@@ -7567,6 +7567,25 @@ html.dark[data-cuelo-look="graphite"] .priority-session-row.is-selected {
   box-shadow: none;
 }
 
+/* The 2px spine reads as a near-white stripe in this palette (and bends into an
+   arc on a pill row). Rows already carry a spinner or unread dot, so the edge
+   goes back to the plain outline. */
+html.dark[data-cuelo-look="graphite"] .navigator-session-row.is-running:not(.is-selected),
+html.dark[data-cuelo-look="graphite"] .priority-session-row.is-running:not(.is-selected),
+html.dark[data-cuelo-look="graphite"] .navigator-session-row.is-unread:not(.is-selected):not(.is-running),
+html.dark[data-cuelo-look="graphite"] .priority-session-row.is-unread:not(.is-selected):not(.is-running) {
+  box-shadow: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .message-user-bubble,
+html.dark[data-cuelo-look="graphite"] .side-chat-answer.is-streaming {
+  border-inline-start: 1px solid var(--border) !important;
+}
+
+html.dark[data-cuelo-look="graphite"] .side-chat-question {
+  border-inline-start: 1px solid var(--border-strong) !important;
+}
+
 html.dark[data-cuelo-look="graphite"] .navigator-search-input,
 html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher,
 html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher button,

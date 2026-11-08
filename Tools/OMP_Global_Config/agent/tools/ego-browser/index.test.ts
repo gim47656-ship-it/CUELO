@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCleanup, buildPrelude, buildScript, createFactory, defaultExec, LINUX_VERIFY_UNSUPPORTED, linuxExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
+import { buildCleanup, buildPrelude, buildScript, createFactory, createLinuxExec, defaultExec, LINUX_VERIFY_UNSUPPORTED, linuxExec, runEgoBrowser, spaceName, VERIFY_PROFILE_MISSING, VERIFY_PROFILE_NAME, type Exec, type ExecResult } from "./index";
 
 // 검증 범위: 스크립트 조립(공간 이름·프로필 id·finish), 종료 코드별 결과 문구, stdin 전달과 ENOENT·시간 초과(가짜 ego-browser 실행 파일).
 // 가짜 경계: fakeExec는 ego-browser를 대신한다. 실제 TaskSpace·프로필 격리·페이지 동작은 여기서 증명하지 않는다(실제 스모크는 작업 기록 참고).
@@ -298,10 +298,11 @@ describe("native Linux host", () => {
     expect(cleaned[0]).toContain(`"cuelo-${UUID_A}-user"`);
   });
 
-  test("linuxExec points the SDK host at the running ego browser and forbids launching another Chromium", async () => {
+  test("linuxExec on a PC without the app launcher points the SDK host at the running ego browser and forbids launching another Chromium", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ego-linux-"));
-    const saved = { host: process.env.EGO_LITE_HOST, port: process.env.EGO_LITE_CDP_PORT, state: process.env.XDG_STATE_HOME, app: process.env.EGO_LITE_APP_PROFILE_ROOT, root: process.env.EGO_LITE_PROFILE_ROOT };
+    const saved = { host: process.env.EGO_LITE_HOST, port: process.env.EGO_LITE_CDP_PORT, state: process.env.XDG_STATE_HOME, app: process.env.EGO_LITE_APP_PROFILE_ROOT, root: process.env.EGO_LITE_PROFILE_ROOT, launcher: process.env.EGO_LITE_APP_LAUNCHER };
     delete process.env.EGO_LITE_PROFILE_ROOT;
+    process.env.EGO_LITE_APP_LAUNCHER = join(dir, "no-launcher");
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/abc-123" }) });
     try {
       const host = join(dir, "host.mjs");
@@ -362,9 +363,72 @@ console.log(JSON.stringify({ input, port: dir ? readFileSync(dir + "/DevToolsAct
       expect((await linuxExec(["nodejs"], "1", { timeoutMs: 20_000 })).code).toBe(127);
     } finally {
       server.stop(true);
-      for (const [key, value] of [["EGO_LITE_HOST", saved.host], ["EGO_LITE_CDP_PORT", saved.port], ["XDG_STATE_HOME", saved.state], ["EGO_LITE_APP_PROFILE_ROOT", saved.app], ["EGO_LITE_PROFILE_ROOT", saved.root]] as const) {
+      for (const [key, value] of [["EGO_LITE_HOST", saved.host], ["EGO_LITE_CDP_PORT", saved.port], ["XDG_STATE_HOME", saved.state], ["EGO_LITE_APP_PROFILE_ROOT", saved.app], ["EGO_LITE_PROFILE_ROOT", saved.root], ["EGO_LITE_APP_LAUNCHER", saved.launcher]] as const) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("linuxExec starts the ego app when it is off and never falls back to Chromium when it cannot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ego-launch-"));
+    const keys = ["EGO_LITE_HOST", "EGO_LITE_CDP_PORT", "XDG_STATE_HOME", "EGO_LITE_APP_PROFILE_ROOT", "EGO_LITE_PROFILE_ROOT", "EGO_LITE_APP_LAUNCHER"] as const;
+    const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    delete process.env.EGO_LITE_PROFILE_ROOT;
+    // A live Chromium on the CDP port: the app path must win over it, and a failed launch must not land here.
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/app-1" }) });
+    try {
+      const host = join(dir, "host.mjs");
+      writeFileSync(host, `let input = ""; for await (const chunk of process.stdin) input += chunk;
+console.log(JSON.stringify({ input, root: process.env.EGO_LITE_PROFILE_ROOT, dir: process.env.EGO_LITE_PROFILE_DIR }));`);
+      const launcher = join(dir, "ego-lite");
+      writeFileSync(launcher, "#!/bin/sh\n");
+      const appRoot = join(dir, "app");
+      const appProfile = join(appRoot, "chromium-profile");
+      Object.assign(process.env, { EGO_LITE_HOST: host, EGO_LITE_CDP_PORT: String(server.port), XDG_STATE_HOME: dir, EGO_LITE_APP_PROFILE_ROOT: appRoot, EGO_LITE_APP_LAUNCHER: launcher });
+      const startApp = () => {
+        mkdirSync(appProfile, { recursive: true });
+        writeFileSync(join(appProfile, "ego-lite-bridge.json"), "{}");
+        writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\n/devtools/browser/app-1\n`);
+      };
+
+      const launched: string[] = [];
+      // The fake launcher brings the app up as it returns; the executor then finds it on its next probe.
+      const exec = createLinuxExec({ launchApp: async (path) => { launched.push(path); startApp(); }, appStartTimeoutMs: 5_000 });
+      const first = await exec(["nodejs"], "after-launch", { timeoutMs: 20_000 });
+      expect(first.code).toBe(0);
+      expect(JSON.parse(first.stdout)).toEqual({ input: "after-launch", root: appRoot });
+      expect(launched).toEqual([launcher]);
+      // The app is up now: the next call attaches without launching again.
+      expect(JSON.parse((await exec(["nodejs"], "running", { timeoutMs: 20_000 })).stdout).root).toBe(appRoot);
+      expect(launched).toHaveLength(1);
+
+      rmSync(appRoot, { recursive: true, force: true });
+      // A call cancelled before it starts launches nothing.
+      let cancelledLaunches = 0;
+      const cancelled = new AbortController();
+      cancelled.abort();
+      const skipped = await createLinuxExec({ launchApp: async () => { cancelledLaunches++; }, appStartTimeoutMs: 300 })(["nodejs"], "never", { timeoutMs: 20_000, signal: cancelled.signal });
+      expect(skipped.killed).toBe(true);
+      expect(cancelledLaunches).toBe(0);
+      const silent = createLinuxExec({ launchApp: async () => {}, appStartTimeoutMs: 300 });
+      const timedOut = await silent(["nodejs"], "never", { timeoutMs: 20_000 });
+      expect(timedOut.code).toBe(1);
+      expect(timedOut.stdout).toBe("");
+      expect(timedOut.stderr).toContain("다른 브라우저로 대신하지 않는다");
+      expect(existsSync(join(dir, "cuelo-ego-browser", "DevToolsActivePort"))).toBe(false);
+
+      const broken = createLinuxExec({ launchApp: async () => { throw new Error("no display"); }, appStartTimeoutMs: 5_000 });
+      const refused = await broken(["nodejs"], "never", { timeoutMs: 20_000 });
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("no display");
+      expect(refused.stdout).toBe("");
+    } finally {
+      server.stop(true);
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
       }
       rmSync(dir, { recursive: true, force: true });
     }

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export type EgoProfile = "user" | "verify";
-/** windows: WSL에서 Windows ego lite의 `ego-browser nodejs`. linux: 네이티브 Linux에서 ego Chromium(CDP)에 붙는 오픈소스 ego-browser SDK. 두 SDK의 TaskSpace API가 다르다. */
+/** windows: Windows ego lite의 `ego-browser nodejs`. linux: Electron ego 앱의 Agent Space에 붙는 SDK(앱이 꺼져 있으면 띄운다, 앱 런처가 없는 PC만 ego Chromium 격리 창). */
 export type EgoHost = "windows" | "linux";
 
 export interface EgoBrowserParams {
@@ -51,7 +51,7 @@ const LINUX_UNAVAILABLE =
  * Linux SDK는 TaskSpace마다 기본 프로필의 쿠키를 복사한다(ego-browser.mjs copyDefaultCookies). 로그아웃 검증 프로필을 보장할 수 없어 verify는 실행 전에 거절한다.
  */
 export const LINUX_VERIFY_UNSUPPORTED =
-  "ego_browser: 이 Linux PC에는 검증 프로필이 없다(ego TaskSpace가 사용자 쿠키를 복사한다). 화면 검증은 `browser.open`에 `app: { relay: false }`를 준 headless로 한다.";
+  "ego_browser: 이 Linux PC에는 검증 프로필이 없다(ego TaskSpace가 사용자 쿠키를 복사한다). CUELO 화면 검증도 profile \"user\"로 하고, 로그아웃 상태가 필요한 확인만 미확인으로 남긴다.";
 
 /** 세션·프로필마다 고정된 TaskSpace 이름. 같은 이름은 ego가 새로 만들지 않고 이어 쓴다. 세션 id를 자르지 않아 다른 세션이 공간을 공유하지 않는다. */
 export function spaceName(sessionId: string, profile: EgoProfile): string {
@@ -298,60 +298,105 @@ async function runningAppProfileDir(): Promise<string | undefined> {
   }
 }
 
+/** Electron판 ego 앱 런처. `EGO_LITE_APP_LAUNCHER`로 바꿀 수 있다. 이 파일이 없는 PC만 ego Chromium 경로를 쓴다. */
+export function linuxAppLauncher(): string {
+  return process.env.EGO_LITE_APP_LAUNCHER || join(homedir(), ".local", "bin", "ego-lite");
+}
+
+/**
+ * ego 앱을 자기 systemd 사용자 유닛으로 띄운다. CUELO 서버 유닛(KillMode=control-group)의 자식으로 띄우면
+ * 서버를 다시 시작할 때 사용자 브라우저도 함께 꺼진다.
+ */
+export async function launchLinuxApp(launcher: string): Promise<void> {
+  const setenv = ["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY"].flatMap((key) => (process.env[key] ? [`--setenv=${key}=${process.env[key]}`] : []));
+  const unit = `ego-lite-gui-${Date.now()}-${process.pid}`;
+  const result = await spawnScript("systemd-run", ["--user", "--collect", `--unit=${unit}`, ...setenv, launcher, "--launch"], "", { timeoutMs: 10_000 });
+  if (result.code !== 0) throw new Error(`systemd-run exit ${result.code}: ${result.stderr.trim()}`);
+}
+
+export interface LinuxExecDeps {
+  launchApp: (launcher: string) => Promise<void>;
+  appStartTimeoutMs: number;
+}
+
 /**
  * Linux 실행기. SDK 호스트 모듈을 node로 직접 돌린다.
- * Electron판 ego 앱이 떠 있으면 그 앱에 붙는다. 공간은 앱 안의 Agent Space로 열리고 사용자 탭은 앞에 그대로 남는다(사용자 결정 2026-11-07).
- * 앱이 없으면 사용자 ego Chromium(CDP)에 붙는다. 호스트가 읽는 `DevToolsActivePort`를 그 CDP로 써 두고,
+ * Electron판 ego 앱에 붙는다. 공간은 앱 안의 Agent Space로 열리고 사용자 탭은 앞에 그대로 남는다(사용자 결정 2026-11-07).
+ * 앱이 꺼져 있으면 띄우고 연결될 때까지 기다린다. 띄우지 못하면 다른 브라우저로 넘어가지 않고 실패한다(사용자 결정 2026-11-08).
+ * 앱 런처가 없는 PC만 사용자 ego Chromium(CDP)에 붙는다. 호스트가 읽는 `DevToolsActivePort`를 그 CDP로 써 두고,
  * 공간은 Target.createBrowserContext로 격리된 새 창에 열린다(사용자 결정 2026-11-02).
  * 어느 쪽이든 연결 직전에 브라우저가 꺼지면 호스트가 빈 Chromium을 새로 띄우려 한다. `/bin/false`로 그 실행을 막는다.
  */
-export const linuxExec: Exec = async (_args, input, options) => {
-  const host = linuxHostPath();
-  const fail = (stderr: string): ExecResult => ({ code: 127, stdout: "", stderr, killed: false });
-  if (!existsSync(host)) return fail(`ego-browser SDK 호스트가 없다: ${host} (EGO_LITE_HOST로 지정할 수 있다)`);
-  const appProfileDir = await runningAppProfileDir();
-  if (appProfileDir) {
-    // 앱 자신의 프로필·Space 기록을 쓰게, 상속된 개별 경로 지정은 넘기지 않는다.
-    const { EGO_LITE_PROFILE_DIR: _profileDir, EGO_LITE_STATE_PATH: _statePath, ...inherited } = process.env;
+export function createLinuxExec(deps: LinuxExecDeps = { launchApp: launchLinuxApp, appStartTimeoutMs: 30_000 }): Exec {
+  return async (_args, input, options) => {
+    const host = linuxHostPath();
+    const fail = (stderr: string, code = 127): ExecResult => ({ code, stdout: "", stderr, killed: false });
+    if (!existsSync(host)) return fail(`ego-browser SDK 호스트가 없다: ${host} (EGO_LITE_HOST로 지정할 수 있다)`);
+    let appProfileDir = await runningAppProfileDir();
+    const launcher = linuxAppLauncher();
+    if (!appProfileDir && existsSync(launcher)) {
+      // A call cancelled before it starts must not leave a new app behind.
+      if (options.signal?.aborted) return { code: -1, stdout: "", stderr: "", killed: true };
+      try {
+        await deps.launchApp(launcher);
+      } catch (error) {
+        return fail(`ego 앱(${launcher})을 띄우지 못했다: ${error instanceof Error ? error.message : String(error)}. 다른 브라우저로 대신하지 않는다.`, 1);
+      }
+      const deadline = Date.now() + deps.appStartTimeoutMs;
+      while (!appProfileDir && Date.now() < deadline) {
+        if (options.signal?.aborted) return { code: -1, stdout: "", stderr: "", killed: true };
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        appProfileDir = await runningAppProfileDir();
+      }
+      if (!appProfileDir) {
+        return fail(`ego 앱(${launcher})을 띄웠지만 ${Math.round(deps.appStartTimeoutMs / 1000)}초 안에 연결되지 않았다. 다른 브라우저로 대신하지 않는다.`, 1);
+      }
+    }
+    if (appProfileDir) {
+      // 앱 자신의 프로필·Space 기록을 쓰게, 상속된 개별 경로 지정은 넘기지 않는다.
+      const { EGO_LITE_PROFILE_DIR: _profileDir, EGO_LITE_STATE_PATH: _statePath, ...inherited } = process.env;
+      return spawnScript("node", [host], input, options, {
+        ...inherited,
+        EGO_LITE_PROFILE_ROOT: linuxAppProfileRoot(),
+        EGO_BROWSER_EXECUTABLE: "/bin/false",
+        EGO_LITE_LAUNCH_TIMEOUT_MS: "1000",
+      });
+    }
+    // 앱이 없는 PC: 사용자의 ego Chromium(`ego-profile-browser`)이 여는 CDP 포트. opencue도 여기에 붙는다.
+    const configuredPort = Number(process.env.EGO_LITE_CDP_PORT || 32899);
+    const port = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 32899;
+    let browserPath: string;
+    try {
+      browserPath = await cdpBrowserPath(port);
+    } catch (error) {
+      return fail(`ego 브라우저 CDP 127.0.0.1:${port}에 연결할 수 없다(ego 앱 런처도 ego-profile-browser도 없다): ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const stateDir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "cuelo-ego-browser");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "DevToolsActivePort"), `${port}\n${browserPath}\n`);
     return spawnScript("node", [host], input, options, {
-      ...inherited,
-      EGO_LITE_PROFILE_ROOT: linuxAppProfileRoot(),
+      ...process.env,
+      EGO_LITE_PROFILE_DIR: stateDir,
+      EGO_LITE_STATE_PATH: join(stateDir, "state.json"),
       EGO_BROWSER_EXECUTABLE: "/bin/false",
       EGO_LITE_LAUNCH_TIMEOUT_MS: "1000",
     });
-  }
-  // 사용자의 ego Chromium(`ego-profile-browser`)이 여는 CDP 포트. opencue도 여기에 붙는다.
-  const configuredPort = Number(process.env.EGO_LITE_CDP_PORT || 32899);
-  const port = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 32899;
-  let browserPath: string;
-  try {
-    browserPath = await cdpBrowserPath(port);
-  } catch (error) {
-    return fail(`ego 브라우저 CDP 127.0.0.1:${port}에 연결할 수 없다(ego 앱도 ego-profile-browser도 떠 있지 않다): ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const stateDir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "cuelo-ego-browser");
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(join(stateDir, "DevToolsActivePort"), `${port}\n${browserPath}\n`);
-  return spawnScript("node", [host], input, options, {
-    ...process.env,
-    EGO_LITE_PROFILE_DIR: stateDir,
-    EGO_LITE_STATE_PATH: join(stateDir, "state.json"),
-    EGO_BROWSER_EXECUTABLE: "/bin/false",
-    EGO_LITE_LAUNCH_TIMEOUT_MS: "1000",
-  });
-};
+  };
+}
+
+export const linuxExec: Exec = createLinuxExec();
 
 function toolDescription(host: EgoHost): string {
   if (host === "linux") {
     const guide = join(dirname(linuxHostPath()), "..", "..", "skills", "ego-browser", "SKILL.md");
-    return "Drive ego TaskSpaces in the user's ego Chromium on this Linux PC without a bash heredoc. Each space opens in its own new window with an isolated context that copies the user's logins; it never adds tabs to the user's windows or the CUELO PWA. "
+    return "Drive isolated ego TaskSpaces in the Electron ego lite app on this Linux PC without a bash heredoc. Each space is an Agent Space inside the app, opened in the background and separate from the user's tabs. If the app is not running, the tool starts it (`~/.local/bin/ego-lite --launch` in its own systemd user unit) and waits for it; if the app cannot start, the call fails rather than using another browser. Only a PC without the app launcher uses the separate ego Chromium (CDP 32899) in an isolated new window; a Chromium result does not verify the Electron ego app. Never open agent work in the user's Space, tabs, or the CUELO PWA, including through native GUI controls or raw CDP. "
       + "`script` runs in Linux Node.js (ESM, top-level await, not the page): the tool has already run `taskSpaces.useOrCreate(<name>)` and bound `task` (`id`, `handOff()`, `takeOver()`, `finish({ keep })`); `page` is the space's current tab (`page.goto`, `page.snapshot`, `page.evaluate`, locators), and `browser.openOrReuseTab(url, { wait: true })` opens more tabs. "
       + `Read the API guide at \`${guide}\` before first use. `
       + "One TaskSpace is kept per session and resumed on every call (variables do not persist between calls, tabs do). "
-      + "Only `profile: \"user\"` exists here; `verify` fails because spaces copy the user's cookies, so CUELO screen verification uses `browser.open` with `app: { relay: false }` (headless). "
+      + "Only `profile: \"user\"` exists here (`verify` fails because spaces copy the user's cookies); use it for CUELO screen verification too, and leave only checks that need a logged-out state unverified. "
       + "Never clear cookies, cache or storage. For login, permission or CAPTCHA steps call `await task.handOff()`, end the script and tell the user; after the user says continue, start the next script with `await task.takeOver()`. "
       + "Set `finish: true` on the last call to close the space; spaces still open when the session ends are closed automatically unless they were handed off to the user. "
-      + "If the ego browser is not running the tool says so; then use `browser.open`.";
+      + "If the browser cannot be reached, report the connection failure. Do not silently substitute browser.open or another browser.";
   }
   return "Drive ego lite TaskSpaces (the `ego-browser` runtime) without a bash heredoc. Only on PCs where ego lite is installed (the tool says so and exits when it is not; then use the normal `browser` tool). "
     + "`script` is the body of an `ego-browser nodejs` script (ESM, top-level await, Node.js, not the page): the tool has already run `const task = await taskSpace(<name>)` and `const page = task.page(\"p1\")`, so use `task`/`page` directly. Browser-side JS goes inside `page.evaluate()`. "
