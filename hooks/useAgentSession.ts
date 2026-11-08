@@ -732,6 +732,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [goalStatus, setGoalStatus] = useState<GoalStatusInfo | null>(null);
   const executeBashRef = useRef<(command: string, excludeFromContext: boolean) => Promise<void> | undefined>(undefined);
   const userScrollIntentUntilRef = useRef(0);
+  const middleScrollRef = useRef<{ top: number; moved: boolean; released: boolean } | null>(null);
   const ignoreProgrammaticScrollUntilRef = useRef(0);
   // Forward reference: handleSend/executeBash are declared above setAutoFollow.
   const setAutoFollowRef = useRef<(following: boolean) => void>(() => {});
@@ -3136,7 +3137,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     completionScrollAllowedRef.current = following;
     setAutoFollowPaused((paused) => (paused === !following ? paused : !following));
   }, []);
-  setAutoFollowRef.current = setAutoFollow;
+  setAutoFollowRef.current = (following) => {
+    middleScrollRef.current = null;
+    setAutoFollow(following);
+  };
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     ignoreProgrammaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
@@ -3147,6 +3151,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // Clear any lingering intent window so the smooth scroll we are about to
     // start is not mistaken for the user scrolling away again.
     userScrollIntentUntilRef.current = 0;
+    middleScrollRef.current = null;
     setAutoFollow(true);
     scrollToBottom("smooth");
   }, [scrollToBottom, setAutoFollow]);
@@ -3154,28 +3159,60 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   /** A jump (search, question rail, palette hit) leaves the bottom on purpose; stop following. */
   const pauseAutoFollow = useCallback(() => {
     userScrollIntentUntilRef.current = 0;
+    middleScrollRef.current = null;
     setAutoFollow(false);
   }, [setAutoFollow]);
 
+  const finishMiddleScroll = useCallback(() => {
+    if (!middleScrollRef.current) return;
+    middleScrollRef.current = null;
+    const container = scrollContainerRef.current;
+    if (container) setAutoFollow(container.scrollHeight - container.scrollTop - container.clientHeight <= AUTO_FOLLOW_BOTTOM_THRESHOLD_PX);
+  }, [setAutoFollow]);
+
   const markUserScrollIntent = useCallback((event: Event) => {
+    if (
+      event instanceof PointerEvent && event.pointerType === "mouse" && event.button === 1
+      && !(event.target instanceof Element && event.target.closest("a[href], input, textarea"))
+      && !(event.target instanceof HTMLElement && event.target.isContentEditable)
+    ) {
+      if (middleScrollRef.current) {
+        finishMiddleScroll();
+        return;
+      }
+      pauseAutoFollow();
+      const container = scrollContainerRef.current;
+      middleScrollRef.current = container ? { top: container.scrollTop, moved: false, released: false } : null;
+      return;
+    }
+    finishMiddleScroll();
     if (event instanceof KeyboardEvent) {
       if (!SCROLL_KEYS.has(event.key)) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, [contenteditable='true']")) return;
     }
     userScrollIntentUntilRef.current = Date.now() + USER_SCROLL_INTENT_MS;
-  }, []);
+  }, [finishMiddleScroll, pauseAutoFollow]);
 
   const handleScrollPositionChange = useCallback(() => {
-    if (!agentRunningRef.current && !bashRunningRef.current) return;
     const container = scrollContainerRef.current;
     if (!container) return;
+    // The native gesture owns scrolling until it ends. App-driven scrollTo
+    // would fight it and emit scrollend events indistinguishable from its end.
+    const middleScroll = middleScrollRef.current;
+    if (middleScroll !== null) {
+      const previousTop = middleScroll.top;
+      middleScroll.moved ||= container.scrollTop !== previousTop;
+      middleScroll.top = container.scrollTop;
+      return;
+    }
+    if (!agentRunningRef.current && !bashRunningRef.current) return;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     // The auto-follow effect refreshes the programmatic-scroll window on every
     // streaming chunk, so during a stream it is always open. Honour a scroll
     // the user actually drove (wheel/touch/pointer/keys) regardless of it,
     // otherwise following could never be paused mid-turn.
     const userDriven = Date.now() <= userScrollIntentUntilRef.current;
     if (!userDriven && Date.now() < ignoreProgrammaticScrollUntilRef.current) return;
-    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (distanceFromBottom <= AUTO_FOLLOW_BOTTOM_THRESHOLD_PX) {
       setAutoFollow(true);
       return;
@@ -3264,26 +3301,45 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [data?.tree, activeLeafId, handleLeafChange, onBranchDataChange]);
 
   useEffect(() => {
+    const handleMiddlePointerUp = (event: PointerEvent) => {
+      const middleScroll = middleScrollRef.current;
+      if (!middleScroll) return;
+      // Chromium consumes the cancelling pointerdown, but still sends pointerup.
+      // The first unmoved middle release starts toggle mode; later clicks end it.
+      if (
+        event.button !== 1 || middleScroll.released || middleScroll.moved
+        || !(event.target instanceof Node && scrollContainerRef.current?.contains(event.target))
+      ) finishMiddleScroll();
+      else middleScroll.released = true;
+    };
+    window.addEventListener("pointerup", handleMiddlePointerUp, true);
     window.addEventListener("keydown", markUserScrollIntent);
     return () => {
+      window.removeEventListener("pointerup", handleMiddlePointerUp, true);
       window.removeEventListener("keydown", markUserScrollIntent);
     };
-  }, [markUserScrollIntent]);
+  }, [finishMiddleScroll, markUserScrollIntent]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    const endMiddleScroll = () => {
+      // A queued programmatic scrollend can arrive just after middle pointerdown.
+      if (middleScrollRef.current?.moved) finishMiddleScroll();
+    };
     container.addEventListener("pointerdown", markUserScrollIntent, { passive: true });
     container.addEventListener("wheel", markUserScrollIntent, { passive: true });
     container.addEventListener("touchstart", markUserScrollIntent, { passive: true });
     container.addEventListener("scroll", handleScrollPositionChange, { passive: true });
+    container.addEventListener("scrollend", endMiddleScroll, { passive: true });
     return () => {
       container.removeEventListener("pointerdown", markUserScrollIntent);
       container.removeEventListener("wheel", markUserScrollIntent);
       container.removeEventListener("touchstart", markUserScrollIntent);
       container.removeEventListener("scroll", handleScrollPositionChange);
+      container.removeEventListener("scrollend", endMiddleScroll);
     };
-  }, [messages.length, loading, handleScrollPositionChange, markUserScrollIntent]);
+  }, [messages.length, loading, finishMiddleScroll, handleScrollPositionChange, markUserScrollIntent]);
 
   useEffect(() => {
     if (transitioningRef.current) return;
@@ -3291,6 +3347,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const container = scrollContainerRef.current;
     if (!container) return;
     const frame = requestAnimationFrame(() => {
+      if (!completionScrollAllowedRef.current) return;
       ignoreProgrammaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
       container.scrollTo({ top: container.scrollHeight, behavior: "instant" });
     });
