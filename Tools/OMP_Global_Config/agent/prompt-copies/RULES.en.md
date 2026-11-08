@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 1a5bd9e5138d9607 -->
+<!-- source-fingerprint: 9c9447a665f5545c -->
 # Global Rules
 
 (Model-facing English copy of the Korean source `RULES.md`.)
