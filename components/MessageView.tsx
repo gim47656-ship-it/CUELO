@@ -433,7 +433,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                 display: "flex", alignItems: "center", gap: 4,
                 padding: "3px 8px", height: 22,
                 background: "none", border: "none",
-                borderRadius: 5,
+                borderRadius: "var(--radius-control)",
                 color: copied ? "var(--accent)" : "var(--text-muted)",
                 cursor: "pointer",
                 fontSize: 11, fontWeight: 400,
@@ -471,7 +471,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     display: "flex", alignItems: "center", gap: 4,
                     padding: "3px 8px", height: 22,
                     background: "none", border: "none",
-                    borderRadius: 5,
+                    borderRadius: "var(--radius-control)",
                     color: "var(--text-dim)",
                     cursor: "pointer",
                     fontSize: 11, fontWeight: 400,
@@ -497,7 +497,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     display: "flex", alignItems: "center", gap: 4,
                     padding: "3px 8px", height: 22,
                     background: "none", border: "none",
-                    borderRadius: 5,
+                    borderRadius: "var(--radius-control)",
                     color: forking ? "var(--accent)" : "var(--text-dim)",
                     cursor: forking ? "not-allowed" : "pointer",
                     fontSize: 11, fontWeight: 400,
@@ -826,7 +826,7 @@ function AssistantMessageView({
             title={t("i18n.messageUsageTitle")}
             style={{
               padding: "3px 8px", height: 22,
-              background: "none", border: "none", borderRadius: 5,
+              background: "none", border: "none", borderRadius: "var(--radius-control)",
               color: usageOpen ? "var(--text-muted)" : "var(--text-dim)",
               cursor: "pointer",
               fontSize: 11, fontWeight: 400,
@@ -847,7 +847,7 @@ function AssistantMessageView({
             title={t("i18n.estimatedTokens")}
             style={{
               padding: "3px 8px", height: 22,
-              background: "none", border: "none", borderRadius: 5,
+              background: "none", border: "none", borderRadius: "var(--radius-control)",
               color: usageOpen ? "var(--text-muted)" : "var(--text-dim)",
               cursor: "pointer",
               fontSize: 11, fontWeight: 400,
@@ -868,7 +868,7 @@ function AssistantMessageView({
               display: "flex", alignItems: "center", gap: 4,
               padding: "3px 8px", height: 22,
               background: "none", border: "none",
-              borderRadius: 5,
+              borderRadius: "var(--radius-control)",
               color: copied ? "var(--accent)" : "var(--text-muted)",
               cursor: "pointer",
               fontSize: 11, fontWeight: 400,
@@ -2007,7 +2007,7 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
       <div
         style={{
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-surface)",
           overflow: "hidden",
           background: "var(--bg)",
         }}
@@ -2107,7 +2107,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
       <div
         style={{
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-surface)",
           overflow: "hidden",
           background: isHiddenDisplay ? "var(--bg-subtle)" : "var(--bg)",
           opacity: isHiddenDisplay && !contentExpanded ? 0.82 : 1,

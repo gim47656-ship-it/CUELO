@@ -1979,7 +1979,7 @@ export function AppShell({
           title={translate("common.settings")}
           style={{
             width: "100%", height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            background: "none", border: "1px solid var(--border)", borderRadius: 9,
+            background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)",
             color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
             fontFamily: "var(--font-mono)", transition: "background 0.12s, color 0.12s, border-color 0.12s",
           }}
@@ -2457,7 +2457,7 @@ export function AppShell({
                             color: copied ? "var(--accent)" : "var(--text-dim)",
                             background: "transparent",
                             border: "1px solid var(--border)",
-                            borderRadius: 4,
+                            borderRadius: "var(--radius-control)",
                             cursor: "pointer",
                             flex: "0 0 auto",
                             transition: "color 0.12s, border-color 0.12s, background 0.12s",

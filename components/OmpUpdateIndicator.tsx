@@ -308,7 +308,7 @@ export function OmpUpdateIndicator() {
           gap: 8,
           padding: "7px 10px",
           border: "1px solid color-mix(in srgb, var(--warning) 54%, var(--border))",
-          borderRadius: 9,
+          borderRadius: "var(--radius-surface)",
           background: "color-mix(in srgb, var(--warning) 8%, transparent)",
           color: "var(--warning)",
           cursor: "pointer",
@@ -348,7 +348,7 @@ export function OmpUpdateIndicator() {
             flexDirection: "column",
             overflow: "hidden",
             border: "1px solid var(--border)",
-            borderRadius: 10,
+            borderRadius: "var(--radius-surface)",
             background: "var(--bg-panel)",
             boxShadow: "0 18px 46px rgba(0,0,0,0.28)",
           }}
@@ -398,7 +398,7 @@ export function OmpUpdateIndicator() {
                     minHeight: isMobile ? 44 : 32,
                     padding: "6px 12px",
                     border: "none",
-                    borderRadius: 7,
+                    borderRadius: "var(--radius-control)",
                     background: "var(--accent)",
                     color: "var(--bg)",
                     fontSize: 12,
@@ -445,14 +445,14 @@ export function OmpUpdateIndicator() {
 
             <div style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
               <div style={{ marginBottom: 7, color: "var(--text-dim)" }}>{t("updates.manual")}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 6, padding: "6px 7px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", fontFamily: "var(--font-mono)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 6, padding: "6px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", fontFamily: "var(--font-mono)" }}>
                 <code style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", color: "var(--text)" }}>{SOURCE_UPDATE_COMMAND}</code>
                 <button
                   type="button"
                   onClick={() => void copyCommand(SOURCE_UPDATE_COMMAND)}
                   title={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
                   aria-label={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
-                  style={{ flex: "0 0 auto", width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, padding: 0, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-panel)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
+                  style={{ flex: "0 0 auto", width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, padding: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
                 >
                   {copiedCommand === SOURCE_UPDATE_COMMAND ? (
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

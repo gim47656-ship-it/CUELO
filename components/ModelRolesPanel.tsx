@@ -140,7 +140,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t("roles.scope")}</span>
-        <div style={{ display: "flex", flexShrink: 0, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ display: "flex", flexShrink: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", overflow: "hidden" }}>
           {SCOPES.map((option) => (
             <button
               key={option}
@@ -193,7 +193,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                   gap: 8,
                   padding: "8px 10px",
                   border: "1px solid var(--border)",
-                  borderRadius: 7,
+                  borderRadius: "var(--radius-surface)",
                   background: "var(--bg-panel)",
                 }}
               >
@@ -202,7 +202,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                     flexShrink: 0,
                     minWidth: 62,
                     padding: "2px 6px",
-                    borderRadius: 4,
+                    borderRadius: "var(--radius-control)",
                     border: "1px solid var(--border)",
                     background: "var(--bg-subtle)",
                     color: "var(--accent)",
@@ -297,7 +297,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                             style={{
                               padding: "3px 7px",
                               border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
-                              borderRadius: 4,
+                              borderRadius: "var(--radius-control)",
                               background: active ? "var(--bg-selected)" : "transparent",
                               color: active ? "var(--accent)" : "var(--text-muted)",
                               cursor: pendingRole === role.role ? "not-allowed" : "pointer",

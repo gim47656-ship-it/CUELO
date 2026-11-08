@@ -57,7 +57,7 @@ function panelButtonStyle(disabled = false): React.CSSProperties {
     minHeight: 30,
     padding: "4px 9px",
     border: "1px solid var(--border)",
-    borderRadius: 6,
+    borderRadius: "var(--radius-control)",
     background: "var(--bg)",
     color: disabled ? "var(--text-dim)" : "var(--text-muted)",
     cursor: disabled ? "default" : "pointer",
@@ -552,7 +552,7 @@ export function SideChatPanel({
                 <QuestionBlock>{entry.question}</QuestionBlock>
                 <SideChatReply identity={replyIdentity} status="failed" utteranceKey={`failed:${entry.question}:${index}`}>
                   {entry.partialAnswer && <AnswerBlock>{entry.partialAnswer}</AnswerBlock>}
-                  <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                  <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
                     {entry.message}
                   </div>
                 </SideChatReply>

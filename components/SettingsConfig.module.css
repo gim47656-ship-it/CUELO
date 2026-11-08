@@ -17,7 +17,7 @@
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-surface);
   background: var(--bg);
   color: var(--text);
   box-shadow: 0 24px 80px rgba(0, 0, 0, .34);
@@ -81,7 +81,7 @@
   height: 32px;
   padding: 0 10px 0 31px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   outline: none;
   background: var(--bg);
   color: var(--text);
@@ -115,7 +115,7 @@
   gap: 9px;
   padding: 0 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -138,7 +138,7 @@
   width: 100%;
   height: 34px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -190,7 +190,7 @@
   gap: 12px;
   padding: 9px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-surface);
   background: var(--bg-panel);
   color: var(--text-muted);
   font: 10px/1.4 var(--font-mono);
@@ -200,7 +200,7 @@
   height: 28px;
   padding: 0 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--accent);
   color: var(--bg);
   cursor: pointer;
@@ -235,7 +235,7 @@
 .select, .textInput, .jsonEditor, .numberInput {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   outline: none;
   background: var(--bg-panel);
   color: var(--text);
@@ -250,7 +250,7 @@
   position: relative;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--seed-radius-full);
   background: var(--bg-hover);
   cursor: pointer;
   transition: background .16s, border-color .16s;
@@ -277,7 +277,7 @@
   gap: 5px;
   padding: 5px 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg-panel);
   color: var(--text-muted);
   font: 10px var(--font-mono);
@@ -307,11 +307,11 @@
   position: relative;
   overflow: visible;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-surface);
   background: var(--bg-panel);
 }
 .themeCard:focus-within { z-index: 10; }
-.themePreview { height: 118px; overflow: hidden; padding: 14px; border-radius: 11px 11px 0 0; background: var(--seed-color-bg-layer-default); }
+.themePreview { height: 118px; overflow: hidden; padding: 14px; border-radius: calc(var(--radius-surface) - 1px) calc(var(--radius-surface) - 1px) 0 0; background: var(--seed-color-bg-layer-default); }
 .themePreviewBar { width: 62%; height: 7px; border-radius: var(--seed-radius-r1); background: var(--seed-color-fg-neutral); opacity: .9; }
 .themePreviewPanel { height: 62px; margin-top: 12px; padding: 10px; border: 1px solid var(--seed-color-stroke-neutral-muted); border-radius: 7px; background: var(--seed-color-bg-layer-floating); }
 .themePreviewLine { width: 74%; height: 5px; margin-bottom: 7px; border-radius: 3px; background: var(--seed-color-fg-neutral); }
@@ -321,24 +321,24 @@
 .themeSlot { font: 700 10px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); }
 .themeActive { font: 9px var(--font-mono); color: var(--accent); }
 
-.mcpLayout { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 490px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.mcpLayout { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 490px; border: 1px solid var(--border); border-radius: var(--radius-surface); overflow: hidden; }
 .mcpList { display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-panel); }
 .scopeTabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
-.scopeButton { height: 29px; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; font: 10px var(--font-mono); }
+.scopeButton { height: 29px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-dim); cursor: pointer; font: 10px var(--font-mono); }
 .scopeButton[data-active="true"] { background: var(--bg-selected); color: var(--text); }
 .serverRows { flex: 1; overflow-y: auto; padding: 7px; }
-.serverRow { width: 100%; display: flex; align-items: center; gap: 3px; padding: 3px; border-radius: 7px; background: transparent; color: var(--text-muted); font: 11px var(--font-mono); }
+.serverRow { width: 100%; display: flex; align-items: center; gap: 3px; padding: 3px; border-radius: var(--radius-control); background: transparent; color: var(--text-muted); font: 11px var(--font-mono); }
 .serverRow[data-active="true"] { background: var(--bg-selected); color: var(--text); }
 .serverSelect { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 5px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
-.serverToggle { width: 30px; height: 23px; flex: 0 0 auto; padding: 0; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text-dim); cursor: pointer; font: 700 8px var(--font-mono); }
+.serverToggle { width: 30px; height: 23px; flex: 0 0 auto; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); color: var(--text-dim); cursor: pointer; font: 700 8px var(--font-mono); }
 .serverToggle[data-on="true"] { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); color: var(--success); }
 .serverToggle:disabled { cursor: wait; opacity: .5; }
 .serverName { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sourceBadge { max-width: 76px; overflow: hidden; text-overflow: ellipsis; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim); font-size: 8px; white-space: nowrap; }
+.sourceBadge { max-width: 76px; overflow: hidden; text-overflow: ellipsis; padding: 2px 4px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-dim); font-size: 8px; white-space: nowrap; }
 .serverListEmpty { padding: 22px 10px; color: var(--text-dim); font: 10px/1.5 var(--font-mono); text-align: center; }
 .statusDot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
 .statusDot[data-off="true"] { background: var(--text-dim); }
-.addServer { margin: 8px; height: 31px; border: 1px dashed var(--border); border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; font: 11px var(--font-mono); }
+.addServer { margin: 8px; height: 31px; border: 1px dashed var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text-muted); cursor: pointer; font: 11px var(--font-mono); }
 .mcpEditor { min-width: 0; padding: 20px; }
 .editorHeader { display: flex; gap: 8px; margin-bottom: 14px; }
 .jsonEditor { min-height: 290px; resize: vertical; padding: 12px; line-height: 1.55; }
@@ -347,19 +347,19 @@
 .editorActions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
 .linkButton {
   display: inline-flex; align-items: center; height: 33px; padding: 0 13px;
-  border: 1px solid var(--border); border-radius: 7px;
+  border: 1px solid var(--border); border-radius: var(--radius-control);
   color: var(--text); text-decoration: none; font: 700 11px var(--font-mono);
 }
 .linkButton:hover { background: var(--bg-hover); }
 
-.primaryButton, .dangerButton { height: 33px; padding: 0 13px; border: 0; border-radius: 7px; background: var(--accent); color: var(--bg); cursor: pointer; font: 700 11px var(--font-mono); }
+.primaryButton, .dangerButton { height: 33px; padding: 0 13px; border: 0; border-radius: var(--radius-control); background: var(--accent); color: var(--bg); cursor: pointer; font: 700 11px var(--font-mono); }
 .dangerButton { border: 1px solid var(--border); background: transparent; color: var(--danger); }
 .primaryButton:disabled { cursor: wait; opacity: .5; }
 .empty { height: 100%; display: grid; place-items: center; padding: 30px; color: var(--text-dim); font: 12px/1.6 var(--font-mono); text-align: center; }
 
 @media (max-width: 760px) {
   .backdrop { padding: 8px; }
-  .window { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 82px minmax(0, 1fr); border-radius: 10px; }
+  .window { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 82px minmax(0, 1fr); border-radius: var(--radius-surface); }
   .brand { padding: 14px 6px 9px; text-align: center; }
   .eyebrow, .context, .searchWrap, .navLabel, .closeButton span:first-child { display: none; }
   .title { font-size: 12px; }

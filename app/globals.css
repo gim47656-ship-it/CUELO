@@ -239,7 +239,7 @@ body {
   background: color-mix(in srgb, var(--text-dim) 65%, transparent);
   border: 2px solid transparent;
   background-clip: content-box;
-  border-radius: 999px;
+  border-radius: var(--seed-radius-full);
 }
 
 .chat-session-scroll::-webkit-scrollbar-thumb:hover {
@@ -1864,7 +1864,7 @@ span.linenumber {
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-surface);
   background: var(--bg-panel);
   list-style: none;
 }
@@ -2276,7 +2276,7 @@ span.linenumber {
   margin-block-end: 8px;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   background: var(--bg-panel);
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -7104,7 +7104,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .upkeep-checked {
   padding: 1px 8px;
   border: 1px solid var(--success);
-  border-radius: 999px;
+  border-radius: var(--seed-radius-full);
   color: var(--success);
   font-size: var(--readout-size);
   font-weight: 600;

@@ -1471,7 +1471,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 cursor: selectedCwd ? "pointer" : "not-allowed",
                 width: 32, height: 32,
                 padding: 0,
-                borderRadius: 7,
+                borderRadius: "var(--radius-control)",
                 fontSize: 12,
                 flexShrink: 0,
                 transition: "background 0.12s, color 0.12s, border-color 0.12s",
@@ -1504,7 +1504,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32, height: 32,
-                borderRadius: 7,
+                borderRadius: "var(--radius-control)",
                 padding: 0,
                 flexShrink: 0,
                 transition: "background 0.3s, color 0.3s, border-color 0.3s",
@@ -1539,7 +1539,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       {cloudProjects && !translatorOn && (
         <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
-          style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           {t("cloudProjects.launch")}
         </button>
       )}
@@ -1568,7 +1568,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             minWidth: 0,
             padding: 2,
             border: "1px solid var(--border)",
-            borderRadius: 6,
+            borderRadius: "var(--radius-control)",
             background: "var(--bg-panel)",
           }}
         >
@@ -1595,7 +1595,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   flex: 1,
                   padding: "3px 4px",
                   border: "none",
-                  borderRadius: 4,
+                  borderRadius: "var(--radius-control)",
                   background: active ? "var(--bg-selected)" : "transparent",
                   color: active ? "var(--text)" : "var(--text-dim)",
                   cursor: "pointer",
@@ -1622,7 +1622,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 flex: 1,
                 padding: "3px 4px",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: "var(--radius-control)",
                 background: translatorOn ? "var(--bg-selected)" : "transparent",
                 color: translatorOn ? "var(--text)" : "var(--text-dim)",
                 cursor: "pointer",
@@ -1651,7 +1651,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               height: 26,
               padding: 0,
               border: "none",
-              borderRadius: 5,
+              borderRadius: "var(--radius-control)",
               background: showHiddenProjects ? "var(--bg-selected)" : "transparent",
               color: showHiddenProjects ? "var(--accent)" : "var(--text-dim)",
               cursor: hasHiddenProjects ? "pointer" : "default",
@@ -1681,7 +1681,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               height: 28,
               padding: 0,
               border: "none",
-              borderRadius: 6,
+              borderRadius: "var(--radius-control)",
               background: "var(--bg-hover)",
               color: "var(--text-muted)",
               cursor: "pointer",
@@ -1739,7 +1739,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               height: 34,
               padding: "0 10px 0 32px",
               border: "1px solid var(--border)",
-              borderRadius: 7,
+              borderRadius: "var(--radius-control)",
               outline: "none",
               background: "var(--bg-hover)",
               color: "var(--text)",
@@ -1874,7 +1874,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   alignItems: "center",
                   minHeight: 34,
                   position: "relative",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-control)",
                   background: isSelectedProject ? "var(--bg-hover)" : "transparent",
                   opacity: hidden ? 0.55 : 1,
                 }}
@@ -1952,7 +1952,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         height: 24,
                         padding: "2px 6px",
                         border: "1px solid var(--accent)",
-                        borderRadius: 5,
+                        borderRadius: "var(--radius-control)",
                         outline: "none",
                         background: "var(--bg)",
                         color: "var(--text)",
@@ -2024,7 +2024,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                     height: 28,
                     padding: 0,
                     border: "none",
-                    borderRadius: 5,
+                    borderRadius: "var(--radius-control)",
                     background: "transparent",
                     color: "var(--text-dim)",
                     cursor: "pointer",
@@ -2074,7 +2074,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         marginRight: 3,
                         padding: 0,
                         border: "none",
-                        borderRadius: 5,
+                        borderRadius: "var(--radius-control)",
                         background: projectMenuOpen === project ? "var(--bg-selected)" : "transparent",
                         color: isSelectedProject && currentWt && !currentWt.isMain ? "var(--accent)" : "var(--text-dim)",
                         cursor: "pointer",
@@ -2101,7 +2101,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         zIndex: 110,
                         background: "var(--bg)",
                         border: "1px solid var(--border)",
-                        borderRadius: 8,
+                        borderRadius: "var(--radius-surface)",
                         boxShadow: "var(--shadow-float)",
                         boxSizing: "border-box",
                         overflow: "hidden",
@@ -2176,7 +2176,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
                           border: "1px solid var(--border)",
-                          borderRadius: 5,
+                          borderRadius: "var(--radius-control)",
                           outline: "none",
                           background: "var(--bg)",
                           color: "var(--text)",
@@ -2197,13 +2197,13 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             <button
                               onClick={() => void handleRemoveWorktree(wt.path, true)}
                               disabled={wtBusy}
-                              style={{ padding: "3px 9px", background: "var(--danger)", border: "none", borderRadius: 5, color: "var(--bg)", fontSize: 11, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}
+                              style={{ padding: "3px 9px", background: "var(--danger)", border: "none", borderRadius: "var(--radius-control)", color: "var(--bg)", fontSize: 11, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}
                             >
                               {t("sidebar.force")}
                             </button>
                             <button
                               onClick={() => setWtConfirmRemove(null)}
-                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
                             >
                               {t("sidebar.cancel")}
                             </button>
@@ -2260,7 +2260,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                                 width: 34, height: 28, padding: 0, marginRight: 4,
                                 background: "none", border: "none",
                                 color: "var(--text-dim)", cursor: "pointer",
-                                borderRadius: 5, flexShrink: 0,
+                                borderRadius: "var(--radius-control)", flexShrink: 0,
                                 transition: "color 0.12s, background 0.12s",
                               }}
                               onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
@@ -2338,7 +2338,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
                           border: "1px solid var(--accent)",
-                          borderRadius: 5,
+                          borderRadius: "var(--radius-control)",
                           outline: "none",
                           background: "var(--bg)",
                           color: "var(--text)",
@@ -2354,7 +2354,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             padding: "4px 0",
                             background: "var(--accent)",
                             border: "none",
-                            borderRadius: 5,
+                            borderRadius: "var(--radius-control)",
                             color: "var(--bg)",
                             fontSize: 11,
                             fontWeight: 600,
@@ -2371,7 +2371,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             padding: "4px 0",
                             background: "var(--bg-hover)",
                             border: "1px solid var(--border)",
-                            borderRadius: 5,
+                            borderRadius: "var(--radius-control)",
                             color: "var(--text-muted)",
                             fontSize: 11,
                             cursor: "pointer",
@@ -2683,7 +2683,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   style={{
                     minWidth: 18,
                     padding: "0 5px",
-                    borderRadius: 9,
+                    borderRadius: "var(--radius-surface)",
                     background: resultsToCheck.length > 0 ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-subtle)",
                     color: resultsToCheck.length > 0 ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-muted)",
                     fontSize: 11,
@@ -2986,7 +2986,7 @@ function PrioritySessionRow({
       style={{
         display: "flex",
         alignItems: "stretch",
-        borderRadius: 5,
+        borderRadius: "var(--radius-control)",
         background: selected ? "var(--bg-selected)" : "transparent",
       }}
     >
@@ -3163,7 +3163,7 @@ function ArchivedSessionsSection({
                     display: "flex", alignItems: "center", justifyContent: "center",
                     height: 24, padding: "0 8px", flexShrink: 0,
                     background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 5, color: "var(--text-muted)",
+                    borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                     cursor: "pointer", fontSize: 11, fontWeight: 500,
                   }}
                 >
@@ -3270,7 +3270,7 @@ function WaitingSessionIndicator() {
       style={{
         flexShrink: 0,
         padding: "0 6px",
-        borderRadius: 9,
+        borderRadius: "var(--radius-surface)",
         border: "1px solid var(--warning-line)",
         background: "var(--warning-soft)",
         color: "var(--warning)",
@@ -3625,7 +3625,7 @@ function SessionItem({
             fontSize: 12,
             padding: "5px 8px",
             border: "1px solid var(--accent)",
-            borderRadius: 5,
+            borderRadius: "var(--radius-control)",
             outline: "none",
             background: "var(--bg)",
             color: "var(--text)",
@@ -3720,7 +3720,7 @@ function SessionItem({
                   width: 26, height: 26, padding: 0,
                   background: isPinned ? "var(--bg-selected)" : "transparent",
                   border: "none",
-                  borderRadius: 5,
+                  borderRadius: "var(--radius-control)",
                   color: isPinned ? "var(--accent)" : "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   opacity: hovered || isPinned ? 1 : 0,
@@ -3738,7 +3738,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 26, height: 26, padding: 0,
                   background: "transparent", border: "none",
-                  borderRadius: 5, color: "var(--text-muted)",
+                  borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   opacity: hovered ? 1 : 0,
                   pointerEvents: hovered ? "auto" : "none",
@@ -3766,7 +3766,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 26, height: 26, padding: 0,
                   background: "transparent", border: "none",
-                  borderRadius: 5, color: "var(--text-muted)",
+                  borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   transition: "background 0.12s, color 0.12s, border-color 0.12s",
                 }}
@@ -3792,7 +3792,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 26, height: 26, padding: 0,
                   background: "transparent", border: "none",
-                  borderRadius: 5, color: "var(--text-muted)",
+                  borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   opacity: hovered ? 1 : 0,
                   pointerEvents: hovered ? "auto" : "none",

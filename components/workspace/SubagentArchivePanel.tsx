@@ -306,7 +306,7 @@ function SubagentDetail({
             {state.note && <div role="status" style={{ marginBottom: 8, color: "var(--text-muted)", fontSize: 9.5, lineHeight: 1.5 }}>{state.note}</div>}
             {state.truncated && <div role="status" style={{ marginBottom: 8, color: "var(--warning)", fontSize: 9.5 }}>최근 400개 기록만 표시합니다.</div>}
             {state.entries.map((entry, index) => (
-              <div key={`${entry.at ?? 0}:${index}`} style={{ margin: "0 0 7px", padding: "8px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 11, lineHeight: 1.55 }}>
+              <div key={`${entry.at ?? 0}:${index}`} style={{ margin: "0 0 7px", padding: "8px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 11, lineHeight: 1.55 }}>
                 <div style={{ marginBottom: 5, color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 8.5, letterSpacing: "0.04em" }}>{entry.role} · {entry.kind}</div>
                 {entry.text || "(내용 없음)"}
               </div>
@@ -314,8 +314,8 @@ function SubagentDetail({
           </>
         )}
         {state.kind === "empty" && <div role="status" style={{ padding: 24, color: "var(--text-muted)", textAlign: "center", fontSize: 10.5, lineHeight: 1.6 }}>{state.note && <><span>{state.note}</span><br /></>}대화 내용이 없습니다.</div>}
-        {state.kind === "unreachable" && <div role="status" style={{ padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text-muted)", fontSize: 10.5, lineHeight: 1.5 }}>{state.message}</div>}
-        {state.kind === "error" && <div role="alert" style={{ padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5 }}>{state.message}</div>}
+        {state.kind === "unreachable" && <div role="status" style={{ padding: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--text-muted)", fontSize: 10.5, lineHeight: 1.5 }}>{state.message}</div>}
+        {state.kind === "error" && <div role="alert" style={{ padding: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5 }}>{state.message}</div>}
       </div>}
     </div>
   );
@@ -599,10 +599,10 @@ export function SubagentArchivePanel({
 
         {!initialLoading && liveState.kind === "loading" && <div role="status" style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 9.5 }}>실시간 상태 불러오는 중…</div>}
         {!initialLoading && archiveState.kind === "loading" && <div role="status" style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 9.5 }}>디스크 기록 불러오는 중…</div>}
-        {liveState.kind === "unreachable" && <div role="status" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text-muted)", fontSize: 9.5 }}>{liveState.message}</div>}
-        {liveState.kind === "error" && <div role="alert" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 9.5 }}>{liveState.message}</div>}
-        {archiveState.kind === "unreachable" && <div role="status" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--text-muted)", fontSize: 9.5 }}>{archiveState.message}</div>}
-        {archiveState.kind === "error" && <div role="alert" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg)", color: "var(--danger)", fontSize: 9.5 }}>{archiveState.message}</div>}
+        {liveState.kind === "unreachable" && <div role="status" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--text-muted)", fontSize: 9.5 }}>{liveState.message}</div>}
+        {liveState.kind === "error" && <div role="alert" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--danger)", fontSize: 9.5 }}>{liveState.message}</div>}
+        {archiveState.kind === "unreachable" && <div role="status" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--text-muted)", fontSize: 9.5 }}>{archiveState.message}</div>}
+        {archiveState.kind === "error" && <div role="alert" style={{ marginTop: 8, padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--danger)", fontSize: 9.5 }}>{archiveState.message}</div>}
         {archiveTruncated && <div role="status" style={{ marginTop: 8, color: "var(--warning)", fontSize: 9.5 }}>최근 디스크 기록 60개만 표시합니다.</div>}
       </div>
     </section>

@@ -189,7 +189,7 @@ function InlineUtteranceBlock({
             padding: "3px 9px",
             height: 22,
             border: "1px solid var(--border)",
-            borderRadius: 5,
+            borderRadius: "var(--radius-control)",
             background: "none",
             color: "var(--text-muted)",
             cursor: "pointer",

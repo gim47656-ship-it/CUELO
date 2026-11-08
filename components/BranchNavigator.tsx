@@ -187,7 +187,7 @@ function TreeNodeView({ node, activePathIds, depth, isLast, parentLines, onSelec
             color: role === "user" ? "var(--accent)" : "var(--text-dim)",
             background: role === "user" ? "rgba(37,99,235,0.08)" : "var(--bg-hover)",
             border: `1px solid ${role === "user" ? "rgba(37,99,235,0.2)" : "var(--border)"}`,
-            borderRadius: 3,
+            borderRadius: "var(--radius-control)",
             padding: "0 4px",
             marginRight: 5,
             flexShrink: 0,

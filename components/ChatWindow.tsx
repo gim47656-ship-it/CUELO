@@ -1676,7 +1676,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
               padding: "6px 12px",
               // 휴대폰에서는 손가락 표적 44px(데스크톱은 그대로).
               minHeight: isMobile ? 44 : undefined,
-              borderRadius: 999,
+              borderRadius: "var(--seed-radius-full)",
               border: "1px solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",
@@ -1750,7 +1750,7 @@ function GoalBar({ goal, t }: { goal: GoalStatusInfo | null; t: (key: string, pa
         marginBottom: 8,
         padding: "5px 10px",
         border: "1px solid var(--border)",
-        borderRadius: 7,
+        borderRadius: "var(--radius-control)",
         background: "var(--bg-panel)",
         color: "var(--text-muted)",
         fontSize: 11,
@@ -1781,7 +1781,7 @@ function ExtensionWidgets({ widgets }: { widgets: Array<{ key: string; lines: st
           key={widget.key}
           style={{
             border: "1px solid var(--border)",
-            borderRadius: 7,
+            borderRadius: "var(--radius-surface)",
             background: "var(--bg-panel)",
             overflow: "hidden",
           }}
@@ -2552,7 +2552,7 @@ function ExtensionCustomPanel({
           width: "min(920px, 100%)",
           maxHeight: "min(760px, calc(100vh - 40px))",
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-surface)",
           background: "var(--bg)",
           boxShadow: "var(--seed-shadow-s3)",
           overflow: "hidden",
@@ -2613,7 +2613,7 @@ function ExtensionCustomPanel({
             onClick={() => onInput(request, "\x03")}
             style={{
               padding: "5px 9px",
-              borderRadius: 6,
+              borderRadius: "var(--radius-control)",
               border: "1px solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",

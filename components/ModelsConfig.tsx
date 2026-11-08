@@ -201,7 +201,7 @@ const inputStyle = {
   padding: "6px 9px",
   background: "var(--bg-panel)",
   border: "1px solid var(--border)",
-  borderRadius: 5,
+  borderRadius: "var(--radius-control)",
   color: "var(--text)",
   fontSize: 12,
   outline: "none",
@@ -424,7 +424,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
          <SectionTitle>{t("i18n.provider")}</SectionTitle>
         <button onClick={onDelete}
-          style={{ padding: "3px 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 4, color: "#ef4444", cursor: "pointer", fontSize: 11 }}>
+          style={{ padding: "3px 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 11 }}>
            {t("i18n.delete")}
         </button>
       </div>
@@ -433,7 +433,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
         <TextInput value={editingName} onChange={setEditingName} placeholder="provider-name" mono />
         {editingName !== name && editingName.trim() && (
           <button onClick={() => onRename(editingName.trim())}
-            style={{ marginTop: 4, padding: "3px 10px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: 4, color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
+            style={{ marginTop: 4, padding: "3px 10px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: "var(--radius-control)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
              {t("i18n.rename")}
           </button>
         )}
@@ -472,7 +472,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
             onClick={handleDiscoverModels}
             disabled={!provider.baseUrl?.trim() || discoveryState.phase === "loading"}
             style={{
-              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 5,
+              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)",
               background: "var(--bg-panel)", color: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
               cursor: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
             }}
@@ -482,7 +482,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
         )}
 
         {discoveryState.phase === "error" && (
-          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
+          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-surface)", color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
             {discoveryState.message}
           </div>
         )}
@@ -497,7 +497,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               style={{ ...inputStyle, width: "100%", minWidth: 0 }}
             />
 
-            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg-panel)" }}>
               <label
                 style={{
                   minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8,
@@ -556,7 +556,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               <button
                 onClick={addSelectedModels}
                 disabled={selectedCount === 0}
-                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: 5, background: selectedCount ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", color: selectedCount ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: selectedCount ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: "var(--radius-control)", background: selectedCount ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", color: selectedCount ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: selectedCount ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
               >
                 {selectedCount
                   ? t("models.discoveryAddSelectedCount", { count: selectedCount })
@@ -643,7 +643,7 @@ function ThinkingLevelMapEditor({
               alignItems: "center",
               gap: 8,
               padding: "5px 4px",
-              borderRadius: 6,
+              borderRadius: "var(--radius-control)",
               background: "transparent",
               border: "1px solid transparent",
             }}
@@ -662,7 +662,7 @@ function ThinkingLevelMapEditor({
             </div>
 
             {/* Default + Disabled buttons */}
-            <div style={{ display: "flex", borderRadius: 5, border: "1px solid var(--border)", overflow: "hidden", flexShrink: 0 }}>
+            <div style={{ display: "flex", borderRadius: "var(--radius-control)", border: "1px solid var(--border)", overflow: "hidden", flexShrink: 0 }}>
               <button
                 onClick={() => setLevel(level, "omit")}
                 style={{ ...btnBase, ...(state === "omit" ? btnActive : {}) }}
@@ -678,7 +678,7 @@ function ThinkingLevelMapEditor({
             </div>
 
             {/* Custom button + input fused */}
-            <div style={{ display: "flex", borderRadius: 5, border: `1px solid ${state === "string" ? "var(--accent)" : "var(--border)"}`, overflow: "hidden", transition: "border-color 0.1s" }}>
+            <div style={{ display: "flex", borderRadius: "var(--radius-control)", border: `1px solid ${state === "string" ? "var(--accent)" : "var(--border)"}`, overflow: "hidden", transition: "border-color 0.1s" }}>
               <button
                 onClick={() => setLevel(level, strVal || level)}
                 style={{ ...btnBase, ...(state === "string" ? btnActive : {}), borderRight: "1px solid var(--border)", flexShrink: 0 }}
@@ -766,7 +766,7 @@ function HeaderListEditor({ headers, onChange }: {
     padding: "6px 9px",
     background: "none",
     border: "1px solid rgba(239,68,68,0.3)",
-    borderRadius: 4,
+    borderRadius: "var(--radius-control)",
     color: "#ef4444",
     cursor: "pointer",
     fontSize: 11,
@@ -787,7 +787,7 @@ function HeaderListEditor({ headers, onChange }: {
         ...current,
         { id: nextRowIdRef.current++, name: "", value: "" },
       ])}
-        style={{ padding: "5px 9px", background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-muted)", cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, alignSelf: "flex-start" }}>
+        style={{ padding: "5px 9px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, alignSelf: "flex-start" }}>
         + Add header
       </button>
     </div>
@@ -1002,7 +1002,7 @@ function ModelDetail({
                 height: 24,
                 padding: "0 8px",
                 border: `1px solid ${testState.phase === "error" ? "#fecaca" : testState.phase === "success" ? "#bbf7d0" : "var(--border)"}`,
-                borderRadius: 4,
+                borderRadius: "var(--radius-control)",
                 background: testState.phase === "error" ? "#fee2e2" : testState.phase === "success" ? "#dcfce7" : "#e5e7eb",
                 color: "#111827",
                 fontSize: 11,
@@ -1026,7 +1026,7 @@ function ModelDetail({
               padding: "0 8px",
               background: testState.phase === "success" ? "#16a34a" : "none",
               border: `1px solid ${testState.phase === "success" ? "#16a34a" : "var(--border)"}`,
-              borderRadius: 4,
+              borderRadius: "var(--radius-control)",
               color: testState.phase === "success" ? "#fff" : (!model.id.trim() || testState.phase === "testing") ? "var(--text-dim)" : "var(--text-muted)",
               cursor: (!model.id.trim() || testState.phase === "testing") ? "not-allowed" : "pointer",
               fontSize: 11,
@@ -1045,7 +1045,7 @@ function ModelDetail({
              {testState.phase === "testing" ? t("i18n.checking") : testState.phase === "success" ? t("common.ok") : t("i18n.test")}
           </button>
           <button onClick={onDelete}
-            style={{ height: 24, padding: "0 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 4, color: "#ef4444", cursor: "pointer", fontSize: 11, boxSizing: "border-box" }}>
+            style={{ height: 24, padding: "0 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 11, boxSizing: "border-box" }}>
              {t("i18n.remove")}
           </button>
         </div>
@@ -1062,7 +1062,7 @@ function ModelDetail({
             onClick={() => void handleCatalogFill()}
             disabled={!model.id.trim() || catalogState.phase === "loading"}
             style={{
-              height: 28, padding: "0 10px", border: "1px solid var(--border)", borderRadius: 5,
+              height: 28, padding: "0 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)",
               background: "var(--bg-panel)",
               color: !model.id.trim() || catalogState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
               cursor: !model.id.trim() || catalogState.phase === "loading" ? "not-allowed" : "pointer",
@@ -1143,7 +1143,7 @@ function ModelDetail({
               {model.thinkingLevelMap && (
                 <button
                   onClick={() => set("thinkingLevelMap", undefined)}
-                  style={{ fontSize: 10, padding: "2px 7px", background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-dim)", cursor: "pointer" }}
+                  style={{ fontSize: 10, padding: "2px 7px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-dim)", cursor: "pointer" }}
                 >
                   clear all
                 </button>
@@ -1385,7 +1385,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         <div
           role="note"
           aria-label={t("relogin.title")}
-          style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-panel)" }}
+          style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg-panel)" }}
         >
           <AccountAvatar seed={relogin.target.seed} size={32} provider={relogin.target.provider} />
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
@@ -1427,7 +1427,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                 <button
                   key={option.id}
                   onClick={() => submitSelection(loginState.token, option.id)}
-                  style={{ padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
+                  style={{ padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
                 >
                   {option.label}
                 </button>
@@ -1441,7 +1441,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
               {t("i18n.deviceLoginGuide")}
             </p>
             {loginState.instructions && (
-              <div role="status" style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0, overflowWrap: "anywhere" }}>
+              <div role="status" style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0, overflowWrap: "anywhere" }}>
                 {loginState.instructions}
               </div>
             )}
@@ -1476,12 +1476,12 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") submitCode(loginState.token, inputValue); }}
                 placeholder={loginState.phase === "auth" ? "Paste the redirect URL or code" : (loginState.placeholder ?? "Enter value…")}
-                style={{ flex: 1, padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 12, outline: "none", fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
+                style={{ flex: 1, padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", fontSize: 12, outline: "none", fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
               />
               <button
                 onClick={() => submitCode(loginState.token, inputValue)}
                 disabled={!inputValue.trim()}
-                style={{ padding: "6px 12px", background: inputValue.trim() ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", border: "none", borderRadius: 5, color: inputValue.trim() ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: inputValue.trim() ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 600, flexShrink: 0 }}
+                style={{ padding: "6px 12px", background: inputValue.trim() ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", border: "none", borderRadius: "var(--radius-control)", color: inputValue.trim() ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: inputValue.trim() ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 600, flexShrink: 0 }}
               >
                  {t("i18n.submit")}
               </button>
@@ -1493,7 +1493,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
               Open the verification page and enter this code:
             </p>
-            <div style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
+            <div style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
               {loginState.userCode}
             </div>
             <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
@@ -1531,7 +1531,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         {isWorking ? (
           <button
             onClick={() => { eventSourceRef.current?.close(); setLoginState({ phase: "idle" }); }}
-            style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-muted)", cursor: "pointer", fontSize: 12 }}
+            style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 12 }}
           >
              {t("i18n.cancel")}
           </button>
@@ -1540,14 +1540,14 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             <button
               ref={loginButtonRef}
               onClick={() => handleLogin()}
-              style={{ padding: "5px 14px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: 5, color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              style={{ padding: "5px 14px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: "var(--radius-control)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
             >
                {provider.loggedIn ? t("i18n.relogin") : t("i18n.login")}
             </button>
             {provider.deviceLoginId && (
               <button
                 onClick={() => handleLogin(provider.deviceLoginId)}
-                style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12 }}
+                style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", cursor: "pointer", fontSize: 12 }}
               >
                 {t("i18n.deviceLogin")}
               </button>
@@ -1555,7 +1555,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             {provider.loggedIn && !relogin && (
               <button
                 onClick={handleLogout}
-                style={{ padding: "5px 12px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", cursor: "pointer", fontSize: 12 }}
+                style={{ padding: "5px 12px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 12 }}
               >
                  {t("i18n.disconnect")}
               </button>
@@ -1662,7 +1662,7 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
             style={{
               padding: "6px 12px",
               background: savedOk ? "#16a34a" : apiKey.trim() ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)",
-              border: "none", borderRadius: 5,
+              border: "none", borderRadius: "var(--radius-control)",
               color: savedOk ? "#fff" : apiKey.trim() ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)",
               cursor: (saving || !apiKey.trim() || savedOk) ? "not-allowed" : "pointer",
               fontSize: 12, fontWeight: 600, flexShrink: 0,
@@ -1688,7 +1688,7 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
           style={{
             alignSelf: "flex-start", padding: "5px 12px",
             background: "none", border: "1px solid rgba(239,68,68,0.3)",
-            borderRadius: 5, color: "#ef4444",
+            borderRadius: "var(--radius-control)", color: "#ef4444",
             cursor: removing ? "not-allowed" : "pointer", fontSize: 12,
           }}
         >
@@ -1718,7 +1718,7 @@ function ProviderIcon({ id, size }: { id: string; size: number }) {
           width: size,
           height: size,
           border: "1px solid var(--border)",
-          borderRadius: 4,
+          borderRadius: "var(--radius-control)",
           color: "var(--text-dim)",
           display: "inline-flex",
           alignItems: "center",
@@ -1752,7 +1752,7 @@ interface AddProviderPickerProps {
 
 // Left-panel rows are buttons so the keyboard reaches them; the reset keeps the old row look.
 const navRowReset: React.CSSProperties = {
-  display: "flex", alignItems: "center", width: "100%", borderRadius: 5,
+  display: "flex", alignItems: "center", width: "100%", borderRadius: "var(--radius-control)",
   border: "none", cursor: "pointer", textAlign: "left", font: "inherit", color: "inherit",
 };
 
@@ -1783,7 +1783,7 @@ function AddProviderPicker({
     padding: "10px 12px",
     background: "var(--bg-panel)",
     border: "1px solid var(--border)",
-    borderRadius: 7,
+    borderRadius: "var(--radius-surface)",
     boxSizing: "border-box",
     cursor: "pointer",
     minWidth: 0,
@@ -1799,7 +1799,7 @@ function AddProviderPicker({
       style={{ position: "fixed", inset: 0, zIndex: 1100, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", overflow: "hidden" }}>
+      <div style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", overflow: "hidden" }}>
         {/* Search */}
         <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }}>
@@ -1835,7 +1835,7 @@ function AddProviderPicker({
                     <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>OpenAI / Anthropic compatible</div>
                      <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>{t("i18n.customEndpoint")}</div>
                   </div>
-                  <span style={{ width: 26, height: 26, borderRadius: 5, background: "var(--bg-hover)", border: "1px dashed var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <span style={{ width: 26, height: 26, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", border: "1px dashed var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)" }}>
                       <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
@@ -2271,7 +2271,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                              {m.id || t("i18n.newModel")}
                           </span>
                           {m.reasoning && (
-                            <span style={{ fontSize: 9, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: 3, flexShrink: 0 }}>T</span>
+                            <span style={{ fontSize: 9, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: "var(--radius-control)", flexShrink: 0 }}>T</span>
                           )}
                         </button>
                       );
@@ -2280,7 +2280,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                     {/* Add model button */}
                     <div
                       onClick={(e) => { e.stopPropagation(); addModel(pName); }}
-                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px 4px 26px", borderRadius: 5, cursor: "pointer", color: "var(--text-dim)" }}
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px 4px 26px", borderRadius: "var(--radius-control)", cursor: "pointer", color: "var(--text-dim)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
                     >
@@ -2295,7 +2295,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
             <div style={{ borderTop: "1px solid var(--border)", padding: "8px 6px" }}>
               <button onClick={() => setPickerOpen(true)} style={{
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                width: "100%", padding: "6px 0", background: "none", border: "1px dashed var(--border)", borderRadius: 5,
+                width: "100%", padding: "6px 0", background: "none", border: "1px dashed var(--border)", borderRadius: "var(--radius-control)",
                 color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
               }}
                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.color = "var(--accent)"; }}
@@ -2319,7 +2319,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, padding: "10px 18px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
           {(loadError ?? saveError) && <span style={{ fontSize: 12, color: "#f87171", flex: 1 }}>{loadError ?? saveError}</span>}
-          <button onClick={onClose} style={{ padding: "6px 14px", background: "none", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", cursor: "pointer", fontSize: 13 }}>
+          <button onClick={onClose} style={{ padding: "6px 14px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 13 }}>
              {t("i18n.cancel")}
           </button>
           <button onClick={handleSave} disabled={saving || savedOk || saveBlocked} style={{
@@ -2327,7 +2327,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
             padding: "6px 16px",
             minWidth: 92,
             background: savedOk ? "#16a34a" : saving || saveBlocked ? "var(--bg-panel)" : "var(--seed-color-bg-neutral-inverted)",
-            border: "none", borderRadius: 6,
+            border: "none", borderRadius: "var(--radius-control)",
             color: savedOk ? "#fff" : saving || saveBlocked ? "var(--text-muted)" : "var(--seed-color-fg-neutral-inverted)",
             cursor: saveBlocked ? "not-allowed" : (saving || savedOk) ? "default" : "pointer", fontSize: 13, fontWeight: 600,
             display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
