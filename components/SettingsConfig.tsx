@@ -11,6 +11,7 @@ import { CharacterModeSettings } from "./CharacterModeSettings";
 import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { SearchableSelect } from "./SearchableSelect";
 import { refreshOmpTheme, useTheme } from "@/hooks/useTheme";
+import { useGraphiteTheme } from "@/hooks/useGraphiteTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { koreanSettingsMetadata } from "@/lib/i18n/settings";
 import { refreshDisplaySettings } from "@/hooks/useDisplaySettings";
@@ -222,6 +223,7 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
   const [needsReload, setNeedsReload] = useState(false);
   const [reloading, setReloading] = useState(false);
   const { theme, setPreference } = useTheme();
+  const graphite = useGraphiteTheme();
   const { locale, t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
   const shellText = (source: string) => (
@@ -392,6 +394,25 @@ export function SettingsConfig({ cwd, sessionId, initialSection = "models", onCl
               );
             })}
           </div>
+          <section className={styles.group}>
+            <div className={styles.settingRow}>
+              <div>
+                <div id="settings-graphite-label" className={styles.settingLabel}>{t("theme.graphite")}</div>
+                <div className={styles.settingDescription}>{t("theme.graphiteHint")}</div>
+              </div>
+              <div className={styles.settingControl}>
+                <button
+                  type="button"
+                  role="switch"
+                  className={styles.switch}
+                  data-on={graphite.enabled}
+                  aria-checked={graphite.enabled}
+                  aria-labelledby="settings-graphite-label"
+                  onClick={() => graphite.setEnabled(!graphite.enabled)}
+                />
+              </div>
+            </div>
+          </section>
           {renderFields(
             settings.fields.filter((field) => field.tab === "appearance" && field.group === "Theme" && !field.path.startsWith("theme.")),
             ["Theme"],

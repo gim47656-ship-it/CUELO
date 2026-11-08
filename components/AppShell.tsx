@@ -25,6 +25,7 @@ import { BranchNavigator } from "./BranchNavigator";
 import { getContextIndicator } from "@/lib/context-usage";
 import { autoNameBlockReason } from "@/lib/auto-name";
 import { useTheme } from "@/hooks/useTheme";
+import { useGraphiteWallpaperSync } from "@/hooks/useGraphiteTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsCompactWorkspace, useIsMobile } from "@/hooks/useIsMobile";
 import { useSoftKeyboardOpen, useViewportHeight } from "@/hooks/useViewportHeight";
@@ -1050,6 +1051,7 @@ export function AppShell({
     cwd: selectedSession?.cwd ?? newSessionCwd ?? activeCwd,
     syncWithOmp: true,
   });
+  useGraphiteWallpaperSync();
   const activeProjectRootRef = useRef<string | null>(null);
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !initialSessionId);

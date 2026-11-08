@@ -385,3 +385,17 @@
   /* The switch keeps its drawn size; an invisible ring around it takes the touch. */
   .switch::before { content: ""; position: absolute; inset: -11px -3px; }
 }
+
+/* Graphite look (app/globals.css "Graphite look"): the window is a floating
+   layer on surfaceContainerHigh with 16px corners; navigation and search are
+   pills. Scoped so the default look is untouched. */
+:global(html.dark[data-cuelo-look="graphite"]) .window {
+  border-color: var(--gt-outline-variant);
+  border-radius: var(--seed-radius-r4);
+  background: var(--gt-surface-high);
+}
+:global(html.dark[data-cuelo-look="graphite"]) .sidebar { background: var(--gt-surface-container); }
+:global(html.dark[data-cuelo-look="graphite"]) .content { background: var(--gt-surface-high); }
+:global(html.dark[data-cuelo-look="graphite"]) .search,
+:global(html.dark[data-cuelo-look="graphite"]) .navButton,
+:global(html.dark[data-cuelo-look="graphite"]) .closeButton { border-radius: var(--seed-radius-full); }

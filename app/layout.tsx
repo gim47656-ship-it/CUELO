@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { PwaRegistration } from "@/components/PwaRegistration";
+import { GRAPHITE_BOOTSTRAP } from "@/lib/graphite-theme";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 
@@ -89,6 +90,10 @@ export default function RootLayout({
             __html: `(function(){try{var s=localStorage,p=s.getItem("pi-theme");if(p!=="light"&&p!=="dark"&&p!=="auto"){p=s.getItem("omp-theme");if(p!=="light"&&p!=="dark")p="auto"}var m=p==="auto"?(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):p,r=document.documentElement;r.dataset.ompThemeMode=m;r.setAttribute("data-seed-color-mode",m==="dark"?"dark-only":"light-only");r.classList.toggle("dark",m==="dark");for(var i=r.style.length-1;i>=0;i--){var n=r.style.item(i);if(n.indexOf("--")===0&&n.indexOf("--omp-md-")!==0)r.style.removeProperty(n)}var c=JSON.parse(s.getItem("omp-theme-config")||"null"),v=c&&c.palettes&&c.palettes[m];if(v&&v.variables){Object.keys(v.variables).forEach(function(k){if(k.indexOf("--omp-md-")===0)r.style.setProperty(k,v.variables[k])});r.dataset.ompThemeName=v.name}}catch(e){}})();`,
           }}
         />
+        {/* Optional graphite look (lib/graphite-theme.ts): applies the stored
+            on/off state and the last wallpaper before the first paint, so a
+            reload does not flash the default surfaces. */}
+        <script dangerouslySetInnerHTML={{ __html: GRAPHITE_BOOTSTRAP }} />
       </head>
       <body translate="no" className="notranslate">
         {children}

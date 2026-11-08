@@ -1470,6 +1470,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
     <div
       className="chat-window relative flex h-full min-w-0 flex-col overflow-hidden"
       aria-busy={transitionBusy}
+      data-empty-start={isEmptyNew && !transcriptReplacement ? "true" : undefined}
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -1513,7 +1514,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         // 바깥 칸은 0까지 줄 수 있어야 한다: 세로 여백을 여기 두면 그만큼은 줄지 않아, 높이가 낮은 가로 폰에서
         // 입력란과 도구 줄을 밀어냈다. 여백은 안쪽에 두고 my-auto로 가운데 맞춘다(넘치면 이 칸 안에서 스크롤된다).
         <div className="flex flex-1 flex-col items-center overflow-y-auto px-4">
-          <div className="my-auto w-full max-w-[860px] py-8">
+          <div className="chat-empty-start my-auto w-full max-w-[860px] py-8">
             <div
               className="mb-3"
               style={{

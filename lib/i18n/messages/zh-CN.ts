@@ -79,6 +79,8 @@ export const zhCNLocale: LocalePlugin = {
     "theme.light": "浅色模式（点击切换到深色）",
     "theme.dark": "深色模式（点击切换到跟随系统）",
     "theme.auto": "跟随系统（点击切换到浅色）",
+    "theme.graphite": "石墨主题（壁纸）",
+    "theme.graphiteHint": "石墨色界面，壁纸随当前角色模式变化。仅在深色模式下生效，只保存在此浏览器中。",
     "history.full": "完整历史",
     "history.unsaved": "会话保存后才能查看完整历史",
     "history.label": "完整历史",

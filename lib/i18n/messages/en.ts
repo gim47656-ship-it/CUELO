@@ -79,6 +79,8 @@ export const enLocale = {
     "theme.light": "Light mode (click for dark)",
     "theme.dark": "Dark mode (click for system)",
     "theme.auto": "System theme (click for light)",
+    "theme.graphite": "Graphite theme (wallpaper)",
+    "theme.graphiteHint": "Graphite surfaces with a wallpaper for the current character mode. Dark mode only, saved in this browser.",
     "history.full": "Full history",
     "history.unsaved": "Full history is available after the session is saved",
     "history.label": "Full history",

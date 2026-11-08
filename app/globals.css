@@ -7308,3 +7308,335 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     padding-block: 12px;
   }
 }
+
+/* ===========================================================================
+   Graphite look (optional, off by default)
+   ===========================================================================
+   Turned on per browser from Settings > Themes (lib/graphite-theme.ts writes
+   `data-cuelo-look="graphite"` on <html>). Every rule below is scoped to
+   `html.dark[data-cuelo-look="graphite"]`, so with the switch off, or in light
+   mode, nothing here applies.
+
+   Colours are the Material 3 SchemeNeutral dark roles generated once from
+   #5b6470 (@material/material-color-utilities, not a dependency), written as
+   static values. Layout: one fixed wallpaper layer behind the app, the
+   sidebar and the chat panel float as separate 16px panels, the chat panel is
+   clear and only the transcript column and the composer sit on a near-opaque
+   backing, so the characters on the right of the wallpaper stay visible in
+   the margin beside the column. No per-panel backdrop-filter.
+   =========================================================================== */
+html.dark[data-cuelo-look="graphite"] {
+  --gt-surface: #131314;
+  --gt-surface-low: #1b1b1d;
+  --gt-surface-container: #1f2021;
+  --gt-surface-high: #2a2a2b;
+  --gt-surface-highest: #343536;
+  --gt-on-surface: #e4e2e3;
+  --gt-on-surface-variant: #c8c6c7;
+  --gt-outline: #919091;
+  --gt-outline-variant: #474748;
+  --gt-primary: #bec7d5;
+  --gt-on-primary-container: #dae3f1;
+  /* primary at 18% over surfaceContainer, resolved so it reads the same on
+     every surface it lands on */
+  --gt-selected: #3c3e41;
+  /* translucent panel and the reading backing over the wallpaper */
+  --gt-panel: rgb(31 32 33 / 0.82);
+  --gt-backing: rgb(27 27 29 / 0.94);
+  --gt-hairline: rgb(228 226 227 / 0.08);
+  /* the one brand colour (logo lamp), spent on the send action only */
+  --gt-amber: #e08c00;
+  --gt-amber-hover: #f5a524;
+  --gt-on-amber: #1b1b1d;
+  /* wallpaper: the fill is the image's own left wall colour with the same 38%
+     dim applied, so the feathered edge of the image disappears into it */
+  --gt-dim: brightness(0.62);
+  --gt-wall: #1e1f21;
+  --gt-wallpaper: none;
+  --gt-band-half: 458px;
+  /* the backing fades out over this width so a character next to the column
+     is not cut by a hard edge; the text area inside stays at full backing */
+  --gt-band-feather: 48px;
+
+  --seed-color-bg-layer-basement: var(--gt-surface);
+  --seed-color-bg-layer-default: var(--gt-surface-low);
+  --seed-color-bg-layer-fill: var(--gt-surface-container);
+  --seed-color-bg-layer-floating: var(--gt-surface-high);
+  --seed-color-bg-layer-default-pressed: var(--gt-surface-high);
+  --seed-color-bg-neutral-weak: var(--gt-surface-high);
+  --seed-color-bg-neutral-weak-pressed: var(--gt-surface-highest);
+  --seed-color-bg-transparent-selected: var(--gt-selected);
+  --seed-color-fg-neutral: var(--gt-on-surface);
+  --seed-color-fg-neutral-muted: var(--gt-on-surface-variant);
+  --seed-color-fg-neutral-subtle: var(--gt-outline);
+  --seed-color-fg-informative: var(--gt-primary);
+  --seed-color-stroke-neutral-weak: var(--gt-outline-variant);
+  --seed-color-stroke-focus-ring: var(--gt-primary);
+
+  --bg: var(--gt-surface-low);
+  --bg-panel: var(--gt-surface-container);
+  --bg-hover: var(--gt-surface-high);
+  --bg-selected: var(--gt-selected);
+  --bg-raised: var(--gt-surface-container);
+  --border: var(--gt-outline-variant);
+  --border-strong: var(--gt-outline);
+  --text: var(--gt-on-surface);
+  --text-muted: var(--gt-on-surface-variant);
+  --text-dim: var(--gt-outline);
+  --accent: var(--gt-primary);
+  --accent-hover: var(--gt-on-primary-container);
+  --metric: var(--gt-primary);
+  --metric-track: var(--gt-surface-highest);
+  --user-bg: var(--gt-surface-high);
+  --tool-bg: var(--gt-surface-high);
+
+  background: var(--gt-wall);
+}
+
+html.dark[data-cuelo-look="graphite"][data-cuelo-wallpaper="default"] {
+  --gt-wall: #212124;
+  --gt-wallpaper: url("/wallpapers/graphite-default.webp");
+}
+
+/* Served from the PC profile (lib/character-mode.ts), never from public/. On a
+   PC without the file the request 404s and only the wall colour shows. */
+html.dark[data-cuelo-look="graphite"][data-cuelo-wallpaper="office"] {
+  --gt-wall: #1e2022;
+  --gt-wallpaper: url("/api/office-characters/wallpaper.webp");
+}
+
+html.dark[data-cuelo-look="graphite"] body {
+  background: transparent;
+}
+
+/* The 3:2 image is anchored right at full height, so its characters (right
+   ~45%) land in the margin beside the transcript column; its left edge fades
+   into the wall colour. The dim is a filter on the image itself, so a missing
+   office file paints nothing and leaves the plain wall. */
+html.dark[data-cuelo-look="graphite"] body::before,
+html.dark[data-cuelo-look="graphite"] .upkeep-view::before {
+  content: "";
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  z-index: -1;
+  block-size: 100%;
+  aspect-ratio: 3 / 2;
+  background: var(--gt-wallpaper) center / cover no-repeat;
+  filter: var(--gt-dim);
+  mask-image: linear-gradient(to right, transparent, #000 16%);
+  pointer-events: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .upkeep-view::before {
+  position: absolute;
+}
+
+/* --- planes --------------------------------------------------------------- */
+html.dark[data-cuelo-look="graphite"] .workspace-shell,
+html.dark[data-cuelo-look="graphite"] .workspace-session-region,
+html.dark[data-cuelo-look="graphite"] .chat-session-scroll,
+html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] {
+  background: transparent;
+}
+
+/* One continuous column backing behind the transcript and the composer. */
+html.dark[data-cuelo-look="graphite"] .chat-window {
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
+    var(--gt-backing) calc(50% - var(--gt-band-half)),
+    var(--gt-backing) calc(50% + var(--gt-band-half)),
+    transparent calc(50% + var(--gt-band-half) + var(--gt-band-feather))
+  );
+}
+
+html.dark[data-cuelo-look="graphite"] .workspace-shell[data-chat-wide="true"] .chat-window:not([data-empty-start]) {
+  background: var(--gt-backing);
+}
+
+html.dark[data-cuelo-look="graphite"] .chat-composer-dock {
+  border-block-start: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .chat-composer {
+  background: transparent !important;
+}
+
+/* Empty start screen: the panel stays clear; the card and the composer each
+   carry their own backing. */
+html.dark[data-cuelo-look="graphite"] .chat-empty-start {
+  padding-inline: var(--seed-dimension-x2);
+  border-radius: var(--seed-radius-r4);
+  background: var(--gt-backing);
+}
+
+html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] .chat-composer-dock {
+  --gt-band-half: 446px;
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
+    var(--gt-backing) calc(50% - var(--gt-band-half)),
+    var(--gt-backing) calc(50% + var(--gt-band-half)),
+    transparent calc(50% + var(--gt-band-half) + var(--gt-band-feather))
+  );
+}
+
+/* Header and sidebar: opaque graphite on narrow screens (the drawer slides
+   over the transcript), translucent floating panels once there is room. */
+html.dark[data-cuelo-look="graphite"] .workspace-header-stack {
+  background: var(--gt-surface-container);
+  box-shadow: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .workspace-header-seam {
+  border-block-end-color: var(--gt-outline-variant);
+  background: transparent;
+}
+
+html.dark[data-cuelo-look="graphite"] .sidebar-container {
+  border-inline-end: 0;
+  background: var(--gt-surface-container);
+  box-shadow: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .session-navigator,
+html.dark[data-cuelo-look="graphite"] .session-navigator-header,
+html.dark[data-cuelo-look="graphite"] .navigator-session-list,
+html.dark[data-cuelo-look="graphite"] .navigator-project-group {
+  background: transparent;
+}
+
+html.dark[data-cuelo-look="graphite"] .navigator-mode-bar,
+html.dark[data-cuelo-look="graphite"] .navigator-footer,
+html.dark[data-cuelo-look="graphite"] .navigator-project-row {
+  background: transparent !important;
+}
+
+@media (min-width: 808px) {
+  html.dark[data-cuelo-look="graphite"] .workspace-shell {
+    gap: var(--seed-dimension-x2);
+    padding:
+      var(--seed-dimension-x2)
+      calc(var(--seed-dimension-x2) + env(safe-area-inset-right))
+      var(--seed-dimension-x2)
+      calc(var(--seed-dimension-x2) + env(safe-area-inset-left));
+  }
+
+  /* The sidebar resize handle is a flex item too; pull it into the gap so the
+     two panels sit one 8px gap apart. */
+  html.dark[data-cuelo-look="graphite"] .workspace-shell > .panel-resize-handle {
+    margin-inline: calc(-6px - var(--seed-dimension-x1));
+  }
+
+  /* Over a dark wall the panel fill alone barely separates; one quiet hairline
+     marks each panel edge (outline, so it stays above the header fill). */
+  html.dark[data-cuelo-look="graphite"] .sidebar-container,
+  html.dark[data-cuelo-look="graphite"] .workspace-session-region {
+    border-radius: var(--seed-radius-r4);
+    outline: 1px solid var(--gt-hairline);
+    outline-offset: -1px;
+  }
+
+  html.dark[data-cuelo-look="graphite"] .sidebar-container,
+  html.dark[data-cuelo-look="graphite"] .workspace-header-stack {
+    background: var(--gt-panel);
+  }
+}
+
+/* --- shape: rows, search, tabs and chips are pills -------------------------- */
+html.dark[data-cuelo-look="graphite"] .navigator-project-row,
+html.dark[data-cuelo-look="graphite"] .navigator-session-row,
+html.dark[data-cuelo-look="graphite"] .priority-session-row {
+  border-block-end: 0;
+  border-radius: var(--seed-radius-full) !important;
+}
+
+html.dark[data-cuelo-look="graphite"] .navigator-project-row:hover,
+html.dark[data-cuelo-look="graphite"] .navigator-session-row:hover,
+html.dark[data-cuelo-look="graphite"] .priority-session-row:hover {
+  background: var(--bg-hover) !important;
+}
+
+html.dark[data-cuelo-look="graphite"] .navigator-project-row.is-selected,
+html.dark[data-cuelo-look="graphite"] .navigator-session-row.is-selected,
+html.dark[data-cuelo-look="graphite"] .priority-session-row.is-selected {
+  background: var(--bg-selected) !important;
+  box-shadow: none;
+}
+
+html.dark[data-cuelo-look="graphite"] .navigator-search-input,
+html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher,
+html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher button,
+html.dark[data-cuelo-look="graphite"] .navigator-settings-action,
+html.dark[data-cuelo-look="graphite"] .composer-action-bar button {
+  border-radius: var(--seed-radius-full) !important;
+}
+
+html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher button[aria-pressed="true"] {
+  box-shadow: none;
+}
+
+/* --- floating layers: 16px, surfaceContainerHigh ----------------------------- */
+html.dark[data-cuelo-look="graphite"] .workspace-command-palette {
+  border-color: var(--gt-outline-variant);
+  border-radius: var(--seed-radius-r4);
+  background: var(--gt-surface-high);
+}
+
+html.dark[data-cuelo-look="graphite"] .palette-search > input {
+  background: var(--gt-surface-high);
+}
+
+html.dark[data-cuelo-look="graphite"] .workspace-command-list {
+  gap: var(--seed-dimension-x1);
+  padding: var(--seed-dimension-x2);
+  background: transparent;
+}
+
+html.dark[data-cuelo-look="graphite"] .workspace-command-list button {
+  border-radius: var(--seed-radius-full);
+  background: transparent;
+}
+
+html.dark[data-cuelo-look="graphite"] .workspace-command-list button:hover {
+  background: var(--gt-surface-highest);
+}
+
+html.dark[data-cuelo-look="graphite"] .seed-menu__content {
+  border-radius: var(--seed-radius-r4);
+}
+
+/* --- the one amber: send, only while it can send ---------------------------- */
+html.dark[data-cuelo-look="graphite"] .chat-composer-send:not(:disabled) {
+  background: var(--gt-amber) !important;
+  color: var(--gt-on-amber) !important;
+}
+
+html.dark[data-cuelo-look="graphite"] .chat-composer-send:hover:not(:disabled) {
+  background: var(--gt-amber-hover) !important;
+  color: var(--gt-on-amber) !important;
+}
+
+/* --- upkeep page: same wallpaper, same column backing ----------------------- */
+html.dark[data-cuelo-look="graphite"] .upkeep-view {
+  background: var(--gt-wall);
+}
+
+html.dark[data-cuelo-look="graphite"] .upkeep-header {
+  border-block-end-color: var(--gt-outline-variant);
+  background: var(--gt-surface-container);
+}
+
+html.dark[data-cuelo-look="graphite"] .upkeep-body {
+  --gt-band-half: 584px;
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
+    var(--gt-backing) calc(50% - var(--gt-band-half)),
+    var(--gt-backing) calc(50% + var(--gt-band-half)),
+    transparent calc(50% + var(--gt-band-half) + var(--gt-band-feather))
+  );
+}
