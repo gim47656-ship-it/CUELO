@@ -716,8 +716,9 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   `fixed`로 닫은 finding은 owner에게 `finding_id=<review가 준 ID>`를 붙인 기존 `REWORK` 주문으로 보내고
   Main이 새 revision의 delta를 검토한다(후속 `cross_review`는 선택이며 필수가 아니다). 통과 지문은 `resolve` 시점
   파일 내용의 blob이므로, 마지막 `fixed` 수정이 reviewer에게 보이지 않았다면 그 delta 검토는 Main의 몫이다.
-  사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 정본은
-  `mainLane.workerReview.crossFamilyReview`다.
+  사용자의 명시 지시 없이는 `crossReviewWaiver`를 쓰지 않는다. 예외는 필수 reviewer가 공급자 한도(429, `rate_limit_error`, usage limit)로
+  실패한 경우로, 2026-11-09 사용자 결정(「아그리고 교차검토 한도초과일때는 걍넘기자」)에 따라 Main이 그 인용과 reviewId, 원문 오류를 적어
+  넘긴다(Maker는 reviewId와 원문 오류를 보고만 한다). 정본은 `mainLane.workerReview.crossFamilyReview`다.
 - **Maker의 보고 전 교차검증.** Maker는 검토가 필요한 조각에서만 자기 집중 검사가 통과한 뒤 완료 보고 전에
   바뀐 실행 코드·설정 파일(`git_finalize` 게이트와 같은 범위)로 `review`를 돌린다. 필요한 경우는 지시서가
   high-risk로 표시했거나 `# Acceptance`에 교차검증 한 줄을 넣었을 때, 게이트의 트리거 marker가 바뀐 줄에

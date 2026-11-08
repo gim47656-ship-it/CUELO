@@ -75,7 +75,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R38 | 지정 프로젝트 폴더 안에서만 수정 | 차단(부분) | R1과 같은 OwnerWriteGuard, `evals/cases/routine/scope-protection.json` | 다른 저장소 쓰기 자체는 막지 않음 |
 | R39 | 커밋·푸시는 `git_finalize`, SubAgent raw Git 금지 | 차단 | `extensions/command-guard/matcher.ts` `REASONS.gitFinalize`, `patches/core-maker-tool-scope-test.ts` | Main의 raw Git fallback 네 조건은 장치가 확인하지 못한다. 장치는 세션 저장소가 아닌 대상만 통과시키며, `rule://subagent` 「프로젝트와 Git 경계」를 그 동작에 맞췄다(2026-11-05) |
 | R40 | 소스 변경 턴은 HANDOFF·작업 기록 마감 | 안내 | `tools/git-finalizer/index.ts` `missingHandoffNote`(`finalizer.test.ts`), `extensions/lib/turn-documents.ts`(turn-end-guard) | 커밋은 막지 않음 |
-| R41 | 게이트가 고른 코드는 `cross_review` 통과 뒤 커밋 | 차단 | `tools/git-finalizer/index.ts` `runGate` | |
+| R41 | 게이트가 고른 코드는 `cross_review` 통과 뒤 커밋 | 차단 | `tools/git-finalizer/index.ts` `runGate` | 2026-11-09 사용자 결정: 필수 reviewer가 공급자 한도로 실패하면 기다리지 않고 `crossReviewWaiver`로 넘긴다. 한도 실패 결과의 nextStep이 그 길을 안내한다(`extensions/lib/cross-review.ts` `describeNext`·`LIMIT_ERROR`, `extensions/tests/cross-review.test.ts`). waiver 문구가 맞는지는 장치가 확인하지 않는다 |
 | R42 | 검토·게이트 모델은 `crossReview*`·`slopReviewOpenAI` 슬롯만 | 구조(부분) | `extensions/cross-review.ts`, `extensions/slop-gate.ts`(슬롯에서만 reviewer 해석) | 브리프에 다른 모델을 적는 실수는 문서(2026-10-26 지적) |
 | R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | |
 | R44 | lock·ancestry·non-ff 우회 금지, rebase·merge·pull·reset 금지 | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.gitIntegrate`·`gitReset`·`gitClean`·`gitDiscard`·`gitDelete` | `index.lock` 삭제는 막지 않음 |

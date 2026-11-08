@@ -1416,7 +1416,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
     ...list,
     ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
-    "A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction and is recorded in the routing ledger.",
+    `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required reviewer failed on a provider rate or usage limit (quote that decision, the reviewId and the raw error), and is recorded in the routing ledger.`,
   ].join("\n"));
 }
 
@@ -1989,7 +1989,13 @@ interface NextState {
   verdicts: readonly CrossReviewVerdict[];
   /** subagent 세션: resolve를 부를 수 없으므로 보고와, 라운드 소진 뒤에도 남은 일을 끝내는 길을 안내한다. */
   maker: boolean;
+  /** 필수 reviewer가 공급자 사용량·속도 한도로 실패했으면 그 원문 오류(2026-11-09 사용자 결정의 waiver 안내용). */
+  limitError?: string;
 }
+
+/** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
+export const LIMIT_ERROR = /\b429\b|rate[_ -]?limit|usage[_ -]?limit|insufficient_quota|quota exceeded|exceed your account/i;
+const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-09: 「아그리고 교차검토 한도초과일때는 걍넘기자」)";
 
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
 // 10-30 UpkeepCollector는 non-probe 라운드를 다 쓴 체인에 finding이 남자 Main 전용 resolve 안내만 받고 남은 일을 둔 채 partial로 끝났다.
@@ -1997,6 +2003,12 @@ const MAKER_REPORT = "report the reviewId chain (newest last) to Main with a pro
 const MAKER_AFTER_LIMIT = "Running out of rounds never ends your slice: fix or refute the remaining findings, finish the remaining acceptance work, run the focused check on each code file's final content, and list every file changed after this round with that check as evidence so Main can resolve with unreviewedAcknowledgements.";
 
 function describeNext(state: NextState): string {
+  if (!state.passable && state.limitError !== undefined) {
+    const raw = state.limitError.length > 300 ? `${state.limitError.slice(0, 300)}…` : state.limitError;
+    return `The required reviewer hit a provider rate or usage limit (${raw}). This chain can never pass. Under ${LIMIT_WAIVER_DECISION}, do not wait for the limit to reset and do not switch to another reviewer: ${state.maker
+      ? "report this reviewId and the raw error to Main, which commits with crossReviewWaiver (git_finalize is Main-only), and finish the rest of your slice."
+      : "commit with git_finalize (or git_integrate) crossReviewWaiver quoting that decision, this reviewId and the raw error, and say in the work record and report that the change went in without a cross-family review."} Other reviewer failures (timeouts, unparsable answers) are not covered.`;
+  }
   if (!state.passable) return "At least one required reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
   const roundsLeft = state.round < MAX_ROUNDS;
   const canProbe = roundsLeft && state.probeUsed < MAX_PROBE_ROUNDS;
@@ -2694,6 +2706,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, runFindings: findings.filter(needsRun).length, recipeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
+      limitError: reviewers.find((reviewer) => reviewer.status === "error" && LIMIT_ERROR.test(reviewer.error ?? ""))?.error,
     }), skippedInputs), ...(advisoryNote ? [advisoryNote] : []), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }
