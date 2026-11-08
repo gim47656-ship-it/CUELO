@@ -270,8 +270,11 @@ export function argumentShape(tool: string, args: unknown): string {
   return parts.join(" ");
 }
 
-/** 사용자 중단·보조 건너뜀·취소처럼 의도된 비결함 오류. */
-const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
+/**
+ * 사용자 중단·보조 건너뜀·취소, 그리고 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언처럼 의도된 비결함 오류.
+ * 사전 점검 조언은 "오류가 아니다"로 시작하고 다시 부르면 통과한다.
+ */
+const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^\[사전 점검\] 오류가 아니다\.|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
 
 /**
  * 도구 결과 뒤 이것이 끼면 다음 요청은 도구 결과가 아니라 새 입력(사용자·다른 agent의 메시지, 백그라운드 결과)이나 세션 재개를
