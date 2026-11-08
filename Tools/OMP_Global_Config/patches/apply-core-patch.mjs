@@ -22549,6 +22549,44 @@ export function cueloIsFallbackKeyBillingRejection(
 			patched: 'import { currentEmbeddingModel, e5Prefixed, embed, embeddingsDisabled } from "../embeddings";\n',
 		}],
 	});
+	// #74, upstream e081f7d: validate the unprefixed snapshot inside the commit transaction.
+	// Old cores without the staged rebuild keep their existing path; unknown future shapes fail closed.
+	for (const [anchor, patched] of [
+		[
+			"const staged: { memoryId: string; json: string }[] = [];",
+			"const staged: { memoryId: string; content: string; json: string }[] = [];",
+		],
+		[
+			"staged.push({ memoryId: item.memoryId, json: JSON.stringify(Array.from(vector)) });",
+			"staged.push({ memoryId: item.memoryId, content: item.content, json: JSON.stringify(Array.from(vector)) });",
+		],
+		[
+			`					using insertEmbedding = beam.db.prepare(
+						"INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)",
+					);
+					for (const row of staged) insertEmbedding.run(row.memoryId, row.json, active);`,
+			`					using insertEmbedding = beam.db.prepare(\`
+						INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model)
+						SELECT ?, ?, ?
+						WHERE EXISTS (
+							SELECT 1 FROM working_memory
+							WHERE id = ? AND superseded_by IS NULL AND COALESCE(embed_text, content) = ?
+						) OR EXISTS (
+							SELECT 1 FROM episodic_memory
+							WHERE id = ? AND superseded_by IS NULL AND content = ?
+						)
+					\`);
+					for (const row of staged) {
+						insertEmbedding.run(row.memoryId, row.json, active,
+							row.memoryId, row.content, row.memoryId, row.content);
+					}`,
+		],
+	]) {
+		EDITS.push({
+			file: STORE, marker: RECONCILE, anchor: RECONCILE, patched: RECONCILE, excludes: MIGRATE,
+			alternates: [{ file: STORE, requires: MIGRATE, marker: patched, anchor, patched }],
+		});
+	}
 }
 
 // Bun 1.4.4 escapes non-ASCII raw-template chunks; cooked substitutions above
