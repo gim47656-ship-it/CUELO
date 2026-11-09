@@ -272,9 +272,9 @@ jobs:
         if: matrix.suite == 'extensions'
         run: node patches/check-extension-duplicates.mjs
 
-      - name: Extension, guard, finalizer and skill-cost tests
+      - name: Extension, guard, finalizer, vm-build and skill-cost tests
         if: matrix.suite == 'extensions'
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./skill-cost
+        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./agent/tools/vm-build ./skill-cost
 
       # Every file is its own process with its own temporary HOME/roots, so the files run
       # side by side (one per CPU); each log is printed whole, in file order, afterwards.

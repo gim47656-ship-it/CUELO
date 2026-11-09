@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildOnVm, clampCpu, type BuildAction, type BuildEngine, type VmBuildOptions, type VmBuildRun } from "./build";
-import { runProcess, type Runner } from "./remote";
+import { cancellable, Cancelled, runProcess, type Runner } from "./remote";
 import { Blocked, blocked, findMapping, resolveLinuxRoot, syncToVm, type SyncMode, type SyncResult, type VmBuildConfig } from "./sync";
 
 /**
@@ -27,7 +27,7 @@ export interface VmBuildParams extends Partial<Omit<VmBuildOptions, "project">> 
 
 export interface VmBuildResult {
   ok: boolean;
-  status: "synced" | "already-current" | "built" | "build-failed" | "blocked";
+  status: "synced" | "already-current" | "built" | "build-failed" | "blocked" | "cancelled";
   reason?: string;
   sync?: SyncResult;
   build?: Omit<VmBuildRun, "logText"> & { localLogPath: string };
@@ -87,38 +87,52 @@ export interface RunDeps {
   cwd: string;
   signal?: AbortSignal;
   now: () => number;
+  lockDir: string;
   readConfig: () => Promise<VmBuildConfig>;
   saveLog: (name: string, text: string) => Promise<string>;
 }
 
 export async function runVmBuild(params: VmBuildParams, deps: RunDeps): Promise<VmBuildResult> {
+  const run = cancellable(deps.run, deps.signal);
+  let sync: SyncResult | undefined;
   try {
     const mode = params.mode ?? "commit";
     if (mode !== "commit" && mode !== "snapshot") blocked(`mode는 commit 또는 snapshot이다: ${mode}`);
     const config = await deps.readConfig();
-    const root = await resolveLinuxRoot(deps.run, resolve(deps.cwd, params.repo ?? "."));
+    const root = await resolveLinuxRoot(run, resolve(deps.cwd, params.repo ?? "."));
     const mapping = await findMapping(config, root);
-    return await withLock(STATE_DIR, async () => {
-      const sync = await syncToVm({ run: deps.run, host: config.host, signal: deps.signal, now: deps.now }, root, mapping, mode);
+    return await withLock(deps.lockDir, async () => {
+      sync = await syncToVm({ run, host: config.host, now: deps.now }, root, mapping, mode);
       if (!params.project) return { ok: true, status: sync.status, sync };
       const timeoutSeconds = Math.max(30, Math.min(MAX_TIMEOUT_SECONDS, Math.trunc(params.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS)));
       const maxErrors = Math.max(1, Math.min(200, Math.trunc(params.maxErrors ?? DEFAULT_MAX_ERRORS)));
       const { repo: _repo, mode: _mode, timeoutSeconds: _timeout, ...rest } = params;
-      const run = await buildOnVm({ run: deps.run, host: config.host, signal: deps.signal, now: deps.now }, mapping.vm, sync.vmHead,
+      const build = await buildOnVm({ run, host: config.host, now: deps.now }, mapping.vm, sync.vmHead,
         { ...rest, project: params.project, maxCpuCount: clampCpu(params.maxCpuCount) }, timeoutSeconds, maxErrors);
-      const { logText, ...build } = run;
-      const localLogPath = await deps.saveLog(`${run.logPath.split("\\").at(-1) ?? "build.log"}`, logText);
-      return { ok: run.ok, status: run.ok ? "built" : "build-failed", sync, build: { ...build, localLogPath } };
+      const { logText, ...summary } = build;
+      const localLogPath = await deps.saveLog(`${build.logPath.split("\\").at(-1) ?? "build.log"}`, logText);
+      return { ok: build.ok, status: build.ok ? "built" : "build-failed", sync, build: { ...summary, localLogPath } };
     });
   } catch (error) {
     if (error instanceof Blocked) return { ok: false, status: "blocked", reason: error.message };
+    if (error instanceof Cancelled) {
+      // 이미 반영된 VM 사본은 되돌리지 않는다. 어디까지 끝났는지만 알린다.
+      const reason = sync
+        ? error.started
+          ? "VM 빌드 중 취소됐다. VM 사본 반영은 끝났고, VM 안의 빌드 프로세스가 멈췄는지는 확인하지 못했다"
+          : "VM 사본 반영은 끝났고, 취소돼 빌드는 시작하지 않았다"
+        : error.duringApply
+          ? "VM 반영 중 취소됐다. VM 사본이 일부 또는 전부 바뀌었을 수 있으니 상태를 확인해야 한다"
+          : "VM 사본을 바꾸기 전에 취소돼 멈췄다";
+      return { ok: false, status: "cancelled", reason, ...(sync ? { sync } : {}) };
+    }
     throw error;
   }
 }
 
 export function formatVmBuildResult(result: VmBuildResult): string {
   if (result.status === "blocked") return `중단: ${result.reason}`;
-  const out: string[] = [];
+  const out: string[] = result.status === "cancelled" ? [`취소: ${result.reason}`] : [];
   const { sync, build } = result;
   if (sync) {
     const target = sync.snapshot ? `스냅샷 ${sync.snapshot} (부모 ${sync.commit})` : sync.commit;
@@ -159,6 +173,7 @@ const defaultDeps = (cwd: string, run: Runner, signal?: AbortSignal): RunDeps =>
   cwd,
   signal,
   now: () => Date.now(),
+  lockDir: STATE_DIR,
   readConfig: async () => {
     const path = configPath();
     const text = await readFile(path, "utf8").catch(() => blocked(`설정 파일이 없다: ${path}`));
@@ -183,7 +198,8 @@ const factory: CustomToolFactory = (pi) => ({
     + "Transfers only missing objects (thin pack via scp + git index-pack); never resets, cleans, force-checks-out or mirrors, so ignored build outputs in the VM copy stay. "
     + "Stops without changing anything when the VM copy is dirty, on another branch, detached outside its own snapshot, or holds commits Linux lacks. "
     + "With `project` (repo-relative .sln/*proj) it runs MSBuild (default) or `dotnet build|test` in the VM at BelowNormal priority with -m:1 by default, and returns exit code, errors, test summary, the VM HEAD it built and log paths; outputs stay in the VM. "
-    + "Build only: Run/Deploy/Publish/Install targets and Pre/PostBuildEvent properties are rejected. Not for CUELO's own server deploy. One run at a time per PC.",
+    + "Build only: Run/Deploy/Publish/Install targets and Pre/PostBuildEvent properties are rejected. Not for CUELO's own server deploy. One run at a time per PC. "
+    + "A cancel starts no further command and returns status cancelled, saying whether the VM copy may already have changed.",
   parameters: pi.zod.object({
     repo: pi.zod.string().optional().describe("Linux repository (any path inside it); default session cwd"),
     mode: pi.zod.enum(["commit", "snapshot"]).optional().describe("commit (default): branch HEAD only. snapshot: include uncommitted working-tree changes"),

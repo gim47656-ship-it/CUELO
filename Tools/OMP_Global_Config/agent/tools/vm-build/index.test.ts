@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCommandArgs, buildOnVm, quoteWindowsArg, resolveVmProject, summarizeTests } from "./build";
-import { parseCliArgs, parseConfig, withLock } from "./index";
-import { encodeRemoteScript, parseRemoteResult, RESULT_MARKER, type Runner } from "./remote";
+import { parseCliArgs, parseConfig, runVmBuild, withLock } from "./index";
+import { encodeRemoteScript, parseRemoteResult, RESULT_MARKER, runProcess, type RunOptions, type RunResult, type Runner } from "./remote";
 import { Blocked, decideSync, scpRemotePath, type VmState } from "./sync";
 
 const A = "a".repeat(40);
@@ -247,5 +247,117 @@ describe("scripts sent to the VM", () => {
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toContain("Emit @{ fatal =");
     expect(scripts[0]).not.toMatch(/\\u[0-9A-Fa-f]{4}/);
+  });
+});
+
+describe("cancellation (#82)", () => {
+  const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "", killed: false });
+  const fromVm = (value: unknown): RunResult => ok(`${RESULT_MARKER}${Buffer.from(JSON.stringify(value), "utf8").toString("base64")}\n`);
+  type OnCall = (label: string, controller: AbortController, options?: RunOptions) => Promise<RunResult> | undefined;
+
+  /**
+   * A fake VM one commit behind Linux that already holds the commit, so a run is inspect → apply → build with no pack.
+   * `onCall` sees every command by label ("git status", "ssh apply", …) and may replace its result.
+   */
+  async function runAgainstFakeVm(onCall: OnCall) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "vm-build-cancel-")));
+    const controller = new AbortController();
+    const calls: { label: string; signal?: AbortSignal }[] = [];
+    const run: Runner = async (command, args, options) => {
+      // lowPriority() wraps git/scp in ionice/nice.
+      const [tool, ...rest] = command === "git" || command === "ssh" ? [command, ...args] : args.slice(args.findIndex((arg) => arg === "git" || arg === "scp"));
+      let label = tool;
+      if (tool === "git") label = `git ${rest.includes("status") ? "status" : rest.includes("--show-toplevel") ? "toplevel" : rest[0]}`;
+      if (tool === "ssh") {
+        const script = Buffer.from(String(rest.at(-1)).split(" ").at(-1) ?? "", "base64").toString("utf16le");
+        label = `ssh ${script.includes("$r = @{ temp") ? "inspect" : script.includes("$steps = @()") ? "apply" : "build"}`;
+      }
+      calls.push({ label, signal: options?.signal });
+      const replaced = onCall(label, controller, options);
+      if (replaced) return replaced;
+      switch (label) {
+        case "git toplevel": return ok(root);
+        case "git symbolic-ref": return ok("main");
+        case "git rev-parse": return ok(B);
+        case "ssh inspect": return fromVm(vm({ has: [B] }));
+        case "ssh apply": return fromVm({ head: B, branch: "main", status: "", steps: [`merge --ff-only ${B}`] });
+        case "ssh build": return fromVm({
+          exitCode: 0, killed: false, tool: "fake", version: "1", durationMs: 1, source: { head: B, branch: "main", status: "" },
+          statusAfter: "", logPath: "C:\\L\\b.log", log: "", stdout: "", stderr: "",
+        });
+        default: return ok();
+      }
+    };
+    try {
+      const result = await runVmBuild({ project: "App.sln" }, {
+        run, cwd: root, signal: controller.signal, now: () => 0, lockDir: join(root, ".lock"),
+        readConfig: async () => ({ host: "vm", repos: [{ linux: root, vm: "D:\\r" }] }),
+        saveLog: async () => join(root, "b.log"),
+      });
+      return { result, calls, signal: controller.signal, remote: calls.map((call) => call.label).filter((label) => /^(ssh|scp)/.test(label)) };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test("without a cancel the fake VM is inspected, updated and built", async () => {
+    const { result, remote } = await runAgainstFakeVm(() => undefined);
+    expect(remote).toEqual(["ssh inspect", "ssh apply", "ssh build"]);
+    expect(result).toMatchObject({ ok: true, status: "built" });
+  });
+
+  test("a cancel during the local status check reaches that git call and starts no VM request", async () => {
+    const { result, calls, signal, remote } = await runAgainstFakeVm((label, controller) => {
+      if (label === "git status") controller.abort();
+      return undefined;
+    });
+    expect(calls.find((call) => call.label === "git status")?.signal).toBe(signal);
+    expect(remote).toEqual([]);
+    expect(result).toMatchObject({ ok: false, status: "cancelled" });
+    expect(result.sync).toBeUndefined();
+  });
+
+  test("a cancel after the VM copy was updated keeps the sync result and does not start the build", async () => {
+    const { result, remote } = await runAgainstFakeVm((label, controller) => {
+      if (label === "ssh apply") controller.abort();
+      return undefined;
+    });
+    expect(remote).toEqual(["ssh inspect", "ssh apply"]);
+    expect(result).toMatchObject({ ok: false, status: "cancelled", sync: { status: "synced", vmHead: B } });
+    expect(result.build).toBeUndefined();
+  });
+
+  test("a cancel that cuts the running VM update is reported as cancelled, not thrown as a transport error", async () => {
+    const { result, remote } = await runAgainstFakeVm((label, controller, options) => {
+      if (label !== "ssh apply") return undefined;
+      const cut = Promise.withResolvers<RunResult>();
+      options?.signal?.addEventListener("abort", () => cut.resolve({ code: 128, stdout: "", stderr: "", killed: true }), { once: true });
+      queueMicrotask(() => controller.abort());
+      return cut.promise;
+    });
+    expect(remote).toEqual(["ssh inspect", "ssh apply"]);
+    expect(result).toMatchObject({ ok: false, status: "cancelled" });
+    expect(result.sync).toBeUndefined();
+  });
+
+  test("runProcess starts nothing for an already cancelled signal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-build-run-"));
+    try {
+      const marker = join(dir, "ran");
+      const result = await runProcess("sh", ["-c", `: > "${marker}"`], { signal: AbortSignal.abort() });
+      expect(existsSync(marker)).toBe(false);
+      expect(result.killed).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runProcess stops a running process when the signal is cancelled", async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = runProcess("sleep", ["10"], { signal: controller.signal });
+    controller.abort();
+    expect((await pending).killed).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 });

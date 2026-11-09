@@ -24,6 +24,8 @@ export type Runner = (command: string, args: string[], options?: RunOptions) => 
 const MAX_CAPTURE = 64 * 1024 * 1024;
 
 export const runProcess: Runner = (command, args, options = {}) => {
+  // 이미 취소된 신호에는 abort 이벤트가 다시 오지 않으므로 띄우기 전에 거른다.
+  if (options.signal?.aborted) return Promise.resolve({ code: 128, stdout: "", stderr: "", killed: true });
   const { promise, resolve, reject } = Promise.withResolvers<RunResult>();
   const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "";
@@ -38,6 +40,10 @@ export const runProcess: Runner = (command, args, options = {}) => {
   };
   const timer = options.timeoutMs ? setTimeout(kill, options.timeoutMs) : undefined;
   options.signal?.addEventListener("abort", kill, { once: true });
+  const finish = () => {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", kill);
+  };
   let fileDone = Promise.resolve();
   if (options.stdoutFile) {
     const written = Promise.withResolvers<void>();
@@ -56,19 +62,41 @@ export const runProcess: Runner = (command, args, options = {}) => {
   child.on("error", (error) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    finish();
     reject(error);
   });
   child.on("close", (code, signal) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    finish();
     fileDone.then(() => resolve({ code: code ?? (signal ? 128 : 1), stdout, stderr, killed }), reject);
   });
   child.stdin.on("error", () => {});
   child.stdin.end(options.input ?? "");
   return promise;
 };
+
+/** vm_build가 취소를 관찰했다. `started`면 끊긴 명령이 이미 돌고 있었고, `duringApply`면 그 명령이 VM 사본을 바꾸는 반영이었다. */
+export class Cancelled extends Error {
+  constructor(readonly started: boolean, readonly duringApply = false) {
+    super(started ? "cancelled a running command" : "cancelled before the next command");
+  }
+}
+
+/**
+ * 한 번의 vm_build가 띄우는 모든 명령(로컬 git·scp·ssh)에 같은 취소 신호를 붙인다. 취소된 뒤에는 새 명령을 시작하지 않고,
+ * 취소로 끊긴 명령은 실패 결과 대신 Cancelled로 바꾼다. 그래서 단계마다 따로 검사하지 않아도 취소 뒤 다음 단계로 넘어가지
+ * 않는다. 취소 전에 정상으로 끝난 명령의 결과는 그대로 쓴다.
+ */
+export function cancellable(run: Runner, signal: AbortSignal | undefined): Runner {
+  if (!signal) return run;
+  return async (command, args, options) => {
+    if (signal.aborted) throw new Cancelled(false);
+    const result = await run(command, args, { ...options, signal });
+    if (signal.aborted && result.killed) throw new Cancelled(true);
+    return result;
+  };
+}
 
 /**
  * 무거운 Linux 쪽 명령(큰 저장소 status·add·pack)을 낮은 CPU·I/O 우선순위로 감싼다. 화면 끊김의 원인이 밝혀지지 않아
@@ -128,10 +156,9 @@ export function sshArgs(host: string, encoded: string): string[] {
   ];
 }
 
-export async function runRemote<T>(
-  run: Runner, host: string, body: string, params: unknown, timeoutMs: number, signal?: AbortSignal,
-): Promise<T> {
+/** `run`은 취소 신호가 붙은 runner다(`cancellable`). */
+export async function runRemote<T>(run: Runner, host: string, body: string, params: unknown, timeoutMs: number): Promise<T> {
   const encoded = encodeRemoteScript(body, params);
   if (encoded.length > MAX_ENCODED) throw new Error(`VM 스크립트가 Windows 명령줄 한도를 넘는다(${encoded.length}자)`);
-  return parseRemoteResult<T>(await run("ssh", sshArgs(host, encoded), { timeoutMs, signal }));
+  return parseRemoteResult<T>(await run("ssh", sshArgs(host, encoded), { timeoutMs }));
 }

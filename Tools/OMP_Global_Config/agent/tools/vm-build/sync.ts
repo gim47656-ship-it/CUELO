@@ -15,7 +15,7 @@
 import { copyFile, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { lowPriority, runRemote, type RunResult, type Runner } from "./remote";
+import { Cancelled, lowPriority, runRemote, type RunResult, type Runner } from "./remote";
 
 export interface RepoMapping { linux: string; vm: string }
 export interface VmBuildConfig { host: string; repos: RepoMapping[] }
@@ -80,9 +80,9 @@ export function decideSync(input: {
 }
 
 export interface SyncDeps {
+  /** 취소 신호가 붙은 runner(`cancellable`). 로컬 git·scp·ssh가 모두 이것으로 돈다. */
   run: Runner;
   host: string;
-  signal?: AbortSignal;
   now: () => number;
 }
 
@@ -231,15 +231,18 @@ export async function findMapping(config: VmBuildConfig, root: string): Promise<
 
 /** Linux 정본을 VM 사본에 한 방향으로 반영한다. 막히면 Blocked를 던진다. */
 export async function syncToVm(deps: SyncDeps, root: string, mapping: RepoMapping, mode: SyncMode): Promise<SyncResult> {
-  const { run, host, signal } = deps;
-  const branch = await linuxGit(run, root, ["symbolic-ref", "--short", "-q", "HEAD"], "Linux 브랜치 확인").catch(() => blocked("Linux 저장소가 detached HEAD다"));
+  const { run, host } = deps;
+  const branch = await linuxGit(run, root, ["symbolic-ref", "--short", "-q", "HEAD"], "Linux 브랜치 확인").catch((error) => {
+    if (error instanceof Blocked) blocked("Linux 저장소가 detached HEAD다");
+    throw error;
+  });
   const commit = await linuxGit(run, root, ["rev-parse", "HEAD"], "Linux HEAD 확인");
   const statusText = await linuxGit(run, root, ["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=normal"], "Linux 상태 확인", { low: true });
   const linuxChanges = statusText.split("\n").filter((line) => line.trim());
   const snapshot = mode === "snapshot" && linuxChanges.length > 0 ? await createSnapshot(run, root, commit, branch, deps.now()) : undefined;
 
   const base = { repo: mapping.vm, safe: vmSafeDirectory(mapping.vm) };
-  const vm = await runRemote<VmState & { fatal?: string }>(run, host, INSPECT, { ...base, branch, want: [commit, snapshot].filter(Boolean) }, 5 * 60 * 1000, signal);
+  const vm = await runRemote<VmState & { fatal?: string }>(run, host, INSPECT, { ...base, branch, want: [commit, snapshot].filter(Boolean) }, 5 * 60 * 1000);
   if (vm.fatal) blocked(`VM 상태 확인 실패: ${vm.fatal}`);
   vm.has = Array.isArray(vm.has) ? vm.has : vm.has ? [String(vm.has)] : [];
   const ancestry = vm.branchTip ? await ancestryOf(run, root, vm.branchTip, commit) : undefined;
@@ -260,7 +263,7 @@ export async function syncToVm(deps: SyncDeps, root: string, mapping: RepoMappin
       const name = `cuelo-vm-${deps.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.pack`;
       remotePack = `${vm.temp.replace(/\\+$/, "")}\\${name}`;
       const [command, argv] = lowPriority("scp", ["-q", "-o", "BatchMode=yes", local, `${host}:${scpRemotePath(remotePack)}`]);
-      const copied = await run(command, argv, { timeoutMs: 30 * 60 * 1000, signal });
+      const copied = await run(command, argv, { timeoutMs: 30 * 60 * 1000 });
       if (copied.code !== 0) blocked(`pack 전송 실패(scp exit ${copied.code}): ${copied.stderr.trim()}`);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -270,7 +273,10 @@ export async function syncToVm(deps: SyncDeps, root: string, mapping: RepoMappin
   const applied = await runRemote<ApplyResult>(run, host, APPLY, {
     ...base, branch, expectHead: vm.head, expectBranch: vm.branch, expectSnapshotRef: vm.snapshotRef, commit, snapshot: snapshot ?? "", pack: remotePack ?? "",
     leaveSnapshot: decision.leaveSnapshot, clearSnapshotRef: decision.clearSnapshotRef,
-  }, 30 * 60 * 1000, signal);
+  }, 30 * 60 * 1000).catch((error) => {
+    if (error instanceof Cancelled && error.started) throw new Cancelled(true, true);
+    throw error;
+  });
   const steps = Array.isArray(applied.steps) ? applied.steps : applied.steps ? [String(applied.steps)] : [];
   if (applied.fatal || applied.failed || applied.blocked) {
     blocked(`VM 반영 중단: ${applied.blocked ?? applied.failed ?? applied.fatal}${steps.length ? ` (끝낸 단계: ${steps.join(", ")})` : ""}`);

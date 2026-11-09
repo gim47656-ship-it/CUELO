@@ -150,9 +150,9 @@ interface RemoteBuild {
 }
 
 export interface BuildDeps {
+  /** 취소 신호가 붙은 runner(`cancellable`). */
   run: Runner;
   host: string;
-  signal?: AbortSignal;
   now: () => number;
 }
 
@@ -167,7 +167,7 @@ export async function buildOnVm(deps: BuildDeps, vmRoot: string, expectHead: str
   const remote = await runRemote<RemoteBuild>(deps.run, deps.host, BUILD, {
     repo: vmRoot, safe: vmSafeDirectory(vmRoot), project: project.windows, engine, expectHead, logName,
     args: args.map(quoteWindowsArg).join(" "), timeoutMs: timeoutSeconds * 1000,
-  }, (timeoutSeconds + 180) * 1000, deps.signal);
+  }, (timeoutSeconds + 180) * 1000);
   if (remote.fatal) blocked(`VM 빌드를 시작하지 못했다: ${remote.fatal}`);
   const consoleText = `${remote.stdout ?? ""}\n${remote.stderr ?? ""}`;
   const diagnostics = parseBuildLog(remote.log || consoleText, maxErrors);
