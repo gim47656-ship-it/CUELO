@@ -366,7 +366,8 @@ interface TranscriptScan {
 export type ToolErrorKind = "failed" | "noMatch" | "cancelled";
 
 const HARNESS_SKIP_PREFIX = "실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지가 도착했다";
-const NO_MATCH_COMMAND = /^(?:grep|egrep|fgrep|rg|test|\[\[?)(?:\s|$)/;
+// exit 1이 실패가 아니라 답인 검사 명령: 찾지 못함(grep·rg·pgrep), 거짓(test), 다름(diff·cmp). exit 2 이상은 실제 오류다.
+const NO_MATCH_COMMAND = /^(?:grep|egrep|fgrep|rg|pgrep|diff|cmp|test|\[\[?)(?:\s|$)/;
 
 /** 끝의 공백 앞 백슬래시가 짝수(0 포함)면 단어가 끝난 것이다. `file\ #tag`의 #은 같은 단어라 주석이 아니다. */
 const UNESCAPED_TRAILING_SPACE = /(?:^|[^\\])(?:\\\\)*\s$/;
