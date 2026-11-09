@@ -1989,8 +1989,10 @@ interface NextState {
   verdicts: readonly CrossReviewVerdict[];
   /** subagent 세션: resolve를 부를 수 없으므로 보고와, 라운드 소진 뒤에도 남은 일을 끝내는 길을 안내한다. */
   maker: boolean;
-  /** 필수 reviewer가 공급자 사용량·속도 한도로 실패했으면 그 원문 오류(2026-11-09 사용자 결정의 waiver 안내용). */
+  /** 실패한 필수 reviewer 가운데 공급자 사용량·속도 한도로 실패한 첫 자리의 원문 오류(2026-11-09 사용자 결정의 waiver 안내용). */
   limitError?: string;
+  /** 실패한 필수 reviewer 가운데 한도 예외가 덮지 않는 자리(시간 초과·해석 불가·일반 오류)의 `자리: 상태` 목록. 비어 있지 않으면 waiver는 전체 변경을 덮지 않는다. */
+  uncoveredFailures: readonly string[];
 }
 
 /** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
@@ -2003,8 +2005,15 @@ const MAKER_REPORT = "report the reviewId chain (newest last) to Main with a pro
 const MAKER_AFTER_LIMIT = "Running out of rounds never ends your slice: fix or refute the remaining findings, finish the remaining acceptance work, run the focused check on each code file's final content, and list every file changed after this round with that check as evidence so Main can resolve with unreviewedAcknowledgements.";
 
 function describeNext(state: NextState): string {
-  if (!state.passable && state.limitError !== undefined) {
-    const raw = state.limitError.length > 300 ? `${state.limitError.slice(0, 300)}…` : state.limitError;
+  const hitLimit = state.limitError !== undefined;
+  if (!state.passable && hitLimit && state.uncoveredFailures.length > 0) {
+    // 11-09 사용자 결정은 공급자 한도 예외만 덮는다. 필수 자리에 시간 초과·해석 불가가 섞였으면 전체 변경을 waiver로 넘기라고 안내하지 않는다.
+    return `Required reviewers failed for different reasons, so the provider-limit waiver does not cover this review: ${state.uncoveredFailures.join(", ")} did not fail on a rate or usage limit (${state.limitError.length > 300 ? `${state.limitError.slice(0, 300)}…` : state.limitError} did). This chain can never pass, and a later round with previousReviewId is refused for the same reason. Do not commit this change under the standing limit waiver: first make the other required reviewer answer (or fix what made its answer unusable) and review a new round without previousReviewId, or get a separate explicit decision from the user for the uncovered failure and record it in the work record. ${state.maker
+      ? "Report this reviewId, both raw errors and the uncovered failure to Main."
+      : "This decision is Main's: the user's standing limit waiver covers only the rate or usage limit."}`;
+  }
+  if (!state.passable && hitLimit) {
+    const raw = state.limitError!.length > 300 ? `${state.limitError!.slice(0, 300)}…` : state.limitError!;
     return `The required reviewer hit a provider rate or usage limit (${raw}). This chain can never pass. Under ${LIMIT_WAIVER_DECISION}, do not wait for the limit to reset and do not switch to another reviewer: ${state.maker
       ? "report this reviewId and the raw error to Main, which commits with crossReviewWaiver (git_finalize is Main-only), and finish the rest of your slice."
       : "commit with git_finalize (or git_integrate) crossReviewWaiver quoting that decision, this reviewId and the raw error, and say in the work record and report that the change went in without a cross-family review."} Other reviewer failures (timeouts, unparsable answers) are not covered.`;
@@ -2689,6 +2698,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     : advisory.status !== "ok" && advisory.status !== "skipped"
       ? `NOTE: the advisory reviewer ${advisory.model} gave no usable answer (${advisory.status}); it is only recorded, does not affect passable, and nothing from it carries over to later rounds.`
       : undefined;
+  // 한도 예외 안내는 실패한 필수 자리만 보고 정한다: 성공한 필수 자리는 한도 안내를 막지 않고, 보조 검토자는 이 배열에 없다.
+  const failedRequired = reviewers.filter((reviewer) => reviewer.status !== "ok");
+  const limitFailed = failedRequired.filter((reviewer) => reviewer.status === "error" && LIMIT_ERROR.test(reviewer.error ?? ""));
+  const uncoveredFailures = failedRequired
+    .filter((reviewer) => !limitFailed.includes(reviewer))
+    .map((reviewer) => `${reviewer.family} (${reviewer.status}${reviewer.error ? `: ${reviewer.error.slice(0, 120)}` : ""})`);
   return {
     reviewId, round, reviewers: reviewers.map((reviewer) => ({
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
@@ -2706,7 +2721,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, runFindings: findings.filter(needsRun).length, recipeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
-      limitError: reviewers.find((reviewer) => reviewer.status === "error" && LIMIT_ERROR.test(reviewer.error ?? ""))?.error,
+      limitError: limitFailed[0]?.error,
+      uncoveredFailures,
     }), skippedInputs), ...(advisoryNote ? [advisoryNote] : []), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }

@@ -180,7 +180,23 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
     }, RETRY_DELAY_MS);
   };
 
+  /**
+   * End the drafts for good. Only this session's own resources go: the call's microphone and the
+   * Codex call belong to someone else. A capture that cannot start has nothing left to feed, so it
+   * takes this path instead of leaving its sockets and audio context open with no listener.
+   */
+  const end = () => {
+    if (closed) return;
+    closed = true;
+    abort.abort();
+    window.clearTimeout(retryTimer);
+    retryTimer = undefined;
+    closeSockets();
+    stopCapture();
+  };
+
   const connect = async () => {
+    if (closed) return;
     try {
       const plans = await mintSecrets(options.mine, options.theirs, abort.signal);
       if (closed) return;
@@ -196,6 +212,7 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
   const startCapture = async () => {
     if (typeof AudioContext !== "function" || typeof AudioWorkletNode !== "function") {
       console.warn("[interpreter] draft captions need AudioWorklet");
+      end();
       return;
     }
     try {
@@ -218,11 +235,13 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
       connectSource();
     } catch {
       console.warn("[interpreter] draft captions cannot capture the microphone");
+      // Without a capture the drafts have nothing to translate: their sockets would stay open unused.
+      end();
     }
   };
 
-  void connect();
   void startCapture();
+  void connect();
 
   return {
     setTrack: (next) => {
@@ -230,12 +249,7 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
       connectSource();
     },
     close: () => {
-      if (closed) return;
-      closed = true;
-      abort.abort();
-      window.clearTimeout(retryTimer);
-      closeSockets();
-      stopCapture();
+      end();
     },
   };
 }

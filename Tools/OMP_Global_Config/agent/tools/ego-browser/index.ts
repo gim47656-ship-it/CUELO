@@ -22,8 +22,18 @@ export interface ExecResult {
   killed: boolean;
 }
 
+export interface ExecOptions {
+  timeoutMs: number;
+  signal?: AbortSignal;
+  /**
+   * `false`면 이 호출은 꺼진 ego 앱을 새로 띄우지 않는다. 세션 종료 정리처럼 사용자가 끝낸 앱을 다시 켜면 안 되는 호출이 준다.
+   * 생략(undefined)하면 일반 실행과 같다. 붙을 앱이 없으면 그 브라우저로 대신하지 않고 최선 노력 실패를 돌려준다.
+   */
+  allowLaunch?: boolean;
+}
+
 /** `ego-browser <args>`를 실행하고 `input`을 stdin으로 넘긴다. 실행 파일이 없으면 code ENOENT로 throw한다. */
-export type Exec = (args: string[], input: string, options: { timeoutMs: number; signal?: AbortSignal }) => Promise<ExecResult>;
+export type Exec = (args: string[], input: string, options: ExecOptions) => Promise<ExecResult>;
 
 export interface EgoDeps {
   exec: Exec;
@@ -337,6 +347,8 @@ export function createLinuxExec(deps: LinuxExecDeps = { launchApp: launchLinuxAp
     if (!appProfileDir && existsSync(launcher)) {
       // A call cancelled before it starts must not leave a new app behind.
       if (options.signal?.aborted) return { code: -1, stdout: "", stderr: "", killed: true };
+      // 세션 종료 정리는 사용자가 끝낸 앱을 다시 켜지 않는다(이슈 #75). 앱이 없으면 최선 노력으로 끝내고 Chromium으로도 넘어가지 않는다.
+      if (options.allowLaunch === false) return fail(`ego 앱이 꺼져 있다. 정리 전용 호출이라 앱을 띄우지 않는다: ${launcher}`);
       try {
         await deps.launchApp(launcher);
       } catch (error) {
@@ -442,7 +454,8 @@ export function createFactory(exec: Exec, host: EgoHost = "windows"): CustomTool
         for (const profile of [...open]) {
           open.delete(profile);
           try {
-            await exec(["nodejs"], buildCleanup(spaceName(sessionId, profile), host), { timeoutMs: 30_000 });
+            // 종료 정리는 attach-only다. 앱이 이미 꺼졌으면 띄우지 않고 최선 노력으로 끝난다(이슈 #75).
+            await exec(["nodejs"], buildCleanup(spaceName(sessionId, profile), host), { timeoutMs: 30_000, allowLaunch: false });
           } catch {
             // 종료 중 정리는 최선 노력이다. ego가 없거나 이미 닫혔으면 할 일이 없다.
           }

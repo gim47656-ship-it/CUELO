@@ -425,6 +425,63 @@ describe("runReview", () => {
     expect(down.nextStep).not.toContain("crossReviewWaiver");
   });
 
+  test("필수 자리 한도+비한도 혼합 실패는 전체 상시 waiver 커밋을 안내하지 않는다(#79)", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const limit = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}} retry-after-ms=31807000';
+    const both = input({ authors: [OPUS, ASTRA] });
+    for (const other of ["TimeoutError: The operation timed out", "boom"]) {
+      for (const maker of [false, true]) {
+        const d = deps(env, { openai: new Error(limit), anthropic: new Error(other) });
+        const result = await runReview({ ...both, maker }, d, signal);
+        expect(result.passable).toBe(false);
+        expect(result.nextStep).not.toContain("commit with git_finalize");
+        expect(result.nextStep).not.toContain("commit with crossReviewWaiver");
+        expect(result.nextStep).toContain("does not cover this review");
+        // 안내는 Main·Maker 모두 전체 상시 waiver 커밋을 권하지 않고, 남은 필수 실패를 보고하게 한다.
+        expect(result.nextStep).toContain(maker ? "Report this reviewId, both raw errors" : "covers only the rate or usage limit");
+        const resolved = await runResolve({ reviewId: result.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
+        expect(resolved.pass).toBe(false);
+        await expect(runReview({ ...both, previousReviewId: result.reviewId }, d, signal)).rejects.toThrow("can never pass");
+      }
+    }
+    // 해석 불가 답(문자열)도 같은 혼합 실패 분기다: 한도가 아닌 필수 자리는 예외 밖이다.
+    const d = deps(env, { openai: new Error(limit), anthropic: "PASS - looks fine" });
+    const unparsable = await runReview(both, d, signal);
+    expect(unparsable.reviewers.find((item) => item.family === "anthropic")).toMatchObject({ status: "unparsable" });
+    expect(unparsable.nextStep).not.toContain("commit with git_finalize");
+    expect(unparsable.nextStep).toContain("does not cover this review");
+    // 두 필수 자리가 모두 한도로 실패하면 기존 waiver 안내를 유지한다.
+    const allLimit = deps(env, { openai: new Error(limit), anthropic: new Error("usage limit reached for this plan") });
+    expect((await runReview(both, allLimit, signal)).nextStep).toContain("commit with git_finalize");
+    // 한도 실패 자리 + 성공 자리도 성공 자리가 안내를 막지 않는다.
+    const limitPlusOk = deps(env, { openai: new Error(limit), anthropic: finding("minor nit", "minor") });
+    const kept = await runReview(both, limitPlusOk, signal);
+    expect(kept.passable).toBe(false);
+    expect(kept.nextStep).toContain("commit with git_finalize");
+    expect(kept.nextStep).not.toContain("does not cover this review");
+  });
+
+  test("보조 검토자 실패는 필수 자리 예외 판정에 들지 않는다(#79)", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const limit = "429 rate_limit_error: account rate limit";
+    const withAdvisory = (answers: Partial<Record<Lane, string | Error>>): ReviewDeps => ({
+      ...deps(env, answers),
+      advisory: { model: "google-vertex/gemini-4-argon", complete: async () => { throw new ReviewerCallError(limit, "google-vertex/gemini-4-argon"); } },
+      advisoryGraceMs: 50,
+    });
+    // 필수 자리는 시간 초과뿐이고 보조만 한도로 실패한다: waiver 안내가 생기지 않는다.
+    const timeoutOnly = await runReview(input(), withAdvisory({ openai: new Error("TimeoutError: The operation timed out") }), signal);
+    expect(timeoutOnly.advisory).toMatchObject({ status: "error" });
+    expect(timeoutOnly.nextStep).not.toContain("commit with git_finalize");
+    // 필수 자리가 한도로 실패하면 보조의 한도 실패는 안내를 mixed로 바꾸지 않는다.
+    const requiredLimit = await runReview(input(), withAdvisory({ openai: new Error(limit) }), signal);
+    expect(requiredLimit.passable).toBe(false);
+    expect(requiredLimit.nextStep).toContain("commit with git_finalize");
+    expect(requiredLimit.nextStep).not.toContain("does not cover this review");
+  });
+
   test("해석할 수 없는 긴 답은 결과에는 전부, 원장에는 앞 20 KB만 남긴다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);

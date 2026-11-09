@@ -172,7 +172,8 @@ export async function inspectNightlyResult(input: {
   /** 작업 사본을 확인하지 못했으면 깨끗하다고 말하지 않는다(보고를 통째로 잃지 않게). */
   let unverified: string | undefined;
   if (!existsSync(join(worktree, ".git"))) {
-    error = `작업 사본을 찾지 못했습니다: ${worktree}`;
+    // 경로는 `worktree` 필드에 500자까지 그대로 남으므로, 다시 읽는 쪽의 오류 상한(`ERROR_LIMIT`)에 맞춰 자른다.
+    error = clip(`작업 사본을 찾지 못했습니다: ${worktree}`, ERROR_LIMIT);
   } else {
     try {
       const lines = (await git(worktree, ["status", "--porcelain", "--untracked-files=all"]))

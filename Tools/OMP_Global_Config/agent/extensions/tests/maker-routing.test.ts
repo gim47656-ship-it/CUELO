@@ -2027,14 +2027,49 @@ describe("발주 이력 기록과 history advisory", () => {
       type: "dispatch", workClass: "NORMAL", workClassConfidence: null, workClassProbabilities: null, routingReason: false, routingReasonText: null,
     });
   });
-  test("빈 ROUTING_REASON 줄 다음 줄은 근거 본문으로 기록하지 않는다", async () => {
+  test("빈 ROUTING_REASON 줄은 추천 변경·UNKNOWN 발주 근거가 아니다(#76)", async () => {
+    const ledger = memoryLedger([]);
+    const h = harness({ ledger });
+    const prepared = (await h.prepare("같은 계약", [h.task], {} as never))[0] as unknown as { preparedId: string };
+    const empty = [
+      `${brief}\nROUTING_REASON:\n# Verification`,
+      `${brief}\nROUTING_REASON: \t\n# Verification`,
+      `${brief}\nROUTING_REASON:\n# Verification`.replaceAll("\n", "\r\n"),
+      `${brief}\nROUTING_REASON:`,
+    ];
+    for (const task of empty) {
+      const blocked = await h.dispatch("anthropic/claude-opus-5-5:auto", task);
+      expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("ROUTING_REASON") });
+    }
+    // prepared 참조에 덧붙인 빈 근거도 같은 판정을 받는다.
+    const referenced = await h.beforeTask({
+      context: "PREPARED_CONTEXT",
+      tasks: [{ name: h.task.name, task: `PREPARED_TASK: ${prepared.preparedId}\nROUTING_REASON:\n# Verification`, model: "anthropic/claude-opus-5-5:auto" }],
+    }, {} as never);
+    expect(referenced).toMatchObject({ block: true });
+    // 반대로 같은 줄의 근거는 그대로 발주를 허용하고 원장 본문으로 기록된다.
+    const reasoned = `${brief}\n\nROUTING_REASON:\tMain이 독립 판단을 위해 선택함`;
+    expect(await h.dispatch("anthropic/claude-opus-5-5:auto", reasoned)).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto", task: reasoned }] });
+    expect(ledger.records.at(-1)).toMatchObject({
+      type: "dispatch", routingReason: true, routingReasonText: "Main이 독립 판단을 위해 선택함",
+    });
+  });
+  test("UNKNOWN 결정도 빈 ROUTING_REASON으로는 발주되지 않는다(#76)", async () => {
+    const h = harness({ designOpen: null });
+    await h.prepare("모름", [h.task], {} as never);
+    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON:\n# Verification`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\r\nROUTING_REASON:\t\r\n# Verification`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON: 모름 판단을 Main이 정함`)).toBeUndefined();
+  });
+  test("추천 모델은 근거가 없어도, 또는 빈 근거 줄이어도 그대로 발주된다(#76 대조)", async () => {
     const ledger = memoryLedger([]);
     const h = harness({ ledger });
     await h.prepare("같은 계약", [h.task], {} as never);
-    const task = `${brief}\nROUTING_REASON:\n# Target`;
-    expect(await h.dispatch(`${DEEPSEEK}:auto`, task)).toBeUndefined();
-    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task }] });
-    expect(ledger.records.at(-1)).toMatchObject({ type: "dispatch", routingReasonText: null });
+    // 추천 모델에는 변경 근거를 요구하지 않는다(기존 테스트 L2030-L2037의 정상 발주 계약).
+    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON:\n# Target`)).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: `${brief}\nROUTING_REASON:\n# Target` }] });
+    expect(ledger.records.at(-1)).toMatchObject({ type: "dispatch", routingReason: false, routingReasonText: null });
   });
 });
 

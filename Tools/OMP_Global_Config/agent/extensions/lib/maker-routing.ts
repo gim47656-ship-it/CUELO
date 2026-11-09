@@ -1296,9 +1296,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (prepared.returnToMain) return { block: true, reason: `'${clipped(name, 40)}'은 Main으로 돌아온 결정입니다. ${prepared.returnToMain}` };
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
       const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
-      const routingReason = /^\s*ROUTING_REASON:\s*\S.+$/m.test(task);
-      // 원장 본문은 ROUTING_REASON 줄 안에서만 읽는다(줄바꿈이 아닌 모든 공백 허용). 위 발주 판정은 기존 그대로 두고 다음 줄을 근거로 기록하지 않는다.
+      // 승인 판정과 원장 본문은 같은 해석을 쓴다: ROUTING_REASON 줄 안의 비어 있지 않은 근거만 인정하고 줄바꿈은 소비하지 않는다.
+      // (예전 승인 판정의 `\s*`는 줄바꿈까지 먹어 빈 줄 다음 제목을 근거로 인정했다.)
       const reasonText = /^[^\S\r\n\u2028\u2029]*ROUTING_REASON:[^\S\r\n\u2028\u2029]*(\S.*)$/m.exec(task)?.[1]?.trim() ?? null;
+      const routingReason = reasonText !== null;
       if (changed && !routingReason) return { block: true, reason: existingOwner ? `기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ROUTING_REASON에 근거를 적습니다.` : "Jev 불가·불명확한 지배 판단·추천 변경은 Main이 같은 기준으로 결정하고 ROUTING_REASON 한 줄에 근거를 남깁니다." };
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
       const recommendedCandidate = candidates[recommended];

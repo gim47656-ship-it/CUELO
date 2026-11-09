@@ -433,6 +433,72 @@ console.log(JSON.stringify({ input, root: process.env.EGO_LITE_PROFILE_ROOT, dir
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("a shutdown cleanup never starts a closed ego app, while normal execution still does", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ego-shutdown-"));
+    const keys = ["EGO_LITE_HOST", "EGO_LITE_CDP_PORT", "XDG_STATE_HOME", "EGO_LITE_APP_PROFILE_ROOT", "EGO_LITE_PROFILE_ROOT", "EGO_LITE_APP_LAUNCHER"] as const;
+    const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    delete process.env.EGO_LITE_PROFILE_ROOT;
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:1/devtools/browser/app-1" }) });
+    const seenLog = join(dir, "seen.log");
+    try {
+      const host = join(dir, "host.mjs");
+      writeFileSync(host, `import { appendFileSync } from "node:fs";
+let input = ""; for await (const chunk of process.stdin) input += chunk;
+appendFileSync(${JSON.stringify(seenLog)}, input + "\\n---\\n");
+console.log("ok");`);
+      const launcher = join(dir, "ego-lite");
+      writeFileSync(launcher, "#!/bin/sh\n");
+      const appRoot = join(dir, "app");
+      const appProfile = join(appRoot, "chromium-profile");
+      Object.assign(process.env, { EGO_LITE_HOST: host, EGO_LITE_CDP_PORT: String(server.port), XDG_STATE_HOME: dir, EGO_LITE_APP_PROFILE_ROOT: appRoot, EGO_LITE_APP_LAUNCHER: launcher });
+      const startApp = () => {
+        mkdirSync(appProfile, { recursive: true });
+        writeFileSync(join(appProfile, "ego-lite-bridge.json"), "{}");
+        writeFileSync(join(appProfile, "DevToolsActivePort"), `${server.port}\n/devtools/browser/app-1\n`);
+      };
+      const stopApp = () => rmSync(appRoot, { recursive: true, force: true });
+      const launched: string[] = [];
+      const linux = createLinuxExec({ launchApp: async (path) => { launched.push(path); startApp(); }, appStartTimeoutMs: 5_000 });
+      const chain: any = new Proxy(() => chain, { get: () => chain, apply: () => chain });
+      const tool = createFactory(linux, "linux")({ zod: { object: () => chain, string: () => chain, enum: () => chain, boolean: () => chain, number: () => chain } } as any) as any;
+      const ctx = { sessionManager: { getSessionId: () => UUID_A } } as any;
+      const shutdown = { reason: "shutdown", previousSessionFile: undefined } as const;
+
+      // 조건 A: 취소된 실행은 공간도 앱도 열지 않았다. 그 정리가 꺼진 앱을 새로 켜면 안 된다(이슈 #75).
+      stopApp();
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await expect(tool.execute("1", { script: "never" }, undefined, ctx, cancelled.signal)).rejects.toThrow("중단");
+      await tool.onSession(shutdown, ctx);
+      expect(launched).toEqual([]);
+      // 앱이 꺼져 있었으므로 정리 스크립트는 호스트에 닿지 않는다.
+      expect(existsSync(seenLog)).toBe(false);
+
+      // 앱이 살아 있으면 정리는 지금처럼 실제 SDK 정리를 돌고, 정규 실행은 앱을 띄운다.
+      await tool.execute("2", { script: "work" }, undefined, ctx);
+      expect(launched).toEqual([launcher]);
+      await tool.onSession(shutdown, ctx);
+      expect(launched).toEqual([launcher]);
+      expect(readFileSync(seenLog, "utf8")).toContain("taskSpaces.list()");
+
+      // 조건 B: 정상 사용 뒤 사용자가 앱을 닫았다. 그 정리가 앱을 다시 켜면 안 된다.
+      await tool.execute("3", { script: "work" }, undefined, ctx);
+      expect(launched).toEqual([launcher]);
+      stopApp();
+      await tool.onSession(shutdown, ctx);
+      expect(launched).toEqual([launcher]);
+      // 앱이 꺼져 있으면 정리 스크립트는 실행되지 않는다(호스트 stdin에 한 번도 닿지 않는다).
+      expect(readFileSync(seenLog, "utf8").match(/taskSpaces\.list\(\)/g)).toHaveLength(1);
+    } finally {
+      server.stop(true);
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("defaultExec with a stand-in ego-browser on PATH", () => {

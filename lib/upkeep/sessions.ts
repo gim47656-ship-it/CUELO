@@ -232,6 +232,17 @@ const TRACEBACK_FRAME = /^\s+File "[^"]*", line \d+/;
  * 이름(`name`)과 예외 뒤에 찍힌 로그 줄(`INFO: Shutting down`처럼 전부 대문자인 표지)은 여기에 걸리지 않는다.
  */
 const EXCEPTION_LINE = /^(?:[A-Za-z_]\w*\.)*(?=[\w]*[a-z])[A-Z]\w*(?::(?:\s.*)?)?$/;
+/**
+ * pydantic 검증 오류의 머리 줄(`…ValidationError: 2 validation errors for Payload`). 이 줄 뒤에는 검증에 실패한 필드
+ * 이름이 한 줄씩 콜론 없이 찍히는데, 필드 별칭이 `Name`·`DisplayName`처럼 대문자로 시작하면 `EXCEPTION_LINE`에 걸려 실제
+ * 예외를 밀어낸다(공개 이슈 #77). 그래서 이 머리 뒤에 오는 콜론 없는 후보는 예외가 아니라 필드 이름으로 본다.
+ */
+const PYDANTIC_ERROR = /^(?:[A-Za-z_]\w*\.)*ValidationError: \d+ validation errors? for .+$/;
+/**
+ * 파이썬이 연결된 예외 사이에 찍는 구분 줄. 이 줄 뒤의 예외는 새 Traceback 머리 없이 올 수 있으므로(앞 예외를 `cause`로
+ * 두고 `traceback.print_exception`으로 찍은 경우) 여기서도 pydantic 표시를 지워야 마지막 실제 예외를 잃지 않는다.
+ */
+const CHAIN_SEPARATOR = /^(?:The above exception was the direct cause of the following exception|During handling of the above exception, another exception occurred):$/;
 const NO_OUTPUT_LINE = /^\(no output\)$/;
 const RUN_NOISE = /^(?:Wall time: [\d.]+ seconds|Command exited with code \d+)$/;
 const EXIT_ONLY_LINE = /^Command exited with code (\d+)$/;
@@ -245,20 +256,43 @@ const BASH_ERROR_MARK = /\b(?:error|errors|failed|failure|fatal|not found|no suc
  * 14일 111건 (no output)과 Traceback 머리가 각각 한 묶음으로 뭉쳤다).
  */
 function errorLine(tool: string, lines: string[]): string {
-  const usable = lines.filter((x) => {
-    const t = x.trim();
-    return t && !TRACEBACK_HEAD.test(t) && !TRACEBACK_FRAME.test(x) && !NO_OUTPUT_LINE.test(t) && !RUN_NOISE.test(t);
-  });
+  /** Traceback 머리로 새 예외 묶음이 시작되는 자리를 표시한다(연결 traceback에서 pydantic 표시를 지우는 경계). */
+  const usable: { text: string; startsTraceback: boolean }[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (TRACEBACK_HEAD.test(t)) {
+      usable.push({ text: "", startsTraceback: true });
+      continue;
+    }
+    if (!t || TRACEBACK_FRAME.test(line) || NO_OUTPUT_LINE.test(t) || RUN_NOISE.test(t)) continue;
+    usable.push({ text: t, startsTraceback: false });
+  }
+  const words = usable.filter((entry) => entry.text);
   if (lines.some((x) => TRACEBACK_HEAD.test(x.trim()))) {
-    const exceptions = usable.filter((x) => EXCEPTION_LINE.test(x.trim()));
-    const terminal = (exceptions.at(-1) ?? usable.at(-1))?.trim();
+    // pydantic 머리 뒤에 콜론 없이 찍힌 후보는 예외가 아니라 검증에 실패한 필드 이름(별칭)이다. 메시지 없는 예외는
+    // 콜론 없이 찍히므로 이 자리에서만 빼고, 그 밖의 사용자 정의 예외는 그대로 예외로 남긴다. 다음 Traceback 머리에서
+    // 표시를 지우므로 연결된(chain) traceback의 마지막 실제 예외는 그대로 잡힌다.
+    const exceptions: string[] = [];
+    let afterPydanticHeader = false;
+    for (const entry of usable) {
+      // 새 예외 묶음이 시작되는 자리: 다음 Traceback 머리와 파이썬의 연결 구분 줄.
+      if (entry.startsTraceback || CHAIN_SEPARATOR.test(entry.text)) {
+        afterPydanticHeader = false;
+        continue;
+      }
+      if (!EXCEPTION_LINE.test(entry.text)) continue;
+      if (afterPydanticHeader && !entry.text.includes(":")) continue;
+      afterPydanticHeader = PYDANTIC_ERROR.test(entry.text);
+      exceptions.push(entry.text);
+    }
+    const terminal = exceptions.at(-1) ?? words.at(-1)?.text;
     if (terminal) return terminal;
   }
   if (tool === "bash") {
-    const marked = usable.find((x) => BASH_ERROR_MARK.test(x));
-    if (marked) return marked.trim();
+    const marked = words.find((entry) => BASH_ERROR_MARK.test(entry.text));
+    if (marked) return marked.text;
   }
-  return (usable[0] ?? lines.find((x) => EXIT_ONLY_LINE.test(x.trim())) ?? lines[0] ?? "").trim();
+  return (words[0]?.text ?? lines.find((x) => EXIT_ONLY_LINE.test(x.trim())) ?? lines[0] ?? "").trim();
 }
 
 /** 오류 대표 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). exit만 있는 실패는 종료 코드를 남긴다. */

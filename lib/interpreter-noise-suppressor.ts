@@ -7,6 +7,8 @@
  * dies later reports through `onBroken` so the caller can switch back.
  */
 
+import type { RnnoiseWorkletNode } from "@sapphi-red/web-noise-suppressor";
+
 /** The worklet and both wasm builds are copies of the package files, served from `public/`. */
 export const RNNOISE_ASSETS = {
   worklet: "/interpreter-noise/rnnoiseWorklet.js",
@@ -56,20 +58,24 @@ export async function createNoiseSuppressor(
   const cancel = () => cancelled.reject(new Error("setup cancelled"));
   if (signal?.aborted) cancel();
   else signal?.addEventListener("abort", cancel, { once: true });
-  const { RnnoiseWorkletNode, loadRnnoise } = await Promise.race([import("@sapphi-red/web-noise-suppressor"), cancelled.promise]);
-  signal?.removeEventListener("abort", cancel);
-  if (signal?.aborted) throw new Error("setup cancelled");
-  const context = new AudioContext({ sampleRate: RNNOISE_SAMPLE_RATE, latencyHint: "interactive" });
+  // `addModule` and `resume` take no signal of their own, and a stalled one keeps its promise pending
+  // after the context closes, so every setup wait races this cancellation. The race also attaches the
+  // rejection handler, so a wait that loses and rejects later stays handled.
+  const settled = <T>(work: Promise<T>): Promise<T> => Promise.race([work, cancelled.promise]);
+
+  let context: AudioContext | null = null;
   let closed = false;
   let source: MediaStreamAudioSourceNode | null = null;
-  let node: InstanceType<typeof RnnoiseWorkletNode> | null = null;
+  let node: RnnoiseWorkletNode | null = null;
   let gate: GainNode | null = null;
   let track: MediaStreamTrack | null = null;
 
   const close = () => {
     if (closed) return;
     closed = true;
-    context.onstatechange = null;
+    const current = context;
+    if (!current) return;
+    current.onstatechange = null;
     if (node) {
       node.onprocessorerror = null;
       node.destroy();
@@ -78,28 +84,33 @@ export async function createNoiseSuppressor(
     source?.disconnect();
     gate?.disconnect();
     track?.stop();
-    if (context.state !== "closed") void context.close().catch(() => {});
+    if (current.state !== "closed") void current.close().catch(() => {});
   };
   signal?.addEventListener("abort", close, { once: true });
 
   try {
     if (signal?.aborted) throw new Error("setup cancelled");
+    const pkg = await settled(import("@sapphi-red/web-noise-suppressor"));
+    if (signal?.aborted) throw new Error("setup cancelled");
+    const { RnnoiseWorkletNode, loadRnnoise } = pkg;
+    const created = new AudioContext({ sampleRate: RNNOISE_SAMPLE_RATE, latencyHint: "interactive" });
+    context = created;
     const [wasmBinary] = await Promise.all([
-      loadRnnoise({ url: assets.wasm, simdUrl: assets.simdWasm }, signal ? { signal } : undefined),
-      context.audioWorklet.addModule(assets.worklet),
+      settled(loadRnnoise({ url: assets.wasm, simdUrl: assets.simdWasm }, signal ? { signal } : undefined)),
+      settled(created.audioWorklet.addModule(assets.worklet)),
     ]);
     if (closed) throw new Error("setup cancelled");
     // `loadRnnoise` hands back whatever the server answered, a 404 page included.
     if (!hasWasmMagic(wasmBinary)) throw new Error("the RNNoise wasm did not load");
-    if (context.sampleRate !== RNNOISE_SAMPLE_RATE) throw new Error(`the browser ran the context at ${context.sampleRate} Hz`);
+    if (created.sampleRate !== RNNOISE_SAMPLE_RATE) throw new Error(`the browser ran the context at ${created.sampleRate} Hz`);
     // A suspended context would turn the microphone into silence; without a running one there is no suppressor.
-    await context.resume();
-    if (context.state !== "running" || closed) throw new Error(`the audio context is ${context.state}`);
+    await settled(created.resume());
+    if (created.state !== "running" || closed) throw new Error(`the audio context is ${created.state}`);
 
-    source = context.createMediaStreamSource(stream);
-    node = new RnnoiseWorkletNode(context, { maxChannels: 2, wasmBinary });
-    gate = context.createGain();
-    const destination = context.createMediaStreamDestination();
+    source = created.createMediaStreamSource(stream);
+    node = new RnnoiseWorkletNode(created, { maxChannels: 2, wasmBinary });
+    gate = created.createGain();
+    const destination = created.createMediaStreamDestination();
     source.connect(node);
     node.connect(gate);
     gate.connect(destination);
@@ -109,14 +120,16 @@ export async function createNoiseSuppressor(
     node.onprocessorerror = () => {
       if (!closed) onBroken("the RNNoise processor failed");
     };
-    context.onstatechange = () => {
-      if (!closed && context.state !== "running") onBroken(`the audio context is ${context.state}`);
+    created.onstatechange = () => {
+      if (!closed && created.state !== "running") onBroken(`the audio context is ${created.state}`);
     };
   } catch (error) {
     close();
     throw error;
   } finally {
     signal?.removeEventListener("abort", close);
+    // Registered for the whole setup: `addModule` and `resume` have no signal of their own.
+    signal?.removeEventListener("abort", cancel);
   }
   const output = gate;
   let muted = false;
