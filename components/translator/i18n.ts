@@ -10,6 +10,16 @@ import type { Locale, TranslationParams } from "@/lib/i18n/types";
  * 공용 `translateMessage`를 그대로 쓴다.
  */
 const ko = {
+  "translator.modeVoice": "대화",
+  "translator.modeType": "타자",
+  "translator.source": "입력 언어",
+  "translator.swapDirection": "방향 바꾸기",
+  "translator.typeLabel": "번역할 문장",
+  "translator.typePlaceholder": "여행 중 전할 말을 입력하세요.",
+  "translator.typeSubmit": "번역",
+  "translator.typePending": "번역 중…",
+  "translator.typeError": "번역하지 못했어요. 다시 시도해 주세요.",
+  "translator.typeAuth": "Codex 로그인 상태를 확인해 주세요.",
   "translator.tab": "통역",
   "translator.title": "통역",
   "translator.back": "대화로",
@@ -86,6 +96,16 @@ const ko = {
 type TranslatorMessageKey = keyof typeof ko;
 
 const en: Record<TranslatorMessageKey, string> = {
+  "translator.modeVoice": "Voice",
+  "translator.modeType": "Type",
+  "translator.source": "Input language",
+  "translator.swapDirection": "Swap direction",
+  "translator.typeLabel": "Text to translate",
+  "translator.typePlaceholder": "Type what you want to say.",
+  "translator.typeSubmit": "Translate",
+  "translator.typePending": "Translating…",
+  "translator.typeError": "Translation failed. Try again.",
+  "translator.typeAuth": "Check your Codex sign-in.",
   "translator.tab": "Interpret",
   "translator.title": "Interpreter",
   "translator.back": "Back to chat",
@@ -160,6 +180,8 @@ const en: Record<TranslatorMessageKey, string> = {
 };
 
 const zhCN: Record<TranslatorMessageKey, string> = {
+  // New typed-mode messages use the same English fallback as unsupported app locales.
+  ...en,
   "translator.tab": "口译",
   "translator.title": "口译",
   "translator.back": "返回对话",

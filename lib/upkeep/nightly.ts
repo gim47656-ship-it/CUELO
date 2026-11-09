@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateFileAtomicSync } from "../atomic-file";
+import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { buildFullPrompt, kstDate, kstDateTime } from "./prompt";
 import type { SkillCandidate } from "./skill-candidates";
 import type { UpkeepReport } from "./types";
@@ -51,6 +52,8 @@ export interface NightlyJobs {
   issues?: number[];
   /** 받은편지함 모드에서만: 근거를 찾는 기존 기능 쓰기 편함·성능·메모리 점검을 맡겼는지 */
   improvementReview?: boolean;
+  /** Source pin and stable npm target, only when a newer core is queued. */
+  coreUpgrade?: { from: string; to: string };
 }
 
 /** 받은편지함 모드에서 출처 하나가 맡은 일 */
@@ -83,6 +86,7 @@ export type NightlyPlan =
     sources?: NightlySourcePlan[];
     /** 받은편지함 모드에서만: HANDOFF를 읽은 커밋. worktree 브랜치를 이 커밋에 둔다. null이면 커밋을 찾지 못해 작업 사본을 읽었다. */
     base?: NightlyBase | null;
+    coreUpdate?: CoreUpdateLookup;
     prompt: string;
   };
 
@@ -288,17 +292,22 @@ export function planNightlyRun(
   now: Date,
   runningSessionIds: readonly string[],
   skillCandidates: readonly SkillCandidate[],
+  coreUpdate: CoreUpdateLookup | null = null,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   const problems = openProblems(report);
   const weeklyReview = weeklyReviewDue(state, date);
-  if (!problems.length && !skillCandidates.length && !weeklyReview) return { action: "skip", reason: "nothing-to-do" };
+  if (!problems.length && !skillCandidates.length && !weeklyReview && coreUpdate?.status !== "newer") return { action: "skip", reason: "nothing-to-do" };
   const blocked = nightlyGuard(report.repoCwd, state, date, runningSessionIds);
   if (blocked || !report.repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
   const sections = [NIGHTLY_PREAMBLE, nightlyAuditRules(date), "# 오늘 할 일"];
   if (problems.length) sections.push(NIGHTLY_PROBLEM_SECTION);
   if (skillCandidates.length) sections.push([NIGHTLY_SKILL_RULES, "", "후보:", ...skillCandidates.map(candidateLine)].join("\n"));
   if (weeklyReview) sections.push(NIGHTLY_WEEKLY_SECTION);
+  if (coreUpdate) {
+    const block = nightlyCoreUpdateBlock(coreUpdate);
+    if (block) sections.push(block);
+  }
   sections.push(NIGHTLY_SUMMARY_RULES);
   if (problems.length) sections.push("---", buildFullPrompt(report));
   return {
@@ -306,8 +315,9 @@ export function planNightlyRun(
     date,
     repoCwd: report.repoCwd,
     branch: nightlyBranch(date),
-    jobs: { problems, skillCandidates: skillCandidates.length, weeklyReview },
+    jobs: { problems, skillCandidates: skillCandidates.length, weeklyReview, ...(coreUpdate?.status === "newer" ? { coreUpgrade: { from: coreUpdate.current, to: coreUpdate.latest } } : {}) },
     skillsScannedAt: now.toISOString(),
+    ...(coreUpdate ? { coreUpdate } : {}),
     prompt: sections.join("\n\n"),
   };
 }

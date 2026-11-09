@@ -52,6 +52,16 @@ export const HISTORY_MAX_LINES = 24;
 /** 한 줄 글의 최대 길이. 더 길면 뒤를 자른다. */
 export const LINE_MAX_CHARS = 300;
 
+/** Typed turns keep complete text instead of the voice transcript's short-line limit. */
+export const INTERPRETER_TEXT_MAX_CHARS = 2000;
+export const INTERPRETER_TEXT_OUTPUT_MAX_CHARS = 8000;
+export const INTERPRETER_TEXT_HISTORY_LINES = 24;
+
+export type InterpreterTextEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; text: string; source: string; target: string }
+  | { type: "error"; error: "live-auth" | "live-upstream" };
+
 export const EMPTY_INTERPRETER_CONTEXT: InterpreterContext = { profile: {}, history: [] };
 
 const pick = <T extends string>(allowed: readonly T[], value: unknown): T | undefined =>

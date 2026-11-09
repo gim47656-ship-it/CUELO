@@ -33,6 +33,8 @@ import {
 } from "./transcript-log";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
 import { useDraftCaptions } from "./useDraftCaptions";
+import { TypedInterpreter } from "./TypedInterpreter";
+import typedStyles from "./TypedInterpreter.module.css";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
@@ -329,6 +331,7 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
+  const [mode, setMode] = useState<"voice" | "text">("voice");
   const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts } = settings;
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
@@ -421,8 +424,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
   useEffect(() => {
-    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, mine, prepare, profile, supported, theirs, visible]);
+    if (visible && mode === "voice" && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
+  }, [active, mine, mode, prepare, profile, supported, theirs, visible]);
+  useEffect(() => { if (mode === "text") stopRef.current(); }, [mode]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -474,7 +478,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   // 대화가 남아 있으면 통역 중처럼 설정을 언어 짝 단추 뒤로 접는다. 펼쳐 둔 설정 묶음이
   // 폰 화면을 거의 다 차지해 통역·원문 칸이 한 줄 높이로 눌렸다.
-  const collapsible = active || segments.length > 0;
+  const collapsible = mode === "text" || active || segments.length > 0;
   const showSetup = !collapsible || setupOpen;
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
@@ -517,7 +521,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     </button>
   );
 
-  if (face) {
+  if (face && mode === "voice") {
     return (
       <section className="translator-view" data-face="true" aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
         <h2 className="sr-only">{tt("translator.title")}</h2>
@@ -554,12 +558,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   return (
     <section className="translator-view" data-active={active ? "true" : undefined} aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
       <header className="translator-header">
-        <div className="translator-bar">
+        <div className={`translator-bar ${typedStyles.toolbar}`}>
           {onBack ? (
             <button type="button" className="translator-icon-button" aria-label={tt("translator.back")} title={tt("translator.back")} onClick={onBack}>
               <BackIcon />
             </button>
           ) : null}
+          <div className={typedStyles.modes} role="group" aria-label={tt("translator.title")}>
+            <button type="button" aria-pressed={mode === "voice"} onClick={() => setMode("voice")}>{tt("translator.modeVoice")}</button>
+            <button type="button" aria-pressed={mode === "text"} onClick={() => { call.stop(); setSetupOpen(false); setMode("text"); }}>{tt("translator.modeType")}</button>
+          </div>
           {collapsible ? (
             <>
               <h2 className="sr-only">{tt("translator.title")}</h2>
@@ -603,7 +611,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             >
               <span aria-hidden="true" data-size="up">{sizeGlyph}</span>
             </button>
-            <button
+            {mode === "voice" ? <button
               type="button"
               className="translator-icon-button"
               aria-pressed={false}
@@ -612,7 +620,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               onClick={() => setSettings({ ...settings, face: true })}
             >
               <FaceIcon />
-            </button>
+            </button> : null}
           </div>
         </div>
         {showSetup ? (
@@ -718,7 +726,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 </select>
               </label>
             </div>
-            <div className="translator-options">
+            {mode === "voice" ? <div className="translator-options">
               <label className="translator-toggle">
                 <input
                   type="checkbox"
@@ -763,7 +771,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <span>{tt("translator.fastDrafts")}</span>
               </label>
               <p id="translator-fast-drafts-hint" className="translator-options-note">{tt("translator.fastDraftsHint")}</p>
-            </div>
+            </div> : null}
             {segments.length > 0 ? (
               <ActionButton
                 variant="ghost"
@@ -781,10 +789,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           </div>
         ) : null}
       </header>
-      {notice ? (
+      {mode === "voice" && notice ? (
         <p className="translator-banner" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
       ) : null}
-      {segments.length === 0 && !active ? (
+      <TypedInterpreter key={`${mine.code}>${theirs.code}`} mine={mine} theirs={theirs} profile={profile} visible={visible && mode === "text"} />
+      {mode === "voice" && (segments.length === 0 && !active ? (
         <div className="translator-log">
           <p className="translator-empty">{tt("translator.empty")}</p>
         </div>
@@ -807,11 +816,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             layoutKey={layoutKey}
           />
         </div>
-      )}
-      <div className="translator-dock">
+      ))}
+      {mode === "voice" ? <div className="translator-dock">
         {statusLine}
         {callButton(active)}
-      </div>
+      </div> : null}
     </section>
   );
 }

@@ -16,6 +16,7 @@ import {
   nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue,
 } from "./nightly";
 import { isLabPluginId, LAB_EXPORT_LIMIT_BYTES, type LabExportEntry } from "../plugin-lab";
+import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import { OBSERVED_LIMIT, OBSERVED_MIN_SESSIONS, type SkillCandidate } from "./skill-candidates";
@@ -880,6 +881,7 @@ export function planInboxRun(
   handoffs: Pick<CloudHandoffs, "items" | "base"> | null = null,
   /** 저장소(origin/main)에 이미 정식 사본이 있는 실험 플러그인 id. 다시 승격하지 않는다. */
   promotedInRepo: ReadonlySet<string> = new Set(),
+  coreUpdate: CoreUpdateLookup | null = null,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   type Active = { bundle: NightlyBundle; candidates: SkillCandidate[]; plan: NightlySourcePlan; ready: LabExportEntry[]; waiting: LabExportEntry[] };
@@ -910,6 +912,10 @@ export function planInboxRun(
   if (blocked || !repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
 
   const sections = [NIGHTLY_PREAMBLE, nightlyAuditRules(date), inboxIntro(outboxDir), INBOX_PRIORITY_RULES, issueBlock(issues)];
+  if (coreUpdate) {
+    const block = nightlyCoreUpdateBlock(coreUpdate);
+    if (block) sections.push(block);
+  }
   for (const { bundle, candidates, plan, ready, waiting } of active) {
     const block = [`# ${bundle.source}`, "", `이 PC가 ${kstDateTime(bundle.generatedAt)}에 보낸 기록입니다.`];
     if (plan.jobs.problems.length) block.push("", problemBlock(bundle.problems));
@@ -939,9 +945,11 @@ export function planInboxRun(
       issueLookup: issues.status === "unavailable" ? "unavailable" : issues.partial ? "partial" : "ok",
       issues: issues.status === "ok" ? issues.issues.map((issue) => issue.number) : [],
       improvementReview: true,
+      ...(coreUpdate?.status === "newer" ? { coreUpgrade: { from: coreUpdate.current, to: coreUpdate.latest } } : {}),
     },
     skillsScannedAt: now.toISOString(),
     ...(handoffs ? { base: handoffs.base } : {}),
+    ...(coreUpdate ? { coreUpdate } : {}),
     // 할 일 없는 출처도 읽은 상한은 옮겨 같은 후보를 다음 날 다시 보지 않게 한다. 주간 점검 날짜는 맡긴 출처만 바뀐다.
     sources: scanned,
     prompt: sections.join("\n\n"),

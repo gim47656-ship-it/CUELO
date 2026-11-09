@@ -166,7 +166,7 @@ interface LostCall {
 }
 
 const targetKey = ({ mine, theirs, profile }: CallTarget) =>
-  `${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}`;
+  `${mine.code}>${theirs.code}|${profile.mood ?? ""}|${profile.gender ?? ""}|${profile.age ?? ""}|${profile.partnerGender ?? ""}|${profile.partnerAge ?? ""}`;
 
 /** The Codex controller also tells when Codex stopped one interpretation and the call kept going. */
 export interface CodexInterpreterCallController extends InterpreterCallController {

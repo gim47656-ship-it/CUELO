@@ -12,12 +12,13 @@ const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 const SELECTOR = /:(?:raw|img|conflicts|-?\d[\d,+:-]*(?::raw)?|raw:[\d,+:-]+)$/;
 const EDIT_TARGET = /^\[([^\]\n#]+)#[0-9A-Fa-f]{4}\]/gm;
 
-export function reminder(count: number): string {
+export function reminder(count: number, isMaker = false): string {
   return [
-    `이번 요청에서 고치지 않을 파일을 벌써 ${count}개째 직접 read하고 있다. Main의 read는 Anthropic 한도를 쓴다.`,
-    "넓게 훑는 읽기는 넘긴다: 남은 질문을 `skim`(paths에 디렉터리나 glob, question에 찾을 것과 돌려받을 형태)으로 보내면 다른 모델이 파일 전체를 꼼꼼히 읽고 답과 근거 경로를 돌려준다.",
-    "실행이나 여러 단계 확인이 필요한 조사는 읽기 전용 diagnostic Maker에 맡긴다.",
-    "직접 read는 skim이 짚은 줄을 확인하거나 고칠 줄을 편집 직전에 볼 때만 쓴다.",
+    `이번 작업에서 고치지 않을 파일을 벌써 ${count}개째 직접 read하고 있다.`,
+    "넓게 훑는 읽기는 `skim`으로 넘긴다: paths에 필요한 디렉터리나 glob, question에 찾을 것과 근거 경로 등 돌려받을 형태를 적는다.",
+    ...(isMaker ? [] : ["실행이나 여러 단계 확인이 필요한 조사는 diagnostic Maker에 맡길 수 있다."]),
+    "요약에 없는 내용이 실제로 없다고 단정하지 않는다. 수정 전에는 해당 원본과 호출 관계를 직접 확인하고 실행으로 검증한다.",
+    "직접 read는 skim이 짚은 줄을 확인하거나 고칠 줄을 편집 직전에 볼 때 쓴다.",
   ].join(" ");
 }
 
@@ -55,15 +56,23 @@ export function createScanNudge(log: Log = defaultLog) {
     let explored = new Set<string>();
     let edited = new Set<string>();
 
-    pi.on("input", (event) => {
-      // 사용자 입력이 아닌 입력(확장이 넣은 후속 입력 등)은 앞 요청의 읽기 수를 이어받지 않고 안내를 끈다.
-      armed = event.source === "interactive" || event.source === "rpc";
-      if (!armed) return;
+    const reset = () => {
+      armed = true;
       delegated = false;
       nudged = false;
       followed = false;
       explored = new Set();
       edited = new Set();
+    };
+
+    pi.on("input", (event) => {
+      // 확장이 넣은 후속 입력은 사용자나 부모가 맡긴 새 작업으로 보지 않는다.
+      armed = event.source === "interactive" || event.source === "rpc";
+      if (armed) reset();
+    });
+    pi.on("before_agent_start", (event, ctx) => {
+      // Maker 최초 발주는 input을 거치지 않는다. 복구 알림만으로는 새 작업을 시작하지 않는다.
+      if (ctx.agent?.kind === "sub" && event.reason === "prompt") reset();
     });
 
     // 먼저 읽고 나중에 고친 파일은 탐색이 아니라 편집 준비였으므로 수에서 뺀다.
@@ -73,7 +82,7 @@ export function createScanNudge(log: Log = defaultLog) {
     };
 
     pi.on("tool_call", (event, ctx) => {
-      if (!armed || ctx.agent?.kind === "sub") return;
+      if (!armed) return;
       const input = (event.input ?? {}) as Record<string, unknown>;
       const cwd = ctx.cwd;
       if (event.toolName === "skim" || event.toolName === "task") {
@@ -104,7 +113,7 @@ export function createScanNudge(log: Log = defaultLog) {
       nudged = true;
       log({ type: "nudge", files: explored.size, sessionId: ctx.sessionManager?.getSessionId?.() });
       pi.sendMessage(
-        { customType: "scan-nudge", content: reminder(explored.size), display: false, attribution: "agent" },
+        { customType: "scan-nudge", content: reminder(explored.size, ctx.agent?.kind === "sub"), display: false, attribution: "agent" },
         { deliverAs: "aside" },
       );
     });

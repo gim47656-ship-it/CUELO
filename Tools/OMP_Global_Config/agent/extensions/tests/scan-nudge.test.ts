@@ -16,6 +16,7 @@ function harness(kind: "main" | "sub" = "main") {
     sent,
     logs,
     input: (source = "interactive") => handlers.get("input")!({ source }, ctx),
+    start: (reason = "prompt") => handlers.get("before_agent_start")?.({ reason, prompt: "Investigate files" }, ctx),
     call: (toolName: string, input: Record<string, unknown>) => handlers.get("tool_call")!({ toolName, input }, ctx),
   };
 }
@@ -60,12 +61,34 @@ describe("scan-nudge", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  test("delegating first, subagents and non-user inputs stay silent; a new input re-arms", () => {
+  test("a Maker prompt is armed without interactive input and records skim follow-through", () => {
     const sub = harness("sub");
-    sub.input();
-    for (let i = 0; i < 10; i += 1) sub.call("read", { path: `f${i}` });
-    expect(sub.sent).toHaveLength(0);
+    sub.start();
+    for (let i = 0; i < EXPLORATION_READS_BEFORE_NUDGE; i += 1) sub.call("read", { path: `f${i}` });
+    expect(sub.sent).toHaveLength(1);
+    sub.call("read", { path: "another" });
+    sub.call("skim", { paths: ["src"] });
+    sub.call("skim", { paths: ["lib"] });
+    expect(sub.sent).toHaveLength(1);
+    expect(sub.logs.map((r) => r.type)).toEqual(["nudge", "followed"]);
+  });
 
+  test("Maker revival does not arm or reset reads, while a new prompt resets them", () => {
+    const sub = harness("sub");
+    sub.start("revive");
+    sub.call("read", { path: "before" });
+    sub.start();
+    for (let i = 0; i < EXPLORATION_READS_BEFORE_NUDGE - 1; i += 1) sub.call("read", { path: `f${i}` });
+    sub.start("revive");
+    expect(sub.sent).toHaveLength(0);
+    sub.call("read", { path: "last" });
+    expect(sub.sent).toHaveLength(1);
+    sub.start();
+    sub.call("read", { path: "fresh" });
+    expect(sub.sent).toHaveLength(1);
+  });
+
+  test("delegating first and non-user inputs stay silent; a new input re-arms", () => {
     const h = harness();
     for (let i = 0; i < 10; i += 1) h.call("read", { path: `pre${i}` }); // before any user input
     h.input("extension");

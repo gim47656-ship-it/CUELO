@@ -111,7 +111,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A23 | 발주에 `TASK_GUARD`·`TASK_TITLE`·`TODO_TASKS` | 차단 | `extensions/command-guard/task-guard.ts` `reserveTaskCall`, `patches/validate-harness-policy.mjs`(`dispatchGuidePaths`) | |
 | A24 | Skill은 필요할 때만 열고, 대신한 부분은 Skill 결과로 부르지 않는다 | 안내(부분) | `extensions/lib/skill-evidence.ts`(frontend 필수 스킬 읽기 관측) | 나머지는 문서 |
 | A25 | `goal`에 `token_budget` 임의 설정 금지 | 문서 | — | |
-| A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 문서 | — | |
+| A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `extensions/todo-language-guard.ts`, `extensions/lib/todo-language.ts`, `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서 |
 | A27 | 절차 Skill은 원인 모를 버그·두 번째 실패에만 | 문서 | — | |
 | A28 | 독립 읽기 묶기, 거절된 edit은 그대로 재전송 | 구조(부분) | `patches/core-edit-batch-test.ts`(거절 파일 전부 표시·재전송 성공) | 묶기는 문서 |
 | A29 | 별칭 호출·교체, SHION은 상담만 | 차단 | `extensions/command-guard/index.ts` CharacterSummonGuard, `extensions/character-voice.ts`, `patches/validate-harness-policy.mjs`(`mainLane.characterRouting`) | |

@@ -7,8 +7,10 @@ import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
 import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
+import { collectNightlyCoreUpdate, type CoreUpdateLookup } from "@/lib/upkeep/nightly-core";
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
+import { kstDate } from "@/lib/upkeep/prompt";
 import { addWorktree } from "@/lib/worktree";
 
 export const dynamic = "force-dynamic";
@@ -57,6 +59,7 @@ function describeJobs(jobs: NightlyJobs): string {
     jobs.labPromotions?.length ? `lab promotion ${jobs.labPromotions.join(", ")}` : null,
     jobs.issueLookup ? `issues ${jobs.issueLookup}${jobs.issues?.length ? ` #${jobs.issues.join(", #")}` : ""}` : null,
     jobs.improvementReview ? "existing-feature review" : null,
+    jobs.coreUpgrade ? `OMP core ${jobs.coreUpgrade.from} -> ${jobs.coreUpgrade.to}` : null,
   ].filter(Boolean).join("; ");
 }
 
@@ -68,6 +71,7 @@ async function planAndRun(dryRun: boolean) {
   const agentDir = getAgentDir();
   let plan;
   let state;
+  let coreUpdate: CoreUpdateLookup | undefined;
   try {
     state = readNightlyState(agentDir);
     const now = new Date();
@@ -100,22 +104,26 @@ async function planAndRun(dryRun: boolean) {
       // 공개 저장소 열린 이슈(읽기 전용, 인증 없음). 읽지 못하면 unavailable로 프롬프트에 그대로 싣는다.
       const issues = await collectOpenIssues();
       log(`issues: ${issues.status === "ok" ? `${issues.issues.length} open${issues.partial ? " (partial)" : ""}` : `unavailable (${issues.reason})`}`);
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, promoted);
+      coreUpdate = await collectNightlyCoreUpdate(repoOverride, handoffs?.base ? [handoffs.base.sha] : [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, promoted, coreUpdate);
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);
-      plan = planNightlyRun({ ...report, repoCwd: repoOverride ?? report.repoCwd }, state, now, getRunningRpcSessionIds(), candidates);
+      const repoCwd = repoOverride ?? report.repoCwd;
+      coreUpdate = await collectNightlyCoreUpdate(repoCwd, [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
+      plan = planNightlyRun({ ...report, repoCwd }, state, now, getRunningRpcSessionIds(), candidates, coreUpdate);
     }
+    log(`core discovery: ${JSON.stringify(coreUpdate)}`);
   } catch (error) {
     log(`failed to plan: ${error instanceof Error ? error.message : String(error)}`);
     return NextResponse.json({ error: "Nightly plan failed" }, { status: 500 });
   }
   if (plan.action === "skip") {
     log(`${dryRun ? "dry run " : ""}skipped: ${plan.reason}`);
-    return NextResponse.json({ action: "skipped", reason: plan.reason, ...(dryRun ? { dryRun } : {}) });
+    return NextResponse.json({ action: "skipped", reason: plan.reason, coreUpdate, ...(dryRun ? { dryRun } : {}) });
   }
   if (dryRun) {
-    log(`dry run: would start ${plan.branch} for ${plan.sources ? describeSources(plan.sources) : describeJobs(plan.jobs)}`);
+    log(`dry run: would start ${plan.branch} for ${describeJobs(plan.jobs)}${plan.sources ? ` | ${describeSources(plan.sources)}` : ""}`);
     return NextResponse.json({ action: "planned", dryRun, plan });
   }
   // 보고서를 모으는 사이 갱신이 시작됐을 수 있어 무엇이든 만들기 직전에 본다.
@@ -141,7 +149,7 @@ async function planAndRun(dryRun: boolean) {
     await session.send({ type: "prompt", message: plan.prompt });
     accepted = true;
     writeNightlyState(agentDir, nightlyStateAfterRun(plan, state, started.realSessionId, worktree, new Date().toISOString()));
-    log(`started ${started.realSessionId} in ${worktree} for ${plan.sources ? describeSources(plan.sources) : describeJobs(plan.jobs)}`);
+    log(`started ${started.realSessionId} in ${worktree} for ${describeJobs(plan.jobs)}${plan.sources ? ` | ${describeSources(plan.sources)}` : ""}`);
     return NextResponse.json({ action: "started", sessionId: started.realSessionId, worktree });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
