@@ -3415,6 +3415,8 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	let backgroundUnavailable = false;
 	const onSnapshot: Array<() => void> = [];
 	const acted: string[] = [];
+	const performed: string[] = [];
+	let dragAnswer: unknown;
 	const refs = new Map<string, { item: string; generation: number }>();
 	const issue = (item: Item) => {
 		const ref = `e${++nextRef}`;
@@ -3480,10 +3482,16 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 			return parent ? nodeOf(parent) : null;
 		},
 		axChildren: async (ref: string) => childrenOf(live(ref).id).map(item => nodeOf(item)),
-		axPerform: async (ref: string) => {
+		axPerform: async (ref: string, name: string) => {
+			performed.push(name);
 			const item = act(ref);
 			if (item.id === "toggle") item.value = item.value === "off" ? "on" : "off";
 		},
+		// The refuse setting checks the user's control grant before every run (no grant in this fixture).
+		controlState: () => ({ active: false }),
+		releaseControl: () => {},
+		// 18.18.2 native drag answers { selection, focusReturn }; older cores answer the focus return alone.
+		drag: async () => dragAnswer,
 		axSetValue: async (ref: string, value: string) => {
 			const item = act(ref);
 			if (!item.ignoresValue) item.value = value;
@@ -3515,11 +3523,11 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	const snapshot = { cwd: fixtureRoot, sessionId: "computer-action", captureMaxWidth: 100, captureMaxHeight: 100, display: "", readOnly: false };
 	let runs = 0;
 	const keepAlive = setInterval(() => {}, 1000);
-	const run = (code: string) =>
+	const run = (code: string, session: Record<string, unknown> = snapshot) =>
 		new Promise<RunResult>(resolve => {
 			const id = `action-${++runs}`;
 			waiters.set(id, resolve);
-			deliver({ type: "run", id, code, timeoutMs: 5000, session: snapshot, escape: { key: "patch-test", acknowledged: 0 } });
+			deliver({ type: "run", id, code, timeoutMs: 5000, session, escape: { key: "patch-test", acknowledged: 0 } });
 		});
 	const caught = "catch (e) { return { ok: false, message: e.message, name: e.name, info: e.computerAction }; }";
 
@@ -3612,6 +3620,18 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	const unread = await run(`const [field] = await (await desktop.window("w1")).find({ role: "textfield", title: "Name" }); return await field.setValue("z");`);
 	breakReadbackAfterAction = false;
 	readbackBroken = false;
+	// 18.18.2 ports: native drag result shape and perform() action keys.
+	const modernNative = (await Bun.file(`${CORE}/tools/computer/worker.ts`).text()).includes("function nativeActionKey(");
+	const dragCode = `const win = await desktop.window("w1"); return await win.drag([[1, 1], [9, 1]]);`;
+	dragAnswer = modernNative ? { selection: { start: 0, length: 5, text: "hello" }, focusReturn: undefined } : undefined;
+	const dragSelected = await run(dragCode);
+	dragAnswer = modernNative ? { selection: undefined, focusReturn: undefined } : undefined;
+	const dragPlain = await run(dragCode);
+	const performedBefore = performed.length;
+	const performPlain = await run(`const [toggle] = await (await desktop.window("w1")).find({ role: "button", title: "Toggle" }); return await toggle.perform("press");`);
+	const performedNames = performed.slice(performedBefore);
+	const refuseSnapshot = { ...snapshot, backgroundFallback: "refuse" };
+	const performRefused = await run(`const [toggle] = await (await desktop.window("w1")).find({ role: "button", title: "Toggle" }); try { await toggle.perform("AXraise"); return { ok: true }; } ${caught}`, refuseSnapshot);
 	clearInterval(keepAlive);
 	globalThis.console = realConsole;
 
@@ -3639,6 +3659,12 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	check("지문 없음: 발급한 적 없는 ref 는 첫 줄이 그대로인 StaleRef 로 실패하고 사유를 붙인다", !unknown.ok && (unknown.error?.message ?? "").startsWith("StaleRef: e99999 expired") && /reacquire refused \(no-fingerprint\)/.test(unknown.error?.message ?? ""), JSON.stringify(unknown));
 	const unreadOut = (unread.payload?.returnValue ?? {}) as ActionOut;
 	check("readback 실패는 전달된 행동을 오류로 바꾸지 않고 unverified/reobserve 로 남긴다", unread.ok && unreadOut.status === "unverified" && unreadOut.suggestedNext === "reobserve", JSON.stringify(unread));
+	check("호환: 창 drag 는 표준 행동 결과를 돌려준다(delivered 는 unverified)", dragPlain.ok && (dragPlain.payload?.returnValue as ActionOut | undefined)?.action === "drag" && (dragPlain.payload?.returnValue as ActionOut | undefined)?.status === "unverified", JSON.stringify(dragPlain));
+	if (!modernNative) console.log("  (이 판의 native drag 는 선택 결과를 돌려주지 않는다: 선택 검사는 세지 않는다)");
+	else check("18.18.2: native drag 의 { selection } 은 버려지지 않고 행동 결과에 실린다", dragSelected.ok && (dragSelected.payload?.returnValue as { selection?: { text?: string }; action?: string } | undefined)?.selection?.text === "hello" && (dragSelected.payload?.returnValue as { action?: string }).action === "drag", JSON.stringify(dragSelected));
+	check("호환: perform(action) 은 요소 ref 와 받은 이름 그대로 native 에 닿는다", performPlain.ok && performedNames.length === 1 && performedNames[0] === "press", JSON.stringify({ performPlain, performedNames }));
+	if (!modernNative) console.log("  (이 판은 AXraise 철자를 같은 raise 로 보지 않는다: 철자 검사는 세지 않는다)");
+	else check("18.18.2: refuse 설정은 raise 의 어떤 철자도 보내기 전에 막는다", (performRefused.payload?.returnValue as Refused | undefined)?.ok === false && /backgroundFallback/.test((performRefused.payload?.returnValue as Refused | undefined)?.message ?? "") && performed.length === performedBefore + 1, JSON.stringify(performRefused));
 }
 
 console.log("\n[31] async-result 자동 전달 — schema 없는 실패도 그 실행의 실제 terminal status 를 싣는다");
@@ -3748,6 +3774,35 @@ console.log("\n[33] 서브에이전트 idle TTL — 대기 중인 async 작업�
 	await Bun.sleep(ttl * 4);
 	check("작업이 끝나면 다음 TTL 에 parked 가 되고 dispose 된다", ref.status === "parked" && !ref.session && disposed === 1, `status=${ref.status} disposed=${disposed}`);
 	await life.dispose();
+}
+
+// 18.18.2: a process-wide lifecycle teardown cuts a running agent off with a process-exit reason (so `omp --restore` can go on
+// with it); a root-scoped teardown (one CUELO session closing) keeps stopping its own children as before and never touches
+// another root's agents. Real AgentRegistry and AgentLifecycleManager; the sessions are fixtures that record dispose().
+console.log("\n[33b] 수명주기 dispose — root 범위 정리는 남의 root 를 건드리지 않고, 프로세스 전체 정리만 실행 중 agent 를 process-exit 로 끊는다");
+{
+	const { AgentLifecycleManager } = await import(`${CORE}/registry/agent-lifecycle.ts`);
+	const modernLifecycle = (await Bun.file(`${CORE}/registry/agent-lifecycle.ts`).text()).includes("AgentReleaseOptions");
+	const reg = new AgentRegistry();
+	const life = new AgentLifecycleManager(reg);
+	const disposeCalls = new Map<string, unknown[]>();
+	const worker = (id: string, parentId: string) => {
+		const session = { hasPendingAsyncWork: () => false, dispose: async (options?: unknown) => { disposeCalls.set(id, [...(disposeCalls.get(id) ?? []), options]); } };
+		const ref = reg.register({ id, displayName: id, kind: "sub", parentId, status: "running", session });
+		life.adopt(id, { idleTtlMs: 600_000 }, ref);
+		return ref;
+	};
+	const rootA = reg.register({ id: "RootA", displayName: "RootA", kind: "main", status: "idle", session: { dispose: async () => {} } });
+	reg.register({ id: "RootB", displayName: "RootB", kind: "main", status: "idle", session: { dispose: async () => {} } });
+	worker("ChildA", "RootA");
+	worker("ChildB", "RootB");
+	await life.dispose(undefined, rootA);
+	check("root 범위 정리는 그 root 의 running 자식만 dispose 하고 옵션 없이 멈춘다", disposeCalls.get("ChildA")?.length === 1 && disposeCalls.get("ChildA")?.[0] === undefined, JSON.stringify([...disposeCalls]));
+	check("root 범위 정리는 다른 root 의 자식을 건드리지 않는다", !disposeCalls.has("ChildB"), JSON.stringify([...disposeCalls]));
+	await life.dispose();
+	const cut = disposeCalls.get("ChildB")?.[0] as { reason?: unknown } | undefined;
+	if (!modernLifecycle) check("옛 판: 프로세스 전체 정리는 옵션 없이 dispose 한다", disposeCalls.get("ChildB")?.length === 1 && cut === undefined, JSON.stringify([...disposeCalls]));
+	else check("18.18.2: 프로세스 전체 정리는 running agent 를 process-exit 이유로 끊는다", disposeCalls.get("ChildB")?.length === 1 && cut?.reason !== undefined, JSON.stringify([...disposeCalls]));
 }
 
 // 2026-10-16 Codex 라이브 v3 목소리: core 의 v1 목록만으로는 `live.voice: haetsal` 이 거절돼 CUELO 통화가 늘 기본 `sol` 로 돌았다.

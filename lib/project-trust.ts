@@ -7,7 +7,7 @@ import { type ExtensionModule, extensionModuleCapability } from "@oh-my-pi/pi-co
 import { type Hook, hookCapability } from "@oh-my-pi/pi-coding-agent/capability/hook";
 import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
 import { discoverCustomToolPaths, type ToolPathWithSource } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
-import { getAllPluginExtensionPaths } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
+import { getEnabledPlugins, resolvePluginExtensionPaths } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
 import { cfgDisabledExtensions, cfgExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 import { resolvePath } from "@oh-my-pi/pi-coding-agent/extensibility/utils";
 import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
@@ -270,6 +270,16 @@ function nonProjectConfiguredExtensions(settings: Settings): string[] {
 }
 
 /**
+ * Extension module paths of every enabled plugin, user and project scope alike.
+ * omp 18.18.2 dropped its `getAllPluginExtensionPaths`; this is the same
+ * aggregation over the loader's own enabled-plugin list and path resolver.
+ */
+async function enabledPluginExtensionPaths(cwd: string): Promise<string[]> {
+  const plugins = await getEnabledPlugins(cwd);
+  return plugins.flatMap((plugin) => resolvePluginExtensionPaths(plugin));
+}
+
+/**
  * Extension modules only the project contributes, keyed by real path.
  *
  * omp's native extension-module provider reads `.omp/extensions` and also the
@@ -290,7 +300,7 @@ async function projectOnlyNativeExtensionModules(
     loadCapability<ExtensionModule>(extensionModuleCapability.id, { cwd, providers: ["native"] }),
     loadCapability<Hook>(hookCapability.id, { cwd }),
     discoverSessionExtensionPaths({ extensionRoots: () => configuredRoots }, cwd, settings),
-    getAllPluginExtensionPaths(cwd),
+    enabledPluginExtensionPaths(cwd),
   ]);
   const fromOtherSources = new Set(
     [

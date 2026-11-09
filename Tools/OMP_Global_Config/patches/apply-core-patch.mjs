@@ -22664,6 +22664,264 @@ ${skip}`)
 ${tail}`);
 }
 
+// 18.18.2: same rules as the 18.17.0 block. Older candidates stay byte-identical except for an `excludes` on the
+// new discriminator; every new candidate `requires` a string that only 18.18.2 carries in its file. Purposes:
+//  - system-prompt Verify block (KEEP): upstream rewrote "Non-trivial work" and the Bug line to "proportional
+//    verification"; the CUELO smoke-run policy (rule://verdict, Maker validation) stays, only the anchor moves.
+//  - browser.md relay line (KEEP no-op): the X11 note upstream added contains our old marker text.
+//  - agent-lifecycle root dispose (ADAPT): upstream cuts running agents off with a process-exit reason on a
+//    process-wide teardown. A root-scoped teardown (one session closing) keeps its old behavior.
+//  - bash-executor / non-interactive-env (ADAPT): buildNonInteractiveEnv takes an options object and pins
+//    LANG/LC_ALL=C.UTF-8 itself; the WSL_UTF8/WSLENV forwarding moves in front of the final return.
+//  - mnemopi recall import (ADAPT), pi-ai stream import (ADAPT): neighbouring import names changed.
+//  - mnemopi store.ts staged rebuild (RETIRE): upstream carries the same staged-content revalidation (#74).
+//  - computer/worker.ts El.perform and window drag (ADAPT): perform() resolves actions through
+//    nativeActionKey(); native drag returns { selection, focusReturn }, which sendInput must not receive whole.
+//  - dist/cli.js advisor transcript skip (no-op): only the minified helper name moved (pFe → wUe).
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.18.2 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const excludeOld = (entry, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		excludeOld(entry, discriminator);
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.18.2 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const swaps = (text, pairs) => pairs.reduce((current, [from, to]) => swap(current, from, to), text);
+	const port = (entry, previous, pairs, discriminator) =>
+		alternate(entry, { marker: previous.marker, anchor: swaps(previous.anchor, pairs), patched: swaps(previous.patched, pairs) }, discriminator);
+
+	// system-prompt Verify block.
+	{
+		const verify = byMarker("Scoped proof of your own change is yours:");
+		const pairs = [
+			["Non-trivial work: NEVER yield without a smoke run: run the thing, exercise the changed path, observe the result. Tests alone are not proof.\n- Investigation: run it; output proves it; no tests.\n- UI: verify actual surface.\n{{#if browserEnabled}}\n  - Web: `browser.open` tab, direct helpers for actions, `tab.run` for custom JS; visual proof; `tab.close`. No tests unless existing suite breaks.\n{{/if}}",
+				"Verify proportionally: run the narrowest check that exercises the change (the failing test, a one-off script), once.\n- Investigation: run it; output proves it; no tests.\n- UI: verify actual surface.\n{{#if browserEnabled}}\n  - Web: `browser.open` tab, direct helpers for actions, `tab.run` for custom JS; visual proof; `tab.close`. No tests unless existing suite breaks.\n{{/if}}"],
+			["- Bug: reproduce before; confirm after. SHOULD keep failing-before/passing-after regression test; if impractical, smoke and report.\n- Feature/API: update broken contract tests;",
+				"- Bug: a failing test or a clear user report is the reproduction; fix, then rerun the narrowest check. Add a regression test only when no existing test covers the path.\n- Feature/API: update broken contract tests;"],
+		];
+		alternate(verify, {
+			marker: verify.marker,
+			anchor: swaps(verify.anchor, pairs),
+			patched: verify.patched,
+			legacyPatched: verify.legacyPatched,
+		// The discriminator must survive the patch (resolveEdit runs again on the patched file), so it is a line
+		// this edit never touches: the Tool Policy line upstream added in 18.18.2.
+		}, "Every turn costs seconds: batch all independent reads/searches/checks into one turn.");
+	}
+
+	// browser.md: the primary's marker ("opens a new tab") now also occurs in upstream's X11 note.
+	{
+		const relay = byMarker("opens a new tab");
+		relay.excludes = [...[relay.excludes ?? []].flat(), "- On Linux under X11, Chrome 150 and later brings its window to the front"];
+	}
+
+	// agent-lifecycle: process-wide teardown adopts upstream's cut-off; root-scoped teardown does not.
+	{
+		const dispose = byMarker("root?: AgentRef");
+		const upstreamTail = "\t\tconst ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];\n\t\tawait Promise.all(\n\t\t\tids.map(async id => {\n\t\t\t\tconst release = this.release(id).then(() => {});";
+		const cutOff = "\t\t// A turn still running (a revived or woken agent) is cut off by this\n\t\t// teardown, not stopped: its session records a process exit, so\n\t\t// `omp --restore` goes on with it.\n\t\tconst cutOff: AgentReleaseOptions = { dispose: { reason: postmortem.Reason.EXIT } };\n";
+		alternate(dispose, {
+			marker: dispose.marker,
+			anchor: swap(dispose.anchor, "\t\tconst ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];\n\t\tawait Promise.all(\n\t\t\tids.map(async id => {\n\t\t\t\tconst release = this.release(id).then(() => {});",
+				`${upstreamTail.split("\t\tawait Promise.all(")[0]}${cutOff}\t\tawait Promise.all(\n\t\t\tids.map(async id => {\n\t\t\t\tconst running = this.#registry.get(id)?.status === "running";\n\t\t\t\tconst release = this.release(id, undefined, running ? cutOff : undefined).then(() => {});`),
+			patched: swap(dispose.patched, "\t\tawait Promise.all(\n\t\t\trefs.map(async ref => {\n\t\t\t\tconst id = ref.id;\n\t\t\t\tconst release = this.release(id, ref).then(() => {});",
+				`${cutOff.replace("by this\n\t\t// teardown, not stopped", "by a process-wide\n\t\t// teardown, not stopped")}\t\tawait Promise.all(\n\t\t\trefs.map(async ref => {\n\t\t\t\tconst id = ref.id;\n\t\t\t\t// A root-scoped teardown ends one session: its children are stopped as before.\n\t\t\t\tconst running = !root && this.#registry.get(id)?.status === "running";\n\t\t\t\tconst release = this.release(id, ref, running ? cutOff : undefined).then(() => {});`),
+		}, "export interface AgentReleaseOptions {");
+	}
+
+	// bash-executor: the per-command env now takes an options object.
+	{
+		const env = byMarker("// HANSE: CUELO next server env unset");
+		port(env, env, [["buildNonInteractiveEnv(preflight.env);", "buildNonInteractiveEnv(preflight.env, { inheritLocale: options?.useUserShell === true });"]],
+			"buildNonInteractiveEnv(preflight.env, { inheritLocale: options?.useUserShell === true });");
+	}
+
+	// non-interactive-env: WSL_UTF8 forwarding before the shared final return (Linux no longer returns early).
+	{
+		const wsl = byMarker("// CUELO: on WSL, wsl.exe writes its own messages as UTF-16LE");
+		const finalReturn = "\t\tObject.assign(env, WINDOWS_PYTHON_UTF8_ENV);\n\t}\n\treturn overrides ? { ...env, ...overrides } : env;\n";
+		const block = "\t// CUELO: on WSL, wsl.exe writes its own messages as UTF-16LE, which the bash tool shows as NUL/U+FFFD\n" +
+			"\t// mojibake, unless WSL_UTF8=1 reaches it. Windows processes see only the Linux variables WSLENV names, so\n" +
+			"\t// WSL_UTF8 is listed there; a value the server env or the caller already set is forwarded as is.\n" +
+			"\t// A caller WSLENV still wins.\n" +
+			"\tif (platform === \"linux\" && baseEnv.WSL_DISTRO_NAME) {\n" +
+			"\t\tconst shared = (baseEnv.WSLENV ?? \"\").split(\":\").filter(name => name.length > 0);\n" +
+			"\t\tif (!shared.some(name => name.split(\"/\")[0] === \"WSL_UTF8\")) shared.push(\"WSL_UTF8\");\n" +
+			"\t\tconst utf8 = hasEnvValue(baseEnv, \"WSL_UTF8\", platform) ? {} : { WSL_UTF8: \"1\" };\n" +
+			"\t\treturn { ...env, ...utf8, WSLENV: shared.join(\":\"), ...overrides };\n" +
+			"\t}\n";
+		alternate(wsl, {
+			marker: wsl.marker,
+			anchor: finalReturn,
+			patched: finalReturn.replace("\treturn overrides", () => `${block}\treturn overrides`),
+		}, "export interface NonInteractiveEnvOptions {");
+	}
+
+	// mnemopi recall import.
+	{
+		const recall = byMarker("import { embedQuery, usesE5Prefix } from");
+		alternate(recall, {
+			marker: "import { currentEmbeddingModel, embedQuery, usesE5Prefix } from",
+			anchor: 'import { currentEmbeddingModel, embedQuery } from "../embeddings";\n',
+			patched: 'import { currentEmbeddingModel, embedQuery, usesE5Prefix } from "../embeddings";\n',
+		}, "const model = currentEmbeddingModel();");
+	}
+
+	// pi-ai stream import.
+	{
+		const stream = byMarker("import { createAuthRetryKeyState, cueloIsFallbackKeyBillingRejection, isApiKeyResolver,");
+		alternate(stream, {
+			marker: "\tcueloIsFallbackKeyBillingRejection,\n\tisApiKeyResolver,\n\tpreferAuthRetryError,\n",
+			anchor: 'import {\n\tcreateAuthRetryKeyState,\n\tisApiKeyResolver,\n\tpreferAuthRetryError,\n\tresolvedApiKeyBearer,\n\tresolveNextAuthRetryKey,\n} from "./auth-retry";\n',
+			patched: 'import {\n\tcreateAuthRetryKeyState,\n\tcueloIsFallbackKeyBillingRejection,\n\tisApiKeyResolver,\n\tpreferAuthRetryError,\n\tresolvedApiKeyBearer,\n\tresolveNextAuthRetryKey,\n} from "./auth-retry";\n',
+		}, "\tpreferAuthRetryError,\n\tresolvedApiKeyBearer,\n");
+	}
+
+	// mnemopi store.ts: upstream carries the staged-content revalidation (#74), so the 18.18.0 candidates retire.
+	// Every 18.18.0 candidate excludes the discriminator; the no-op candidate keeps apply/--check/--revert idempotent.
+	{
+		const STORE = "../pi-mnemopi/src/core/beam/store.ts";
+		const ABSORBED = "Each staged insert also revalidates its source text.";
+		const staged = EDITS.filter(entry => entry.file === STORE && candidates(entry).some(c => c.requires === 'const probe = await embed(["mnemopi embedding probe"]);'
+			&& (c.marker.includes("content: string; json: string") || c.marker.includes("content: item.content, json") || c.marker.includes("INSERT OR REPLACE INTO memory_embeddings"))));
+		if (staged.length !== 3) throw new Error(`18.18.2 staged entries: ${staged.length}/3`);
+		for (const entry of staged) {
+			alternate(entry, { marker: ABSORBED, anchor: ABSORBED, patched: ABSORBED }, ABSORBED);
+		}
+	}
+
+	// computer/worker.ts El.perform and window drag.
+	{
+		const marker = "class RefBook {";
+		const refs = EDITS.filter(entry => entry.file === "src/tools/computer/worker.ts" && entry.marker === marker);
+		if (refs.length !== 1) throw new Error(`18.18.2 RefBook entry: ${refs.length}/1`);
+		const NATIVE = "function nativeActionKey(action: string): string {";
+		const performPairs = [
+			["\t\t// The names native `axPerform` runs as `AXRaise` (its `action_name` mapping).\n\t\tif (action.trim().toLowerCase() === \"raise\" || action === \"AXRaise\") {\n",
+				"\t\tconst native = nativeActionKey(action);\n\t\tif (native === \"axraise\") {\n"],
+			["\t\t// The names native `axPerform` runs as `AXOpen` (`action_name` prefixes \"AX\"\n\t\t// to any other name). On an item in Chrome's Open panel it brings the\n\t\t// panel's application to the front, even when the action fails, and it\n\t\t// stays there.\n\t\tif (this.#session.capabilities.backend === \"quartz\" && (action === \"AXOpen\" || action === \"Open\")) {\n",
+				"\t\t// On an item in Chrome's Open panel `AXOpen` brings the panel's application to the front, even\n\t\t// when the action fails, and it stays there.\n\t\tif (this.#session.capabilities.backend === \"quartz\" && native === \"axopen\") {\n"],
+			["\t\t// The names native `axPerform` runs as `AXShowMenu`, which opens the element's context menu.\n\t\tif ([\"showmenu\", \"show_menu\"].includes(action.trim().toLowerCase()) || action === \"AXShowMenu\") {\n",
+				"\t\t// `AXShowMenu` opens the element's context menu.\n\t\tif (native === \"axshowmenu\") {\n"],
+			["\t\t// The names native `axPerform` runs as `AXPress`.\n\t\tif (action.trim().toLowerCase() === \"press\" || action === \"AXPress\") {\n",
+				"\t\tif (native === \"axpress\") {\n"],
+		];
+		const sentLine = "\t\t// macOS runs the key the refusals checked; UIA and AT-SPI match their own action names as given.\n\t\tconst sent = this.#session.capabilities.backend === \"quartz\" ? native : action;\n";
+		const refBook = refs[0];
+		const live = candidates(refBook).filter(c => c.anchor.includes("async perform(action: string, options?: MenuOptions)") && c.anchor.includes("class El {"));
+		if (live.length !== 1) throw new Error(`18.18.2 El candidates: ${live.length}/1`);
+		const [previous] = live;
+		alternate(refBook, {
+			marker: previous.marker,
+			anchor: swaps(previous.anchor, [...performPairs,
+				["\t\tawait nativeCall(context.signal, () => this.#session.axPerform(this.ref, action, menu));\n", `${sentLine}\t\tawait nativeCall(context.signal, () => this.#session.axPerform(this.ref, sent, menu));\n`]]),
+			patched: swaps(previous.patched, [...performPairs,
+				["\t\treturn this.#act(\"perform\", ref => this.#session.axPerform(ref, action, menu), judgeStateChange);\n", `${sentLine}\t\treturn this.#act("perform", ref => this.#session.axPerform(ref, sent, menu), judgeStateChange);\n`]]),
+		}, NATIVE);
+
+		const drag = one(entry => candidates(entry).some(c => c.marker === "Failed to convert napi value"));
+		const dragStart = "\tasync drag(points: Array<[number, number]>, options?: DragOptions): Promise<";
+		const spanOf = (text, resultType) => {
+			const from = text.indexOf(`${dragStart}${resultType}> {`);
+			const until = text.indexOf("\n\t}\n\n\tasync scroll(", from);
+			if (from < 0 || until < 0 || text.split(`${dragStart}${resultType}> {`).length !== 2) throw new Error(`18.18.2 drag span ${resultType}`);
+			return [from, until + "\n\t}\n".length];
+		};
+		const previousDrag = candidates(drag).filter(c => c.requires === "#guardInput(method: string): ComputerRunContext");
+		if (previousDrag.length !== 1) throw new Error(`18.18.2 drag candidates: ${previousDrag.length}/1`);
+		const [prior] = previousDrag;
+		const replaceDrag = (text, resultType, body) => {
+			const [from, to] = spanOf(text, resultType);
+			return text.slice(0, from) + body + text.slice(to);
+		};
+		const upstreamDrag = [
+			"\tasync drag(points: Array<[number, number]>, options?: DragOptions): Promise<AxTextSelection | undefined> {",
+			"\t\tconst context = this.#guardInput(\"drag\");",
+			"\t\tconst native = pointerOptions(options);",
+			"\t\trefusePointerMenu(this.#session, context, \"drag\", native, `window ${this.id}`);",
+			"\t\trefuseMenuPress(this.#session, context, native);",
+			"\t\tlet selection: AxTextSelection | undefined;",
+			"\t\tawait sendInput(",
+			"\t\t\tthis.#session,",
+			"\t\t\tcontext,",
+			"\t\t\t\"drag\",",
+			"\t\t\tnative.takeover,",
+			"\t\t\tasync fallback => {",
+			"\t\t\t\tconst result = await this.#session.drag(",
+			"\t\t\t\t\tthis.id,",
+			"\t\t\t\t\tpoints.map(([x, y]) => ({ x, y })),",
+			"\t\t\t\t\t{ ...native, ...fallback },",
+			"\t\t\t\t);",
+			"\t\t\t\tselection = result?.selection;",
+			"\t\t\t\treturn result?.focusReturn;",
+			"\t\t\t},",
+			"\t\t\tthis.pid,",
+			"\t\t);",
+			"\t\tif (!selection) return undefined;",
+			"\t\t// The returned selection keeps the whole text; the output line quotes its start.",
+			"\t\tconst quoted = truncate(JSON.stringify(selection.text).slice(1, -1), DRAG_SELECTION_PREVIEW_CHARS);",
+			"\t\tcontext.output.push({",
+			"\t\t\ttype: \"text\",",
+			"\t\t\ttext: `drag selected \"${quoted}\" through accessibility instead of dragging; no mouse input was sent`,",
+			"\t\t});",
+			"\t\treturn selection;",
+			"\t}",
+			"",
+		].join("\n");
+		const patchedDrag = [
+			"\tasync drag(points: Array<[number, number]>, options?: DragOptions): Promise<ComputerActionResult> {",
+			"\t\tconst context = this.#guardInput(\"drag\");",
+			"\t\tconst native = pointerOptions(options);",
+			"\t\trefusePointerMenu(this.#session, context, \"drag\", native, `window ${this.id}`);",
+			"\t\trefuseMenuPress(this.#session, context, native);",
+			"\t\t// Native drag answers { selection, focusReturn }: sendInput gets only the focus return.",
+			"\t\tlet selection: AxTextSelection | undefined;",
+			"\t\tconst result = await this.#input(\"drag\", context, native.takeover, async fallback => {",
+			"\t\t\tconst dragged = await this.#session.drag(",
+			"\t\t\t\tthis.id,",
+			"\t\t\t\tpoints.map(([x, y]) => ({ x, y })),",
+			"\t\t\t\t{ ...native, ...fallback },",
+			"\t\t\t);",
+			"\t\t\tselection = dragged?.selection;",
+			"\t\t\treturn dragged?.focusReturn;",
+			"\t\t});",
+			"\t\tif (!selection) return result;",
+			"\t\t// The selection stays whole on the result; the output line quotes its start.",
+			"\t\tconst quoted = truncate(JSON.stringify(selection.text).slice(1, -1), DRAG_SELECTION_PREVIEW_CHARS);",
+			"\t\tcontext.output.push({",
+			"\t\t\ttype: \"text\",",
+			"\t\t\ttext: `drag selected \"${quoted}\" through accessibility instead of dragging; no mouse input was sent`,",
+			"\t\t});",
+			"\t\treturn { ...result, selection } as ComputerActionResult;",
+			"\t}",
+			"",
+		].join("\n");
+		alternate(drag, {
+			marker: prior.marker,
+			anchor: replaceDrag(prior.anchor, "void", upstreamDrag),
+			patched: replaceDrag(prior.patched, "ComputerActionResult", patchedDrag),
+		}, NATIVE);
+	}
+
+	// dist/cli.js: only the minified advisor-name helper moved again (no-op).
+	{
+		const advisor = one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
+		const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&wUe(c))continue';
+		alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+	}
+}
+
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는

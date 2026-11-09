@@ -21,7 +21,13 @@ function resolveCore(): string {
 const CORE = resolveCore();
 console.log(`대상 ${CORE}`);
 // The core copy is chosen at runtime (OMP_CORE_PATCH_TARGET or the installed core), so this import cannot be static.
-const { buildNonInteractiveEnv, NON_INTERACTIVE_ENV } = await import(`${CORE}/exec/non-interactive-env.ts`);
+const { buildNonInteractiveEnv: coreBuild, NON_INTERACTIVE_ENV } = await import(`${CORE}/exec/non-interactive-env.ts`);
+// 18.18.2 takes ({ baseEnv, platform }) and pins LANG/LC_ALL=C.UTF-8 itself; older cores take (overrides, baseEnv, platform)
+// and return the shared NON_INTERACTIVE_ENV object off Windows. Both shapes are driven through the same assertions.
+const modern = String(coreBuild).includes("inheritLocale");
+const buildNonInteractiveEnv = (overrides: Record<string, string> | undefined, baseEnv: Record<string, string>, platform: string): Record<string, string> =>
+	modern ? coreBuild(overrides, { baseEnv, platform }) : coreBuild(overrides, baseEnv, platform);
+const BASE: Record<string, string> = modern ? { ...NON_INTERACTIVE_ENV, LANG: "C.UTF-8", LC_ALL: "C.UTF-8" } : NON_INTERACTIVE_ENV;
 
 let pass = 0;
 let fail = 0;
@@ -44,7 +50,7 @@ console.log("WSL: wsl.exe 가 UTF-8 로 쓰도록 WSL_UTF8 을 WSLENV 로 넘긴
 	check("WSL_UTF8=1 과 WSLENV=WSL_UTF8 이 붙는다", env.WSL_UTF8 === "1" && env.WSLENV === "WSL_UTF8", shown(env));
 	check(
 		"비대화 기본값은 그대로이고 두 값만 늘어난다",
-		isDeepStrictEqual(env, { ...NON_INTERACTIVE_ENV, WSL_UTF8: "1", WSLENV: "WSL_UTF8" }),
+		isDeepStrictEqual(env, { ...BASE, WSL_UTF8: "1", WSLENV: "WSL_UTF8" }),
 		`keys=${Object.keys(env).length}`,
 	);
 	const shared = buildNonInteractiveEnv(undefined, { ...WSL, WSLENV: "WT_SESSION:WT_PROFILE_ID/up:" }, "linux");
@@ -56,19 +62,19 @@ console.log("WSL: wsl.exe 가 UTF-8 로 쓰도록 WSL_UTF8 을 WSLENV 로 넘긴
 	const service = buildNonInteractiveEnv(undefined, { ...WSL, WSL_UTF8: "1" }, "linux");
 	check(
 		"서비스 env 가 WSL_UTF8=1 만 정했어도 WSLENV 로 넘긴다",
-		isDeepStrictEqual(service, { ...NON_INTERACTIVE_ENV, WSLENV: "WSL_UTF8" }),
+		isDeepStrictEqual(service, { ...BASE, WSLENV: "WSL_UTF8" }),
 		shown(service),
 	);
 	const serverSet = buildNonInteractiveEnv(undefined, { ...WSL, WSL_UTF8: "0", WSLENV: "WT_SESSION" }, "linux");
 	check(
 		"서버 env 가 정한 WSL_UTF8 값은 그대로 두고 WSLENV 로 넘긴다",
-		isDeepStrictEqual(serverSet, { ...NON_INTERACTIVE_ENV, WSLENV: "WT_SESSION:WSL_UTF8" }),
+		isDeepStrictEqual(serverSet, { ...BASE, WSLENV: "WT_SESSION:WSL_UTF8" }),
 		shown(serverSet),
 	);
 	const callerSet = buildNonInteractiveEnv({ WSL_UTF8: "0" }, WSL, "linux");
 	check(
 		"호출자가 준 WSL_UTF8 값이 이기고 WSLENV 로 넘긴다",
-		isDeepStrictEqual(callerSet, { ...NON_INTERACTIVE_ENV, WSL_UTF8: "0", WSLENV: "WSL_UTF8" }),
+		isDeepStrictEqual(callerSet, { ...BASE, WSL_UTF8: "0", WSLENV: "WSL_UTF8" }),
 		shown(callerSet),
 	);
 	const callerShared = buildNonInteractiveEnv({ WSLENV: "FOO/p", PAGER: "less" }, WSL, "linux");
@@ -81,14 +87,17 @@ console.log("WSL: wsl.exe 가 UTF-8 로 쓰도록 WSL_UTF8 을 WSLENV 로 넘긴
 
 console.log("WSL 밖은 그대로다");
 {
-	check("linux(WSL 아님) 기본 env 는 같은 객체다", buildNonInteractiveEnv(undefined, {}, "linux") === NON_INTERACTIVE_ENV);
+	// Check observable environment values, not whether the core reuses an object.
+	const plain = buildNonInteractiveEnv(undefined, {}, "linux");
+	check("linux(WSL 아님) 기본 env 는 기본값 그대로다", isDeepStrictEqual(plain, BASE));
 	const linuxOverride = buildNonInteractiveEnv({ PAGER: "less" }, { WSLENV: "WT_SESSION" }, "linux");
 	check(
 		"linux(WSL 아님)는 WSLENV 가 있어도 WSL_UTF8·WSLENV 를 넣지 않는다",
-		isDeepStrictEqual(linuxOverride, { ...NON_INTERACTIVE_ENV, PAGER: "less" }),
+		isDeepStrictEqual(linuxOverride, { ...BASE, PAGER: "less" }),
 		shown(linuxOverride),
 	);
-	check("darwin 은 WSL_DISTRO_NAME 이 있어도 같은 객체다", buildNonInteractiveEnv(undefined, WSL, "darwin") === NON_INTERACTIVE_ENV);
+	const mac = buildNonInteractiveEnv(undefined, WSL, "darwin");
+	check("darwin 은 WSL_DISTRO_NAME 이 있어도 기본값 그대로다", isDeepStrictEqual(mac, BASE));
 	const win = buildNonInteractiveEnv(undefined, WSL, "win32");
 	check(
 		"win32 는 기존 UTF-8 기본값만 넣는다",

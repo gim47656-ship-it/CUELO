@@ -291,6 +291,9 @@ await section("[2] lsp diagnostics pull 실패의 정직성", async () => {
 			config: {},
 			requestId: 0,
 			diagnostics: new Map(),
+			// 18.18.2 keeps pushed and pulled reports apart (dual-mode merge); older cores ignore these fields.
+			publishedDiagnostics: new Map(),
+			pulledDiagnostics: new Map(),
 			diagnosticsVersion: 0,
 			openFiles: new Map(),
 			pendingRequests: new Map<number | string, FakePending>(),
