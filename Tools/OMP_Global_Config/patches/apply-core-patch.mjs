@@ -3078,7 +3078,7 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		patched: "- NEVER acquire control to work around `BackgroundUnavailable` or a background no-op: retry that one call with `{ takeover: true }`, which needs no confirmation. Acquire only when the user asks for sustained foreground control.\n- `computer.control.acquire({reason})` requires live human confirmation for task-scoped foreground control;",
 	},
 	{
-		// 2026-10-19 사용자 결정: 프로필이 `computer.backgroundFallback: refuse`라 동작별 takeover 재시도는 늘 거절된다.
+		// 2026-10-19 사용자 결정: 프로필이 `computer.backgroundFallback: refuse`라 동작별 takeover 재시도는 늘 거절됐다(11-09 사용자 결정으로 프로필은 다시 takeover).
 		// takeover가 호출 사이 포커스를 사용자 창으로 돌려주며 입력이 그 창으로 샜기 때문이다. 오류가 알려 주는 설정을 따르게 한다.
 		// 같은 날 집계: 14일 computer eval 셀 353개 중 judge() 사용 2개. 규칙 문장만으로는 쓰이지 않아 한 셀 확인 순서를 여기 적는다.
 		file: "src/prompts/system/computer-use.md",
