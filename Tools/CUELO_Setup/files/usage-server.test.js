@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog } = require('./usage-server');
+const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog, createSampleStore, applyDaySlots } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -1256,4 +1256,28 @@ test('the omp CLI is found without OMP_EXE: the package-owned binary on Linux/ma
     const fixed = path.join('C:\\FixtureLocalAppData', 'omp', 'omp.exe');
     assert.equal(resolveOmpExecutable({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\FixtureLocalAppData' }, root, exists: has(fixed) }), fixed);
     assert.equal(resolveOmpExecutable({ platform: 'win32', env: {}, root, exists: has(owned) }), 'omp.exe');
+});
+
+test('a same-window usage drop keeps counting the day slot instead of blanking it', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-slot-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const store = createSampleStore(path.join(dir, 'samples.json'));
+    const DAY = 86_400_000;
+    const WEEK = 7 * DAY;
+    const resetsAt = Date.UTC(2026, 10, 13, 20);
+    const slotStart = resetsAt - 5 * DAY; // 7일 창의 세 번째 구간
+    const poll = (at, used, reset = resetsAt) => applyDaySlots({ reports: [{
+        provider: 'anthropic', credentialId: 11, fetchedAt: at,
+        limits: [{ id: 'anthropic:7d', amount: { usedFraction: used / 100 }, window: { durationMs: WEEK, resetsAt: reset } }],
+    }] }, store, at).reports[0].limits[0].daySlot;
+
+    const shown = slot => [slot.usedPct === null ? null : Math.round(slot.usedPct * 10) / 10, slot.quality];
+    poll(slotStart - 30_000, 50);
+    assert.deepEqual(shown(poll(slotStart + 3_600_000, 55)), [5, 'exact']);
+    const dropped = poll(slotStart + 2 * 3_600_000, 54); // provider 반올림으로 1포인트 내려간 응답
+    assert.deepEqual(shown(dropped), [5, 'exact'], 'a drop is not new consumption and does not erase what was used');
+    assert.deepEqual(shown(poll(slotStart + 3 * 3_600_000, 57)), [8, 'exact'], 'usage after the drop adds to the slot total');
+
+    const next = poll(resetsAt + 3_600_000, 2, resetsAt + WEEK); // 새 창의 첫 구간은 보정값 없이 0부터 센다
+    assert.deepEqual(shown(next), [2, 'exact']);
 });

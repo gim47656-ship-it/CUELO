@@ -749,7 +749,7 @@ function createSampleStore(file = SAMPLE_FILE) {
             const all = load().series;
             const record = all[key];
             if (record && Array.isArray(record.samples)) return record;
-            all[key] = { resetsAt: 0, samples: [], baseline: null, dropAt: null, at: 0 };
+            all[key] = { resetsAt: 0, samples: [], baseline: null, offset: 0, at: 0 };
             return all[key];
         },
         flush(now = Date.now()) {
@@ -796,26 +796,28 @@ function slotBounds(window, now) {
     };
 }
 
-// 표본 하나를 반영하고 현재 구간의 실측을 낸다. 기준선은 네 경로로만 정해진다.
-//   1) 같은 창에서 사용률이 떨어진 지점이 현재 구간 안이면 시작값을 알 수 없다 → unknown
-//   2) 구간 시작이 창 시작보다 앞이면(창의 첫 구간) 기준선은 정의상 0 이다 → exact, 표본 불필요
-//   3) 그 구간에 대해 이미 고정해 둔 기준선
-//   4) 같은 창의 표본 중 구간 시작 이하의 최신 것. 이때 고정한다
+// 표본 하나를 반영하고 현재 구간의 실측을 낸다. 기준선은 세 경로로만 정해진다.
+//   1) 구간 시작이 창 시작보다 앞이면(창의 첫 구간) 기준선은 정의상 0 이다 → exact, 표본 불필요
+//   2) 그 구간에 대해 이미 고정해 둔 기준선
+//   3) 같은 창의 표본 중 구간 시작 이하의 최신 것. 이때 고정한다
+// 표본과 기준선은 provider 값에 하락 보정값(offset)을 더한 연속 척도로 저장한다.
 function trackSlot(record, bounds, resetsAt, pct, observedAt) {
     // 창 identity. resetsAt 이 다르면 다른 창의 표본이고 비교 대상이 아니다.
     if (!(Math.abs(record.resetsAt - resetsAt) <= SAME_WINDOW_MS)) {
-        Object.assign(record, { resetsAt, samples: [], baseline: null, dropAt: null });
+        Object.assign(record, { resetsAt, samples: [], baseline: null, offset: 0 });
     }
     const last = record.samples[record.samples.length - 1];
-    if (last && pct < last[1] - DROP_EPSILON_PCT) {
-        // 같은 창에서 사용률이 줄었다(저장된 리셋 사용, provider 보정). 이전 표본과 기준선은
-        // 다른 척도의 값이라 전부 버린다. 하락 지점 이후로만 다시 센다.
-        Object.assign(record, { samples: [], baseline: null, dropAt: observedAt });
+    let level = pct + (record.offset || 0);
+    if (last && level < last[1] - DROP_EPSILON_PCT) {
+        // 같은 창에서 사용률이 줄었다(provider 반올림·보정, 창을 유지한 리셋). 이미 쓴 양은 그대로
+        // 쓴 것이므로 기록을 버리지 않고, 줄어든 만큼을 보정값에 쌓아 이전 표본·기준선과 같은 척도로
+        // 이어 센다. 예전처럼 기록을 버리면 그 구간이 끝날 때까지 quality 가 unknown 으로 남았다
+        // (2026-11-09: 1포인트 반올림 하락 하나로 계정의 하루 몫 판정이 하루 종일 꺼졌다).
+        record.offset = (record.offset || 0) + (last[1] - level);
+        level = last[1];
     }
     let baseline = null;
-    if (record.dropAt != null && record.dropAt >= bounds.slotStart) {
-        baseline = null;
-    } else if (bounds.slotStart <= bounds.windowStart) {
+    if (bounds.slotStart <= bounds.windowStart) {
         baseline = { i: bounds.slotIndex, p: 0, t: bounds.slotStart };
     } else if (record.baseline && record.baseline.i === bounds.slotIndex) {
         baseline = record.baseline;
@@ -828,7 +830,7 @@ function trackSlot(record, bounds, resetsAt, pct, observedAt) {
     }
     const appended = !last || last[0] !== observedAt;
     if (appended) {
-        record.samples.push([observedAt, pct]);
+        record.samples.push([observedAt, level]);
         record.at = observedAt;
         const cutoff = observedAt - SAMPLE_RETENTION_MS;
         if (record.samples[0][0] <= cutoff) record.samples = record.samples.filter(([at]) => at > cutoff);
@@ -844,7 +846,7 @@ function trackSlot(record, bounds, resetsAt, pct, observedAt) {
             slotCount: bounds.slotCount,
             slotsLeft: bounds.slotsLeft,
             baselinePct: baseline ? baseline.p : null,
-            usedPct: baseline ? Math.max(0, pct - baseline.p) : null,
+            usedPct: baseline ? Math.max(0, level - baseline.p) : null,
             quotaPct: bounds.quotaPct,
             quality: !baseline ? 'unknown' : gapMs <= SLOT_EXACT_GAP_MS ? 'exact' : 'approx',
             gapMs,
