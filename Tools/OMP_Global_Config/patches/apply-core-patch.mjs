@@ -8347,6 +8347,37 @@ function staticInstructions(autoRetain: boolean): string {
 					}
 					throw new ToolError(\`Path '\${localReadPath}' not found\${nearby}\`);`),
 	},
+	{
+		// 2026-11-09 점검: 최근 7일 read 경로 없음 23건 중 6건은 같은 응답의 bash가 막 만들 파일(캡처 png, 생성 스크립트 출력,
+		// 복사본)을 read가 동시에 읽어 생겼다. read는 concurrency를 선언하지 않아 늘 shared로 형제 bash와 함께 돈다. 아직
+		// 디스크에 없는 로컬 경로를 받은 read만 exclusive로 두어 같은 묶음의 앞선 호출이 끝난 뒤 실행되게 한다. 있는 파일,
+		// URL과 내부 scheme(skill://, proc:// 등), 확인할 수 없는 경로는 지금처럼 병렬이다. 실행 결과·오류 문구는 바꾸지 않는다.
+		// 한계: agent-core 투기 실행은 concurrency가 함수인 도구를 대상에서 뺀다(speculative-execution.ts). 그 설정
+		// (tools.speculativeExecution.enabled)은 기본 꺼짐이고 CUELO도 켜지 않는다. 켜게 되면 read 투기도 같이 다시 본다.
+		file: "src/tools/read.ts",
+		marker: "// CUELO: read of a not-yet-existing path waits for its batch siblings",
+		anchor: "\treadonly parameters = readSchema;\n\treadonly strict = true;\n",
+		patched: `	readonly parameters = readSchema;
+	readonly strict = true;
+	// CUELO: read of a not-yet-existing path waits for its batch siblings
+	// A sibling call in the same assistant message (bash writing a screenshot, a generator, a copy) may be
+	// about to create this file. Schedule such a read exclusively so it runs after the earlier calls finish;
+	// existing files, URLs and internal schemes keep running in parallel.
+	readonly concurrency = (args: unknown): "shared" | "exclusive" => {
+		const rawPath = args && typeof args === "object" && "path" in args ? String(args.path ?? "") : "";
+		if (rawPath.length === 0 || /^[a-z][a-z0-9+.-]*:\\/\\//i.test(rawPath) || isReadableUrlPath(rawPath)) return "shared";
+		const withoutQuestion = splitImageQuestionTarget(rawPath).path;
+		const { path: selectorless } = splitPathAndSelPreferringLiteralSync(withoutQuestion, this.session.cwd);
+		return probeLiteralPathExistsSync(selectorless, this.session.cwd) === "missing" ? "exclusive" : "shared";
+	};
+`,
+	},
+	{
+		file: "src/tools/read.ts",
+		marker: "\tprobeLiteralPathExists,\n\tprobeLiteralPathExistsSync,\n",
+		anchor: "\tprobeLiteralPathExists,\n\tresolveReadPathAsync,\n",
+		patched: "\tprobeLiteralPathExists,\n\tprobeLiteralPathExistsSync,\n\tresolveReadPathAsync,\n",
+	},
 	// 18.3.0 RETIRE: eval 설명에 browser·computer prelude 문서 전체를 싣지 않고 짧은 안내 +
 	// `xd://eval-browser`·`xd://eval-computer` 장치로 돌리던 네 항목(옛 #181~#184). upstream이
 	// 같은 일을 흡수했다: 설명에는 prelude마다 첫 줄 요약과 `xd://eval/<name>` 링크만 싣고

@@ -50,7 +50,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R13 | 일회성 산출물 정리·근거 후보 보고 | 문서 | — | |
 | R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서 |
 | R15 | 도구 평가는 `tool_trial`로 기준·후보 분리 기록 | 구조 | `extensions/tool-trial.ts`(PASS 없음·보수 판정), `extensions/tests/tool-trial.test.ts` | 쓸지는 문서 |
-| R16 | 같은 조건의 같은 조치 반복 금지 | 안내 | `extensions/jev-runtime.ts` `pre-retry` advisory, `extensions/lsp-timeout-hint.ts`, `evals/cases/security/same-failure-twice.json` | |
+| R16 | 같은 조건의 같은 조치 반복 금지 | 안내 | `extensions/jev-runtime.ts` `pre-retry` advisory, `extensions/lsp-timeout-hint.ts`, `extensions/tool-recovery-hint.ts`(사라진 job id, eval `ENOBUFS`, read 텍스트 JSON 파싱 오류에 다음 행동 안내), `evals/cases/security/same-failure-twice.json` | |
 | R17 | 도구로 할 수 있는 일은 끝까지, "해줘"는 실행 지시 | 안내 | `extensions/turn-end-guard.ts`(미완 todo·이어 하기 약속 뒤 종료 판정) | |
 | R18 | MCP 설치·인증·권한 변경은 승인 뒤 에이전트가 실행 | 구조(부분) | `extensions/mcp-selection.ts`(허용된 서버만 연결, 설치·활성화 안 함) | 승인 요청·실행 순서는 문서 |
 | R19 | 호스트 OS 시스템 변경은 정확한 변경 승인 | 안내 | `extensions/command-guard/host-change-hint.ts`(`reg`·`sc`·`netsh`·`bcdedit` 쓰기 명령의 bash 결과에 규칙 안내), `extensions/command-guard/host-change-hint.test.ts` | 2026-10-06 지적(보안 필터 드라이버 비활성화 제안). 2026-11-03 사용자 결정: 막지 않고 경고만. 결과에 붙으므로 그 호출은 멈추지 못한다. 조회와 PowerShell cmdlet은 보지 않는다 |
