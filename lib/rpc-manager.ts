@@ -73,6 +73,7 @@ import type {
 } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
 import {
+  parseAskFormActivity,
   parseAskFormSnapshot,
   type PreparedAskForm,
   prepareAskForm,
@@ -2299,8 +2300,8 @@ export class AgentSessionWrapper {
     signal?: AbortSignal,
     /** Value to settle with when the timeout fires; also lets user activity restart the timeout. */
     timeoutValue?: () => T,
-    /** Receives what a timed form's browser reports with each activity (its current values). */
-    onActivityPayload?: (payload: string) => void,
+    /** Receives what a timed form's browser reports with each activity (its current values); false drops a stale report, which then does not restart the wait. */
+    onActivityPayload?: (payload: string) => boolean,
   ): Promise<T> {
     if (signal?.aborted) return Promise.resolve(defaultValue);
 
@@ -2347,7 +2348,7 @@ export class AgentSessionWrapper {
       ...(timeout && timeoutValue
         ? {
           activity: (payload) => {
-            if (payload !== undefined) onActivityPayload?.(payload);
+            if (payload !== undefined && onActivityPayload?.(payload) === false) return;
             armTimeout();
             // Replays after a reconnect carry the extended deadline; the live surface is not re-sent,
             // so its in-progress selection and typing stay intact.
@@ -2388,8 +2389,11 @@ export class AgentSessionWrapper {
           return undefined;
         }
         if (opts?.signal?.aborted) return undefined;
-        // Latest values the browser reported while a timed form was being filled in.
+        // Latest values the browser reported while a timed form was being filled in. Each card counts its
+        // reports; a report that arrives after a newer one from the same card is dropped, and once ordered
+        // reports arrive an old-format one cannot roll them back (#83). The card edited last wins.
         let snapshot: unknown;
+        const lastSeq = new Map<string, number>();
         return this.requestExtensionUi<ExtensionFormDialogResultLike | undefined>(
           { method: "form", form: prepared.model, ...(opts?.timeout ? { timeout: opts.timeout } : {}) },
           undefined,
@@ -2404,7 +2408,16 @@ export class AgentSessionWrapper {
           opts?.signal,
           () => ({ data: timedOutAskFormData(prepared, snapshot), timedOut: true }),
           (payload) => {
-            snapshot = parseAskFormSnapshot(payload);
+            const activity = parseAskFormActivity(payload);
+            if (!activity) return false;
+            if (activity.editor === null) {
+              if (lastSeq.size > 0) return false;
+            } else {
+              if (activity.seq <= (lastSeq.get(activity.editor) ?? 0)) return false;
+              lastSeq.set(activity.editor, activity.seq);
+            }
+            snapshot = activity.snapshot;
+            return true;
           },
         );
       },

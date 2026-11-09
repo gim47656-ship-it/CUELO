@@ -14,7 +14,7 @@ import {
 } from "@oh-my-pi/pi-tui/html-form/data";
 import { loadFormImage, MAX_FORM_IMAGE_BYTES, svgMedia, type FormMedia } from "@oh-my-pi/pi-tui/html-form/media";
 import { type FormField, type HtmlForm, parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
-import type { AskFormBlock, AskFormData, AskFormModel, AskFormValue } from "./types";
+import { ASK_FORM_ORDERED_ACTIVITY_TAG, type AskFormBlock, type AskFormData, type AskFormModel, type AskFormValue } from "./types";
 
 /** Largest `activity` payload the server keeps as a form snapshot. */
 const MAX_SNAPSHOT_CHARS = 512 * 1024;
@@ -141,6 +141,19 @@ export function parseAskFormSnapshot(payload: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** One `activity` report: an ordered one names its card and count; `editor` null is the older plain format. */
+export type AskFormActivity = { editor: string; seq: number; snapshot: unknown } | { editor: null; snapshot: unknown };
+
+const ORDERED_ACTIVITY = /^v2:([A-Za-z0-9-]{1,64}):([1-9]\d{0,14}):/;
+
+/** Read an `activity` payload (the text after the prefix); null when an ordered header is malformed. */
+export function parseAskFormActivity(payload: string): AskFormActivity | null {
+  if (!payload.startsWith(ASK_FORM_ORDERED_ACTIVITY_TAG)) return { editor: null, snapshot: parseAskFormSnapshot(payload) };
+  const header = ORDERED_ACTIVITY.exec(payload);
+  if (!header) return null;
+  return { editor: header[1], seq: Number(header[2]), snapshot: parseAskFormSnapshot(payload.slice(header[0].length)) };
 }
 
 /**

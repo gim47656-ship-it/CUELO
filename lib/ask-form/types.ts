@@ -52,3 +52,13 @@ export type AskFieldError =
 
 /** `extension_ui_input` data a timed form sends: this prefix, then the form's current values as JSON. */
 export const ASK_FORM_ACTIVITY_PREFIX = "activity:form:";
+/**
+ * Marks an ordered report after {@link ASK_FORM_ACTIVITY_PREFIX}: `v2:<editor>:<seq>:<values JSON>`. Each
+ * open card has its own editor id and counts its reports up from 1, so the server can drop a report that
+ * arrives after a newer one from the same card (#83). Plain JSON after the prefix is the older format.
+ */
+export const ASK_FORM_ORDERED_ACTIVITY_TAG = "v2:";
+
+export function formatAskFormActivity(editor: string, seq: number, data: AskFormData): string {
+  return `${ASK_FORM_ACTIVITY_PREFIX}${ASK_FORM_ORDERED_ACTIVITY_TAG}${editor}:${seq}:${JSON.stringify(data)}`;
+}

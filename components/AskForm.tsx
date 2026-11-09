@@ -16,7 +16,7 @@ import {
   typeOther,
 } from "@/lib/ask-form/answers";
 import {
-  ASK_FORM_ACTIVITY_PREFIX,
+  formatAskFormActivity,
   type AskFieldError,
   type AskFormBlock,
   type AskFormModel,
@@ -424,9 +424,14 @@ export function AskForm({
 
   const throttleRef = useRef<ActivityThrottle | null>(null);
   if (throttleRef.current === null) {
+    // This card's own id and report count, so the server can drop a report that arrives late (#83).
+    // getRandomValues also works on plain-http addresses, where randomUUID is unavailable.
+    const editor = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    let seq = 0;
     throttleRef.current = createActivityThrottle(() => {
       const current = requestRef.current;
-      onActivityRef.current?.(current, ASK_FORM_ACTIVITY_PREFIX + JSON.stringify(formDataFromState(current.form, statesRef.current)));
+      seq += 1;
+      onActivityRef.current?.(current, formatAskFormActivity(editor, seq, formDataFromState(current.form, statesRef.current)));
     }, ACTIVITY_INTERVAL_MS);
   }
   useEffect(() => () => throttleRef.current?.cancel(), []);
