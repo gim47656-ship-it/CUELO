@@ -6,6 +6,7 @@ import { ActionButton, Icon, Menu, ToggleButton } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
+import { ComputerTakeoverControl } from "./ComputerTakeoverControl";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
 import { FileViewer, type FileViewStateStore } from "./FileViewer";
 import type { MakerSelection } from "./answer-status/AnswerStatusContext";
@@ -2179,6 +2180,9 @@ export function AppShell({
                 </svg>
                 {!isCompactWorkspace && <span>{translate("trust.resourcesNotLoaded")}</span>}
               </ActionButton>
+            )}
+            {showChat && selectedSessionId && (
+              <ComputerTakeoverControl sessionId={selectedSessionId} refreshKey={String(sessionBusy)} compact={isCompactWorkspace} />
             )}
             {showChat && contextReadout && (
               <ActionButton

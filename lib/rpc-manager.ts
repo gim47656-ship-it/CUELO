@@ -44,6 +44,7 @@ import { readConfiguredModelRoleRefs, readDefaultModelRole } from "./model-roles
 import { findModelWithRecovery, getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "./omp-runtime";
 import { describeMissingModel } from "./model-discovery-recovery";
 import { PRESET_FULL } from "./tool-presets";
+import { computerTakeoverState, revokeComputerTakeover, setComputerTakeover, type ComputerTakeoverState } from "./computer-takeover";
 import type { SlashCommandInfo } from "./omp-types";
 import { recordRuntimeActivity } from "./update-maintenance";
 import { GoalModeController } from "./goal-mode";
@@ -782,6 +783,8 @@ export class AgentSessionWrapper {
    * 신뢰 저장소는 시작 때 한 번만 읽히므로, 저장된 승인과 실제 실행 상태를 가르는 값이다.
    */
   projectCodeLoaded = false;
+  /** True when this session uses the runtime's shared Settings instance (cwd equals the server's cwd). */
+  sharesRuntimeSettings = false;
   /** Plugin Lab extension set this session loaded (`labSignatureOf`); `reload` restarts the session when it changed. */
   labSignature = "";
   /** The wrapper that took over this one's event listeners on a Plugin Lab restart. */
@@ -1600,6 +1603,7 @@ export class AgentSessionWrapper {
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           configuredThinkingLevel: this.inner.configuredThinkingLevel() ?? "off",
           thinkingCeiling: this.inner.thinkingLevelCeiling ?? null,
+          computerTakeover: this.computerTakeover(),
           // SDK rpc-mode `get_state`와 같은 이름: 요청(enabled)과 실제 적용(active)을 따로 준다.
           fastModeEnabled: this.inner.isFastModeEnabled(),
           fastModeActive: this.inner.isFastModeActive(),
@@ -2046,9 +2050,23 @@ export class AgentSessionWrapper {
     }
   }
 
+  /** The user-granted computer takeover for this session only (see lib/computer-takeover.ts). */
+  computerTakeover(): ComputerTakeoverState | null {
+    // Only hand-built session doubles lack a Settings object; every SDK session has one.
+    const settings: AgentSessionLike["settings"] | undefined = this.inner.settings;
+    return settings ? computerTakeoverState(settings, this.sharesRuntimeSettings) : null;
+  }
+
+  setComputerTakeover(enabled: boolean): ComputerTakeoverState {
+    if (!this._alive) throw new Error("Session is not running");
+    return setComputerTakeover(this.inner.settings, this.sharesRuntimeSettings, enabled);
+  }
+
   destroy(): void {
     if (!this._alive) return;
     this._alive = false;
+    // Back to the configured `refuse`; this Settings instance is also what revived children read.
+    revokeComputerTakeover(this.inner.settings);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.inner.isBashRunning) this.inner.abortBash();
     this.unsubscribe?.();
@@ -2930,6 +2948,8 @@ export async function startRpcSession(
 
       const wrapper = new AgentSessionWrapper(session, eventBus);
       wrapper.projectCodeLoaded = untrusted === undefined;
+      // The runtime's shared Settings instance must never carry a per-session takeover override.
+      wrapper.sharesRuntimeSettings = sessionSettings === runtime.settings;
       wrapper.labSignature = labSignatureOf(labEntries);
       wrapper.bindToolUiContext(
         setToolUIContext as unknown as (uiContext: ExtensionUiContextLike, hasUI: boolean) => void,

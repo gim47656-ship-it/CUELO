@@ -1,0 +1,16 @@
+/* Takeover is granted to this session: a warning fill, stroke and icon so it is never mistaken for a
+   plain button. The text stays neutral for contrast on the tinted fill. The doubled class beats the
+   design-system button's own background rule. */
+.active.active {
+  background: var(--seed-color-bg-warning-weak);
+  color: var(--seed-color-fg-neutral);
+  box-shadow: inset 0 0 0 1px var(--seed-color-stroke-warning-weak);
+}
+
+.active.active svg {
+  color: var(--seed-color-fg-warning);
+}
+
+.active.active:hover:not(:disabled) {
+  background: var(--seed-color-bg-warning-weak-pressed);
+}
