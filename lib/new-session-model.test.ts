@@ -53,8 +53,9 @@ describe("Anthropic daily-share policy", () => {
     const selected = await selectNewSessionModel(scope, fresh, storage, async () => snapshot());
     expect(selected.initial.model).toBe(sol);
     expect(selected.notice).toBe(DAY_SLOT_START_NOTICE);
-    const handlers = new Map<string, Function>();
-    characterVoice({ on: (name: string, fn: Function) => handlers.set(name, fn) } as never);
+    type StartHandler = (event: { prompt: string; systemPrompt: string[] }, ctx: unknown) => Promise<{ systemPrompt: string[] }>;
+    const handlers = new Map<string, StartHandler>();
+    characterVoice({ on: (name: string, fn: StartHandler) => handlers.set(name, fn) } as never);
     const ctx = { model: selected.initial.model, sessionManager: { getSessionId: () => "new-yuki" } };
     const started = await handlers.get("before_agent_start")!({ prompt: "hello", systemPrompt: ["base"] }, ctx);
     expect(started.systemPrompt.join("\n")).toContain('alias="YUKI(유키)"');
