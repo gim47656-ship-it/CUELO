@@ -711,7 +711,7 @@ async function initializeControl() {
 //
 // 기록은 최소다. 표본은 (관측 시각, 사용률) 두 값뿐이고, 계열 키는 이메일이 아니라
 // provider + credentialId(없으면 accountId/orgId) + limit.id 다. 파일이 없거나 깨졌으면
-// quality 를 unknown 으로 낮출 뿐이고, 어떤 경우에도 사이드카를 죽이지 않는다
+// quality 를 estimate 로 낮출 뿐이고, 어떤 경우에도 사이드카를 죽이지 않는다
 // (2026-09-16: 처리되지 않은 rejection 하나가 프로세스를 끝내 모든 페이지가 502 를 받았다).
 const DAY_MS = 86_400_000;
 const SAMPLE_FILE = process.env.OMP_USAGE_SAMPLE_FILE
@@ -740,7 +740,7 @@ function createSampleStore(file = SAMPLE_FILE) {
                 state = { version: 1, series: parsed.series };
                 return state;
             }
-        } catch { /* 없거나 깨진 파일은 빈 기록과 같다. 그 결과는 quality: unknown 이다 */ }
+        } catch { /* 없거나 깨진 파일은 빈 기록과 같다. 그 결과는 quality: estimate 다 */ }
         state = { version: 1, series: {} };
         return state;
     }
@@ -749,7 +749,7 @@ function createSampleStore(file = SAMPLE_FILE) {
             const all = load().series;
             const record = all[key];
             if (record && Array.isArray(record.samples)) return record;
-            all[key] = { resetsAt: 0, samples: [], baseline: null, offset: 0, at: 0 };
+            all[key] = { resetsAt: 0, samples: [], baseline: null, first: null, offset: 0, at: 0 };
             return all[key];
         },
         flush(now = Date.now()) {
@@ -800,11 +800,15 @@ function slotBounds(window, now) {
 //   1) 구간 시작이 창 시작보다 앞이면(창의 첫 구간) 기준선은 정의상 0 이다 → exact, 표본 불필요
 //   2) 그 구간에 대해 이미 고정해 둔 기준선
 //   3) 같은 창의 표본 중 구간 시작 이하의 최신 것. 이때 고정한다
+// 기준선이 없으면(구간 시작 무렵 사이드카가 꺼져 있었다 등) 두 보조 계산을 함께 낸다
+// (2026-11-09 사용자 결정 「A, B 둘 다」). quality 는 estimate 다.
+//   A) usedPct: 이 구간에서 처음 본 값부터 늘어난 양. 실제보다 적을 수는 있어도 많지는 않다
+//   B) paceOver: 창의 누적 사용률이 오늘 구간 끝까지의 누적 몫((slotIndex+1)×quotaPct) 이상이다
 // 표본과 기준선은 provider 값에 하락 보정값(offset)을 더한 연속 척도로 저장한다.
 function trackSlot(record, bounds, resetsAt, pct, observedAt) {
     // 창 identity. resetsAt 이 다르면 다른 창의 표본이고 비교 대상이 아니다.
     if (!(Math.abs(record.resetsAt - resetsAt) <= SAME_WINDOW_MS)) {
-        Object.assign(record, { resetsAt, samples: [], baseline: null, offset: 0 });
+        Object.assign(record, { resetsAt, samples: [], baseline: null, first: null, offset: 0 });
     }
     const last = record.samples[record.samples.length - 1];
     let level = pct + (record.offset || 0);
@@ -828,6 +832,15 @@ function trackSlot(record, bounds, resetsAt, pct, observedAt) {
             record.baseline = baseline;
         }
     }
+    // 보조 계산 A 의 출발점. 이 구간에서 처음 본 값을 고정한다(보존 3시간보다 오래 이어져도 남는다).
+    let first = null;
+    if (!baseline) {
+        if (!(record.first && record.first.i === bounds.slotIndex)) {
+            const seen = record.samples.find(([at]) => at >= bounds.slotStart);
+            record.first = { i: bounds.slotIndex, p: seen ? seen[1] : level, t: seen ? seen[0] : observedAt };
+        }
+        first = record.first;
+    }
     const appended = !last || last[0] !== observedAt;
     if (appended) {
         record.samples.push([observedAt, level]);
@@ -846,10 +859,14 @@ function trackSlot(record, bounds, resetsAt, pct, observedAt) {
             slotCount: bounds.slotCount,
             slotsLeft: bounds.slotsLeft,
             baselinePct: baseline ? baseline.p : null,
-            usedPct: baseline ? Math.max(0, level - baseline.p) : null,
+            usedPct: baseline ? Math.max(0, level - baseline.p) : Math.max(0, level - first.p),
             quotaPct: bounds.quotaPct,
-            quality: !baseline ? 'unknown' : gapMs <= SLOT_EXACT_GAP_MS ? 'exact' : 'approx',
+            quality: !baseline ? 'estimate' : gapMs <= SLOT_EXACT_GAP_MS ? 'exact' : 'approx',
             gapMs,
+            ...(baseline ? {} : {
+                firstSeenAt: first.t,
+                paceOver: pct >= (bounds.slotIndex + 1) * bounds.quotaPct,
+            }),
         },
     };
 }

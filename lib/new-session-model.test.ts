@@ -49,6 +49,18 @@ describe("Anthropic daily-share policy", () => {
     expect(anthropicOverDaySlot(snapshot([spent, account(11)]), [9, 11])).toBe(true);
   });
 
+  test("a slot without its start value counts as over by its lower bound or by weekly pace", () => {
+    const estimate = (usedPct: number, paceOver: boolean) => {
+      const a = account(11); a.limits[0]!.daySlot = { usedPct, quotaPct: 14.29, slotsLeft: 5, quality: "estimate", paceOver };
+      return a;
+    };
+    expect(anthropicOverDaySlot(snapshot([account(9), estimate(0, true)]), [9, 11])).toBe(true);
+    expect(anthropicOverDaySlot(snapshot([account(9), estimate(15, false)]), [9, 11])).toBe(true);
+    expect(anthropicOverDaySlot(snapshot([account(9), estimate(3, false)]), [9, 11])).toBe(false);
+    const measured = account(11, 3); measured.limits[0]!.daySlot!.paceOver = true;
+    expect(anthropicOverDaySlot(snapshot([account(9), measured]), [9, 11]), "pace only stands in for a missing start value").toBe(false);
+  });
+
   test("fresh implicit-model startup selects the canonical YUKI selector and actual YUKI voice", async () => {
     const selected = await selectNewSessionModel(scope, fresh, storage, async () => snapshot());
     expect(selected.initial.model).toBe(sol);

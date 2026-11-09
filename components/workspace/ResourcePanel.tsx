@@ -283,11 +283,16 @@ function slotReadout(daySlot: UsageDaySlot | undefined): string | null {
   if (!daySlot) return null;
   if (daySlot.quality === "unknown" || daySlot.usedPct == null) return "구간 사용 — 기록 부족";
   if (daySlot.quality === "approx") return `구간 사용 ≈${daySlot.usedPct.toFixed(0)}% · 추정`;
+  if (daySlot.quality === "estimate") return `구간 사용 ≥${daySlot.usedPct.toFixed(0)}% · 추정`;
   return `구간 사용 ${daySlot.usedPct.toFixed(1)}%`;
 }
 
 function slotQuality(daySlot: UsageDaySlot): string {
   if (daySlot.quality === "unknown") return "기록 부족 · 구간 시작 전 표본이 없습니다";
+  if (daySlot.quality === "estimate") {
+    const since = daySlot.firstSeenAt == null ? "?" : slotStamp(daySlot.firstSeenAt);
+    return `추정 · 구간 시작 표본이 없어 ${since}부터 센 최소량${daySlot.paceOver ? " · 주간 진도 초과" : ""}`;
+  }
   const gap = daySlot.gapMs == null || daySlot.gapMs === 0 ? null : formatGap(daySlot.gapMs);
   if (daySlot.quality === "exact") return gap ? `실측 · 경계 ${gap} 전 표본` : "실측 · 구간 시작이 창의 시작";
   return `추정 · 경계 ${gap ?? "?"} 전 표본`;

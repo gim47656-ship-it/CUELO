@@ -4,8 +4,9 @@ export interface QuotaLimit {
   id: string | null;
   usedFraction: number | null;
   resetsAt: number | null;
-  /** 사이드카가 리셋 시각에서 24시간씩 거꾸로 센 오늘 구간. `usedPct`는 그 구간에서 쓴 양, `quotaPct`는 하루 몫(7d면 100/7%), `slotEnd`는 구간 끝 시각이다. */
-  daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null; slotEnd?: number | null } | null;
+  /** 사이드카가 리셋 시각에서 24시간씩 거꾸로 센 오늘 구간. `usedPct`는 그 구간에서 쓴 양, `quotaPct`는 하루 몫(7d면 100/7%), `slotEnd`는 구간 끝 시각이다.
+   * 구간 시작값이 없으면 `quality: "estimate"`이고 `usedPct`는 구간 첫 관측부터 센 최소량, `paceOver`는 창 누적 사용률이 오늘까지의 누적 몫 이상인지다. */
+  daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null; slotEnd?: number | null; paceOver?: boolean | null } | null;
   /** 사이드카 `scope.windowId`(없으면 `window.id`). 예: `5h`, `7d`. */
   windowId: string | null;
   /** 계정의 모든 모델이 함께 쓰는 공유 구간(`scope.shared`). 계열 전용 tier 구간은 false다. */
@@ -71,6 +72,7 @@ export async function readSidecarQuota(providers: string[], signal?: AbortSignal
                 slotsLeft: finiteOrNull(daySlot.slotsLeft),
                 quality: typeof daySlot.quality === "string" ? daySlot.quality : null,
                 slotEnd: finiteOrNull(daySlot.slotEnd),
+                paceOver: typeof daySlot.paceOver === "boolean" ? daySlot.paceOver : null,
               }
               : null,
             windowId: typeof scope.windowId === "string" ? scope.windowId : typeof window.id === "string" ? window.id : null,
@@ -119,8 +121,10 @@ export function anthropicOverDaySlot(quota: QuotaSnapshot, enabledCredentialIds?
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt)
     || liveWeeklyShared(account, quota.observedAt).some((limit) => {
       const slot = limit.daySlot;
-      return slot !== null && slot.quality !== null && slot.quality !== "unknown"
-        && typeof slot.usedPct === "number" && Number.isFinite(slot.usedPct)
+      if (slot === null || slot.quality === null || slot.quality === "unknown") return false;
+      // 시작값이 없는 구간(estimate)은 최소량(A)이 하루 몫 이상이거나 주간 진도(B)가 넘었으면 초과다.
+      if (slot.quality === "estimate" && slot.paceOver === true) return true;
+      return typeof slot.usedPct === "number" && Number.isFinite(slot.usedPct)
         && typeof slot.quotaPct === "number" && Number.isFinite(slot.quotaPct)
         && slot.usedPct >= slot.quotaPct;
     }));

@@ -1281,3 +1281,31 @@ test('a same-window usage drop keeps counting the day slot instead of blanking i
     const next = poll(resetsAt + 3_600_000, 2, resetsAt + WEEK); // 새 창의 첫 구간은 보정값 없이 0부터 센다
     assert.deepEqual(shown(next), [2, 'exact']);
 });
+
+test('without a slot-start sample the day slot reports a lower bound and the weekly pace instead of unknown', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-slot-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const store = createSampleStore(path.join(dir, 'samples.json'));
+    const HOUR = 3_600_000;
+    const DAY = 24 * HOUR;
+    const resetsAt = Date.UTC(2026, 10, 13, 20);
+    const slotStart = resetsAt - 5 * DAY; // 세 번째 구간: 오늘까지 누적 몫 3/7 ≈ 42.9%
+    const poll = (at, used) => applyDaySlots({ reports: [{
+        provider: 'anthropic', credentialId: 11, fetchedAt: at,
+        limits: [{ id: 'anthropic:7d', amount: { usedFraction: used / 100 }, window: { durationMs: 7 * DAY, resetsAt } }],
+    }] }, store, at).reports[0].limits[0].daySlot;
+    const shown = slot => [Math.round(slot.usedPct * 10) / 10, slot.quality, slot.paceOver];
+
+    const firstAt = slotStart + 4 * HOUR; // 구간 시작 무렵 사이드카가 꺼져 있었다
+    const opened = poll(firstAt, 30);
+    assert.deepEqual(shown(opened), [0, 'estimate', false]);
+    assert.equal(opened.firstSeenAt, firstAt);
+    assert.deepEqual(shown(poll(slotStart + 8 * HOUR, 40)), [10, 'estimate', false]);
+    // 표본 보존(3시간)이 지나도 처음 본 값은 고정돼 최소량이 줄지 않는다
+    assert.deepEqual(shown(poll(slotStart + 12 * HOUR, 45)), [15, 'estimate', true], 'A and B both cross once usage passes the shares');
+
+    const next = poll(slotStart + DAY + HOUR, 50); // 다음 구간은 경계 전 표본(12시간 전)이 있어 시작값 기반 추정으로 돌아온다
+    assert.equal(next.quality, 'approx');
+    assert.equal(Math.round(next.usedPct), 5);
+    assert.equal(next.paceOver, undefined);
+});

@@ -19,9 +19,9 @@ export type ResourceLoadState<T> =
   | { status: "error"; data: null; error: ResourceClientError };
 
 /**
- * 리셋 시각에서 24시간씩 거꾸로 센 구간의 실측. 사이드카가 남긴 표본에서 나오며, 표본이
- * 없으면 숫자를 지어내지 않고 `unknown` 으로 온다. 하루 이하 창은 창 자체가 구간이라
- * 이 값이 아예 오지 않는다.
+ * 리셋 시각에서 24시간씩 거꾸로 센 구간의 실측. 사이드카가 남긴 표본에서 나온다. 구간 시작값이
+ * 없으면 `estimate` 로 오고, 그때 `usedPct` 는 구간에서 처음 본 값부터 센 최소량이다. 하루 이하
+ * 창은 창 자체가 구간이라 이 값이 아예 오지 않는다.
  */
 export interface UsageDaySlot {
   slotStart: number;
@@ -35,9 +35,13 @@ export interface UsageDaySlot {
   usedPct: number | null;
   /** 창을 구간 수로 나눈 균등 배분 기준(%). 실측이 아니라 계산값이다. */
   quotaPct: number | null;
-  quality: "exact" | "approx" | "unknown";
+  quality: "exact" | "approx" | "estimate" | "unknown";
   /** 구간 시작과 실제로 쓴 표본 사이의 거리(ms). */
   gapMs: number | null;
+  /** `estimate` 일 때 최소량을 세기 시작한 관측 시각. */
+  firstSeenAt?: number;
+  /** `estimate` 일 때 창 누적 사용률이 이 구간 끝까지의 누적 몫 이상인지. */
+  paceOver?: boolean;
 }
 
 /**
