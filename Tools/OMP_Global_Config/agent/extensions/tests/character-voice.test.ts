@@ -90,7 +90,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
   const calls: string[] = [];
   const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
   const models = [
-    { provider: "openai-codex", id: "gpt-6-astra" },
+    { provider: "openai-codex", id: "gpt-6.1-sol" },
     { provider: "anthropic", id: "claude-opus-5-5" },
     { provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" },
     { provider: "hive", id: "zai-org/glm-5.3-flash" },
@@ -204,7 +204,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
 describe("character voice identity", () => {
   test("character targets use exact runtime selectors", () => {
     expect(CHARACTER_TARGETS).toEqual({
-      "YUKI(유키)": { model: "openai-codex/gpt-6-astra", toolCapable: true },
+      "YUKI(유키)": { model: "openai-codex/gpt-6.1-sol", toolCapable: true },
       "ISANA(이사나)": { model: "hive/deepseek-ai/deepseek-v4.1-flash-1017", toolCapable: true },
       "MIO(미오)": { model: "anthropic/claude-opus-5-5", toolCapable: true },
       "RIN(린)": { model: "anthropic/claude-opus-5-5", toolCapable: true },
@@ -430,7 +430,7 @@ describe("character voice identity", () => {
     expect(routing).toContain('[character-summon-intent alias="YUKI(유키)"]');
     expect(routing).toContain('[character-summon-intent alias="MIO(미오)"]');
     expect(routing).toContain('[character-summon-intent alias="SHION(시온)"]');
-    expect(routing).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]');
+    expect(routing).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]');
     expect(routing).toContain('[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]');
     expect(routing).toContain("web6/gpt-6-pro");
     expect(routing).toContain("WEB6");
@@ -438,7 +438,7 @@ describe("character voice identity", () => {
   });
 
   test("multi-summon rewrite claims marked tasks and rejects unmarked or partial dispatch", () => {
-    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]';
+    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]';
     const mioMarker = '[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]';
     const pending = ["YUKI(유키)", "MIO(미오)"] as const;
 
@@ -668,7 +668,7 @@ describe("character voice identity", () => {
       });
       expect(harness.calls).toEqual([]);
       expect(harness.sent).toEqual([]);
-      expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+      expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
     }
   });
 
@@ -807,17 +807,17 @@ describe("character voice identity", () => {
     expect(result).toEqual({
       text: "[CharacterSwitchRuntime] 교체를 실행하지 못했다. 도구를 호출하지 말고 사용자에게 다음 이유를 그대로 한국어로 알린다: 런타임 model registry에서 anthropic/claude-opus-5-5을(를) 해석하지 못했습니다.",
     });
-    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
   });
 
   test("pin이 거부되면 다른 계정·모델로 조용히 대체하지 않고 실패를 알린다", async () => {
     const harness = createRuntimeHarness({ pinRefused: true });
     const result = await harness.emit("input", { type: "input", text: "린으로 교체해", source: "rpc" });
-    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "set:openai-codex/gpt-6-astra"]);
+    expect(harness.calls).toEqual(["reload", "set:anthropic/claude-opus-5-5", "set:openai-codex/gpt-6.1-sol"]);
     expect(result).toEqual({
       text: "[CharacterSwitchRuntime] 교체를 실행하지 못했다. 도구를 호출하지 말고 사용자에게 다음 이유를 그대로 한국어로 알린다: RIN(린) 교체 실패: Anthropic OAuth 저장 위치 0 계정을 현재 세션에 pin하지 못했습니다. 현재 세션 모델은 전환 전 상태로 유지했습니다.",
     });
-    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
     expect(harness.accounts.find((account) => account.active)?.credentialId).toBe(13);
   });
 
@@ -827,7 +827,7 @@ describe("character voice identity", () => {
     expect(harness.calls).toEqual(["reload", "set-refused:anthropic/claude-opus-5-5"]);
     expect(result.text).toContain("RIN(린) 교체 실패");
     expect(result.text).toContain("현재 세션 모델은 전환 전 상태로 유지했습니다.");
-    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
     expect(harness.accounts.find((account) => account.active)?.credentialId).toBe(13);
   });
 
@@ -1037,7 +1037,7 @@ describe("character voice identity", () => {
     // model이 바뀌면 이전 선택은 쓰이지 않는다.
     await harness.emit("input", { type: "input", text: "이사나로 교체해", source: "rpc" });
     expect(await voiceOf()).toBe("ISANA(이사나)");
-    harness.selectModel("openai-codex/gpt-6-astra");
+    harness.selectModel("openai-codex/gpt-6.1-sol");
     await harness.emit("session_switch", { type: "session_switch", reason: "new", previousSessionFile: "old.jsonl" });
     expect(await voiceOf()).toBe("YUKI(유키)");
   });
@@ -1121,7 +1121,7 @@ describe("character voice identity", () => {
       text: "이사나로 교체해",
       source: "rpc",
     });
-    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
     expect(harness.calls).toEqual(["discover:hive"]);
     expect(JSON.stringify(result)).toContain("discovery unavailable");
   });
@@ -1261,7 +1261,7 @@ describe("configured seat identity through runtime hooks", () => {
       ]) {
         writeFileSync(join(dir, "config.yml"), content);
         await expectHookVoice(harness, undefined);
-        harness.selectModel("openai-codex/gpt-6-astra");
+        harness.selectModel("openai-codex/gpt-6.1-sol");
         await expectHookVoice(harness, "YUKI(유키)");
         harness.selectModel("anthropic/claude-opus-5-5");
       }
@@ -1351,7 +1351,7 @@ describe("office mode character seat", () => {
       const intent = parseCharacterIntent("테스타 불러와");
       expect(intent).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
       expect(parseCharacterIntent("testa 호출해")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6-astra"]`;
+      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6.1-sol"]`;
       const routing = renderCharacterSummonRouting([OFFICE_ALIAS]);
       expect(routing).toContain(`[character-summon-intent alias="${OFFICE_ALIAS}"]`);
       expect(routing).toContain("FIXTURE-TEMPERAMENT");
@@ -1370,7 +1370,7 @@ describe("office mode character seat", () => {
       const harness = createRuntimeHarness();
       harness.selectModel("anthropic/claude-opus-5-5");
       const result = await harness.emit("input", { type: "input", text: "테스타로 교체해", source: "rpc" });
-      expect(harness.calls).toContain("set:openai-codex/gpt-6-astra");
+      expect(harness.calls).toContain("set:openai-codex/gpt-6.1-sol");
       expect(JSON.stringify(result)).toContain(OFFICE_ALIAS);
       const wire = await harness.emit("before_provider_request", {
         type: "before_provider_request",
@@ -1574,7 +1574,7 @@ describe("office mode character seat", () => {
       expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
       expect(renderCharacterVoice("YUKI(유키)")).toContain(CHARACTER_VOICES["YUKI(유키)"].temperament);
       expect(buildCharacterSummonBrief("인사한다.", "YUKI(유키)").startsWith(
-        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]',
+        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]',
       )).toBe(true);
     });
   });

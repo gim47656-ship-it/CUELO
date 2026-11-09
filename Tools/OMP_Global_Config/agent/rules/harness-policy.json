@@ -255,7 +255,7 @@
         "when": "optional-once-per-revision-immediately-before-the-final-judgement-never-during-steering-or-delta-review",
         "useWhen": "main-s-discretion-and-worth-it-when-the-revision-edited-trigger-code-when-an-acceptance-condition-is-a-judgement-call-rather-than-a-command-exit-status-or-when-several-slices-converged-on-one-execution-path-a-docs-or-typo-revision-never-consults",
         "neverAJustification": "having-consulted-is-never-part-of-the-pass-evidence-and-skipping-the-consult-is-never-a-finding-this-optional-consult-is-not-the-mainLane.workerReview.crossFamilyReview-gate-which-is-mandatory-when-triggered-and-never-replaced-by-it",
-        "channel": "eval-completion-stateless-configured-slot-slow-astra-or-smol-fable-5-1-with-explicit-main-decided-effort-no-tools-no-session-no-owned-paths",
+        "channel": "eval-completion-stateless-configured-slot-modelRoles.slow-or-modelRoles.smol-with-explicit-main-decided-effort-no-tools-no-session-no-owned-paths",
         "notAChild": "never-counts-against-task-budget-and-spawnguard-still-blocks-agent-workpool-and-tool.task-so-child-execution-stays-on-the-task-path",
         "input": ["acceptance-conditions", "evidence-locators-with-command-and-exit-status", "delta-summary-by-path"],
         "prohibited": ["diff-body", "raw-build-or-test-output", "file-contents", "asking-the-model-to-decide-acceptance"],

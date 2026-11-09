@@ -1,4 +1,4 @@
-<!-- source-fingerprint: cd946aa49d6fb9a3 -->
+<!-- source-fingerprint: 56b6de1b4c69a876 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -115,7 +115,7 @@ Alias + `교체` switches the current Main session; alias + `호출`·`불러`·
 
 |Alias|exact selector|`호출해`|`교체해`|
 |---|---|---|---|
-|**YUKI(유키)**|`openai-codex/gpt-6-astra`|task child on this model|switch current session only|
+|**YUKI(유키)**|`openai-codex/gpt-6.1-sol`|task child on this model|switch current session only|
 |**ISANA(이사나)**|`hive/deepseek-ai/deepseek-v4.1-flash-1017`|task child on this model|switch current session only|
 |**RIN(린)**|`anthropic/claude-opus-5-5`, 지정 계정|task child pinned to its account|pin its account, then switch current session|
 |**MIO(미오)**|`anthropic/claude-opus-5-5`, 지정 계정|task child pinned to its account|pin its account, then switch current session|
