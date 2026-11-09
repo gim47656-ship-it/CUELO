@@ -37,7 +37,8 @@ export function requestedTodoJapanese(text: string): boolean | undefined {
     const english = /\b(?:write|create|show|keep|switch|change)\s+(?:(?:the|my|your|all|every|future)\s+)*(?:todos?|todo\s*(?:list|items?)|task\s*list|checklist)\s+(?:in|to)\s+(japanese|korean)\b/i.exec(clause);
     if (english) {
       const japanese = english[1]!.toLowerCase() === "japanese";
-      const prohibited = /\b(?:don't|do not|not|never)\s*$/i.test(clause.slice(0, english.index));
+      // A bounded adverb list may sit between the negation and the verb ("do not ever write"); anything else ends its reach.
+      const prohibited = /\b(?:don't|do not|not|never)(?:\s+(?:ever|again|really|actually|just|even))*\s*$/i.test(clause.slice(0, english.index));
       if (prohibited && japanese) requested = false;
       else if (!prohibited) requested = japanese;
     }

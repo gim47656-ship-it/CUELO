@@ -165,6 +165,23 @@ test("review exception and protected-span probes", async () => {
   expect(h.state()[0]!.tasks.map(task => task.content)).toEqual(["「コア直接変更とアプリ側機能の境界を確認」", "오류: 利用者に確認する"]);
 });
 
+test("issue 84: an adverb between the English negation and the verb still prohibits Japanese", async () => {
+  for (const request of ["Do not ever write todos in Japanese", "Never ever write todos in Japanese", "don't EVER write the todo list in Japanese",
+    "Do not ever again write todos in Japanese", "Please never really write todos in Japanese"]) {
+    expect(requestedTodoJapanese(request)).toBe(false);
+    const h = await harness();
+    await h.runner.emitInput(request, undefined, "rpc");
+    await expect(h.call({ op: "init", items: ["パッチを確認する"] })).rejects.toThrow("items[0]");
+    await h.runner.emitInput("Please continue.", undefined, "rpc");
+    await expect(h.call({ op: "init", items: ["パッチを確認する"] })).rejects.toThrow("items[0]");
+    expect(h.writes()).toBe(0);
+  }
+  // Adverbs after an affirmative verb, or outside the negation's reach, keep the request allowed.
+  for (const request of ["Always write todos in Japanese", "If it's not urgent, write todos in Japanese", "Do it now and write todos in Japanese"]) {
+    expect(requestedTodoJapanese(request)).toBe(true);
+  }
+});
+
 test("restores only real branch todo-language requests after resume", async () => {
   const h = await harness();
   h.entries.push({ type: "message", id: "user", parentId: null, timestamp: new Date().toISOString(),
