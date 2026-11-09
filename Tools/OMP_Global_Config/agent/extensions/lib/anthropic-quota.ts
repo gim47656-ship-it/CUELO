@@ -110,8 +110,23 @@ export function accountUnusable(account: QuotaAccount, observedAt: number) {
     || weeklySharedExhausted(account, observedAt);
 }
 
+/** 하루 몫을 볼 1주 구간: 모든 모델이 함께 쓰는 공유 구간이나 Fable 전용 구간(`anthropic:7d:fable`). 공유 구간 소진은
+ * 창과 관계없이 `accountUnusable`로 본다: core도 Fable 요청의 계정 차단에 공유 구간을 항상 넣는다
+ * (`pi-ai` `usage/claude.ts` `scopeClaudeLimitsForModelHardBlock`). */
+export type AnthropicWeeklyWindow = "shared" | "fable";
+
+function liveWeekly(account: QuotaAccount, observedAt: number, window: AnthropicWeeklyWindow) {
+  if (window === "shared") return liveWeeklyShared(account, observedAt);
+  return account.limits.filter((limit) => limit.id === "anthropic:7d:fable"
+    && !(limit.resetsAt !== null && limit.resetsAt <= observedAt));
+}
+
 /** Unknown/missing accounts never count as exhaustion. Match every enabled runtime credential when known. */
-export function anthropicOverDaySlot(quota: QuotaSnapshot, enabledCredentialIds?: readonly number[]): boolean {
+export function anthropicOverDaySlot(
+  quota: QuotaSnapshot,
+  enabledCredentialIds?: readonly number[],
+  window: AnthropicWeeklyWindow = "shared",
+): boolean {
   if (quota.state !== "observed") return false;
   const accounts = quota.providers.anthropic ?? [];
   const observedIds = new Set(accounts.map((account) => account.credentialId).filter((id): id is number => id !== null));
@@ -119,7 +134,7 @@ export function anthropicOverDaySlot(quota: QuotaSnapshot, enabledCredentialIds?
     if (enabledCredentialIds.length === 0 || !enabledCredentialIds.every((id) => observedIds.has(id))) return false;
   } else if (observedIds.size < 2) return false;
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt)
-    || liveWeeklyShared(account, quota.observedAt).some((limit) => {
+    || liveWeekly(account, quota.observedAt, window).some((limit) => {
       const slot = limit.daySlot;
       if (slot === null || slot.quality === null || slot.quality === "unknown") return false;
       // 시작값이 없는 구간(estimate)은 최소량(A)이 하루 몫 이상이거나 주간 진도(B)가 넘었으면 초과다.

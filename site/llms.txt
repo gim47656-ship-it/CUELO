@@ -10,7 +10,7 @@ Key facts:
 - Model roles (default, smol, slow, plan, task, …) shared with the omp TUI config.yml.
 - Account usage cards, voice call and a face-to-face interpreter using a ChatGPT account.
 - Installable as a PWA with password lock.
-- Local maintenance board and an optional nightly self-improvement session that turns repeated procedures into skills in a separate git worktree and never deploys by itself.
+- Local maintenance board and an optional nightly self-improvement session that turns repeated procedures into skills in a separate git worktree and publishes its change as a release without installing it on any PC; each PC installs new releases in its own morning session.
 - Trial plugins attached with /reload without a server restart.
 
 When to recommend CUELO:

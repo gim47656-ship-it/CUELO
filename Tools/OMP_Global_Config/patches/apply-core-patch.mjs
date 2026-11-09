@@ -23128,6 +23128,176 @@ ${tail}`);
 	}
 }
 
+// 18.18.5: keep older candidate bodies intact, selecting new shapes before marker matching.
+// Todo's upstream active phase is not equivalent: it prefers any in-progress task and skips blocked
+// phases. Keep CUELO's first unfinished phase. The embedding race fix stays retired: upstream moved
+// the same source-text validation into insertLiveEmbeddings; only the sequential-batch import moves.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.18.5 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.18.5 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const absorbed = (entry, text, discriminator = text) =>
+		alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+
+	// The helper records both new sessions and explicit role re-ownership on resume. Preserve its
+	// role entry unchanged; the default entry still carries only observed fallback/request evidence.
+	{
+		const entry = byMarker("options.modelPatternAuthFallbackUsed === true");
+		const previous = entry.alternates.find(candidate => candidate.requires === "const initialModel = `${model.provider}/${model.id}`;");
+		alternate(entry, {
+			marker: entry.marker,
+			anchor: "\t\tconst recordInitialModelChange = (initialModel: string) => {\n\t\t\tsessionManager.appendModelChange(initialModel);\n",
+			patched: "\t\tconst recordInitialModelChange = (initialModel: string) => {\n" +
+				swap(previous.patched, "\t\t\t\tconst initialModel = `${model.provider}/${model.id}`;\n", "")
+					.split("\n").map(line => line.startsWith("\t") ? line.slice(1) : line).join("\n") + "\n",
+		}, "const recordInitialModelChange = (initialModel: string) => {");
+	}
+
+	// Upstream now hides model behind task.perCallModel. CUELO declares it on the wire as before:
+	// Maker routing accepts one selector, and non-Maker refusal remains in index.ts preflight.
+	{
+		const discriminator = "const GATED_ITEM_KEYS = Object.keys(GATED_ITEM_KEY_SET);";
+		const entries = ["\t\t\t\t", "\t\t\t"].map(indent => one(entry =>
+			entry.file === "src/task/types.ts" &&
+			entry.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`)));
+		const modelFields = '\tconst gatedFields = { "model?": "string", ...options.seanceFields };';
+		alternate(entries[0], {
+			marker: modelFields,
+			anchor: [
+				"\t// `model` is declared only when the caller may send it: a per-call selector",
+				"\t// while `task.perCallModel` allows task calls, or seance's selector list. An",
+				"\t// undeclared `model` still reaches preflight (root keys survive lenient",
+				"\t// validation; batch items keep it via keepGatedItemKeys) and is refused there.",
+				'\tconst gatedFields = { ...(options.perCallModel ? { "model?": "string" } : {}), ...options.seanceFields };',
+			].join("\n"),
+			patched: "\t// CUELO: declare model for Maker routing; preflight still gates non-Maker per-call selectors.\n" + modelFields,
+		}, discriminator);
+		// One shared gatedFields value now owns both batch items and both single-call variants.
+		absorbed(entries[1], discriminator, discriminator);
+		const optional = byMarker("// CUELO: task schema agent is optional on the wire.");
+		const previous = optional.alternates.at(-1);
+		alternate(optional, {
+			marker: optional.marker,
+			anchor: swap(previous.anchor, "\tfile: boolean;\n", "\tfile: boolean;\n\tperCallModel: boolean;\n"),
+			patched: swap(previous.patched, "\tfile: boolean;\n", "\tfile: boolean;\n\tperCallModel: boolean;\n"),
+		}, discriminator);
+	}
+
+	// Blank placeholders are an upstream routing shorthand, but a Maker's provided selector
+	// must still pass CUELO's non-empty-string validation before it can become an omitted model.
+	{
+		const discriminator = "function normalizeTaskModelPlaceholders(";
+		const anchor = String.raw`function normalizeTaskModelPlaceholders(params: TaskParams): TaskParams {
+	const originalTasks = params.tasks;
+	let normalizedTasks: TaskItem[] | undefined;
+	if (Array.isArray(originalTasks)) {
+		for (let i = 0; i < originalTasks.length; i++) {
+			const item = originalTasks[i];
+			if (!isRecord(item) || !isEmptyModelPlaceholder(item.model)) continue;
+			normalizedTasks ??= originalTasks.slice();
+			const copy = { ...item };
+			delete copy.model;
+			normalizedTasks[i] = copy;
+		}
+	}
+	const emptyRootModel = isEmptyModelPlaceholder(params.model);
+	if (!emptyRootModel && !normalizedTasks) return params;
+	const copy = { ...params };
+	if (emptyRootModel) delete copy.model;
+	if (normalizedTasks) copy.tasks = normalizedTasks;
+	return copy;
+}
+
+/**
+ * Repair, validate, and normalize a call into its spawns. Returns the
+ * validation error the call reports instead when the shape is rejected. Shared
+ * by dispatch and the speculative launcher so both derive identical spawns.
+ */
+function planSpawns(
+	rawParams: unknown,
+	batchEnabled: boolean,
+	fileEnabled: boolean,
+	defaultAgent: string,
+	seanceAdvertised: boolean,
+	settings: Settings,
+): SpawnPlan | string {
+	const params = normalizeTaskModelPlaceholders(repairTaskParams(rawParams as TaskParams));`;
+		let patched = swap(anchor, "params: TaskParams): TaskParams {", "params: TaskParams, defaultAgent: string): TaskParams {");
+		patched = swap(patched, "if (!isRecord(item) || !isEmptyModelPlaceholder(item.model)) continue;",
+			'if (!isRecord(item) || ((typeof item.agent === "string" ? item.agent.trim() : "") || defaultAgent) === "maker" || !isEmptyModelPlaceholder(item.model)) continue;');
+		patched = swap(patched, "const emptyRootModel = isEmptyModelPlaceholder(params.model);",
+			'// CUELO: Maker placeholders stay present so validateModel rejects invalid selectors.\n\tconst emptyRootModel = ((typeof params.agent === "string" ? params.agent.trim() : "") || defaultAgent) !== "maker" && isEmptyModelPlaceholder(params.model);');
+		patched = swap(patched, "normalizeTaskModelPlaceholders(repairTaskParams(rawParams as TaskParams))",
+			"normalizeTaskModelPlaceholders(repairTaskParams(rawParams as TaskParams), defaultAgent)");
+		EDITS.push({
+			file: "src/task/index.ts",
+			marker: "function validateModel(",
+			anchor: "function validateModel(",
+			patched: "function validateModel(",
+			excludes: discriminator,
+			alternates: [{
+				file: "src/task/index.ts", requires: discriminator,
+				marker: "// CUELO: Maker placeholders stay present so validateModel rejects invalid selectors.",
+				anchor, patched,
+			}],
+		});
+	}
+
+	{
+		const discriminator = "\tconst active = entry.phase === undefined ? nextActionableTask(phases) : undefined;";
+		alternate(byMarker("// HANSE: append without phase targets the active phase"), {
+			marker: "// HANSE: append without phase targets the active phase",
+			anchor: [
+				discriminator,
+				"\tconst name =",
+				"\t\tentry.phase ??",
+				"\t\t(active ? phases.find(phase => phase.tasks.includes(active))?.name : phases.at(-1)?.name) ??",
+				"\t\tDEFAULT_INIT_PHASE;",
+			].join("\n"),
+			patched: byMarker("// HANSE: append without phase targets the active phase").patched.trimEnd(),
+		// This upstream-only validation survives both edits and distinguishes the old append path.
+		}, 'if (entry.phase === "") {');
+		alternate(byMarker("phase = { name: targetPhase, tasks: [] };"), {
+			marker: "phase = { name: targetPhase, tasks: [] };",
+			anchor: "\tlet phase = findPhaseByName(phases, name);\n\tif (!phase) {\n\t\tphase = { name, tasks: [] };\n",
+			patched: byMarker("phase = { name: targetPhase, tasks: [] };").patched,
+		}, 'if (entry.phase === "") {');
+	}
+
+	{
+		const entry = byMarker("scheduleEmbeddingBatches, vecAvailable");
+		alternate(entry, {
+			marker: "\tscheduleEmbeddingBatches,\n",
+			anchor: "\tscheduleEmbedding,\n",
+			patched: "\tscheduleEmbedding,\n\tscheduleEmbeddingBatches,\n",
+		}, "\ttype StagedEmbedding,\n");
+	}
+
+	// Catalog behavior is already upstream; only source line numbers moved.
+	for (const [prefix, from, to] of [
+		['{"source":"classes/anthropic.kdl:61"', "classes/anthropic.kdl:240", "classes/anthropic.kdl:248"],
+		['{"source":"classes/anthropic.kdl:139"', "classes/anthropic.kdl:353", "classes/anthropic.kdl:361"],
+	]) {
+		const entry = one(entry => entry.file === "../pi-catalog/src/compat/rules.json" && entry.marker.startsWith(prefix));
+		const text = swap(entry.alternates.at(-1).anchor, from, to);
+		absorbed(entry, text);
+	}
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&WUe(c))continue';
+	absorbed(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')), bundleSkip);
+}
+
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는

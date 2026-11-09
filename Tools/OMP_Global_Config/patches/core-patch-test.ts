@@ -3284,6 +3284,13 @@ console.log("\n[27] todo — phase 없는 append 는 아직 안 끝난 일이 �
 		[{ op: "append", items: ["new"] }],
 	);
 	check("진행 중인 phase 에 붙고 오류가 없다", active.errors.length === 0 && phaseOf(active.phases, "new") === "P2", JSON.stringify(active));
+	for (const status of ["pending", "blocked"]) {
+		const earlier = applyOpsToPhases(
+			[{ name: "Earlier", tasks: [{ content: "a", status }] }, { name: "Later", tasks: [{ content: "b", status: "in_progress" }] }],
+			[{ op: "append", items: ["new"] }],
+		);
+		check(`first unfinished phase wins even when ${status}`, earlier.errors.length === 0 && phaseOf(earlier.phases, "new") === "Earlier", JSON.stringify(earlier));
+	}
 	const done = applyOpsToPhases([{ name: "D1", tasks: [{ content: "a", status: "completed" }] }, { name: "D2", tasks: [{ content: "b", status: "completed" }] }], [{ op: "append", items: ["new"] }]);
 	check("모두 끝났으면 마지막 phase 에 붙는다", phaseOf(done.phases, "new") === "D2");
 	check("빈 목록이면 init 기본 phase 를 만든다", JSON.stringify(applyOpsToPhases([], [{ op: "append", items: ["new"] }]).phases.map((phase: TodoPhaseShape) => phase.name)) === '["Tasks"]');

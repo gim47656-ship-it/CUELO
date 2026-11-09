@@ -38,6 +38,7 @@ const brief = "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: 표시
 const reworkTaskBrief = brief.replace("OWNED_PATHS:", "FINDING_ID: f-1\nOWNED_PATHS:");
 const allStrengths = ["low", "medium", "high", "xhigh", "max"];
 const SONNET = "anthropic/claude-sonnet-5-5";
+const OPUS = "anthropic/claude-opus-5-5";
 const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 const candidates = [
   { profile: "NORMAL_SONNET", model: SONNET, efforts: allStrengths },
@@ -1170,7 +1171,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ fail });
       const prepared = await h.prepare("같은 계약", [h.task], {} as never);
       expect(prepared[0]!.status).toBe(fail ? "unavailable" : "judged");
-      // 추천(NORMAL_SONNET)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
+      // 추천(NORMAL_DEEPSEEK)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
       const item = { ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto" };
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
       item.task = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 두 경합 불변식이 새로 확인되어 Main이 결정함");
@@ -1661,29 +1662,29 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
   type Options = NonNullable<Parameters<typeof harness>[0]>;
-  test("Jev routes settled work to DeepSeek, difficult UI to Sonnet, bounded design/rework to Sol, and open design/repeated failure to Main", async () => {
+  test("Jev routes settled work to DeepSeek, difficult UI to Opus, bounded design/rework to Sol, and open design/repeated failure to Main", async () => {
     const rework = { task: reworkTaskBrief };
     type Row = [string, Options & { task?: string }, string | null];
     const rows: Row[] = [
       ["확정된 구현 → DeepSeek", {}, "NORMAL_DEEPSEEK"],
       ["UI 판단이 남아도 보통 난이도면 DeepSeek", { uiUxBoundary: 1, uiDifficulty: "ROUTINE" }, "NORMAL_DEEPSEEK"],
       ["UI 경계만으로 어렵다고 보지 않는다(NONE)", { uiUxBoundary: 1, uiDifficulty: "NONE" }, "NORMAL_DEEPSEEK"],
-      ["정말 어려운 UI → Sonnet", { uiUxBoundary: 1, uiDifficulty: "DIFFICULT" }, "NORMAL_SONNET"],
+      ["정말 어려운 UI → Opus", { uiUxBoundary: 1, uiDifficulty: "DIFFICULT" }, "NORMAL_OPUS"],
       ["HARD 코드, 방향 확정 → HARD DeepSeek", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_DEEPSEEK"],
-      ["HARD 라벨·UI_UX 분야만으로는 Sonnet이 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_CODE_DEEPSEEK"],
-      ["HARD + 어려운 UI → HARD UI Sonnet", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT" }, "HARD_UI_SONNET"],
+      ["HARD 라벨·UI_UX 분야만으로는 Opus가 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_CODE_DEEPSEEK"],
+      ["HARD + 어려운 UI → HARD UI Opus", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT" }, "HARD_UI_OPUS"],
       ["Bounded design uses Sol", { boundedDesign: "BOUNDED" }, "NORMAL_SOL"],
       ["HARD bounded design uses Sol61", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SOL61"],
       ["준비된 복잡한 상태 구현(boundedDesign NONE)은 DeepSeek", { boundedDesign: "NONE", designOpen: 0.2 }, "NORMAL_DEEPSEEK"],
       ["한정된 설계도 큰 교차 경계 재설계(designOpen 높음)면 Main이 먼저다", { boundedDesign: "BOUNDED", designOpen: 0.8 }, null],
       ["한정된 설계도 반복 실패면 Main이 먼저다", { boundedDesign: "BOUNDED", reworkNature: "RETURN_TO_MAIN" }, null],
-      ["boundedDesign UNKNOWN은 추천 없음(Sonnet·Opus로 올리지 않음)", { boundedDesign: "UNKNOWN" }, null],
+      ["boundedDesign UNKNOWN은 추천 없음(Opus로 올리지 않음)", { boundedDesign: "UNKNOWN" }, null],
       ["boundedDesign 무응답도 모름이라 추천 없음", { boundedDesign: null }, null],
-      ["어려운 UI와 한정된 설계가 함께여도 Sonnet 하나(어려운 UI 우선)", { uiDifficulty: "DIFFICULT", boundedDesign: "BOUNDED" }, "NORMAL_SONNET"],
+      ["어려운 UI와 한정된 설계가 함께여도 Opus 하나(어려운 UI 우선)", { uiDifficulty: "DIFFICULT", boundedDesign: "BOUNDED" }, "NORMAL_OPUS"],
       ["열린 설계 → Main", { designOpen: 0.5 }, null],
       ["designOpen 무응답은 모름(UNKNOWN): 추천 없음이지만 막지 않는다", { designOpen: null }, null],
       ["HARD 열린 설계 → Main", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], designOpen: 0.9 }, null],
-      ["UI 난이도 UNKNOWN은 보통도 어려움도 아니라 추천 없음(Sonnet·Opus로 올리지 않음)", { uiUxBoundary: 1, uiDifficulty: "UNKNOWN" }, null],
+      ["UI 난이도 UNKNOWN은 보통도 어려움도 아니라 추천 없음(Opus로 올리지 않음)", { uiUxBoundary: 1, uiDifficulty: "UNKNOWN" }, null],
       ["UI 난이도 무응답도 모름이라 추천 없음", { uiUxBoundary: 1, uiDifficulty: null }, null],
       ["HARD에서도 UI 난이도 모름이면 추천 없음", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], uiDifficulty: "UNKNOWN" }, null],
       ["열린 설계는 UI 난이도 모름보다 먼저 Main으로 돌아온다", { designOpen: 0.9, uiDifficulty: "UNKNOWN" }, null],
@@ -1695,10 +1696,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["실패 근거 없는 재작업 표기(NONE)도 DeepSeek", { ...rework, reworkNature: "NONE" }, "NORMAL_DEEPSEEK"],
       ["FINDING_ID 표기가 없어도 Jev가 반복 실패로 보면 Main이 먼저다", { reworkNature: "RETURN_TO_MAIN" }, null],
       ["Bounded failed rework without FINDING_ID uses Sol", { reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
-      ["DeepSeek가 없으면 Sonnet으로 자동 대체하지 않고 추천 없음(Main이 다시 판단)", { candidates: without("NORMAL_DEEPSEEK") }, null],
-      ["HARD DeepSeek가 없으면 HARD Sonnet으로 자동 대체하지 않고 추천 없음", { workClass: "HARD", candidates: without("HARD_CODE_DEEPSEEK") }, null],
-      ["어려운 UI인데 Sonnet이 없으면 추천 없음(Opus·Sol로 올리지 않음)", { uiDifficulty: "DIFFICULT", candidates: without("NORMAL_SONNET") }, null],
-      ["DeepSeek·Sonnet이 모두 없으면 추천 없음", { candidates: without("NORMAL_DEEPSEEK", "NORMAL_SONNET") }, null],
+      ["DeepSeek가 없으면 Opus로 자동 대체하지 않고 추천 없음(Main이 다시 판단)", { candidates: without("NORMAL_DEEPSEEK") }, null],
+      ["HARD DeepSeek가 없으면 HARD Opus로 자동 대체하지 않고 추천 없음", { workClass: "HARD", candidates: without("HARD_CODE_DEEPSEEK") }, null],
+      ["어려운 UI인데 Opus가 없으면 추천 없음(Sonnet·Sol로 올리지 않음)", { uiDifficulty: "DIFFICULT", candidates: without("NORMAL_OPUS") }, null],
+      ["어려운 UI인데 HARD Opus가 없으면 추천 없음", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT", candidates: without("HARD_UI_OPUS") }, null],
+      ["DeepSeek·Opus가 모두 없으면 추천 없음", { candidates: without("NORMAL_DEEPSEEK", "NORMAL_OPUS") }, null],
       ["Jev 실패 → 추천 없음", { fail: true }, null],
     ];
     for (const [label, { task: taskBrief, ...options }, expected] of rows) {
@@ -1730,7 +1732,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         expect(batch.anthropicOverDaySlot).toBe(used >= 14.29);
         expect(batch.routes[0]!.profile).toBe(used >= 14.29
           ? workClass === "HARD" ? "HARD_CODE_SOL61" : "NORMAL_SOL"
-          : workClass === "HARD" ? "HARD_UI_SONNET" : "NORMAL_SONNET");
+          : workClass === "HARD" ? "HARD_UI_OPUS" : "NORMAL_OPUS");
         if (used >= 14.29) {
           expect((batch.routes[0]!.hardAllocation ?? batch.routes[0]!.normalAllocation)!.reason).toContain("오늘 하루 몫");
           expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
@@ -1738,7 +1740,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       }
     }
   });
-  test("DeepSeek 후보는 한도로 소진돼도 Sonnet으로 내려가지 않고 추천 없음이며, 미관측은 소진이 아니고 막지도 않는다", async () => {
+  test("DeepSeek 후보는 한도로 소진돼도 Opus로 내려가지 않고 추천 없음이며, 미관측은 소진이 아니고 막지도 않는다", async () => {
     const spent = { limitReached: true, limits: [] };
     const observed = (providers: Record<string, unknown[]>) => async () => ({ state: "observed", observedAt: 1, providers }) as never;
     // 미관측: DeepSeek 유지, 사유에 남긴다.
@@ -1750,16 +1752,16 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 관측된 정상 한도: DeepSeek.
     const fine = harness({ quota: observed({ hive: [{ limitReached: false, limits: [] }] }) });
     expect((await fine.prepare("정상", [fine.task], {} as never))[0]!.normalAllocation).toMatchObject({ state: "observed", profile: "NORMAL_DEEPSEEK" });
-    // DeepSeek 소진: Sonnet이 멀쩡해도 자동 대체 없이 추천 없음. 구조 차단이 아니라 Main 재판단이라 returnToMain은 false다.
+    // DeepSeek 소진: Opus가 멀쩡해도 자동 대체 없이 추천 없음. 구조 차단이 아니라 Main 재판단이라 returnToMain은 false다.
     const dsSpent = harness({ quota: observed({ hive: [spent] }) });
     const [dsSpentRoute] = await dsSpent.prepare("DeepSeek 소진", [dsSpent.task], {} as never);
     expect(dsSpentRoute).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
     // 다른 provider의 소진은 DeepSeek 추천을 바꾸지 않는다.
     const others = harness({ quota: observed({ anthropic: [spent], "openai-codex": [spent] }) });
     expect((await others.prepare("다른 provider 소진", [others.task], {} as never))[0]!.profile).toBe("NORMAL_DEEPSEEK");
-    // 어려운 UI는 Sonnet 소진 시 추천 없음. DeepSeek로 내려가지 않는다.
+    // 어려운 UI는 Opus 소진 시 추천 없음. DeepSeek로 내려가지 않는다.
     const uiSpent = harness({ uiDifficulty: "DIFFICULT", quota: observed({ anthropic: [spent] }) });
-    expect((await uiSpent.prepare("UI Sonnet 소진", [uiSpent.task], {} as never))[0]!.profile).toBeNull();
+    expect((await uiSpent.prepare("UI Opus 소진", [uiSpent.task], {} as never))[0]!.profile).toBeNull();
   });
   test("추천 후보는 ROUTING_REASON 없이 발주되고, Sonnet·Opus·Sol은 의도한 예외로 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 계약 근거로 의도한 예외를 선택함");
@@ -1773,15 +1775,17 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       expect(await h.dispatch(`${alternative}:auto`, reasoned), alternative).toBeUndefined();
       expect(await h.dispatch(`${alternative}:high`, reasoned), alternative).toMatchObject({ input: { tasks: [expect.objectContaining({ model: `${alternative}:auto` })] } });
     }
-    // 어려운 UI의 추천은 Sonnet이고 DeepSeek는 근거가 있어야 한다. 추천이 없는 Main 반환 route도 근거 없이는 발주할 수 없다.
+    // 어려운 UI의 추천은 Opus이고 DeepSeek·Sonnet은 근거가 있어야 한다. 추천이 없는 Main 반환 route도 근거 없이는 발주할 수 없다.
     const ui = harness({ uiDifficulty: "DIFFICULT" });
-    expect((await ui.prepare("어려운 UI", [ui.task], {} as never))[0]!.profile).toBe("NORMAL_SONNET");
-    expect(await ui.dispatch(`${SONNET}:auto`)).toBeUndefined();
-    expect(await ui.dispatch(`${DEEPSEEK}:auto`)).toMatchObject({ block: true });
+    expect((await ui.prepare("어려운 UI", [ui.task], {} as never))[0]!.profile).toBe("NORMAL_OPUS");
+    expect(await ui.dispatch(`${OPUS}:auto`)).toBeUndefined();
+    for (const alternative of [`${DEEPSEEK}:auto`, `${SONNET}:auto`]) {
+      expect(await ui.dispatch(alternative), alternative).toMatchObject({ block: true });
+    }
     const open = harness({ designOpen: 0.9 });
     expect((await open.prepare("열린 설계", [open.task], {} as never))[0]!.profile).toBeNull();
     // 해결되지 않은 구조 결정은 어떤 후보도, 임의의 ROUTING_REASON으로도 발주할 수 없다.
-    for (const model of [DEEPSEEK, SONNET, "anthropic/claude-opus-5-5"]) {
+    for (const model of [DEEPSEEK, SONNET, OPUS]) {
       expect(await open.dispatch(`${model}:auto`, reasoned), model).toMatchObject({ block: true, reason: expect.stringContaining("maker_route를 다시 실행") });
     }
     // 모름(UNKNOWN)은 막지 않는다: 근거 없이는 막히고, Main이 ROUTING_REASON으로 정하면 기존 경로로 발주된다. 비싼 모델로 자동 승격하지 않는다.
@@ -1814,13 +1818,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const [first] = await h.prepare("반복 실패", [h.task], {} as never);
     expect(first!.profile).toBeNull();
     expect(first!.normalAllocation).toMatchObject({ returnToMain: true, reason: expect.stringContaining("maker_route를 다시 실행") });
-    expect(await h.dispatch(`${SONNET}:auto`, reasoned)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${OPUS}:auto`, reasoned)).toMatchObject({ block: true });
     // Main이 접근을 바꾼 사실로 다시 준비하면 새 판단이 나오고 과거 실패 기록만으로 계속 막히지 않는다.
     const revised = { ...h.task, assessment: { ...facts, settledImplementation: ["상태 소유자를 store로 옮기는 새 접근으로 확정"], failureEvidence: ["이전 접근은 갱신 시점이 둘로 갈려 실패함"] } };
     const [second] = await h.prepare("접근 변경", [revised], {} as never);
     expect(second!.normalAllocation).toMatchObject({ returnToMain: false });
-    expect(second!.profile).toBe("NORMAL_SONNET");
-    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
+    expect(second!.profile).toBe("NORMAL_OPUS");
+    expect(await h.dispatch(`${OPUS}:auto`)).toBeUndefined();
     expect(h.requests).toHaveLength(2);
   });
   test("기존 owner 충돌은 추천과 상관없이 새 발주를 막는다", async () => {
@@ -1859,7 +1863,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 일반 후보가 모두 없어도 Gemini·GLM으로 조용히 대체하지 않는다.
     const only = harness({
       workClass: "NORMAL",
-      candidates: [...candidates, ...explicit].filter((c) => !["NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"].includes(c.profile)),
+      candidates: [...candidates, ...explicit].filter((c) => !["NORMAL_OPUS", "NORMAL_SONNET", "NORMAL_DEEPSEEK", "NORMAL_SOL"].includes(c.profile)),
     });
     expect((await only.prepare("명시 후보만", [only.task], {} as never))[0]!.profile).toBeNull();
   });
@@ -2097,12 +2101,13 @@ describe("발주 이력 기록과 history advisory", () => {
 });
 
 describe("어려운 UI 이관과 active owner", () => {
-  test("어려운 UI에서도 Sonnet이 없으면 추천 없음이고 비싼 모델로 자동 승격하지 않는다", async () => {
-    const h = harness({ uiDifficulty: "DIFFICULT", candidates: without("NORMAL_SONNET", "HARD_CODE_SONNET", "HARD_UI_SONNET") });
+  test("어려운 UI에서도 Opus가 없으면 추천 없음이고 비싼 모델로 자동 승격하지 않는다", async () => {
+    const h = harness({ uiDifficulty: "DIFFICULT", candidates: without("NORMAL_OPUS", "HARD_UI_OPUS") });
     const batch = await h.prepareBatch("UI 후보 없음", [h.task], {} as never);
     expect(batch.routes[0]).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
-    // 근거 없이는 Opus·DeepSeek로 대신 발주할 수 없다.
-    expect(await h.dispatch("anthropic/claude-opus-5-5:auto")).toMatchObject({ block: true });
+    // 근거 없이는 Sonnet·DeepSeek로 대신 발주할 수 없다.
+    expect(await h.dispatch(`${SONNET}:auto`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toMatchObject({ block: true });
   });
 
   test("UI 이관도 active writer를 보존하고 freeze 뒤 명시적 새 발주만 허용한다", async () => {
@@ -2110,11 +2115,11 @@ describe("어려운 UI 이관과 active owner", () => {
     const owner = { name: "Previous", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"], active: true };
     h.setOwners([owner]);
     await h.prepareBatch("UI 경계 발견", [h.task], {} as never);
-    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 변경·증거 인계 후 Sonnet 이관");
-    expect(await h.dispatch(`${SONNET}:auto`, reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("active owner") });
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 변경·증거 인계 후 Opus 이관");
+    expect(await h.dispatch(`${OPUS}:auto`, reasoned)).toMatchObject({ block: true, reason: expect.stringContaining("active owner") });
     h.setOwners([{ ...owner, active: false }]);
     await h.prepareBatch("UI 경계 발견", [h.task], {} as never);
-    expect(await h.dispatch(`${SONNET}:auto`, reasoned)).toBeUndefined();
+    expect(await h.dispatch(`${OPUS}:auto`, reasoned)).toBeUndefined();
   });
 });
 
@@ -2550,8 +2555,8 @@ describe("산출물별 필수 스킬 advisory(rule://frontend 정본, 발주 비
     expect(gaps.some((gap) => gap.includes("kill-ai-slop") && gap.includes("이유가 없음"))).toBe(true);
     // 분류 답은 Main용 recommendations에 섞지 않는다.
     expect(Object.keys(route.recommendations ?? {}).some((key) => key.startsWith("requiredSkill"))).toBe(false);
-    expect(await h.dispatch(`${SONNET}:auto`, mockup)).toBeUndefined();
-    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: mockup, model: `${SONNET}:auto` }] });
+    expect(await h.dispatch(`${OPUS}:auto`, mockup)).toBeUndefined();
+    h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: mockup, model: `${OPUS}:auto` }] });
     expect(ledger.records.at(-1)).toMatchObject({
       type: "dispatch",
       requiredSkills: {

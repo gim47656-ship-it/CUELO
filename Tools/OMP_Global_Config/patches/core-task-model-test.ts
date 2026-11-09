@@ -110,6 +110,22 @@ const SPACE = "one fix: forward model";
 	}
 }
 
+// Wire declaration must not disappear when upstream gates task.perCallModel: Maker routing
+// needs the selector advertised even though non-Maker execution still goes through preflight.
+for (const batchEnabled of [true, false]) {
+	for (const isolationEnabled of [true, false]) {
+		for (const defaultAgent of ["task", "maker"]) {
+			const schema = getTaskSchema({ batchEnabled, isolationEnabled, defaultAgent, perCallModel: false });
+			const wire = schema.toJsonSchema() as {
+				properties: Record<string, { type?: string; items?: { properties: Record<string, { type?: string }> } }>;
+			};
+			const model = batchEnabled ? wire.properties.tasks.items?.properties.model : wire.properties.model;
+			check(`wire model with per-call disabled: ${defaultAgent}/${batchEnabled ? "batch" : "single"}/${isolationEnabled ? "iso" : "flat"}`,
+				model?.type === "string", JSON.stringify(model));
+		}
+	}
+}
+
 // 4. single flat: 최상위 model 보존, 생략 시 부재.
 {
 	const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: false });
@@ -275,7 +291,9 @@ if (!existsSync(`${CORE}/task/seance.ts`)) {
 			const batchTool = await makeTool(spawns, true);
 			const asked = await speculativeAsked(batchTool, batchArgs(agent));
 			check(`TaskTool speculative ${label}: planSpawns 가 spawn 을 만든다`, asked >= 1, `asked=${asked}`);
-			const batchResult = resultText(await batchTool.execute("call-batch", batchArgs(agent)));
+			const batchParsed = parse(getTaskSchema({ isolationEnabled: false, batchEnabled: true, defaultAgent: spawns === "maker" ? "maker" : "task", perCallModel: false }), batchArgs(agent));
+			if (!batchParsed.ok) throw new Error(batchParsed.error);
+			const batchResult = resultText(await batchTool.execute("call-batch", batchParsed.value));
 			check(`TaskTool dispatch batch ${label}: preflight 가 같은 selector 를 받는다`, batchResult.includes(`${PREFLIGHT}${JSON.stringify(SELECTOR)}`), batchResult.slice(0, 200));
 			const flatTool = await makeTool(spawns, false);
 			const flatArgs = { task: "Read-only fixture.", solutionSpace: SPACE, model: SELECTOR, ...(agent ? { agent } : {}) };
@@ -286,7 +304,9 @@ if (!existsSync(`${CORE}/task/seance.ts`)) {
 		const otherArgs = { context: "Fixture", tasks: [{ name: "Other", agent: "explore", task: "Read-only fixture.", solutionSpace: SPACE, model: SELECTOR }] };
 		const otherAsked = await speculativeAsked(otherTool, otherArgs);
 		check("TaskTool speculative 다른 agent + model: spawn 을 만들지 않는다", otherAsked === 0, `asked=${otherAsked}`);
-		const otherResult = resultText(await otherTool.execute("call-other", otherArgs));
+		const otherParsed = parse(getTaskSchema({ isolationEnabled: false, batchEnabled: true, perCallModel: false }), otherArgs);
+		if (!otherParsed.ok) throw new Error(otherParsed.error);
+		const otherResult = resultText(await otherTool.execute("call-other", otherParsed.value));
 		const refusal = PER_CALL_GATE ? PER_CALL_OFF : "`model` is only accepted for the `seance` agent.";
 		check("TaskTool dispatch 다른 agent + model: validator 가 거절한다", otherResult.includes(refusal) && !otherResult.includes(PREFLIGHT), otherResult.slice(0, 200));
 		if (PER_CALL_GATE) {

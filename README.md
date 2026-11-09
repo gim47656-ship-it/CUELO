@@ -20,21 +20,21 @@ For agent-assisted setup and operation, see [docs/agent-guide.md](https://github
 
 - **One agent home, two surfaces**: the terminal `omp` CLI and the browser share the same `~/.omp/agent` sessions, credentials and model settings. Start in one, continue in the other.
 - **Multi-agent work you can inspect**: Main delegates to Makers; each task gets a card with live status, Main's review verdict, a flow graph and the files it changed.
-- **GPT worker preference**: With a GPT-family main model, code and research tasks prefer configured GPT workers. Design routing stays unchanged, and worker effort stays `Auto`.
+- **Maker routing by task shape**: Work with settled direction and acceptance goes to the cheapest configured candidate, difficult UI design goes to the Anthropic side, bounded design and failed rework go to the OpenAI side, and large redesigns or repeated failures return to Main.
 - **Accounts and models at a glance**: per-account usage cards with limit windows and reset guidance, plus model roles you switch from the composer.
 - **Voice call and face-to-face interpreter**: a live voice call with the agent, and an interpreter for Korean with English, Chinese, Vietnamese, Japanese or Thai, using your ChatGPT account.
 - **Phone-ready**: install as a PWA, lock it with a password, and reach it over your own HTTPS proxy or VPN.
-- **A harness that learns from failures**: observed failures become rules and memory so the same mistake is not repeated. It is not an automatic background self-fix.
+- **A harness that learns from failures**: observed failures become rules and memory so the same mistake is not repeated. Ordinary sessions do not repair the project in the background on their own; an optional scheduled nightly session on a machine you set up reviews open issues and evidence-backed improvements and publishes a release, and each PC installs new releases in its own morning session.
 
 ### 한국어 요약
 
 - **한 곳의 에이전트, 두 개의 화면**: 터미널 `omp` CLI와 브라우저가 같은 `~/.omp/agent`의 세션·계정·모델 설정을 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고 다시 돌아갈 수 있습니다.
 - **들여다볼 수 있는 여러 에이전트 작업**: Main이 Maker에게 일을 맡기면 작업마다 카드가 붙어 실행 상태, Main의 검수 판정, 흐름 그래프, 바뀐 파일을 보여 줍니다.
-- **GPT 작업자 우선 추천**: 메인 모델이 GPT 계열이면 코드·조사 작업에서 설정된 GPT 후보를 우선합니다. 디자인 작업의 추천은 그대로이며 작업 강도는 `Auto`를 유지합니다.
+- **작업 성격별 Maker 배정**: 방향과 완료 조건이 정해진 작업은 가장 저렴한 설정 후보에게, 열린 시각 및 상호작용 설계가 있는 어려운 UI 작업은 Anthropic 쪽 후보에게, 범위가 제한된 설계와 실패 후 재작업은 OpenAI 쪽 후보에게 맡기며, 경계를 넘는 큰 재설계와 반복 실패는 Main으로 돌아옵니다.
 - **계정과 모델 한눈에**: 계정별 사용량 카드에서 한도 창과 리셋 권장을 보고, 입력창에서 모델 역할을 바꿉니다.
 - **실시간 통화와 대면 통역**: 에이전트와 음성으로 통화하고, 한국어와 영어·중국어·베트남어·일본어·태국어 사이를 ChatGPT 계정으로 통역합니다.
 - **휴대폰에서도**: PWA로 설치하고 비밀번호로 잠근 뒤, 직접 둔 HTTPS 프록시나 VPN으로 접속합니다.
-- **실패에서 배우는 하네스**: 작업 중 확인한 실패를 규칙과 기억에 반영해 같은 실수를 줄입니다. 백그라운드에서 저절로 고치는 기능은 아닙니다.
+- **실패에서 배우는 하네스**: 작업 중 확인한 실패를 규칙과 기억에 반영해 같은 실수를 줄입니다. 일반 세션은 백그라운드에서 프로젝트를 스스로 고치지 않습니다. 직접 마련한 머신에서 선택적으로 돌리는 예약 야간 세션은 열린 이슈와 근거 있는 개선을 검토해 릴리스로 게시하고, 각 PC는 아침 세션에 새 릴리스를 설치합니다.
 
 ## Quick start
 
@@ -201,7 +201,7 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 
 ## 하네스 세부 동작
 
-내장 OMP 코어는 **18.18.3**입니다. 에이전트가 묻는 질문은 HTML 폼 하나로 오며, 웹은 폼 전체를 한 화면에 보여 줍니다. 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적이며, 앱에 포함된 CLI를 `omp` 명령으로 사용하는 설치에서는 웹과 같은 코어를 사용합니다.
+내장 OMP 코어는 **18.18.5**입니다. 에이전트가 묻는 질문은 HTML 폼 하나로 오며, 웹은 폼 전체를 한 화면에 보여 줍니다. 별도로 설치한 `omp` CLI의 버전은 웹 업데이트와 독립적이며, 앱에 포함된 CLI를 `omp` 명령으로 사용하는 설치에서는 웹과 같은 코어를 사용합니다.
 
 문서 하네스는 기존 Word·Excel·PowerPoint 문서를 열고 편집하거나 변환할 때 LibreOffice를 우선 사용합니다. 원본은 보존하고 출력 결과를 확인하며, 매크로·전용 기능·서식 호환성이 필요하거나 사용자가 지정하면 MS Office를 사용합니다.
 
@@ -231,7 +231,7 @@ CUELO의 목적은 작업 중 확인한 실패와 막힘을 기억·작업 규�
 
 검증 결과는 [연결 검사·실환경 확인·모델 평가](./docs/harness.md#검증-결과-읽기)로 구분해 읽습니다. 도구에 요청을 전달했다는 표시만으로 사용자가 원한 작업까지 끝났다고 판단하지 않습니다.
 
-컴퓨터 조작을 맡은 모델은 지정한 대상과 완료 조건에 맞춰 전담 도구만 사용합니다.
+데스크톱 조작은 별도 작업자 도구 없이 Main이 eval `computer` 헬퍼로 대상 창, 원하는 결과, 다시 읽어 확인하는 단계를 한 셀에 묶어 직접 수행합니다.
 
 교차 검토를 닫을 때 검토 이후의 파일 변경·삭제를 알려 줍니다. 앞선 라운드에서 이미 검토한 삭제는 다른 파일의 후속 검토를 이어 가도 다시 경고하지 않습니다. 검토 뒤 바뀐 코드가 남아 있으면 지적을 모두 닫아도 통과하지 않으므로 수정분을 다음 라운드에서 다시 검토받습니다. 문서·테스트·생성물만 바뀐 경우는 안내로 끝납니다.
 
@@ -243,7 +243,7 @@ Main이 요구사항과 설계 경계를 먼저 정리하고 작업 성격에 �
 
 큰 문서 검토는 내용을 나누어 빠짐없이 확인하며, 일부 실패가 발생했을 때 전체를 통과로 표시하지 않습니다. 기존 작은 문서 경로와 동일한 내용에 대한 통과 재사용 동작은 그대로 유지됩니다.
 
-세션은 관련 작업을 시작할 때 미결 항목과 미해결 실패를 현재 근거로 분류하고, 이미 승인된 범위 안의 실행 가능한 일만 원인 확인·처리·재검증한 뒤 문서를 맞춥니다. 막힌 실패는 증거와 재검증 기준을 `HANDOFF.md`에 남겨 다음 관련 세션이 이어받습니다. 백그라운드에서 스스로 고치는 기능은 아닙니다. 자세한 내용은 [하네스 안내](./docs/harness.md#미결-작업-처리)를 참고하세요.
+세션은 관련 작업을 시작할 때 미결 항목과 미해결 실패를 현재 근거로 분류하고, 이미 승인된 범위 안의 실행 가능한 일만 원인 확인·처리·재검증한 뒤 문서를 맞춥니다. 막힌 실패는 증거와 재검증 기준을 `HANDOFF.md`에 남겨 다음 관련 세션이 이어받습니다. 일반 세션이 백그라운드에서 스스로 고치는 기능은 아닙니다. 자세한 내용은 [하네스 안내](./docs/harness.md#미결-작업-처리)를 참고하세요.
 
 WSL에서 작업하는 프로젝트에 기존 Windows 사본이 연결되어 있으면, 작업 완료 후 검증·게시한 소스와 문서를 Windows 사본에도 같은 커밋으로 반영합니다. Windows에 별도로 남은 변경이나 갈라진 이력은 덮어쓰지 않고 알립니다. 실시간 양방향 동기화는 아니며, 설치된 프로필·인증정보·실행 산출물·독립 CLI는 복사하지 않습니다. Windows 전용 장비 프로젝트는 기존 위치와 도구를 유지합니다.
 
@@ -260,7 +260,7 @@ WSL에서 작업하는 프로젝트에 기존 Windows 사본이 연결되어 있
 
 이전 세션이나 압축 전 대화에서 빠진 사용자 지시·정정은 원문 회수 도구로 다시 확인할 수 있습니다. 현재 프로젝트와 각 세션의 선택된 분기를 기준으로 찾으며, 보관 세션·다른 프로젝트는 명시한 경우에만 포함합니다. 검색 한도에 걸리면 결과가 일부임을 표시하고, 원문을 읽기만 하며 현재 승인으로 되살리지 않습니다.
 
-하네스의 일반 비-UI 작업은 기본 구현 후보를 추천합니다. 그 후보를 쓸 수 없거나, Main이 결과를 기다리지 않는 백그라운드 작업이거나, 관측된 구독 사용량이 그날 몫을 넘었으면 지정된 대안 후보를 먼저 추천합니다. 사용량이 관측되지 않았다는 사실만으로는 대안으로 넘어가지 않습니다. 추천은 Main의 선택을 돕는 정보이고 진행 중인 담당자의 모델을 바꾸지 않습니다.
+방향과 수용 조건이 정해진 작업은 저렴한 기본 담당을 추천하고, 열린 시각이나 상호작용 설계가 필요한 어려운 UI 작업은 Anthropic 쪽 후보를, 범위가 제한된 설계 선택과 구현 실패 뒤 재작업은 OpenAI 쪽 후보를 추천합니다. 모든 Anthropic 계정이 그날 주간 창 몫을 넘기면 어려운 UI 추천도 OpenAI 쪽 후보로 바뀌며, 경계를 넘는 큰 재설계와 반복 실패는 Main으로 돌아와 접근법을 다시 정합니다. 기본 추천 밖의 명시 선택 전용 후보는 Main이 사유(`ROUTING_REASON`)를 남겨 고를 때만 씁니다. 추천은 Main의 선택을 돕는 정보이고 진행 중인 담당자의 모델을 바꾸지 않습니다.
 
 컨텍스트 창과 압축 시작점은 따로 관리합니다. 실제 요청·압축 뒤 재탐색·보고 비용을 근거로 설정을 조정하고, 누락된 값은 미상으로 남기는 운영을 따릅니다. 외부 사례의 절감률을 보장하지 않으며 압축 뒤 기존 결정과 검증 증거를 이어받습니다. 설정과 해석은 [하네스 안내](./docs/harness.md#컨텍스트와-압축-운용)를 참고하세요.
 

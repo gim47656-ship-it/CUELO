@@ -34,7 +34,9 @@ export async function selectNewSessionModel(
       resolve({ state: "unavailable", observedAt: Date.now(), reason: "new-session quota budget exceeded" });
     }, 2_000);
     const quota = await Promise.race([readQuota(["anthropic"], controller.signal), timeout]);
-    if (!anthropicOverDaySlot(quota, enabledAnthropicCredentialIds(storage))) return normal();
+    // Fable counts against its own weekly window, so a Fable default is judged on that window's daily share.
+    const window = options.defaultModel?.provider === "anthropic" && options.defaultModel.modelId.startsWith("claude-fable-") ? "fable" : "shared";
+    if (!anthropicOverDaySlot(quota, enabledAnthropicCredentialIds(storage), window)) return normal();
     return { initial: selectInitialModelScope(scope, { ...options, requestedModel: target }), notice: DAY_SLOT_START_NOTICE };
   } catch {
     return normal();

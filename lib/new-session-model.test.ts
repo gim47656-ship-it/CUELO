@@ -111,6 +111,26 @@ describe("Anthropic daily-share policy", () => {
     expect(result.initial.model).toBe(opus); expect(result.notice).toBeNull();
   });
 
+  test("a Fable default is judged on Fable's own weekly window, not the shared one", async () => {
+    const fable = { provider: "anthropic", id: "claude-fable-5-2" } as ModelScopeResult["visible"][number];
+    const fableScope = { ...scope, visible: [fable, sol] } as ModelScopeResult;
+    const fableFresh = { ...fresh, defaultModel: { provider: fable.provider, modelId: fable.id } };
+    const withFable = (id: number, sharedUsed: number, fableUsed: number): QuotaAccount => {
+      const a = account(id, sharedUsed);
+      a.limits.push({ id: "anthropic:7d:fable", usedFraction: 0.05, resetsAt: 100, windowId: "7d", shared: false,
+        daySlot: { usedPct: fableUsed, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } });
+      return a;
+    };
+    const sharedSpent = snapshot([withFable(9, 24, 5), withFable(11, 20, 0)]);
+    const kept = await selectNewSessionModel(fableScope, fableFresh, storage, async () => sharedSpent);
+    expect(kept.initial.model).toBe(fable); expect(kept.notice).toBeNull();
+    const fableSpent = snapshot([withFable(9, 1, 20), withFable(11, 1, 15)]);
+    const switched = await selectNewSessionModel(fableScope, fableFresh, storage, async () => fableSpent);
+    expect(switched.initial.model).toBe(sol); expect(switched.notice).toBe(DAY_SLOT_START_NOTICE);
+    // An Opus default keeps the shared window.
+    expect((await selectNewSessionModel(scope, fresh, storage, async () => sharedSpent)).initial.model).toBe(sol);
+  });
+
   test("sidecar adapter feeds the same predicate", async () => {
     const server = Bun.serve({ port: 0, fetch: () => Response.json({ reports: [9, 11].map((credentialId) => ({
       provider: "anthropic", credentialId, limits: [{ id: "anthropic:7d", scope: { windowId: "7d", shared: true },
