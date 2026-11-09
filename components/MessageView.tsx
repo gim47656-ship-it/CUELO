@@ -428,6 +428,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
             transition: "opacity 0.12s",
           }}>
             <button
+              className="message-meta-action"
               onClick={copyContent}
                title={t("i18n.copyMessage")}
               style={{
@@ -820,6 +821,7 @@ function AssistantMessageView({
         {message.usage && !isStreaming && (
           <button
             type="button"
+            className="message-meta-action"
             onClick={() => setUsageOpen((open) => !open)}
             onFocus={() => setHovered(true)}
             onBlur={() => setHovered(false)}
@@ -843,6 +845,7 @@ function AssistantMessageView({
         {isStreaming && Math.round(estimatedTokens) > 0 && (
           <button
             type="button"
+            className="message-meta-action"
             onClick={() => setUsageOpen((open) => !open)}
             aria-expanded={usageOpen}
             title={t("i18n.estimatedTokens")}
@@ -863,6 +866,7 @@ function AssistantMessageView({
         )}
         {textContent && !isStreaming && (
           <button
+            className="message-meta-action"
             onClick={copyContent}
              title={t("i18n.copyMessage")}
             style={{
@@ -2212,6 +2216,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
         >
           {text || detailsText ? (
             <button
+              className="message-meta-action"
               onClick={copyContent}
               style={{
                 padding: "3px 7px",

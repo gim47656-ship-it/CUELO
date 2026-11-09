@@ -5785,9 +5785,11 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   }
 
   /* Phone: the status line and the numeric readout yield to the controls, but
-     the meter and its accessible name stay. */
+     the meter and its accessible name stay. The project name went first and
+     left only "C…" beside a cut title; the drawer and window title still name it. */
   .workspace-session-status,
-  .workspace-context-readout {
+  .workspace-context-readout,
+  .workspace-session-project {
     display: none !important;
   }
 
@@ -5873,6 +5875,25 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     content: "";
     position: absolute;
     inset: -6px;
+  }
+
+  /* 메시지 아래 복사·사용량(22px)과 세션 줄의 고정·이름 변경·보관·삭제(26px)는 모양을 그대로 두고
+     세로 표적만 44px로 넓힌다. 옆 단추와 붙어 있어 가로는 넓히지 않는다. 숨겨진 동안에는
+     단추의 pointer-events:none을 이어받아 아무것도 가로채지 않는다. */
+  .message-meta-action,
+  .navigator-session-action {
+    position: relative;
+  }
+
+  .message-meta-action::before,
+  .navigator-session-action::before {
+    content: "";
+    position: absolute;
+    inset: -11px 0;
+  }
+
+  .navigator-session-action::before {
+    inset-block: -9px;
   }
 
   /* 드로어가 열리면 뒤 레이어는 확실히 뒤로 물러나야 한다. 기본 --scrim은 검정 17%라
@@ -6732,6 +6753,14 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .translator-pair {
     min-inline-size: 44px;
     min-block-size: 44px;
+  }
+
+  /* 대화가 있을 때 펼친 설정은 화면의 40%까지만 차지하고 그 안에서 스크롤한다. 나머지는
+     통역·원문 칸과 시작 단추가 쓴다. 대화가 없을 때는 설정이 화면의 주인공이라 제한하지 않는다. */
+  .translator-header:has(.translator-pair) .translator-setup {
+    max-block-size: 40dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   /* 언어 고르기와 마이크 스위치 줄은 한 줄을 통째로 쓴다. */

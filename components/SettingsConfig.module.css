@@ -359,15 +359,16 @@
 
 @media (max-width: 760px) {
   .backdrop { padding: 8px; }
-  .window { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: 82px minmax(0, 1fr); border-radius: var(--radius-surface); }
-  .brand { padding: 14px 6px 9px; text-align: center; }
-  .eyebrow, .context, .searchWrap, .navLabel, .closeButton span:first-child { display: none; }
-  .title { font-size: 12px; }
-  .nav { padding-inline: 6px; }
-  .navButton { height: 45px; flex-direction: column; justify-content: center; gap: 3px; padding: 0 3px; }
-  .navButton span { display: block; width: 100%; overflow: hidden; font-size: 8px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-  .closeButton { display: grid; place-items: center; }
-  .closeButton span:last-child { display: inline; }
+  /* 폰에서는 메뉴를 위쪽 가로 줄로 올리고 본문이 창 폭을 다 쓴다. 82px 세로 레일에 8px 라벨을
+     두면 라벨은 읽을 수 없고 본문은 265px로 줄어 「모델」 같은 제목이 글자마다 꺾였다. */
+  .window { width: calc(100vw - 16px); height: calc(100dvh - 16px); grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); border-radius: var(--radius-surface); }
+  .sidebar { flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); }
+  .brand, .searchWrap, .navLabel { display: none; }
+  .nav { display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 6px; }
+  .navButton { flex: none; width: auto; height: 44px; gap: 6px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
+  .closeRail { flex: none; padding: 6px; border-top: 0; border-left: 1px solid var(--border); }
+  .closeButton { display: grid; place-items: center; font-size: 18px; }
+  .closeButton span:first-child { display: none; }
   .scrollContent { padding: 24px 16px 40px; }
   .settingRow { grid-template-columns: 1fr; gap: 10px; }
   .settingControl, .multiSelect { justify-content: flex-start; }

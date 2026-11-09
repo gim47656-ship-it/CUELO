@@ -472,7 +472,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     : phase === "error" ? tt("translator.errorStatus")
     : "";
 
-  const showSetup = !active || setupOpen;
+  // 대화가 남아 있으면 통역 중처럼 설정을 언어 짝 단추 뒤로 접는다. 펼쳐 둔 설정 묶음이
+  // 폰 화면을 거의 다 차지해 통역·원문 칸이 한 줄 높이로 눌렸다.
+  const collapsible = active || segments.length > 0;
+  const showSetup = !collapsible || setupOpen;
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
   const canStart = active || !(unsupported || insecure || call.supported === null);
@@ -557,7 +560,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               <BackIcon />
             </button>
           ) : null}
-          {active ? (
+          {collapsible ? (
             <>
               <h2 className="sr-only">{tt("translator.title")}</h2>
               <button

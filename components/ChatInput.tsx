@@ -3907,7 +3907,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 width: "max-content",
                 maxWidth: "calc(100vw - 32px)",
                 flexWrap: "wrap",
-                justifyContent: "flex-end",
+                // 휴대폰에서는 줄이 바뀌므로 왼쪽부터 채운다. 오른쪽 정렬이면 첫 줄 왼쪽이 비고
+                // 둘째 줄 단추만 오른쪽 끝에 붙어 어긋나 보였다.
+                justifyContent: isMobile ? "flex-start" : "flex-end",
                 border: "1px solid var(--seed-color-stroke-neutral-muted)",
                 borderRadius: "var(--seed-radius-r2)",
                 background: "var(--seed-color-bg-layer-floating)",

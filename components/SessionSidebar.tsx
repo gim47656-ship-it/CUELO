@@ -3708,6 +3708,7 @@ function SessionItem({
           {!session.transient && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
               <button
+                className="navigator-session-action"
                 onClick={(e) => {
                   e.stopPropagation();
                   onTogglePin?.();
@@ -3732,6 +3733,7 @@ function SessionItem({
                 <PinIcon filled={isPinned} />
               </button>
               <button
+                className="navigator-session-action"
                 onClick={startRename}
                 title={t("sidebar.rename")}
                 style={{
@@ -3760,6 +3762,7 @@ function SessionItem({
                 </svg>
               </button>
               <button
+                className="navigator-session-action"
                 onClick={performArchive}
                 title={t("sidebar.archive")}
                 style={{
@@ -3786,6 +3789,7 @@ function SessionItem({
                 </svg>
               </button>
               <button
+                className="navigator-session-action"
                 onClick={handleDeleteClick}
                 title={t("sidebar.deleteWithShiftClick")}
                 style={{
