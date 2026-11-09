@@ -154,7 +154,13 @@ await test("bare wait with only a failed job recovers the error and then stops r
   assert.ok(!JSON.stringify(second).includes("STALL-FAILURE"));
  } finally { await manager.dispose({ timeoutMs: 0 }); }
 });
-await test("queued steering interrupts a running ask, skips a later ask, and reaches the next model step", async () => {
+// 18.18.3: ask closes itself on a queued USER steer (`toolCall.steeringSignal`, reason "user") and stays open for a finished
+// background job, a queued aside or a peer IRC. The CUELO `interruptible` marker is retired on 18.18.3 because it made agent-core
+// hard-abort the open form for those too (evidence: doc/history/2026/11/09-core-18183/maker-core.md).
+const ASK_FORM = `<form><fieldset><legend>Continue waiting?</legend><label><input type="radio" name="direction" value="continue" checked> Continue</label><label><input type="radio" name="direction" value="stop"> Stop</label></fieldset></form>`;
+const askUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+/** Real Agent loop with two `ask` calls in one batch; the form dialog is a fixture that never resolves on its own. */
+async function runAskBatch(afterAskStarted: (agent: InstanceType<typeof Agent>, control: { background: boolean; irc: boolean }) => void, settleMs: number) {
  const settings = createSettingsTestScope(key => {
   if (key === "ask.notify") return "off";
   if (key === "ask.timeout") return 0;
@@ -163,18 +169,21 @@ await test("queued steering interrupts a running ask, skips a later ask, and rea
  });
  const ask = new AskTool({ hasUI: true, settings } as never);
  const askStarted = Promise.withResolvers<void>();
- let askSignal: AbortSignal | undefined;
+ const dialogs: { signal?: AbortSignal; answer: () => void }[] = [];
+ // After the user's submit, a later ask of the same batch opens its form and gets answered at once, so the run can end.
+ let released = false;
  const toolContext = {
   hasUI: true,
   abort: () => assert.fail("steering ask preemption must not abort the session"),
   ui: {
    timeoutStartsOnPresentation: false,
-   askDialog: (_questions: unknown, options?: { signal?: AbortSignal }) => {
-    askSignal = options?.signal;
+   formDialog: (_html: string, options?: { signal?: AbortSignal }) => {
     askStarted.resolve();
-    // The real dialog owns this wait. `untilAborted` in AskTool races it against
-    // the agent-core tool signal, so it need not resolve to acknowledge a steer.
-    return new Promise<never>(() => {});
+    if (released) return Promise.resolve({ data: { direction: "continue" } });
+    // The real dialog owns this wait. `untilAborted` in AskTool races it against the dialog signal, so it need not resolve to acknowledge a steer.
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    dialogs.push({ signal: options?.signal, answer: () => resolve({ data: { direction: "continue" } }) });
+    return promise;
    },
   },
  };
@@ -182,67 +191,24 @@ await test("queued steering interrupts a running ask, skips a later ask, and rea
  assert.ok(model);
  let providerCalls = 0;
  let sawSteerAtProvider = false;
- const usage = () => ({
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
- });
  const streamFn = (_model: unknown, context: { messages: unknown[] }) => {
   const stream = createAssistantMessageEventStream();
   const call = ++providerCalls;
   queueMicrotask(() => {
    if (call === 1) {
-    const questions = [{
-     id: "direction",
-     question: "Continue waiting?",
-     options: [{ label: "Continue" }, { label: "Stop" }],
-     recommended: 0,
-    }];
-    const firstAsk = {
-     type: "toolCall" as const,
-     id: "ask-steering-running",
-     name: "ask",
-     arguments: { questions, i: "Waiting for user direction" },
-    };
-    const secondAsk = {
-     type: "toolCall" as const,
-     id: "ask-steering-not-started",
-     name: "ask",
-     arguments: { questions, i: "Waiting for user direction" },
-    };
-    const message = {
-     role: "assistant" as const,
-     content: [firstAsk, secondAsk],
-     api: model.api,
-     provider: model.provider,
-     model: model.id,
-     usage: usage(),
-     stopReason: "toolUse" as const,
-     timestamp: Date.now(),
-    };
+    const calls = ["ask-running", "ask-not-started"].map(id => ({ type: "toolCall" as const, id, name: "ask", arguments: { html: ASK_FORM, i: "Waiting for user direction" } }));
+    const message = { role: "assistant" as const, content: calls, api: model.api, provider: model.provider, model: model.id, usage: askUsage(), stopReason: "toolUse" as const, timestamp: Date.now() };
     stream.push({ type: "start", partial: message });
-    stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
-    stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: firstAsk, partial: message });
-    stream.push({ type: "toolcall_start", contentIndex: 1, partial: message });
-    stream.push({ type: "toolcall_end", contentIndex: 1, toolCall: secondAsk, partial: message });
+    calls.forEach((toolCall, contentIndex) => {
+     stream.push({ type: "toolcall_start", contentIndex, partial: message });
+     stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: message });
+    });
     stream.push({ type: "done", reason: "toolUse", message });
     stream.end();
     return;
    }
    sawSteerAtProvider = JSON.stringify(context.messages).includes("STEER-NOW");
-   const message = {
-    role: "assistant" as const,
-    content: [{ type: "text" as const, text: "Steering handled" }],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: usage(),
-    stopReason: "stop" as const,
-    timestamp: Date.now(),
-   };
+   const message = { role: "assistant" as const, content: [{ type: "text" as const, text: "Steering handled" }], api: model.api, provider: model.provider, model: model.id, usage: askUsage(), stopReason: "stop" as const, timestamp: Date.now() };
    stream.push({ type: "start", partial: message });
    stream.push({ type: "done", reason: "stop", message });
    stream.end();
@@ -252,45 +218,68 @@ await test("queued steering interrupts a running ask, skips a later ask, and rea
  const agent = new Agent({
   initialState: { systemPrompt: [], model, tools: [ask], messages: [] },
   streamFn: streamFn as never,
-  getToolContext: () => toolContext as never,
+  // The host builds the tool context around the loop's per-call context; `toolCall.steeringSignal` rides it.
+  getToolContext: (callContext: unknown) => ({ ...toolContext, toolCall: callContext }) as never,
  });
- const askResultDetails = new Map<string, unknown>();
+ const control = { background: false, irc: false };
+ agent.hasBackgroundCompletions = () => control.background;
+ agent.hasIrcInterrupts = () => control.irc;
+ const results = new Map<string, { isError: boolean; text: string }>();
  const unsubscribe = agent.subscribe(event => {
   if (event.type === "tool_execution_end" && event.toolName === "ask") {
-   askResultDetails.set(event.toolCallId, event.result.details);
+   const block = event.result.content?.[0];
+   results.set(event.toolCallId, { isError: event.isError === true, text: block?.type === "text" ? block.text : "" });
   }
  });
  try {
   const prompt = agent.prompt("Start");
   await within(askStarted.promise, 1_000, "ask start");
-  const steeredAt = Date.now();
-  agent.steer({
-   role: "user",
-   content: "STEER-NOW",
-   steering: true,
-   attribution: "user",
-   timestamp: steeredAt,
-  });
-  await within(prompt, 1_000, "steering preemption");
-  assert.equal(askSignal?.aborted, true);
-  assert.ok(Date.now() - steeredAt < 1_000);
-  assert.deepEqual(askResultDetails.get("ask-steering-running"), {
-   __interrupted: true,
-   source: "interrupt_skipped",
-   execution: "started",
-  });
-  assert.deepEqual(askResultDetails.get("ask-steering-not-started"), {
-   __synthetic: true,
-   source: "interrupt_skipped",
-   executed: false,
-  });
-  assert.equal(sawSteerAtProvider, true);
-  assert.equal(providerCalls, 2);
+  const changedAt = Date.now();
+  afterAskStarted(agent, control);
+  // Let a few 250 ms steering polls pass; a still-open form has settled nothing by then.
+  const settled = await Promise.race([prompt.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), settleMs))]);
+  const elapsed = Date.now() - changedAt;
+  const stillOpen = dialogs[0]?.signal?.aborted === false;
+  // The queued job/IRC is consumed by the time the user answers; a flag that stays up would hold the next model step forever.
+  control.background = false;
+  control.irc = false;
+  released = true;
+  dialogs.forEach(dialog => dialog.answer());
+  await within(prompt, 2_000, "ask run end");
+  return { settled, elapsed, stillOpen, dialogsOpened: dialogs.length, firstSignalAborted: dialogs[0]?.signal?.aborted, results, providerCalls, sawSteerAtProvider };
  } finally {
   unsubscribe();
  }
+}
+await test("a queued user steer closes the running ask, never opens a later ask, and reaches the next model step", async () => {
+ const run = await runAskBatch(agent => agent.steer({ role: "user", content: "STEER-NOW", steering: true, attribution: "user", timestamp: Date.now() }), 1_000);
+ assert.equal(run.settled, true, "the prompt finished without waiting for the dialog");
+ assert.ok(run.elapsed < 1_000, `closed in ${run.elapsed}ms`);
+ assert.equal(run.firstSignalAborted, true);
+ assert.equal(run.dialogsOpened, 1, "the later ask never opened its form");
+ for (const id of ["ask-running", "ask-not-started"]) {
+  const result = run.results.get(id);
+  assert.equal(result?.isError, true, id);
+  assert.match(result?.text ?? "", /Ask interrupted by message/, id);
+ }
+ assert.equal(run.sawSteerAtProvider, true);
+ assert.equal(run.providerCalls, 2);
 });
-await test("ordinary ask completion still returns the selected answer", async () => {
+for (const [name, trigger] of [
+ ["a finished background job", (control: { background: boolean }) => { control.background = true; }],
+ ["a peer IRC interrupt", (control: { irc: boolean }) => { control.irc = true; }],
+] as const) {
+ await test(`${name} leaves the user's open form alone`, async () => {
+  const run = await runAskBatch((_agent, control) => trigger(control as never), 800);
+  assert.equal(run.settled, false, "the form is still waiting for the user");
+  assert.equal(run.stillOpen, true, "the dialog signal stayed up");
+  // Once the user submits, the first ask returns the real answer instead of a skipped result.
+  const first = run.results.get("ask-running");
+  assert.equal(first?.isError, false);
+  assert.match(first?.text ?? "", /^User answers:/);
+ });
+}
+await test("ordinary ask completion still returns the submitted form data", async () => {
  const settings = createSettingsTestScope(key => {
   if (key === "ask.notify") return "off";
   if (key === "ask.timeout") return 0;
@@ -300,37 +289,21 @@ await test("ordinary ask completion still returns the selected answer", async ()
  const ask = new AskTool({ hasUI: true, settings } as never);
  const result = await ask.execute(
   "ordinary-ask",
-  {
-   questions: [{
-    id: "direction",
-    question: "Continue?",
-    options: [{ label: "Continue" }, { label: "Stop" }],
-    recommended: 0,
-   }],
-  },
+  { html: ASK_FORM },
   undefined,
   undefined,
   {
    hasUI: true,
    abort: () => assert.fail("ordinary ask must not abort"),
-   ui: {
-    timeoutStartsOnPresentation: false,
-    askDialog: async () => ({
-     kind: "submit",
-     results: [{
-      id: "direction",
-      question: "Continue?",
-      options: ["Continue", "Stop"],
-      multi: false,
-      selectedOptions: ["Continue"],
-     }],
-    }),
-   },
+   ui: { timeoutStartsOnPresentation: false, formDialog: async () => ({ data: { direction: "stop" } }) },
   } as never,
  );
  assert.equal(result.isError, undefined);
- assert.equal(result.content[0]?.type === "text" ? result.content[0].text : undefined, "User selected: Continue");
- assert.deepEqual(result.details?.selectedOptions, ["Continue"]);
+ const text = result.content[0]?.type === "text" ? result.content[0].text : undefined;
+ assert.equal(text, 'User answers:\n{\n  "direction": "stop"\n}');
+ assert.deepEqual(result.details?.answers, [{ name: "direction", question: "Continue waiting?", answer: "Stop" }]);
+ assert.equal(result.details?.timedOut, undefined);
 });
 console.log(`STALL regression failures: ${failures}`);
-process.exitCode = failures ? 1 : 0;
+// A failed ask case can leave its Agent loop waiting; exit explicitly so a failure ends the run instead of hanging it.
+process.exit(failures ? 1 : 0);

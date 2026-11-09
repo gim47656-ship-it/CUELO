@@ -1,3 +1,4 @@
+import type { AskFormModel } from "./ask-form/types";
 import type { FinishedTurnSummary } from "./answer-status/turn-summary";
 import type { CiSuccessHead } from "./answer-status/work-flow";
 import type { TodoPhase } from "./todo-state";
@@ -258,6 +259,16 @@ export type ExtensionUiRequest =
   | {
       type: "extension_ui_request";
       id: string;
+      method: "form";
+      /** The agent's HTML form as data (lib/ask-form); never markup. */
+      form: AskFormModel;
+      timeout?: number;
+      expiresAt?: number;
+      closed?: boolean;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
       method: "plan_review";
       title: string;
       planFilePath: string;
@@ -338,7 +349,7 @@ export type ExtensionUiRequest =
 
 export type BlockingExtensionUiRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "ask" | "plan_review" | "custom" }
+  { method: "select" | "confirm" | "input" | "editor" | "ask" | "form" | "plan_review" | "custom" }
 >;
 
 export type ExtensionUiResponse =

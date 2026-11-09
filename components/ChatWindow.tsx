@@ -54,6 +54,7 @@ import {
 } from "@/lib/inline-utterance";
 import type { ProcessLogData } from "./workspace/ProcessLogPanel";
 import { splitLabWidgets } from "./workspace/plugin-lab-bridge";
+import { AskForm } from "./AskForm";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -1706,7 +1707,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
               <ExtensionDialog
                 request={extensionDialog}
                 onRespond={respondToExtensionUi}
-                onActivity={(request) => void sendExtensionCustomInput(request, "activity")}
+                onActivity={(request, data) => void sendExtensionCustomInput(request, data ?? "activity")}
                 delivery={extensionResponse}
               />
             </div>
@@ -1868,7 +1869,7 @@ function NoticeShelf({ notices, floating = false, align = "left" }: { notices: N
 
 type ExtensionDialogRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "ask" | "plan_review" }
+  { method: "select" | "confirm" | "input" | "editor" | "ask" | "form" | "plan_review" }
 >;
 
 /**
@@ -2049,8 +2050,11 @@ function ExtensionDialog({
 }: {
   request: ExtensionDialogRequest;
   onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => void;
-  /** Reports choosing/typing in a timed ask so the server restarts its wait (lib/rpc-manager.ts EXTENSION_UI_ACTIVITY). */
-  onActivity?: (request: ExtensionDialogRequest) => void;
+  /**
+   * Reports choosing/typing in a timed ask or form so the server restarts its wait (lib/rpc-manager.ts
+   * EXTENSION_UI_ACTIVITY); a form passes its current values as `data`.
+   */
+  onActivity?: (request: ExtensionDialogRequest, data?: string) => void;
   /** Non-null while this request's answer is in flight or after it failed. */
   delivery?: ExtensionResponseState | null;
 }) {
@@ -2081,6 +2085,14 @@ function ExtensionDialog({
       onRespond(request, { value });
     }
   };
+  if (request.method === "form") {
+    // No Escape cancel: Cancel ends the agent's turn, and a long form must not be lost to a stray key.
+    return (
+      <ResponseSurface focusKey={request.id} label={t("chat.agentQuestion")} delivery={delivery}>
+        <AskForm key={request.id} request={request} onRespond={onRespond} onActivity={onActivity} delivery={delivery} />
+      </ResponseSurface>
+    );
+  }
   if (request.method === "ask") {
     const canSubmit = canSubmitAskAnswers(request.questions, askAnswers);
     const submitAnswers = () => {

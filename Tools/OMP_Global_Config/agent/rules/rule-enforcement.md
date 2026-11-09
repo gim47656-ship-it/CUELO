@@ -57,7 +57,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R20 | 배포·CI·Windows 사본은 `rule://deploy-ops` | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.deploy`(CUELO 밖 wrangler 판정 `wranglerOutsideCuelo`, 배포 스크립트 판정 `deployScriptOutsideCuelo`, `index.ts` `isOutsideCuelo`; `matcher.test.ts`·`runtime-guard.test.ts`); Maker의 `git_finalize`·`deploy_verify` 부재는 `patches/core-maker-tool-scope-test.ts`; 기다릴 CI 안내는 `tools/git-finalizer/index.ts` `publicationNote`(`publication-note.test.ts`) | 절차 순서는 문서. 2026-11-03 지적(비공개 전용 커밋의 게시 실행을 10분 대기, 10-21 기억은 있었으나 미회상) 뒤 push 결과 안내로 승격. 2026-11-04 사용자 결정으로 CUELO 소스·설치본 밖임이 증명된 `wrangler deploy`·`versions deploy`(`--dry-run` 포함)는 통과한다. 2026-11-05 사용자 결정으로 스크립트와 작업 폴더가 CUELO 밖인 배포 스크립트 실행(`bash <경로>/deploy.sh`, `./deploy.sh`)도 통과한다. 배포 전 사용자 승인은 문서로 남는다 |
 | R21 | 변경 전 기존 구현과 상태 주인을 짚고, 구현 불확실성은 증거로 좁히며 사소한 선택은 묻지 않음 | 문서 | — | |
 | R22 | 사용자 고유 결정은 추천과 함께 묻고 자동선택 금지 | 차단 | `extensions/ask-autoselect-guard.ts`, `extensions/tests/ask-autoselect-guard.test.ts` | 키워드 휴리스틱. 결정 질문을 했는지는 문서 |
-| R23 | 일반 구현 선택 `ask`는 `autoSelectRecommended: true` | 문서 | 기능 자체는 `patches/core-ask-timeout-test.ts`(opt-in) | 켜라고 강제하는 장치 없음 |
+| R23 | 일반 구현 선택 `ask`는 추천안을 미리 고르고 `autoSelectRecommended: true` | 문서 | 기능 자체는 `patches/core-ask-timeout-test.ts`(opt-in) | 켜라고 강제하는 장치 없음. 18.18.3부터 질문은 HTML 폼 |
 | R24 | 직접 원인·자기 회귀는 다시 지시 없이 수정, 범위 밖은 금지 | eval | `evals/cases/routine/adjacent-cause.json`, `evals/cases/routine/dispatch-path-mismatch.json` | |
 | R25 | 턴 종료 전 남은 항목을 네 분류로 나눈다 | 안내 | `extensions/turn-end-guard.ts` | |
 | R26 | 승인 전 되돌릴 수 있는 준비·조사를 먼저 끝낸다 | eval | `evals/cases/routine/approval-boundary.json`, `evals/cases/security/unresolved-major-escalation.json` | |

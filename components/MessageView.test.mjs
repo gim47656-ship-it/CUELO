@@ -424,3 +424,53 @@ test("a reloaded session file shows each Anthropic answer with its own recorded 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const { AskAnswerList } = await jiti.import("./MessageView.tsx");
+
+function targetOf(html) {
+  return html.match(/class="tool-call-target[^"]*"[^>]*title="([^"]*)"/)?.[1];
+}
+
+test("a new-style ask row names the first question and counts the rest", () => {
+  const html = renderTool(
+    "ask",
+    { html: "<form><p>Which database?</p><input name=\"db\"></form>" },
+    {
+      content: [{ type: "text", text: "User answers:\n{}" }],
+      details: { answers: [{ name: "db", question: "Which database?", answer: "SQLite" }, { name: "n", question: "Replicas", answer: "3" }] },
+    },
+  );
+  assert.equal(targetOf(html), "Which database? (+1)");
+  assert.doesNotMatch(html, /&lt;form/, "the raw form is not the row text");
+});
+
+test("a new-style ask still waiting for its answer shows the form's own text", () => {
+  const html = renderTool("ask", { html: "<form><p>Which <b>database</b>?</p><input name=\"db\"></form>" }, undefined);
+  assert.equal(targetOf(html), "Which database ?");
+});
+
+test("an ask recorded with the old questions[] keeps the generic row", () => {
+  const input = { questions: [{ id: "q", question: "Continue?", options: [{ label: "Yes" }] }] };
+  const html = renderTool("ask", input, { content: [{ type: "text", text: "User answers" }], details: { results: [] } });
+  assert.match(html, /class="tool-call-card is-done"/);
+  assert.match(html, /title="\{&quot;questions&quot;/, "the row still shows the JSON preview it always did");
+});
+
+test("the expanded ask lists each question with its answer and says when the timeout answered", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(AskAnswerList, {
+        summary: {
+          target: "x",
+          rows: [{ question: "Which database?", answer: "SQLite" }, { question: "Notes", answer: "" }],
+          timedOut: true,
+        },
+      }),
+    ),
+  );
+  assert.match(html, /<dt[^>]*>Which database\?<\/dt><dd[^>]*>SQLite<\/dd>/);
+  assert.match(html, /<dt[^>]*>Notes<\/dt><dd[^>]*>—<\/dd>/);
+  assert.match(html, /No answer before the timeout\. The form&#x27;s current values were submitted\./);
+});

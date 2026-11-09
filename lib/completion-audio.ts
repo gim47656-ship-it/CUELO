@@ -78,7 +78,7 @@ export const NO_TONE_FALLBACK_CUE_TAGS: Readonly<Record<CueTag, boolean>> = {
  * `ask`)은 고르는 일이고, 그 밖의 확인·입력·계획 검토는 답하는 일이다.
  */
 export function cueTagForDialog(method: string): CueTag {
-  return method === "select" || method === "ask" ? "choice" : "approval";
+  return method === "select" || method === "ask" || method === "form" ? "choice" : "approval";
 }
 
 /**

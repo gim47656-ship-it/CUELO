@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { type FormSpan, parseHtmlForm, spansText } from "@oh-my-pi/pi-tui/html-form/parse";
 
 // Match explicit decision topics, not incidental words such as "model", "cost" or "account" alone.
 // Words that also name ordinary code concepts (비용·계정·권한·공개·account·permission) count only next to an action.
@@ -29,14 +30,28 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function decisionText(question: Record<string, unknown>): string {
+// 18.18.3: `ask` takes one HTML form. The decision text is what the user sees in it (section titles, context blocks,
+// field labels, option labels, placeholders, and the text a text input or textarea starts with), taken from upstream's
+// own form parser; control names and choice values are identifiers, not wording, and stay out like the old question
+// ids did.
+function formDecisionText(html: string): string {
   const parts: string[] = [];
-  if (typeof question.question === "string") parts.push(question.question);
-  if (Array.isArray(question.options)) {
-    for (const option of question.options) {
-      if (!record(option)) continue;
-      for (const key of ["label", "description", "preview"]) {
-        if (typeof option[key] === "string") parts.push(option[key]);
+  const add = (spans: readonly FormSpan[]): void => {
+    const text = spansText(spans);
+    if (text) parts.push(text);
+  };
+  for (const section of parseHtmlForm(html).sections) {
+    add(section.title);
+    for (const block of section.blocks) {
+      if (block.kind === "text") add(block.spans);
+      else if (block.kind === "list") block.items.forEach(add);
+      else if (block.kind === "pre") parts.push(block.text);
+      else if (block.kind === "table") for (const row of block.rows) row.forEach(add);
+      else if (block.kind === "image" || block.kind === "svg") parts.push(block.alt);
+      else {
+        add(block.field.label);
+        if (block.field.kind === "choice") for (const option of block.field.options) add(option.label);
+        else parts.push(block.field.placeholder, block.field.value);
       }
     }
   }
@@ -45,17 +60,15 @@ function decisionText(question: Record<string, unknown>): string {
 
 export default function askAutoSelectGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", event => {
-    if (event.toolName !== "ask" || !record(event.input) || !Array.isArray(event.input.questions)) return;
-    for (const question of event.input.questions) {
-      if (!record(question) || question.autoSelectRecommended !== true) continue;
-      const text = decisionText(question);
-      if (HIGH_IMPACT.test(text) || USER_DECISION.test(text) || MODEL_CHOICE.test(text) ||
-          PROVIDER_CHOICE.test(text) || namesBothSides(text) || (PROVIDER.test(text) && FALLBACK.test(text))) {
-        return {
-          block: true,
-          reason: "ask-autoselect-guard: 사용자 결정·승인 질문은 자동선택할 수 없다. 해당 질문의 autoSelectRecommended를 빼거나 false로 바꿔 다시 호출하라.",
-        };
-      }
+    if (event.toolName !== "ask" || !record(event.input) || event.input.autoSelectRecommended !== true) return;
+    if (typeof event.input.html !== "string") return;
+    const text = formDecisionText(event.input.html);
+    if (HIGH_IMPACT.test(text) || USER_DECISION.test(text) || MODEL_CHOICE.test(text) ||
+        PROVIDER_CHOICE.test(text) || namesBothSides(text) || (PROVIDER.test(text) && FALLBACK.test(text))) {
+      return {
+        block: true,
+        reason: "ask-autoselect-guard: 사용자 결정·승인 질문은 자동선택할 수 없다. 이 폼의 autoSelectRecommended를 빼거나 false로 바꿔 다시 호출하라.",
+      };
     }
   });
 }

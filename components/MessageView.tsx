@@ -66,6 +66,7 @@ import type {
   ToolCallContent,
   ThinkingContent,
 } from "@/lib/types";
+import { summarizeAskCall, type AskTranscriptSummary } from "@/lib/ask-form/transcript";
 
 const MAX_THINKING_CACHE_ENTRIES = 100;
 const thinkingContentCache = new Map<string, Promise<string>>();
@@ -1303,8 +1304,11 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
   }
 
   const command = isBashTool && typeof block.input.command === "string" ? block.input.command : "";
-  const hasStructuredPreview = Boolean(todoPhases || resultDiff);
-  const target = isBashTool ? (command.split(/\r?\n/, 1)[0] ?? "") : getStructuredToolPreview(block, todoPhases);
+  const askSummary = summarizeAskCall(block.toolName, block.input, result?.details);
+  // New-style ask: the answers read as question and answer; without them the generic card shows the raw result.
+  const askRows = askSummary !== null && askSummary.rows.length > 0 ? askSummary : null;
+  const hasStructuredPreview = Boolean(todoPhases || resultDiff || askRows);
+  const target = isBashTool ? (command.split(/\r?\n/, 1)[0] ?? "") : (askSummary?.target ?? getStructuredToolPreview(block, todoPhases));
   // 공백 없는 경로 모양이면 앞쪽을 줄여 파일명을 남긴다. 명령과 설명 문장은 뒤쪽을 줄인다.
   const targetIsPath = !isBashTool && /^\S+$/.test(target) && /[\\/]/.test(target);
   const diffStatsLabel = diffStats ? t("toolRun.diffStats", { added: diffStats.added, removed: diffStats.removed }) : "";
@@ -1379,6 +1383,8 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
                 <PairedResult text={resultText ?? ""} isEmpty={resultIsEmpty} isError />
               )}
 
+              {askRows && !isError && <AskAnswerList summary={askRows} />}
+
               {!hasStructuredPreview && (
                 <pre
                   className="tool-call-input"
@@ -1405,6 +1411,28 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
             </>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The questions of a finished new-style `ask` call with the user's answers, in form order. */
+export function AskAnswerList({ summary }: { summary: AskTranscriptSummary }) {
+  const { t } = useI18n();
+  return (
+    <div className="tool-call-ask" style={{ padding: "8px 10px" }}>
+      <dl style={{ margin: 0, display: "grid", gap: 8 }}>
+        {summary.rows.map((row, rowIndex) => (
+          <div key={rowIndex} style={{ minWidth: 0 }}>
+            <dt style={{ color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5, overflowWrap: "anywhere" }}>{row.question}</dt>
+            <dd style={{ margin: "2px 0 0", color: "var(--text)", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {row.answer === "" ? "—" : row.answer}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {summary.timedOut && (
+        <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5 }}>{t("toolRun.askTimedOut")}</p>
       )}
     </div>
   );

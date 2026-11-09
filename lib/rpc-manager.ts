@@ -52,6 +52,7 @@ import { mergeSubagentSnapshot } from "./subagent-snapshots";
 import { isThinkingCeiling, latestThinkingCeiling, THINKING_CEILING_ENTRY_TYPE } from "./thinking-ceiling";
 import type {
   AgentSessionLike,
+  ExtensionFormDialogResultLike,
   ExtensionInputResultLike,
   ExtensionUiContextLike,
   OmpImageContent,
@@ -70,6 +71,14 @@ import type {
   SubagentSnapshot,
 } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
+import {
+  parseAskFormSnapshot,
+  type PreparedAskForm,
+  prepareAskForm,
+  timedOutAskFormData,
+  validateAskFormSubmission,
+} from "./ask-form/server";
+import { ASK_FORM_ACTIVITY_PREFIX } from "./ask-form/types";
 
 /** `extension_ui_input` data a timed ask dialog sends while the user is choosing or typing (components/ChatWindow.tsx). */
 const EXTENSION_UI_ACTIVITY = "activity";
@@ -230,8 +239,11 @@ export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdate
 type PendingUiResponse = {
   resolve: (response: ExtensionUiResponse) => void;
   cancel: () => void;
-  /** Restart the timeout on user activity; only timed asks that auto-select a recommendation have it. */
-  activity?: () => void;
+  /**
+   * Restart the timeout on user activity; only timed asks that auto-select have it. A timed form passes
+   * the values the browser reports with it (the text after `ASK_FORM_ACTIVITY_PREFIX`).
+   */
+  activity?: (payload?: string) => void;
 };
 
 type CustomUiComponent = {
@@ -2174,6 +2186,9 @@ export class AgentSessionWrapper {
     if (!custom) {
       // A timed ask dialog reports choosing/typing so the recommendation never overwrites an answer in progress.
       if (data === EXTENSION_UI_ACTIVITY) this.pendingUiResponses.get(id)?.activity?.();
+      else if (data.startsWith(ASK_FORM_ACTIVITY_PREFIX)) {
+        this.pendingUiResponses.get(id)?.activity?.(data.slice(ASK_FORM_ACTIVITY_PREFIX.length));
+      }
       return;
     }
     try {
@@ -2266,6 +2281,8 @@ export class AgentSessionWrapper {
     signal?: AbortSignal,
     /** Value to settle with when the timeout fires; also lets user activity restart the timeout. */
     timeoutValue?: () => T,
+    /** Receives what a timed form's browser reports with each activity (its current values). */
+    onActivityPayload?: (payload: string) => void,
   ): Promise<T> {
     if (signal?.aborted) return Promise.resolve(defaultValue);
 
@@ -2311,7 +2328,8 @@ export class AgentSessionWrapper {
       cancel: () => settle(defaultValue),
       ...(timeout && timeoutValue
         ? {
-          activity: () => {
+          activity: (payload) => {
+            if (payload !== undefined) onActivityPayload?.(payload);
             armTimeout();
             // Replays after a reconnect carry the extended deadline; the live surface is not re-sent,
             // so its in-progress selection and typing stay intact.
@@ -2344,6 +2362,34 @@ export class AgentSessionWrapper {
         opts?.signal,
         () => timedOutAskResult(questions),
       ),
+      formDialog: async (html, opts) => {
+        let prepared: PreparedAskForm;
+        try {
+          prepared = await prepareAskForm(html, { cwd: this.cwd, signal: opts?.signal });
+        } catch {
+          return undefined;
+        }
+        if (opts?.signal?.aborted) return undefined;
+        // Latest values the browser reported while a timed form was being filled in.
+        let snapshot: unknown;
+        return this.requestExtensionUi<ExtensionFormDialogResultLike | undefined>(
+          { method: "form", form: prepared.model, ...(opts?.timeout ? { timeout: opts.timeout } : {}) },
+          undefined,
+          (response) => {
+            if (!("value" in response)) return undefined;
+            const checked = validateAskFormSubmission(prepared, parseAskFormSnapshot(response.value));
+            // Thrown before anything settles: the request stays open and the browser reports the failure.
+            if ("error" in checked) throw new Error(checked.error);
+            return { data: checked.data };
+          },
+          opts?.timeout,
+          opts?.signal,
+          () => ({ data: timedOutAskFormData(prepared, snapshot), timedOut: true }),
+          (payload) => {
+            snapshot = parseAskFormSnapshot(payload);
+          },
+        );
+      },
       select: (title, options, opts) => this.requestExtensionUi(
         { method: "select", title, options, ...(opts?.timeout ? { timeout: opts.timeout } : {}) },
         undefined,

@@ -10,6 +10,7 @@ import type { SkillsSettings } from "@oh-my-pi/pi-coding-agent/extensibility/set
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
+import type { AskFormData } from "./ask-form/types";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
 import type { TodoPhase } from "./todo-state";
 import type { AuthStorage, OAuthAccountSummary } from "@oh-my-pi/pi-ai";
@@ -127,6 +128,12 @@ type DialogOptionsLike = {
   timeout?: number;
 };
 
+/** What `formDialog` resolves: the submitted data, flagged when the timeout submitted the current values. */
+export interface ExtensionFormDialogResultLike {
+  data: AskFormData;
+  timedOut?: boolean;
+}
+
 type WidgetOptionsLike = {
   placement?: "aboveEditor" | "belowEditor";
 };
@@ -134,6 +141,7 @@ type WidgetOptionsLike = {
 export interface ExtensionUiContextLike {
   readonly timeoutStartsOnPresentation?: boolean;
   askDialog?(questions: ExtensionAskDialogQuestion[], opts?: DialogOptionsLike): Promise<ExtensionAskDialogResult | undefined>;
+  formDialog?(html: string, opts?: DialogOptionsLike): Promise<ExtensionFormDialogResultLike | undefined>;
   select(title: string, options: string[], opts?: DialogOptionsLike): Promise<string | undefined>;
   confirm(title: string, message: string, opts?: DialogOptionsLike): Promise<boolean>;
   input(title: string, placeholder?: string, opts?: DialogOptionsLike): Promise<string | undefined>;

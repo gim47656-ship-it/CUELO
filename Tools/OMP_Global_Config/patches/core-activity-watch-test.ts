@@ -429,20 +429,24 @@ await check("agent/proc inspection exposes current monitoring and preserves JSON
 });
 await check("actual ask marks only interactive waiting and always clears on answer/error/cancel", async () => {
   const settings = createSettingsTestScope(key => key === "ask.notify" ? "off" : key === "ask.timeout" ? 0 : key === "speech.enabled" ? false : undefined);
-  for (const mode of ["answer", "error", "cancel", "headless"]) {
+  const html = `<form><fieldset><legend>Choice?</legend><label><input type="radio" name="q" value="a" checked> A</label><label><input type="radio" name="q" value="b"> B</label></fieldset></form>`;
+  // 18.18.3: the user wait is one formDialog, or the field-by-field select/input/editor walk on hosts without a form surface.
+  for (const surface of ["formDialog", "fields"]) for (const mode of ["answer", "error", "cancel", "headless"]) {
     const updates: boolean[] = [], entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<unknown>(), abort = new AbortController();
     const ask = new AskTool({ hasUI: mode !== "headless", settings } as never);
-    const pending = ask.execute("watch-ask", { questions: [{ id: "q", question: "Choice?", options: [{ label: "A" }, { label: "B" }] }] }, abort.signal,
+    const wait = () => { entered.resolve(); return gate.promise; };
+    const ui = surface === "formDialog" ? { formDialog: wait } : { select: wait };
+    const pending = ask.execute("watch-ask", { html }, abort.signal,
       (value: { details?: { waitingForUser?: boolean } }) => { if (typeof value.details?.waitingForUser === "boolean") updates.push(value.details.waitingForUser); },
-      { hasUI: mode !== "headless", abort() {}, ui: { timeoutStartsOnPresentation: false, askDialog: () => { entered.resolve(); return gate.promise; } } } as never);
+      { hasUI: mode !== "headless", abort() {}, ui: { timeoutStartsOnPresentation: false, ...ui } } as never);
     if (mode !== "headless") {
-      await within(entered.promise, "ask entered"); assert.deepEqual(updates, [true]);
-      if (mode === "answer") gate.resolve({ kind: "submit", results: [{ id: "q", question: "Choice?", options: ["A", "B"], multi: false, selectedOptions: ["A"] }] });
+      await within(entered.promise, "ask entered"); assert.deepEqual(updates, [true], `${surface} ${mode}`);
+      if (mode === "answer") gate.resolve(surface === "formDialog" ? { data: { q: "a" } } : "A");
       if (mode === "error") gate.reject(new Error("fixture UI error"));
       if (mode === "cancel") abort.abort();
     }
     await within(pending.catch(() => undefined), "ask settles");
-    assert.deepEqual(updates, mode === "headless" ? [] : [true, false], mode);
+    assert.deepEqual(updates, mode === "headless" ? [] : [true, false], `${surface} ${mode}`);
   }
 });
 

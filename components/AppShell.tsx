@@ -43,6 +43,7 @@ import { copyText } from "@/lib/clipboard";
 import { getDraft, setDraft } from "@/lib/draft-store";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
+import { firstAskFormQuestion } from "@/lib/ask-form/answers";
 import {
   claimExtensionAttentionNotification,
   shouldShowBrowserNotification,
@@ -1465,7 +1466,9 @@ export function AppShell({
         ? translate("i18n.extensionInputNeeded")
         : request.method === "ask"
           ? request.questions[0]?.question || translate("i18n.extensionInputNeeded")
-          : request.title,
+          : request.method === "form"
+            ? firstAskFormQuestion(request.form) || translate("i18n.extensionInputNeeded")
+            : request.title,
       tag: `pi-extension-ui:${request.id}`,
     });
   }, [deliverSessionNotification, selectedSession, translate]);

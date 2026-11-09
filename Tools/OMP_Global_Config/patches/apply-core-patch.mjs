@@ -22922,6 +22922,181 @@ ${tail}`);
 	}
 }
 
+// 18.18.3: same rules as the 18.18.2 block. Older candidates stay byte-identical except for an `excludes` on the
+// new discriminator; every new candidate `requires` a string only 18.18.3 carries in its file. The discriminator
+// must survive the patch (resolveEdit runs again on the patched file), so it is a line no candidate here touches.
+// Purposes:
+//  - ask opt-in (ADAPT): upstream replaced `questions[]` with one HTML <form> and a timeout that submits the
+//    form's preselected values for EVERY call. The 2026-09-30 user decision stays: only a call that opts in with
+//    `autoSelectRecommended: true` AND carries a valid recommendation may time out; approvals wait indefinitely.
+//    A valid recommendation means every radio group and single <select> has an explicitly preselected option
+//    (the parser marks a single <select>'s first enabled option when none is marked: that guess never counts)
+//    and the preselected data passes upstream's own fieldError checks.
+//  - waitingForUser (ADAPT): the user wait (formDialog and the field-by-field fallback) is bracketed by
+//    `details.waitingForUser` updates again; the pi-tui type entries are unchanged.
+//  - ask `interruptible` marker (RETIRE): 18.18.3 closes a pending ask itself on a queued user message, and leaves it
+//    open for a finished background job, an aside or a peer IRC; the marker would close it for those too.
+//  - dist/cli.js advisor transcript skip (no-op): only the minified helper name moved again (wUe → $Ue).
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.18.3 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const lines = (...rows) => rows.join("\n");
+	const FORM = "async function askFieldByField(";
+	const FORM_MD = "Ask the user to fill in one HTML form";
+
+	// Schema: the optional opt-in flag next to `html`.
+	alternate(byMarker('"autoSelectRecommended?": arkType("boolean")'), {
+		marker: '"autoSelectRecommended?": arkType("boolean")',
+		anchor: lines(
+			'const askSchema = arkType({',
+			'\thtml: arkType("string").describe("one HTML <form>"),',
+			'});'),
+		patched: lines(
+			'const askSchema = arkType({',
+			'\thtml: arkType("string").describe("one HTML <form>"),',
+			'\t"autoSelectRecommended?": arkType("boolean").describe(',
+			'\t\t"opt-in: submit the form\'s preselected answers after ask.timeout with no answer; reversible implementation choices only",',
+			'\t),',
+			'});'),
+	}, FORM);
+
+	// "Never guess the first option" (was the recommended-index resolver): the validity check for a form's recommendation.
+	// `import` declarations hoist, so the parser import sits next to its only user.
+	alternate(byMarker("never guess the first option on the user's behalf"), {
+		marker: "function hasValidRecommendation(html: string, form: HtmlForm): boolean {",
+		anchor: "\treturn { data, timedOut: false };\n}\n",
+		patched: lines(
+			'\treturn { data, timedOut: false };',
+			'}',
+			'',
+			'import { parseHTML } from "@oh-my-pi/pi-utils/dom";',
+			'',
+			'/**',
+			' * CUELO: whether the form carries a valid recommendation, the only case where `ask.timeout` may submit it.',
+			' * Every single-answer choice (radio group, single <select>) needs an explicitly preselected option: the',
+			' * parser marks a single <select>\'s first enabled option when none is marked, and that guess is never the',
+			' * model\'s pick. The preselected data must also pass the field checks a user submission passes.',
+			' */',
+			'function hasValidRecommendation(html: string, form: HtmlForm): boolean {',
+			'\tconst document = parseHTML(html).document;',
+			'\tconst unmarked = new Set<string>();',
+			'\tfor (const select of (document.querySelector("form") ?? document).querySelectorAll("select")) {',
+			'\t\tconst name = select.getAttribute("name");',
+			'\t\tif (!name || select.hasAttribute("multiple")) continue;',
+			'\t\tif (!select.querySelectorAll("option").some(option => option.hasAttribute("selected"))) unmarked.add(name);',
+			'\t}',
+			'\tconst data = defaultFormData(form);',
+			'\tfor (const field of form.fields) {',
+			'\t\tif (!field.name) continue;',
+			'\t\tif (field.kind === "choice" && !field.multi) {',
+			'\t\t\tconst preselected = field.options.some(option => option.checked && !option.disabled);',
+			'\t\t\tif (!preselected || (field.select && unmarked.has(field.name))) return false;',
+			'\t\t}',
+			'\t\tif (fieldError(field, data[field.name]) !== undefined) return false;',
+			'\t}',
+			'\treturn true;',
+			'}',
+			''),
+	}, FORM);
+
+	// Timed-out result text: the model must not read the submission as the user's answer or approval.
+	alternate(byMarker("no user response, not user approval"), {
+		marker: "no user response, not user approval",
+		anchor: '\t\t\t\t\t{ type: "text", text: `No answer before the timeout; submitted the form\'s current values:\\n${json}` },',
+		patched: lines(
+			'\t\t\t\t\t{',
+			'\t\t\t\t\t\ttype: "text",',
+			'\t\t\t\t\t\ttext: `No user response before the timeout: auto-submitted the form\'s preselected values for the unanswered fields (no user response, not user approval):\\n${json}`,',
+			'\t\t\t\t\t},'),
+	}, FORM);
+
+	// The 18.18.2 per-question result line has no counterpart: 18.18.3 reports one text for the whole form,
+	// carried by the entry above. No-op so older cores keep their candidate and --revert stays idempotent.
+	alternate(byMarker("No user response: auto-selected the recommended option after timeout"), {
+		marker: "const NO_NAMED_CONTROLS_ERROR =",
+		anchor: "const NO_NAMED_CONTROLS_ERROR =",
+		patched: "const NO_NAMED_CONTROLS_ERROR =",
+	}, FORM);
+
+	// Timeout arming for both paths (formDialog and the field-by-field fallback read this one value).
+	alternate(byMarker("Auto-selection is a positive opt-in"), {
+		marker: "CUELO: auto-submitting the preselected answers is a positive opt-in.",
+		anchor: "\t\tconst timeout = planModeEnabled ? undefined : askTimeoutMs(this.session.settings);",
+		patched: lines(
+			'\t\t// CUELO: auto-submitting the preselected answers is a positive opt-in. The call must ask for it',
+			'\t\t// (`autoSelectRecommended: true`) and the form must carry a valid recommendation; approvals and every',
+			'\t\t// other form wait indefinitely, as does plan mode.',
+			'\t\tconst autoSubmit = params.autoSelectRecommended === true && hasValidRecommendation(params.html, form);',
+			'\t\tconst timeout = planModeEnabled || !autoSubmit ? undefined : askTimeoutMs(this.session.settings);'),
+	}, FORM);
+
+	alternate(byMarker("`autoSelectRecommended: true`"), {
+		marker: "`autoSelectRecommended: true`",
+		anchor: "- Preselect your recommendation with `checked`/`selected`/`value`. If the user does not answer in time, those values are submitted.",
+		patched: "- Preselect your recommendation with `checked`/`selected`/`value`. `autoSelectRecommended: true` (needs a preselected answer for every radio group and `<select>`): if nobody answers before `ask.timeout`, the preselected values are submitted. Use ONLY for reversible implementation choices; NEVER for deployment, deletion, cost, account/permission, provider safety, or other high-impact confirmations. Without it the form waits indefinitely. A timed-out submission is not user approval.",
+	}, FORM_MD);
+
+	// waitingForUser: the wrapper and its two call sites (one entry each, as in older cores).
+	alternate(byMarker("\t\tconst waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {"), {
+		marker: "\t\tconst waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {",
+		anchor: "\t\tlet answered: { data: HtmlFormData; timedOut?: boolean } | undefined;\n",
+		patched: lines(
+			'\t\tconst waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {',
+			'\t\t\t_onUpdate?.({ content: [], details: { answers: [], waitingForUser: true } });',
+			'\t\t\ttry {',
+			'\t\t\t\treturn await action();',
+			'\t\t\t} finally {',
+			'\t\t\t\t_onUpdate?.({ content: [], details: { answers: [], waitingForUser: false } });',
+			'\t\t\t}',
+			'\t\t};',
+			'\t\tlet answered: { data: HtmlFormData; timedOut?: boolean } | undefined;',
+			''),
+	}, FORM);
+	alternate(byMarker("\t\t\t\tconst richResult = await waitForUser(showRichDialog);"), {
+		marker: "answered = await waitForUser(() => askFieldByField(extensionUi, form, timeout, dialogSignal));",
+		anchor: lines(
+			'\t\t\t\tanswered = await untilAborted(dialogSignal, () =>',
+			'\t\t\t\t\tformDialog(params.html, { timeout, signal: dialogSignal }),',
+			'\t\t\t\t);',
+			'\t\t\t} else {',
+			'\t\t\t\tanswered = await askFieldByField(extensionUi, form, timeout, dialogSignal);'),
+		patched: lines(
+			'\t\t\t\tanswered = await waitForUser(() =>',
+			'\t\t\t\t\tuntilAborted(dialogSignal, () => formDialog(params.html, { timeout, signal: dialogSignal })),',
+			'\t\t\t\t);',
+			'\t\t\t} else {',
+			'\t\t\t\tanswered = await waitForUser(() => askFieldByField(extensionUi, form, timeout, dialogSignal));'),
+	}, FORM);
+
+	// interruptible marker (RETIRE on 18.18.3). 18.18.3 closes a pending ask itself when the user queues a message
+	// (`toolCall.steeringSignal` with reason "user"), so the 2026-09-15 requirement (a queued user steer must not
+	// wait out ask.timeout) holds without the marker. The marker made it worse: agent-core hard-aborts an
+	// `interruptible` tool for a finished background job or a peer IRC too, which closed the user's open form with
+	// a skipped result. Older cores keep their candidate (the marker is the only steering path there). No-op
+	// candidate on a line that exists before and after: --apply and --revert leave the tool untouched.
+	{
+		const entry = one(e => e.file === "src/tools/ask.ts" && e.marker === "readonly interruptible = true;");
+		const parameters = "\treadonly parameters = askSchema;\n\treadonly strict = true;";
+		alternate(entry, { marker: parameters, anchor: parameters, patched: parameters }, FORM);
+	}
+
+	// dist/cli.js advisor transcript skip: only the minified helper name moved (wUe → $Ue).
+	{
+		const advisor = one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
+		const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&$Ue(c))continue';
+		alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+	}
+}
+
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는

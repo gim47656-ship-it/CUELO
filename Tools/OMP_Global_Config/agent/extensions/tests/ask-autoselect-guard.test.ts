@@ -2,13 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import askAutoSelectGuard from "../ask-autoselect-guard";
 
-type Question = {
-  id: string;
-  question: string;
-  options: { label: string; description?: string; preview?: string }[];
-  recommended?: number;
-  autoSelectRecommended?: boolean;
-};
+type AskInput = { html: string; autoSelectRecommended?: boolean };
 type Result = { block: boolean; reason: string } | undefined;
 
 function harness() {
@@ -16,17 +10,25 @@ function harness() {
   askAutoSelectGuard({
     on: (_name: string, callback: typeof handler) => { handler = callback; },
   } as unknown as ExtensionAPI);
-  return (questions: Question[], toolName = "ask") => handler({ toolName, input: { questions } });
+  return (input: unknown, toolName = "ask") => handler({ toolName, input });
 }
 
-function question(text: string, autoSelectRecommended: boolean | undefined = true): Question {
-  return {
-    id: "choice",
-    question: text,
-    options: [{ label: "진행" }, { label: "보류" }],
-    recommended: 0,
-    autoSelectRecommended,
-  };
+const escapeHtml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** One radio question in a fieldset, `<legend>` as the question text; `context` goes in front of it as extra markup. */
+function form(text: string, options: { labels?: string[]; context?: string; name?: string } = {}): string {
+  const [first = "진행", second = "보류"] = options.labels ?? [];
+  const name = options.name ?? "choice";
+  return `<form>${options.context ?? ""}<fieldset><legend>${escapeHtml(text)}</legend>` +
+    `<label><input type="radio" name="${name}" value="go" checked> ${escapeHtml(first)}</label>` +
+    `<label><input type="radio" name="${name}" value="hold"> ${escapeHtml(second)}</label></fieldset></form>`;
+}
+
+/** `flag` "omit" leaves the opt-in out entirely, as a call that never mentions it. */
+function ask(text: string, flag: boolean | "omit" = true, options?: Parameters<typeof form>[1]): AskInput {
+  const input: AskInput = { html: form(text, options) };
+  if (flag !== "omit") input.autoSelectRecommended = flag;
+  return input;
 }
 
 const decisions = [
@@ -72,41 +74,52 @@ const decisions = [
 
 describe("ask auto-select guard", () => {
   test.each(decisions)("blocks auto-selection for decision: %s", text => {
-    const result = harness()([question(text)]);
+    const result = harness()(ask(text));
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain("autoSelectRecommended");
   });
 
   test.each(decisions)("allows the same decision without auto-selection: %s", text => {
     const call = harness();
-    expect(call([question(text, false)])).toBeUndefined();
-    const withoutFlag = question(text);
-    delete withoutFlag.autoSelectRecommended;
-    expect(call([withoutFlag])).toBeUndefined();
+    expect(call(ask(text, false))).toBeUndefined();
+    expect(call(ask(text, "omit"))).toBeUndefined();
   });
 
   test("blocks the measured HIKARI model choice", () => {
-    const q = question("HIKARI 호출 모델을 어떻게 정할까?");
-    q.options = [{ label: "implGemini 역할을 따르게" }, { label: "프록시로 고정" }];
-    expect(harness()([q, question("같은 작업에 넣을 것을 골라 줘.")])?.block).toBe(true);
+    const input = ask("HIKARI 호출 모델을 어떻게 정할까?", true, { labels: ["implGemini 역할을 따르게", "프록시로 고정"] });
+    expect(harness()(input)?.block).toBe(true);
   });
 
   test("blocks the measured Gemini web fallback choice", () => {
-    const q = question("웹검색에 Gemini 3.8 Flash를 어떻게 붙일까?");
-    q.options = [{ label: "Luna 실패 때만 Gemini로 폴백" }, { label: "항상 사용" }];
-    expect(harness()([q])?.block).toBe(true);
-  });
-
-  test.each(["label", "description", "preview"] as const)("inspects option %s text", key => {
-    const q = question("어느 쪽으로 할까?");
-    q.options = [{ label: "A", [key]: "기존 데이터 보존" }, { label: "B" }];
-    expect(harness()([q])?.block).toBe(true);
+    const input = ask("웹검색에 Gemini 3.8 Flash를 어떻게 붙일까?", true, { labels: ["Luna 실패 때만 Gemini로 폴백", "항상 사용"] });
+    expect(harness()(input)?.block).toBe(true);
   });
 
   test("blocks English provider fallback choices", () => {
-    const q = question("How should web search use Gemini?");
-    q.options = [{ label: "Fall back to Gemini only if Luna fails" }, { label: "Always" }];
-    expect(harness()([q])?.block).toBe(true);
+    const input = ask("How should web search use Gemini?", true, { labels: ["Fall back to Gemini only if Luna fails", "Always"] });
+    expect(harness()(input)?.block).toBe(true);
+  });
+
+  test.each([
+    ["an option label", { labels: ["기존 데이터 보존", "B"] }],
+    ["a context paragraph", { context: "<p>기존 데이터 보존</p>" }],
+    ["a context list item", { context: "<ul><li>영향 없음</li><li>기존 데이터 보존</li></ul>" }],
+    ["a context table cell", { context: "<table><tr><th>항목</th><th>영향</th></tr><tr><td>데이터</td><td>기존 데이터 보존</td></tr></table>" }],
+    ["a context code block", { context: "<pre>기존 데이터 보존</pre>" }],
+    ["an image alt", { context: '<img src="data:image/png;base64,AAAA" alt="기존 데이터 보존">' }],
+    ["a text field placeholder", { context: '<label>메모 <input type="text" name="note" placeholder="기존 데이터 보존"></label>' }],
+    ["a textarea's initial text", { context: '<label>메모 <textarea name="note">기존 데이터 보존</textarea></label>' }],
+    ["a text field's initial value", { context: '<label>메모 <input type="text" name="note" value="기존 데이터 보존"></label>' }],
+  ] as [string, Parameters<typeof form>[1]][])("inspects the visible text of %s", (_name, options) => {
+    expect(harness()(ask("어느 쪽으로 할까?", true, options))?.block).toBe(true);
+  });
+
+  test("inspects every question of a multi-question form", () => {
+    const html = "<form>" +
+      '<fieldset><legend>함수를 나눌까?</legend><label><input type="radio" name="a" value="1" checked> 나눈다</label><label><input type="radio" name="a" value="2"> 둔다</label></fieldset>' +
+      '<fieldset><legend>계정을 바꿀까?</legend><label><input type="radio" name="b" value="1" checked> 바꾼다</label><label><input type="radio" name="b" value="2"> 둔다</label></fieldset>' +
+      "</form>";
+    expect(harness()({ html, autoSelectRecommended: true })?.block).toBe(true);
   });
 
   test.each([
@@ -129,24 +142,21 @@ describe("ask auto-select guard", () => {
     "Which file should hold the provider registry?",
     "Which provider should we use for dependency injection?",
   ])("allows routine implementation auto-selection: %s", text => {
-    expect(harness()([question(text)])).toBeUndefined();
+    expect(harness()(ask(text))).toBeUndefined();
   });
 
-  test("does not combine opted-out decisions with a different auto-select question", () => {
-    expect(harness()([
-      question("운영에 배포할까?", false),
-      question("함수를 나눌까?"),
-    ])).toBeUndefined();
+  test("does not inspect control names, option values or non-ask tool input", () => {
+    // Identifiers are not wording: the old guard ignored question ids the same way.
+    const input = ask("함수를 나눌까?", true, { name: "deployment-model-choice" });
+    input.html = input.html.replace('value="go"', 'value="deploy-to-production"');
+    expect(harness()(input)).toBeUndefined();
+    expect(harness()(ask("배포할까?"), "other_tool")).toBeUndefined();
   });
 
-  test("blocks a sensitive question later in a batch", () => {
-    expect(harness()([question("함수를 나눌까?"), question("계정을 바꿀까?")])?.block).toBe(true);
-  });
-
-  test("does not inspect non-ask tool input or question identifiers", () => {
-    const q = question("함수를 나눌까?");
-    q.id = "deployment-model-choice";
-    expect(harness()([q])).toBeUndefined();
-    expect(harness()([question("배포할까?")], "other_tool")).toBeUndefined();
+  test("ignores an ask call without an html string", () => {
+    const call = harness();
+    expect(call({ autoSelectRecommended: true })).toBeUndefined();
+    expect(call({ html: 42, autoSelectRecommended: true })).toBeUndefined();
+    expect(call(undefined)).toBeUndefined();
   });
 });

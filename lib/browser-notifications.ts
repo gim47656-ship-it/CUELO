@@ -41,6 +41,7 @@ export function isBlockingExtensionUiRequest(
     case "input":
     case "editor":
     case "ask":
+    case "form":
     case "plan_review":
       return true;
     case "custom":
