@@ -27,13 +27,17 @@ export const SLOW_GAP_MS = 20_000;
 /** HANDOFF 「기본 Maker 관찰」: 한 모델이 partial로 2회 이상 끝나면 보고. */
 export const EARLY_EXIT_REPORT_COUNT = 2;
 
-/** 「또」는 '역시·게다가'로도 흔히 쓰여(11-05 점검: 최근 4건 중 3건 오탐) 메시지 첫머리일 때만 센다(2026-11-05 사용자 결정). */
+/**
+ * 「또」는 '역시·게다가'로도 흔히 쓰여(11-05 점검: 최근 4건 중 3건 오탐) 메시지 첫머리일 때만 센다(2026-11-05 사용자 결정).
+ * 첫머리의 짧은 감탄사 뒤 「또」(「아또」「아니 또」「에휴.. 또」)도 첫머리로 본다(2026-11-09 사용자 결정: 11-09 사무실 점검에서
+ * 「아또 살짝버벅인다.」를 놓쳤다). 「또한」은 계속 뺀다.
+ */
+const LEADING_AGAIN = /^(?:(?:아니|어휴|에휴|아|하)[\s.,!?~…]*)?또(?!한)/u;
 export const COMPLAINT_EXPRESSIONS = ["왜 안", "아까 말", "말했잖", "다시 말하", "몇 번", "그게 아니라", "안 되잖", "왜 이래", "아직도"];
 
 export function isComplaint(text: string): boolean {
   if (text.length > COMPLAINT_MAX_CHARS) return false;
-  const head = text.trimStart();
-  return (head.startsWith("또") && !head.startsWith("또한")) || COMPLAINT_EXPRESSIONS.some((x) => text.includes(x));
+  return LEADING_AGAIN.test(text.trimStart()) || COMPLAINT_EXPRESSIONS.some((x) => text.includes(x));
 }
 /**
  * 이보다 긴 사용자 메시지는 지적 표현으로 세지 않는다(2026-11-04 사용자 결정). 붙여 넣은 글(조사 결과·다른 PC 요청)과 CUELO가
