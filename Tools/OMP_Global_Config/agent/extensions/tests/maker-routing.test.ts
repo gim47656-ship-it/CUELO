@@ -50,11 +50,11 @@ const candidates = [
   { profile: "HARD_CODE_DEEPSEEK", model: DEEPSEEK, efforts: allStrengths },
   { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   { profile: "HARD_CODE_TERRA", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
+  { profile: "HARD_CODE_SOL61", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
 ];
 const without = (...profiles: string[]) => candidates.filter((candidate) => !profiles.includes(candidate.profile));
 /** 명시 선택 전용 후보 fixture. */
 const explicitFixtures = [
-  { profile: "HARD_CODE_SOL61", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   ...["NORMAL_GEMINI", "HARD_CODE_GEMINI"].map((profile) => ({ profile, model: "google-antigravity/gemini-3.8-flash", efforts: allStrengths })),
   ...["NORMAL_GLM", "HARD_CODE_GLM"].map((profile) => ({ profile, model: "hive/zai-org/glm-5.3-flash", efforts: allStrengths })),
 ];
@@ -1661,7 +1661,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
   type Options = NonNullable<Parameters<typeof harness>[0]>;
-  test("Jev 답에서 route까지: DeepSeek가 대부분이고 Sonnet은 어려운 UI·한정된 실패 재작업뿐이며 열린 설계·반복 실패는 Main으로 돌아온다", async () => {
+  test("Jev routes settled work to DeepSeek, difficult UI to Sonnet, bounded design/rework to Sol, and open design/repeated failure to Main", async () => {
     const rework = { task: reworkTaskBrief };
     type Row = [string, Options & { task?: string }, string | null];
     const rows: Row[] = [
@@ -1672,8 +1672,8 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["HARD 코드, 방향 확정 → HARD DeepSeek", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_DEEPSEEK"],
       ["HARD 라벨·UI_UX 분야만으로는 Sonnet이 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_CODE_DEEPSEEK"],
       ["HARD + 어려운 UI → HARD UI Sonnet", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT" }, "HARD_UI_SONNET"],
-      ["한정된 설계(기존 상태 소유자·승인된 계약 안)는 Sonnet이 맡는다", { boundedDesign: "BOUNDED" }, "NORMAL_SONNET"],
-      ["HARD 한정된 설계 → HARD Sonnet", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SONNET"],
+      ["Bounded design uses Sol", { boundedDesign: "BOUNDED" }, "NORMAL_SOL"],
+      ["HARD bounded design uses Sol61", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SOL61"],
       ["준비된 복잡한 상태 구현(boundedDesign NONE)은 DeepSeek", { boundedDesign: "NONE", designOpen: 0.2 }, "NORMAL_DEEPSEEK"],
       ["한정된 설계도 큰 교차 경계 재설계(designOpen 높음)면 Main이 먼저다", { boundedDesign: "BOUNDED", designOpen: 0.8 }, null],
       ["한정된 설계도 반복 실패면 Main이 먼저다", { boundedDesign: "BOUNDED", reworkNature: "RETURN_TO_MAIN" }, null],
@@ -1687,14 +1687,14 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["UI 난이도 무응답도 모름이라 추천 없음", { uiUxBoundary: 1, uiDifficulty: null }, null],
       ["HARD에서도 UI 난이도 모름이면 추천 없음", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], uiDifficulty: "UNKNOWN" }, null],
       ["열린 설계는 UI 난이도 모름보다 먼저 Main으로 돌아온다", { designOpen: 0.9, uiDifficulty: "UNKNOWN" }, null],
-      ["한정된 구현 실패 재작업 → Sonnet", { ...rework, reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SONNET"],
-      ["HARD 한정된 실패 재작업 → HARD Sonnet", { ...rework, reworkNature: "BOUNDED_FAILURE", workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SONNET"],
+      ["Bounded failed rework uses Sol", { ...rework, reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
+      ["HARD bounded rework uses Sol61", { ...rework, reworkNature: "BOUNDED_FAILURE", workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SOL61"],
       ["반복 실패 → Main", { ...rework, reworkNature: "RETURN_TO_MAIN" }, null],
       ["반복 실패는 어려운 UI여도 Main이 먼저다", { ...rework, reworkNature: "RETURN_TO_MAIN", uiDifficulty: "DIFFICULT", uiUxBoundary: 1 }, null],
       ["의도한 RED·인프라·검증 보정은 실패가 아니라 DeepSeek", { ...rework, reworkNature: "NOT_FAILURE" }, "NORMAL_DEEPSEEK"],
       ["실패 근거 없는 재작업 표기(NONE)도 DeepSeek", { ...rework, reworkNature: "NONE" }, "NORMAL_DEEPSEEK"],
       ["FINDING_ID 표기가 없어도 Jev가 반복 실패로 보면 Main이 먼저다", { reworkNature: "RETURN_TO_MAIN" }, null],
-      ["FINDING_ID 표기가 없어도 한정된 구현 실패면 Sonnet이다", { reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SONNET"],
+      ["Bounded failed rework without FINDING_ID uses Sol", { reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
       ["DeepSeek가 없으면 Sonnet으로 자동 대체하지 않고 추천 없음(Main이 다시 판단)", { candidates: without("NORMAL_DEEPSEEK") }, null],
       ["HARD DeepSeek가 없으면 HARD Sonnet으로 자동 대체하지 않고 추천 없음", { workClass: "HARD", candidates: without("HARD_CODE_DEEPSEEK") }, null],
       ["어려운 UI인데 Sonnet이 없으면 추천 없음(Opus·Sol로 올리지 않음)", { uiDifficulty: "DIFFICULT", candidates: without("NORMAL_SONNET") }, null],
@@ -1711,6 +1711,29 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
         if (expected === null && !options.fail) {
           const allocation = options.workClass === "HARD" ? route!.hardAllocation : route!.normalAllocation;
           expect(allocation, label).toMatchObject({ profile: null, reason: expect.stringContaining("Main") });
+        }
+      }
+    }
+  });
+  test("difficult UI changes to Sol only with every Anthropic account over its day slot", async () => {
+    for (const workClass of ["NORMAL", "HARD"]) {
+      for (const used of [10, 15]) {
+        const h = harness({ workClass, uiDifficulty: "DIFFICULT", quota: async () => ({
+          state: "observed", observedAt: 1,
+          providers: { anthropic: [9, 11].map((credentialId) => ({
+            credentialId, disabled: false, limitReached: false, autoBlockedUntilMs: null, fetchedAt: 1,
+            limits: [{ id: "anthropic:7d", windowId: "7d", shared: true, resetsAt: 100,
+              usedFraction: 0.2, daySlot: { usedPct: used, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } }],
+          })) },
+        }) });
+        const batch = await h.prepareBatch("day slot", [h.task], h.ctx);
+        expect(batch.anthropicOverDaySlot).toBe(used >= 14.29);
+        expect(batch.routes[0]!.profile).toBe(used >= 14.29
+          ? workClass === "HARD" ? "HARD_CODE_SOL61" : "NORMAL_SOL"
+          : workClass === "HARD" ? "HARD_UI_SONNET" : "NORMAL_SONNET");
+        if (used >= 14.29) {
+          expect((batch.routes[0]!.hardAllocation ?? batch.routes[0]!.normalAllocation)!.reason).toContain("오늘 하루 몫");
+          expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
         }
       }
     }

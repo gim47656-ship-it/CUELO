@@ -44,7 +44,7 @@ export const SLOP_OPENAI_SLOT = "slopReviewOpenAI";
 
 /**
  * slop_check의 reviewer 자리와 자리별 slot(사용자 결정 2026-10-29: Luna 단독, 자문 없음). slopReviewOpenAI가 비면 cross_review와 같은 옛 경로(reviewerLanes)다.
- * 필수: OpenAI 저자 → Anthropic 자리(crossReviewAnthropic, Opus), 그 밖의 저자(Anthropic·Gemini·기타) → OpenAI 자리에 slopReviewOpenAI(Luna).
+ * 필수: OpenAI 저자 → Anthropic 자리(crossReviewAnthropic), 그 밖의 저자(Anthropic·Gemini·기타) → OpenAI 자리에 slopReviewOpenAI(Luna).
  * 저자 계열이 필수 자리와 겹치면(OpenAI 저자는 OpenAI 자리를 못 쓴다) 그 slot은 건너뛰고 cross_review의 slot으로 돌아간다.
  */
 export function planReviewers(authors: string[], mainModel: string | undefined, slopSlots: SlopDeps["slopSlots"]): { lanes: Lane[]; slots: Partial<Record<Lane, string>> } {

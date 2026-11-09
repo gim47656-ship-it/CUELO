@@ -5,6 +5,8 @@ import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 import { briefSkillCoverage, dispatchRequiredSkills, isRequiredSkillAnswerKey, loadRequiredSkillContract, requiredSkillGaps, requiredSkillQuestions, selectRequiredSkills, type RequiredSkillSelection, type RequiredSkillSource } from "./skill-evidence";
+import { accountUnusable, anthropicOverDaySlot, enabledAnthropicCredentialIds, readSidecarQuota, type QuotaSnapshot } from "./anthropic-quota";
+export type { QuotaSnapshot } from "./anthropic-quota";
 
 export interface RoutingFacts {
   goal: string;
@@ -142,29 +144,6 @@ export interface RoutingPlacement {
   ownerIndex: number | null;
   owner: Owner | null;
 }
-/** Main 재량용 계정 잔량 참고 정보. 후보 revision·Jev state에는 넣지 않는다. */
-export interface QuotaLimit {
-  id: string | null;
-  usedFraction: number | null;
-  resetsAt: number | null;
-  /** 사이드카가 리셋 시각에서 24시간씩 거꾸로 센 오늘 구간. `usedPct`는 그 구간에서 쓴 양, `quotaPct`는 하루 몫(7d면 100/7%), `slotEnd`는 구간 끝 시각이다. */
-  daySlot: { usedPct: number | null; quotaPct: number | null; slotsLeft: number | null; quality: string | null; slotEnd?: number | null } | null;
-  /** 사이드카 `scope.windowId`(없으면 `window.id`). 예: `5h`, `7d`. */
-  windowId: string | null;
-  /** 계정의 모든 모델이 함께 쓰는 공유 구간(`scope.shared`). 계열 전용 tier 구간은 false다. */
-  shared: boolean;
-}
-export interface QuotaAccount {
-  credentialId: number | null;
-  disabled: boolean;
-  autoBlockedUntilMs: number | null;
-  limitReached: boolean | null;
-  fetchedAt: number | null;
-  limits: QuotaLimit[];
-}
-export type QuotaSnapshot =
-  | { state: "observed"; observedAt: number; providers: Record<string, QuotaAccount[]> }
-  | { state: "unavailable"; observedAt: number; reason: string };
 export interface RoutingDeps {
   judge: (ctx: ExtensionContext, request: { state: unknown; questions: Record<string, RoutingQuestion> }, signal?: AbortSignal) => Promise<{ answers: Record<string, RoutingAnswer> }>;
   settings: (ctx: ExtensionContext) => Promise<{ getModelRoles(): Readonly<Record<string, string>> } | undefined>;
@@ -182,74 +161,6 @@ export interface RoutingDeps {
   requiredSkills?: () => RequiredSkillSource;
 }
 
-// 잔량은 참고 정보다. 실측: 사이드카 `/usage` 웜 응답 1-3ms, 콜드 경로가 실행하는
-// `omp usage --json` 0.25-1.3s(4회 실측 1249·246·750·295ms), 사이드카 자체 캐시 60s.
-// 이 예산을 넘기면 배치를 더 붙잡지 않고 이번 호출만 unavailable로 두며,
-// 다음 호출은 사이드카 캐시가 채워져 웜으로 답한다.
-const QUOTA_ADVISORY_BUDGET_MS = 2_000;
-const finiteOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
-
-/** CUELO usage 사이드카의 `/usage`를 후보 provider만 남겨 요약한다. 실패는 unavailable로 두고 발주를 막지 않는다. */
-export async function readSidecarQuota(providers: string[], signal?: AbortSignal): Promise<QuotaSnapshot> {
-  const observedAt = Date.now();
-  const port = Number(process.env.OMP_USAGE_PORT || 30142);
-  const budget = AbortSignal.timeout(QUOTA_ADVISORY_BUDGET_MS);
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/usage`, {
-      redirect: "error",
-      signal: signal ? AbortSignal.any([signal, budget]) : budget,
-    });
-    if (!response.ok) return { state: "unavailable", observedAt, reason: `usage sidecar HTTP ${response.status}` };
-    const body = await response.json() as { brokerOk?: boolean; reports?: Record<string, unknown>[] };
-    if (body.brokerOk === false) return { state: "unavailable", observedAt, reason: "usage sidecar brokerOk=false" };
-    const wanted = new Set(providers);
-    const byProvider: Record<string, QuotaAccount[]> = Object.fromEntries(providers.map((provider) => [provider, []]));
-    for (const report of body.reports ?? []) {
-      const provider = typeof report.provider === "string" ? report.provider : "";
-      if (!wanted.has(provider)) continue;
-      const metadata = (report.metadata ?? {}) as Record<string, unknown>;
-      const limits = Array.isArray(report.limits) ? report.limits as Record<string, unknown>[] : [];
-      byProvider[provider]!.push({
-        credentialId: finiteOrNull(report.credentialId),
-        disabled: report.disabled === true,
-        autoBlockedUntilMs: finiteOrNull(report.autoBlockedUntilMs),
-        limitReached: typeof metadata.limitReached === "boolean" ? metadata.limitReached : null,
-        fetchedAt: finiteOrNull(report.fetchedAt),
-        limits: limits.map((limit) => {
-          const amount = (limit.amount ?? {}) as Record<string, unknown>;
-          const window = (limit.window ?? {}) as Record<string, unknown>;
-          const scope = (limit.scope ?? {}) as Record<string, unknown>;
-          const daySlot = limit.daySlot as Record<string, unknown> | undefined;
-          return {
-            id: typeof limit.id === "string" ? limit.id : null,
-            usedFraction: finiteOrNull(amount.usedFraction),
-            resetsAt: finiteOrNull(window.resetsAt),
-            daySlot: daySlot
-              ? {
-                usedPct: finiteOrNull(daySlot.usedPct),
-                quotaPct: finiteOrNull(daySlot.quotaPct),
-                slotsLeft: finiteOrNull(daySlot.slotsLeft),
-                quality: typeof daySlot.quality === "string" ? daySlot.quality : null,
-                slotEnd: finiteOrNull(daySlot.slotEnd),
-              }
-              : null,
-            windowId: typeof scope.windowId === "string" ? scope.windowId : typeof window.id === "string" ? window.id : null,
-            shared: scope.shared === true,
-          };
-        }),
-      });
-    }
-    return { state: "observed", observedAt, providers: byProvider };
-  } catch (error) {
-    return {
-      state: "unavailable",
-      observedAt,
-      reason: budget.aborted
-        ? `usage sidecar advisory budget 초과 (${QUOTA_ADVISORY_BUDGET_MS}ms)`
-        : error instanceof Error ? error.message : String(error),
-    };
-  }
-}
 const policyUrl = new URL("../../rules/harness-policy.json", import.meta.url);
 export function loadRoutingPolicy(): RoutingPolicy {
   return JSON.parse(readFileSync(policyUrl, "utf8")).routing;
@@ -641,24 +552,20 @@ function placementOf(
 
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-/**
- * 자동 추천(2026-11-08 사용자 결정). Main(Claude Opus)이 생각·준비·검수하고 DeepSeek가 Main이 준비한 대부분의 구현을 맡는다. UI·상태 복잡도가
- * 있어도 Main이 방향을 정했으면 DeepSeek다. Sonnet은 어려운 UI(uiDifficulty=DIFFICULT), 기존 상태 소유자·승인된 계약 안의 한정된 설계·복잡 상태
- * 설계(boundedDesign=BOUNDED), 경계가 정해진 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)만 맡는다. 큰 교차 경계 재설계·열린 제품/구조 방향(designOpen)과
- * 반복 실패(RETURN_TO_MAIN)는 UI 여부와 상관없이 Main이 먼저 갖는다.
- * Sonnet 재시도나 frontier Maker로 올리지 않는다. 기본 후보(DeepSeek)가 없거나 관측 소진이어도 Sonnet으로 자동 대체하지 않는다(2026-11-08
- * 사용자 결정): 추천 없음과 "Main이 다시 판단" 사유만 돌려주며 막지는 않는다. Opus·Sol·Gemini·GLM은 추천 순서에 없고 Main이 의도한
- * 예외로 ROUTING_REASON과 함께 명시 선택한다. Jev가 모르면 모르는 것이며 더 비싼 모델의 근거가 아니다.
- */
+/** Settled implementation stays DeepSeek. Bounded design/rework use Sol; difficult UI uses
+ * Sonnet except for the user-approved complete Anthropic daily-share exhaustion exception.
+ * Open redesign, repeated failure and UNKNOWN retain their existing decisions. */
 const SETTLED_NORMAL_ORDER: readonly string[] = ["NORMAL_DEEPSEEK"];
 const SETTLED_HARD_ORDER: readonly string[] = ["HARD_CODE_DEEPSEEK"];
 const SONNET_NORMAL_ORDER: readonly string[] = ["NORMAL_SONNET"];
 const HARD_UI_ORDER: readonly string[] = ["HARD_UI_SONNET"];
-const HARD_REWORK_ORDER: readonly string[] = ["HARD_CODE_SONNET"];
+const SOL_NORMAL_ORDER: readonly string[] = ["NORMAL_SOL"];
+const SOL_HARD_ORDER: readonly string[] = ["HARD_CODE_SOL61"];
 const SETTLED_BASIS = "Main이 방향을 정한 구현이라 DeepSeek가 먼저 맡습니다.";
 const DIFFICULT_UI_BASIS = "정말 어려운 UI/UX 판단이 남아 Sonnet이 맡습니다.";
-const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sonnet이 맡습니다.";
-const BOUNDED_REWORK_BASIS = "경계가 정해진 구현 실패 재작업은 Sonnet이 맡습니다.";
+const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sol이 맡습니다.";
+const BOUNDED_REWORK_BASIS = "경계가 정해진 구현 실패 재작업은 Sol이 맡습니다.";
+const DAY_SLOT_BASIS = "모든 Anthropic 계정의 오늘 하루 몫이 소진되어 Sonnet 대신 Sol을 추천합니다.";
 const RETURN_REMEDY = "Main이 원인과 근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 maker_route를 다시 실행하세요. 갱신된 준비가 해결된 구조와 한정된 구현으로 판정되면 그 준비로 발주할 수 있습니다(임의의 ROUTING_REASON으로는 넘길 수 없습니다).";
 const RETURN_REWORK_REASON = `같은 원인의 한정된 수정이 남지 않았거나 현재 접근이 실패했다는 증거가 있어 반복 실패로 판단했습니다(의도한 RED 테스트·일시적 인프라 실패는 제외). Sonnet 재시도나 frontier Maker 승격으로 잇지 않습니다. ${RETURN_REMEDY}`;
 const OPEN_DESIGN_REASON = `승인된 접근이 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계의 미해결 변경 없이는 수용 조건을 만족하지 못하거나 제품·구조 방향 자체가 열려 있는 큰 교차 경계 재설계가 남았습니다. ${RETURN_REMEDY}`;
@@ -667,23 +574,6 @@ const UNKNOWN_UI_REASON = "Jev가 남은 UI/UX 판단의 난이도를 판단하�
 const UNKNOWN_BOUNDED_REASON = "Jev가 남은 설계 판단이 한정된 것인지 정해진 것인지 판단하지 못했습니다(모름). 어느 쪽으로도 추측하지 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
 
 
-/** 계정의 1주 공유 구간(`7d`, shared) 가운데 관측 시각에 아직 리셋되지 않은 것. 계열 전용 구간과 이미 리셋된 구간은 뺀다. */
-function liveWeeklyShared(account: QuotaAccount, observedAt: number) {
-  return account.limits.filter((limit) => limit.windowId === "7d" && limit.shared
-    && !(limit.resetsAt !== null && limit.resetsAt <= observedAt));
-}
-
-/** 계정의 1주 공유 구간이 관측상 찼다. */
-function weeklySharedExhausted(account: QuotaAccount, observedAt: number) {
-  return liveWeeklyShared(account, observedAt).some((limit) => limit.usedFraction !== null && limit.usedFraction >= 1);
-}
-
-/** 계정 사용 가능성은 core 신호(disabled·limitReached·autoBlockedUntil)와 관측된 1주 공유 구간 소진으로만 본다. */
-function accountUnusable(account: QuotaAccount, observedAt: number) {
-  return account.disabled || account.limitReached === true
-    || (account.autoBlockedUntilMs != null && account.autoBlockedUntilMs > observedAt)
-    || weeklySharedExhausted(account, observedAt);
-}
 
 /** 그 모델 provider의 관측된 계정이 모두 쓸 수 없을 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
 function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
@@ -893,7 +783,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main(Claude Opus)이 생각·준비·검수하고 DeepSeek가 범위와 수용 조건이 분명한 구현·테스트·반복 수정을 맡습니다. 준비된 복잡한 상태 구현도 Main이 방향을 정했으면 DeepSeek입니다. Main은 profile·recommendations·placement·history·normalAllocation·hardAllocation을 보고 후보를 지정합니다. 방향이 정해진 구현은 DeepSeek를 추천하며, 그 후보가 없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않고 추천 없이 'Main이 다시 판단' 사유만 돌려줍니다(구조 재설계가 아니라 가용성 사안이라 막지 않으며, Main이 한도를 확인해 다른 후보를 ROUTING_REASON과 함께 직접 지정할 수 있습니다). Sonnet은 어려운 UI/UX(uiDifficulty=DIFFICULT), 기존 상태 소유자와 승인된 계약 안에서 목표가 분명한 한정된 열린 설계·복잡 상태 설계(boundedDesign=BOUNDED), 경계가 정해진 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)에 추천하며, Sonnet을 쓸 수 없으면 추천 없이 사유만 돌려줍니다. 실패한 테스트마다 Sonnet으로 보내지 않습니다. 새 정본 상태 소유권·공개 계약·모듈 경계가 필요한 큰 교차 경계 재설계나 제품·구조 방향 자체가 열린 경우(designOpen)와 반복 실패(reworkNature=RETURN_TO_MAIN, FINDING_ID 표기와 무관하게 failureEvidence·facts로 판단, UI 여부와 무관)는 returnToMain=true이며 추천 없이 Main으로 돌아옵니다. 이 준비로는 ROUTING_REASON이 있어도 어떤 후보도 발주할 수 없고(beforeTask가 막음), Main이 원인·근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 maker_route를 다시 실행해 갱신된 판단이 해결된 구조와 한정된 구현·설계로 나오면 발주합니다. 의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정은 실패 재작업으로 세지 않습니다. Jev가 모르거나 불가하면 UNKNOWN이며 막지 않습니다. 더 비싼 모델의 근거도 아니고 기존처럼 Main이 ROUTING_REASON으로 정합니다. Opus·Sol은 자동으로 올리지 않으며 Main이 의도한 예외로 기존 frontier 후보를 ROUTING_REASON과 함께 지정할 때만 씁니다. 한도 미관측은 소진이 아닙니다. 추천 변경·Jev 불가·기존 owner 대신 새 발주는 ROUTING_REASON을 남깁니다. Maker는 '<후보 selector>:auto'로만 발주하며 강도는 child auto가 고릅니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운·리셋과 warm/exact pin은 유지합니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. model은 Main이 지정합니다. routes[].briefGaps와 ownershipOverlaps를 확인하고 필요하면 계약을 고쳐 다시 준비합니다.`;
+  const INSTRUCTION = `Main이 생각하고 준비하고 검수합니다. 방향이 정해진 구현과 준비된 복잡 상태, 테스트와 반복 수정은 DeepSeek입니다. DeepSeek가 없거나 관측 소진이면 자동 대체 없이 추천 없음과 Main 재판단 사유를 돌려주며 막지 않습니다. 어려운 UI/UX(uiDifficulty=DIFFICULT)는 Sonnet, 기존 상태 소유자와 승인된 계약 안의 한정된 설계(boundedDesign=BOUNDED)와 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)은 Sol입니다. anthropicOverDaySlot=true는 모든 활성 Anthropic 계정을 관측했고 각 계정이 기존 규칙상 사용 불가이거나 오늘 하루 몫 이상을 썼다는 뜻이며, 이때 어려운 UI도 Sonnet 대신 Sol입니다. 미관측과 모름은 소진이 아닙니다. 큰 교차 경계 재설계(designOpen)와 반복 실패(RETURN_TO_MAIN)는 UI 여부와 무관하게 Main으로 돌아오고 이 준비로는 ROUTING_REASON이나 다른 후보로 발주할 수 없습니다. Main이 원인과 근거를 검토해 접근, 범위, 계약 또는 수용 조건을 바꿔 다시 준비한 판단만 발주됩니다. FINDING_ID가 아니라 failureEvidence와 facts로 판단합니다. 의도한 RED, 일시적 인프라 실패와 일상적 검증 보정은 실패 재작업이 아닙니다. Jev 불가와 UNKNOWN은 추천 없이 Main이 ROUTING_REASON으로 정하며 막지 않고 더 비싼 모델의 근거도 아닙니다. 추천과 다른 선택과 기존 owner 대신 새 발주는 ROUTING_REASON이 필요합니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운과 리셋, warm/exact pin은 유지합니다. 후보 없는 결정은 다른 모델로 자동 대체하지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. 강도는 child auto가 고릅니다. Main은 profile, recommendations, placement, history, normalAllocation, hardAllocation, routes[].briefGaps와 ownershipOverlaps를 확인합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -960,7 +850,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // 잔량은 시각마다 바뀌므로 revision·identity·Jev state 밖의 참고 정보로만 붙인다.
       // Jev 판단과 함께 시작하고, 이번 계정 잔량 조회가 끝난 뒤 배정 결과를 반환한다.
       // 기존 조회 시간 제한과 사용자 AbortSignal은 유지한다.
-      const quotaProviders = [...new Set(candidates.map((candidate) => candidate.model.slice(0, candidate.model.indexOf("/"))))];
+      const quotaProviders = [...new Set([...candidates.map((candidate) => candidate.model.slice(0, candidate.model.indexOf("/"))), "anthropic"])];
       quotaAbort = new AbortController();
       const quotaSignal = signal
         ? AbortSignal.any([signal, quotaAbort.signal])
@@ -1089,6 +979,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const quota = await quotaPending;
       const quotaDoneAt = clock();
       requireLatest();
+      const overDaySlot = anthropicOverDaySlot(quota, enabledAnthropicCredentialIds(ctx.modelRegistry?.authStorage));
       // Historic summaries remain advisory; FINDING_ID is the per-dispatch rework signal.
       const ledgerRecords = deps.ledger?.read();
       const historyOf = (answers: Record<string, RoutingAnswer> | null): RoutingHistory | null => {
@@ -1114,16 +1005,18 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const failedRework = nature === "BOUNDED_FAILURE";
         const returnRework = nature === "RETURN_TO_MAIN";
         // 우선순위: 반복 실패 → 큰 교차 경계 재설계 → (모름) → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 일반 구현.
-        // 앞의 둘은 UI 여부와 무관하게 Main이 갖는다. Sonnet은 어려운 UI·한정된 설계·한정된 실패 재작업이다.
+        // 앞의 둘은 UI 여부와 무관하게 Main이 갖는다. 한정된 설계와 실패 재작업은 Sol이다.
         const decide = (): NormalAllocation => {
           if (returnRework) return returnToMain(quota, RETURN_REWORK_REASON);
           if (architectureOpen) return returnToMain(quota, OPEN_DESIGN_REASON);
           if (!designKnown) return unknownDecision(quota, UNKNOWN_DESIGN_REASON);
           if (!uiKnown) return unknownDecision(quota, UNKNOWN_UI_REASON);
           if (!boundedKnown) return unknownDecision(quota, UNKNOWN_BOUNDED_REASON);
-          if (difficultUi) return allocate(candidates, quota, hard ? HARD_UI_ORDER : SONNET_NORMAL_ORDER, DIFFICULT_UI_BASIS);
-          if (boundedDesign) return allocate(candidates, quota, hard ? HARD_REWORK_ORDER : SONNET_NORMAL_ORDER, BOUNDED_DESIGN_BASIS);
-          if (failedRework) return allocate(candidates, quota, hard ? HARD_REWORK_ORDER : SONNET_NORMAL_ORDER, BOUNDED_REWORK_BASIS);
+          if (difficultUi) return overDaySlot
+            ? allocate(candidates, quota, hard ? SOL_HARD_ORDER : SOL_NORMAL_ORDER, DAY_SLOT_BASIS)
+            : allocate(candidates, quota, hard ? HARD_UI_ORDER : SONNET_NORMAL_ORDER, DIFFICULT_UI_BASIS);
+          if (boundedDesign) return allocate(candidates, quota, hard ? SOL_HARD_ORDER : SOL_NORMAL_ORDER, BOUNDED_DESIGN_BASIS);
+          if (failedRework) return allocate(candidates, quota, hard ? SOL_HARD_ORDER : SOL_NORMAL_ORDER, BOUNDED_REWORK_BASIS);
           return allocate(candidates, quota, hard ? SETTLED_HARD_ORDER : SETTLED_NORMAL_ORDER, SETTLED_BASIS);
         };
         // 등급(workClass) 답이 없어도 열린 구조 결정이나 반복 실패가 이미 드러났으면 그 결정은 Main의 것이다(부분 판정으로 차단을 우회하지 못한다).
@@ -1156,6 +1049,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         candidates,
         unavailableCandidates,
         quota,
+        anthropicOverDaySlot: overDaySlot,
         instruction: INSTRUCTION,
         routes: publications.map((publication, index) => ({
           ...publication.route,
@@ -1446,7 +1340,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 난이도·열린 설계·한정된 설계·UI/UX와 그 난이도·HARD 분야·재작업 성격·owner·교차검증 필요성을 판단한다. 위임 적합성 조언은 결과에 싣지 않고 발주 원장에만 남긴다. 교차검증 조언은 게이트를 바꾸지 않는다. 같은 batch의 TaskGuard 계약 충돌은 판단 전 거절한다. Main(Claude Opus)이 준비·검수하고 방향이 정해진 구현은 UI·상태 복잡도가 있어도 DeepSeek를 추천한다(없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않고 추천 없이 Main이 다시 판단하게 한다. 막지 않는다). Sonnet은 어려운 UI/UX, 기존 상태 소유자와 승인된 계약 안의 한정된 설계·복잡 상태 설계, 경계가 정해진 구현 실패 재작업에 추천한다. 큰 교차 경계 재설계(새 상태 소유권·공개 계약)와 반복 실패는 returnToMain이며 추천 없이 Main으로 돌아오고, 그 준비로는 ROUTING_REASON이 있어도 발주할 수 없다. Main이 원인·근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 다시 준비한 판단만 발주된다. 의도한 RED 테스트·일시적 인프라 실패·일상적 검증 보정은 실패 재작업이 아니다. Jev 불명·불가는 UNKNOWN이며 막지 않고 더 비싼 모델의 근거도 아니다. Main이 기존 frontier 후보를 의도한 예외로 고르면 ROUTING_REASON이 필요하다. 한도 미관측은 소진이 아니다. Maker는 '<후보 selector>:auto'만 쓰며 강도는 child auto가 고른다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, warm/exact pin은 바꾸지 않는다. history는 advisory이고 routing_verdict는 실제 spawn identity를 쓴다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 난이도, 열린 설계, 한정된 설계, UI 난이도, 재작업 성격, owner와 교차검증 필요성을 판단한다. 방향이 정해진 구현은 DeepSeek, 어려운 UI는 Sonnet, 한정된 설계와 실패 재작업은 Sol을 추천한다. 모든 활성 Anthropic 계정의 하루 몫 소진이 관측되면 anthropicOverDaySlot=true이고 Sonnet 추천도 Sol이다. 미관측은 소진이 아니다. 큰 교차 경계 재설계와 반복 실패는 Main으로 반환하고 그 준비로는 발주할 수 없다. UNKNOWN은 막지 않으며 Main이 ROUTING_REASON으로 정한다. 추천 변경에는 ROUTING_REASON이 필요하다. 계정 pin, 실행 중 모델과 기존 owner는 바꾸지 않는다. 후보 selector:auto로 발주한다. history와 교차검증 조언은 advisory다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

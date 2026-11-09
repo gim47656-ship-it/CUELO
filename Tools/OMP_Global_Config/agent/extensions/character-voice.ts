@@ -624,9 +624,11 @@ async function switchCharacterForSession(
     // 교체와 summon 모두 exact pin이다. 일반 explicit pin은 다음 요청의 계정 랭킹(오늘 몫 안에서 리셋 임박·
     // 잔량 많은 계정 우선)이 다른 계정으로 되돌릴 수 있어 교체 완료 보고와 실제 계정이 어긋났다.
     // exact pin은 sessions.release로 풀 수 없으므로 뒤에 실패할 단계가 없도록 마지막에 건다.
+    // CUELO's core patch extends SessionsApi; the published SDK declaration still has restoredAtMs only.
+    const exactPinOptions: { restoredAtMs?: number; exactLabel: string } = { exactLabel: alias };
     if (
       targetCredentialId !== undefined &&
-      !ctx.modelRegistry.authStorage.sessions.pin("anthropic", sessionId, targetCredentialId, { exactLabel: alias })
+      !ctx.modelRegistry.authStorage.sessions.pin("anthropic", sessionId, targetCredentialId, exactPinOptions)
     ) {
       throw new Error(`Anthropic OAuth 저장 위치 ${target.oauthPosition} 계정을 현재 세션에 pin하지 못했습니다.`);
     }

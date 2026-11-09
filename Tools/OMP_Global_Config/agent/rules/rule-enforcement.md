@@ -101,7 +101,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
 | A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내 | `extensions/lib/maker-routing.ts` `maker_route`, `evals/cases/routine/small-grouped.json`·`concurrency-eight-way.json`·`routine-simple.json` | 요청당 child 상한은 task-guard 차단 |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
-| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 차단(부분) | `extensions/lib/maker-routing.ts`의 `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts` | 큰 교차 경계 재설계와 반복 실패는 Main의 재준비 전 발주 차단. 한정된 설계는 Sonnet 추천, 모름과 후보 소진은 Main의 근거 있는 선택 허용 |
+| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 차단(부분) | `extensions/lib/maker-routing.ts`의 `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts`; 하루 몫과 새 세션은 `extensions/lib/anthropic-quota.ts`, `lib/new-session-model.test.ts` | 큰 교차 경계 재설계와 반복 실패는 Main의 재준비 전 발주 차단. 한정된 설계와 실패 재작업은 Sol, 어려운 UI는 Sonnet 추천. 모든 활성 Anthropic 계정의 하루 몫 소진이 관측되면 Sonnet 추천과 모델 미지정 새 최상위 세션은 Sol로 간다. 모름과 후보 소진은 Main의 근거 있는 선택 허용 |
 | A17 | Main은 Maker 경로를 고치지 않고 검사를 반복하지 않는다 | 문서 | — | OwnerWriteGuard는 Maker 쓰기만 본다 |
 | A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | 검사 | `patches/core-subagent-verify-test.ts`, `evals/cases/security/missing-evidence.json` | 최종 확인·N회 반복은 검토 수렴 뒤 한 번(`writerValidation.finalSuiteOrder`, Maker SOP)은 문서. 2026-11-04 지적(검토마다 10회 반복 재시작) |
 | A19 | `wait`는 Main 전용 | 구조 | `patches/core-subagent-wait-test.ts` | |

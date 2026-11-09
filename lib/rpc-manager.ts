@@ -32,7 +32,8 @@ import { join } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { invalidateModelsCache } from "./models-cache";
-import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
+import { resolveVisibleModels } from "./model-scope";
+import { selectNewSessionModel } from "./new-session-model";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { createSessionRecallTool } from "./session-recall";
 import { canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, isInsideProject, untrustedProjectSessionOptions } from "./project-trust";
@@ -2802,6 +2803,7 @@ export async function startRpcSession(
   sessionFile: string,
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
+  freshTopLevel = false,
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
   const { toolNames, initialModel, thinkingLevel, accountOauthPosition } = options;
   const registry = getRegistry();
@@ -2903,15 +2905,16 @@ export async function startRpcSession(
       // 대화가 이미 있는 세션은 transcript의 thinking_level_change를 따른다. 여기서 싣지
       // 않으면 세션은 설정 기본값(예: auto)으로 열려 역할 selector의 xhigh가 사라진다.
       const roleThinkingLevel = initialModel ? undefined : defaultRole?.thinkingLevel;
-      const selectedThinkingLevel = thinkingLevel ?? roleThinkingLevel;
       const hasExistingMessages = sessionManager.buildSessionContext().messages.length > 0;
-      const initial = hasExistingMessages
-        ? { scopedModels: [...scope.scopedModels], model: undefined, thinkingLevel: undefined }
-        : selectInitialModelScope(scope, {
-          ...(initialModel ? { requestedModel: initialModel } : {}),
-          ...(defaultRole ? { defaultModel: defaultRole } : {}),
-          ...(selectedThinkingLevel ? { thinkingLevel: selectedThinkingLevel } : {}),
-        });
+      const { initial, notice: daySlotNotice } = await selectNewSessionModel(scope, {
+        freshTopLevel,
+        sessionFile,
+        hasExistingMessages,
+        ...(initialModel ? { requestedModel: initialModel } : {}),
+        ...(defaultRole ? { defaultModel: defaultRole } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(roleThinkingLevel ? { defaultThinkingLevel: roleThinkingLevel } : {}),
+      }, runtime.authStorage);
       const sessionOptions: CreateAgentSessionOptions = {
         cwd: sessionCwd,
         agentDir,
@@ -3040,6 +3043,23 @@ export async function startRpcSession(
         handover.from.handOverListenersTo(wrapper, handover.keepAlive);
       }
       wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
+      if (daySlotNotice) {
+        try {
+          await session.sendCustomMessage({
+            customType: "anthropic-day-slot-start",
+            content: daySlotNotice,
+            display: true,
+            attribution: "agent",
+          }, { triggerTurn: false });
+        } catch (error) {
+          try {
+            await wrapper.shutdown();
+          } catch (shutdownError) {
+            console.error("[cuelo] startup cleanup failed after notice error:", shutdownError);
+          }
+          throw error;
+        }
+      }
 
       return { session: wrapper, realSessionId };
     } finally {
@@ -3079,7 +3099,7 @@ export async function startNewRpcSession(
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
   // startRpcSession은 키를 공유하는 동시 호출을 한 세션으로 합치므로 시작 키는 요청마다 새로 만든다.
-  const start = () => startRpcSession(`__new__${randomUUID()}`, "", cwd, options);
+  const start = () => startRpcSession(`__new__${randomUUID()}`, "", cwd, options, true);
   if (!createRequestId) return start();
 
   const requests = getNewSessionRequests();

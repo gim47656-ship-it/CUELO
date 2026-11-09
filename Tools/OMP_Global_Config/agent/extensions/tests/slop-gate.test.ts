@@ -847,7 +847,7 @@ describe("slop_check reviewer 자리 계획(planReviewers)", () => {
     expect(plan(["openai-codex/gpt-6-astra"], {})).toEqual({ lanes: ["anthropic"], slots: {} });
   });
 
-  test("Luna slot이 있으면 Anthropic·Gemini·그 밖 저자는 Luna 하나, OpenAI 저자는 같은 계열이라 Opus(crossReviewAnthropic) 하나다", () => {
+  test("Luna slot이 있으면 Anthropic·Gemini·그 밖 저자는 Luna 하나, OpenAI 저자는 같은 계열이라 crossReviewAnthropic 하나다", () => {
     expect(plan(["anthropic/claude-opus-5-5"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
     expect(plan(["other-provider/some-model"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
     expect(plan(["aistudio/gemini-4-argon"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
