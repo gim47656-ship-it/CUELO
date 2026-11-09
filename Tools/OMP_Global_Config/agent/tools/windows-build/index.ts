@@ -123,10 +123,13 @@ function validateToken(label: string, value: string, pattern: RegExp): string {
   return trimmed;
 }
 
-/** MSBuild 명령줄 인자를 만든다. project·logFile은 이미 Windows 경로여야 한다. */
-export function buildMsbuildArgs(params: Omit<WindowsBuildParams, "project">, project: string, logFile: string): string[] {
+/**
+ * MSBuild 명령줄 인자를 만든다. project·logFile은 이미 Windows 경로여야 한다.
+ * `maxCpuCount`를 주면 `-m:<n>`으로 병렬 노드 수를 묶는다(VM 빌드가 보수적 병렬도로 쓴다). 없으면 기존처럼 `-m`이다.
+ */
+export function buildMsbuildArgs(params: Omit<WindowsBuildParams, "project">, project: string, logFile: string, maxCpuCount?: number): string[] {
   if (logFile.includes(";")) throw new Error(`windows_build: 로그 경로에 ';'가 있어 MSBuild 파일 로거에 넘길 수 없다: ${logFile}`);
-  const args = ["-nologo", "-m", "-nodeReuse:false", "-noconlog", `-flp:logfile=${logFile};encoding=UTF-8;verbosity=minimal`];
+  const args = ["-nologo", maxCpuCount ? `-m:${maxCpuCount}` : "-m", "-nodeReuse:false", "-noconlog", `-flp:logfile=${logFile};encoding=UTF-8;verbosity=minimal`];
   if (params.restore) args.push("-restore");
   const properties: Array<[string, string]> = [];
   if (params.configuration !== undefined) properties.push(["Configuration", validateToken("configuration", params.configuration, /^[\w .+-]+$/)]);
