@@ -1,7 +1,7 @@
 {
   "id": "scan-nudge",
   "name": "넓은 읽기 넘김 안내",
-  "description": "Main과 Maker가 한 작업에서 고치지 않을 파일을 4개째 직접 읽으려 하면 skim 활용을 한 번 안내합니다. 읽기를 막지 않으며, 안내와 이후 skim 사용 기록을 에이전트 폴더의 cuelo-scan-nudge-events.jsonl에 남깁니다.",
+  "description": "Main과 Maker가 한 작업에서 고치지 않을 파일을 4개째 직접 읽어 성공하면 skim 활용을 한 번 안내합니다. 읽기를 막지 않으며, 안내와 이후 skim 사용 기록을 에이전트 폴더의 cuelo-scan-nudge-events.jsonl에 남깁니다. 실패하거나 다른 가드가 막은 읽기, 실패한 skim이나 task는 세지 않습니다.",
   "createdAt": "2026-11-09T11:40:00.000Z",
   "extension": "index.ts",
   "tools": []

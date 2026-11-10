@@ -81,10 +81,47 @@ export function createScanNudge(log: Log = defaultLog) {
       explored.delete(path);
     };
 
-    pi.on("tool_call", (event, ctx) => {
-      if (!armed) return;
+    // 편집 대상은 확장 이벤트의 정규화된 `path`/`paths`가 정본이다. 그 필드가 있을 때 payload의
+    // 모양만 같은 글자를 대상으로 읽으면, 실제로 건드리지 않은 파일이 탐색에서 빠진다.
+    // hashline 마커는 정규화된 대상이 하나도 없을 때만 대비책으로 쓴다.
+    const markEditTargets = (input: Record<string, unknown>, cwd: string) => {
+      let normalized = 0;
+      const single = normalizeReadPath(input.path, cwd);
+      if (single) {
+        markEdited(single);
+        normalized += 1;
+      }
+      if (Array.isArray(input.paths)) {
+        for (const candidate of input.paths) {
+          const path = normalizeReadPath(candidate, cwd);
+          if (!path) continue;
+          markEdited(path);
+          normalized += 1;
+        }
+      }
+      if (normalized > 0) return;
+      for (const match of String(input.input ?? "").matchAll(EDIT_TARGET)) {
+        const path = normalizeReadPath(match[1], cwd);
+        if (path) markEdited(path);
+      }
+    };
+
+    // 세 상태(편집된 파일, 넘긴 조사, 탐색한 읽기)는 모두 호출이 아니라 끝난 결과로 판정한다.
+    // tool_call은 실행 전에 오므로, 그때 세면 실패하거나 다른 가드가 막은 호출도 성공으로 굳는다:
+    // 없는 파일 읽기가 탐색 자리를 차지하고, 실패한 skim이나 task가 조사를 넘긴 것으로 남고,
+    // 실패한 edit이나 write가 편집된 것으로 기록된다. 실패한 호출은 isError로, 차단된 호출은 결과 없이 끝난다.
+    pi.on("tool_result", (event, ctx) => {
+      if (!armed || event.isError) return;
       const input = (event.input ?? {}) as Record<string, unknown>;
-      const cwd = ctx.cwd;
+      if (event.toolName === "write") {
+        const path = normalizeReadPath(input.path, ctx.cwd);
+        if (path) markEdited(path);
+        return;
+      }
+      if (event.toolName === "edit") {
+        markEditTargets(input, ctx.cwd);
+        return;
+      }
       if (event.toolName === "skim" || event.toolName === "task") {
         delegated = true;
         if (nudged && !followed) {
@@ -93,20 +130,8 @@ export function createScanNudge(log: Log = defaultLog) {
         }
         return;
       }
-      if (event.toolName === "write") {
-        const path = normalizeReadPath(input.path, cwd);
-        if (path) markEdited(path);
-        return;
-      }
-      if (event.toolName === "edit") {
-        for (const match of String(input.input ?? "").matchAll(EDIT_TARGET)) {
-          const path = normalizeReadPath(match[1], cwd);
-          if (path) markEdited(path);
-        }
-        return;
-      }
       if (event.toolName !== "read" || nudged || delegated) return;
-      const path = normalizeReadPath(input.path, cwd);
+      const path = normalizeReadPath(input.path, ctx.cwd);
       if (!path || edited.has(path)) return;
       explored.add(path);
       if (explored.size < EXPLORATION_READS_BEFORE_NUDGE) return;
