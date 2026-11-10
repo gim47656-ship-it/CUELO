@@ -45,8 +45,6 @@ export interface NightlyJobs {
   handoff?: string[];
   /** 받은편지함 모드에서만: 연 뒤 오류와 함께 나타나 살펴볼 관리 스킬(합계는 `출처:이름`) */
   skillHealth?: string[];
-  /** 받은편지함 모드에서만: 승격 기준을 넘은 실험 플러그인 id(합계는 `출처:id`) */
-  labPromotions?: string[];
   /** 받은편지함 모드에서만: 공개 저장소 열린 이슈 조회 결과와 맡긴 이슈 번호 */
   issueLookup?: "ok" | "partial" | "unavailable";
   issues?: number[];

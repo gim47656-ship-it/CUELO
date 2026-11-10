@@ -150,14 +150,6 @@
   padding-block-start: var(--seed-dimension-x0_5);
 }
 
-.controlNote {
-  margin: 0;
-  color: var(--seed-color-fg-neutral-muted);
-  font-size: var(--seed-font-size-t2-static);
-  line-height: var(--seed-line-height-t3-static);
-  text-align: end;
-}
-
 .switchLabel {
   min-inline-size: 3.5em;
   color: var(--seed-color-fg-neutral-muted);

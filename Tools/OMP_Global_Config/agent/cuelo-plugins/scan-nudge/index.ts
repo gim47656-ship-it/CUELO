@@ -36,7 +36,7 @@ export function normalizeReadPath(raw: unknown, cwd: string): string | null {
 type Log = (record: Record<string, unknown>) => void;
 
 // 관찰 기록은 플러그인 폴더 밖(에이전트 폴더의 다른 cuelo-*.json 상태 파일 옆)에 둔다. 정식 폴더는 프로필 동기화가 덮는다.
-// 시험판(plugin-lab/<id>)과 정식판(cuelo-plugins/<id>) 모두 두 단계 위가 에이전트 폴더다.
+// 설치된 플러그인 폴더(cuelo-plugins/<id>)에서 두 단계 위가 에이전트 폴더다.
 export const EVENTS_FILE = "cuelo-scan-nudge-events.jsonl";
 
 const defaultLog: Log = (record) => {

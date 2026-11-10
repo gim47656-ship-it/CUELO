@@ -1,20 +1,20 @@
 ---
 name: plugin-lab
-description: "Build a trial plugin (a new tool and/or a side panel) for this user's own CUELO profile during a conversation, test it live, and leave promotion to the nightly loop. Open when the user asks for a new tool, a small automation, a custom panel, or says \"make a plugin\", \"플러그인 만들어\", \"도구 하나 만들어 붙여\"."
+description: "Build a plugin (a new tool and/or a side panel) for this user's own CUELO profile, written straight into the repository's formal plugin folder and shipped in the same turn. Open when the user asks for a new tool, a small automation, a custom panel, or says \"make a plugin\", \"플러그인 만들어\", \"도구 하나 만들어 붙여\"."
 ---
 
 # Plugin Lab
 
-CUELO's Creator Mode. A trial plugin runs only in this user's profile on this PC, with the user's own privileges
-(it can read and write whatever the user can). Say so to the user before you write one. Nothing here is reviewed,
-committed or deployed: the nightly loop looks at trial plugins that proved useful over several days and promotes them
-through review, CI and deployment. Never copy a plugin into the repository or `cuelo-plugins/` yourself, unless the
-user explicitly asks to promote it now; then it takes the same review, version and CI path as a nightly promotion.
+A plugin runs only in this user's profile on this PC, with the user's own privileges (it can read and
+write whatever the user can). Say so to the user before you write one. There is no trial stage: the
+plugin is written into the repository and ships in the same turn. It becomes active only once that
+deploy has restarted the server.
 
 ## Where it lives
 
-- Trial: `~/.omp/agent/plugin-lab/<id>/` (find the exact root with `plugin_lab` `action: "list"`).
-- Promoted (written only by the nightly loop): `~/.omp/agent/cuelo-plugins/<id>/`. A promoted id hides the trial copy.
+- Source: `Tools/OMP_Global_Config/agent/cuelo-plugins/<id>/` in the repository. Write here.
+- Installed: the profile sync copies that folder to `~/.omp/agent/cuelo-plugins/<id>/`, which is what
+  sessions load. `plugin_lab` `action: "list"` shows the installed root.
 - `<id>` is kebab-case (`a-z`, `0-9`, single dashes) and equals the folder name.
 
 ## plugin.json
@@ -32,13 +32,13 @@ user explicitly asks to promote it now; then it takes the same review, version a
 ```
 
 `extension`, `tools` and `panel` are optional, but `tools` must list exactly the tool names the extension registers:
-usage is counted by that list, and the nightly loop judges usefulness from it. Paths are relative, stay inside the
-folder, and may not be symlinks that point outside it.
+usage is counted by that list. Paths are relative, stay inside the folder, and may not be symlinks that point
+outside it.
 
 ## Extension template
 
 Run `plugin_lab` `action: "inspect"` first and pick tool names nobody uses yet (prefix them `lab_`).
-Lab plugins cannot import npm packages at runtime: use `import type` only, and the `pi` API (`pi.zod` for schemas).
+An installed plugin cannot resolve packages at runtime: use `import type` only, and the `pi` API (`pi.zod` for schemas).
 
 ```ts
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -95,12 +95,20 @@ style only, no network, no storage, no same-origin access. Talk to the host with
 - Host → panel: `{ type: "cuelo-lab:state", sessionId, lines }`, where `lines` are the latest
   `ctx.ui.setWidget("lab:<id>", lines)` lines of the current session.
 
-## Loop
+## Ship it in the same turn
 
-1. Tell the user what the plugin will do and that it runs with their privileges on this PC only.
-2. Write `plugin.json` and the files under the trial folder.
-3. `plugin_lab` `action: "check", id: "<id>"` and fix every listed problem.
-4. Ask the user to start a new session or run `/reload` (an idle session restarts in place with the same history).
-5. Call the new tool once and show the result. A panel opens from the side deck.
-6. Tell the user it is a trial: `plugin_lab` `action: "disable"` turns it off, and the nightly loop proposes promotion
-   once it has been used without failures. Deleting a plugin is the user's call.
+1. Tell the user what the plugin will do and that it runs with their privileges.
+2. Write `plugin.json` and the files directly under `Tools/OMP_Global_Config/agent/cuelo-plugins/<id>/`.
+3. `plugin_lab` `action: "check", id: "<id>"` reads that repository copy; fix every listed problem.
+4. Add a focused test under `Tools/OMP_Global_Config/agent/extensions/tests/` for any tool the plugin
+   registers, and run it.
+5. Bump the patch version, write the CHANGELOG entry in the user's words, run `cross_review`, publish
+   with `git_finalize` (`git_integrate` from a `wt/` worktree), watch the public CI run to success and
+   then deploy this PC. The repository's standing deploy approval covers harness profile changes, so
+   that one needs no further approval; a failed or unobserved CI means no deploy.
+6. Do not stop at "written". The turn is done when that deploy has restarted the server, so the plugin
+   is active.
+7. Call the new tool once and show the result, or open the panel from the side deck.
+
+The user can turn the plugin off from the plugin panel with `plugin_lab` `action: "disable"`, and
+deleting it is the user's call.

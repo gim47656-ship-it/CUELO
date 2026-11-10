@@ -23410,6 +23410,211 @@ function planSpawns(
 	alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
 }
 
+// Per-model auto policy is a harness extension. Fold into the existing owners so
+// HEAD-patched installations upgrade and reverting still restores upstream bytes.
+{
+	const one = marker => {
+		const entries = EDITS.filter(entry => entry.marker === marker);
+		if (entries.length !== 1) throw new Error(`auto policy owner: ${marker}`);
+		return entries[0];
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`auto policy anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const floor = one("function raiseToAutoThinkingFloor(");
+	for (const candidate of [floor, ...(floor.alternates ?? [])]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = swap(swap(candidate.patched,
+			"function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, settings: Settings): Effort | undefined {",
+			"function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, settings: Settings, policyFloor?: Effort, policyMax = false): Effort | undefined {"),
+			"const floor = cfgProvidersAutoThinkingMinEffort.get(settings);",
+			"const floor = policyFloor ?? cfgProvidersAutoThinkingMinEffort.get(settings);");
+		candidate.patched = swap(candidate.patched,
+			"const ceiling = cfgProvidersAutoThinkingMaxEffort.get(settings) === Effort.Max ? Effort.Max : Effort.XHigh;",
+			"const ceiling = policyMax || cfgProvidersAutoThinkingMaxEffort.get(settings) === Effort.Max ? Effort.Max : Effort.XHigh;");
+	}
+	const effective = one("raiseToAutoThinkingFloor(\n\t\t\t\tmodel,");
+	for (const candidate of [effective, ...(effective.alternates ?? [])]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = swap(candidate.patched, "\t\t\t\tthis.#host.settings,\n", "\t\t\t\tthis.#host.settings,\n\t\t\t\tpolicyFloor,\n\t\t\t\tpolicyMax,\n");
+		candidate.marker = candidate.patched;
+	}
+	const uncapped = one("// CUELO: remember the pre-ceiling resolution so raising the ceiling can restore it.");
+	for (const candidate of [uncapped, ...(uncapped.alternates ?? [])]) {
+		// The later raise-only owner inserts between this guard and our block.
+		// Own only the surviving suffix so HEAD upgrades can recognize it.
+		candidate.anchor = swap(candidate.anchor, "\t\tif (effort === undefined) return;\n", "");
+		candidate.patched = swap(candidate.patched, "\t\tif (effort === undefined) return;\n", "");
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = swap(candidate.patched, "\t\t\tthis.#host.settings,\n", "\t\t\tthis.#host.settings,\n\t\t\tpolicyFloor,\n\t\t\tpolicyMax,\n");
+	}
+	const signature = one("options?: { raiseOnly?: boolean },");
+	for (const candidate of [signature, ...(signature.alternates ?? [])]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.marker = "options?: { raiseOnly?: boolean; added?: string },";
+		candidate.patched = swap(candidate.patched, "options?: { raiseOnly?: boolean },", candidate.marker);
+	}
+	const queued = one("#raiseAutoThinkingForQueuedInput(text: string");
+	queued.legacyPatched = queued.patched;
+	queued.patched = swap(queued.patched, "{ raiseOnly: true });", "{ raiseOnly: true, added: text });");
+	// The parent owner inserts before queueUserMessage, separating our trailing
+	// anchor from this method on already-patched installations.
+	const queuedLegacy = queued.legacyPatched.slice(0, -queued.anchor.length);
+	queued.marker = "{ raiseOnly: true, added: text });";
+	queued.excludes = queuedLegacy;
+	queued.alternates = [{
+		file: queued.file, marker: queued.marker, anchor: "",
+		requires: queuedLegacy, legacyPatched: queuedLegacy,
+		patched: queued.patched.slice(0, -queued.anchor.length),
+	}];
+	const parent = one("\t#reclassifyAutoThinkingForParent(text: string): void {\n");
+	const olderParent = parent.legacyPatched;
+	parent.legacyPatched = parent.patched;
+	parent.patched = swap(parent.patched,
+		"applyAutoThinkingLevel(request, this.#promptGeneration, solutionSpace);",
+		"applyAutoThinkingLevel(request, this.#promptGeneration, solutionSpace, { added: text });");
+	// Preserve the earlier deployed parent-message body as a disjoint candidate.
+	parent.excludes = olderParent;
+	parent.alternates = [{
+		file: parent.file, marker: parent.marker, anchor: parent.anchor,
+		requires: olderParent, legacyPatched: olderParent, patched: parent.patched,
+	}];
+	EDITS.push({
+		file: "src/session/model-controls.ts",
+		marker: 'const autoPolicy = Reflect.get(globalThis, Symbol.for("cuelo.autoThinkingPolicy"));',
+		anchor: "\t\tlet resolved: Effort | undefined;\n",
+		patched: `		let policyFloor: Effort | undefined;
+		let policyHold = false;
+		let policyXhighAsMax = false;
+		// The explicit maximum keyword bypasses the optional harness policy too.
+		if (!(this.#host.magicKeywordEnabled("ultrathink") && containsMagicKeyword(promptText, "ultrathink"))) {
+			try {
+				const autoPolicy = Reflect.get(globalThis, Symbol.for("cuelo.autoThinkingPolicy"));
+				if (typeof autoPolicy === "function") {
+					const decision = autoPolicy({
+						provider: model.provider, modelId: model.id,
+						supportedEfforts: getSupportedEfforts(model),
+						request: promptText, added: options?.added, solutionSpace,
+						raiseOnly: options?.raiseOnly === true, current: this.#autoResolvedLevel,
+					});
+					if (decision !== undefined) {
+						if (decision === null || typeof decision !== "object") {
+							logger.debug("auto-thinking: ignoring invalid policy result");
+						} else {
+							const { floor, hold, xhighAsMax } = decision;
+							if (floor === Effort.Low || floor === Effort.Medium || floor === Effort.High || floor === Effort.XHigh) {
+								policyFloor = floor;
+							} else if (floor !== undefined) {
+								logger.debug("auto-thinking: ignoring invalid policy floor");
+							}
+							if (typeof hold === "boolean") policyHold = hold;
+							else if (hold !== undefined) logger.debug("auto-thinking: ignoring invalid policy hold");
+							if (xhighAsMax === true) policyXhighAsMax = true;
+							else if (xhighAsMax !== undefined) logger.debug("auto-thinking: ignoring invalid policy xhighAsMax");
+						}
+					}
+				} else if (autoPolicy !== undefined) {
+					logger.debug("auto-thinking: ignoring non-function policy");
+				}
+			} catch (error) {
+				policyFloor = undefined;
+				policyHold = false;
+				policyXhighAsMax = false;
+				logger.debug("auto-thinking: policy failed; using core policy", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		const policyMax = policyXhighAsMax && getSupportedEfforts(model).includes(Effort.Max) &&
+			!getSupportedEfforts(model).includes(Effort.XHigh);
+		let resolved: Effort | undefined;
+`,
+	}, {
+		file: "src/session/model-controls.ts",
+		marker: "\t\t} else if (policyHold) {\n",
+		anchor: "\t\t} else {\n\t\t\tconst controller = new AbortController();\n",
+		patched: `		} else if (policyHold) {
+			const autoCeiling = policyMax || cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max ? Effort.Max : Effort.XHigh;
+			const floorIndex = THINKING_EFFORTS.indexOf(policyFloor ?? cfgProvidersAutoThinkingMinEffort.get(this.#host.settings));
+			const ceilingIndex = THINKING_EFFORTS.indexOf(autoCeiling);
+			const firstHeld = getSupportedEfforts(model).find(effort => {
+				const index = THINKING_EFFORTS.indexOf(effort);
+				return index >= floorIndex && index <= ceilingIndex;
+			}) ?? resolveProvisionalAutoLevel(model);
+			// A keyword's maximum bypass applies to that turn, not later holds.
+			resolved = raiseToAutoThinkingFloor(
+				model,
+				this.#autoResolvedLevel === undefined
+					? firstHeld
+					: clampAutoThinkingEffort(model, this.#autoUncappedLevel ?? this.#autoResolvedLevel, autoCeiling),
+				this.#host.settings,
+				policyFloor,
+				policyMax,
+			);
+		} else {
+			const controller = new AbortController();
+`,
+	});
+	EDITS.push({
+		file: "src/session/model-controls.ts",
+		marker: "\t\t\t\t\t\txhighAsMax: policyMax,",
+		anchor: "\t\t\t\t\t\tregistry: this.#host.modelRegistry,\n",
+		patched: "\t\t\t\t\t\tregistry: this.#host.modelRegistry,\n\t\t\t\t\t\txhighAsMax: policyMax,\n",
+	});
+	EDITS.push({
+		file: "src/auto-thinking/classifier.ts",
+		marker: "\txhighAsMax?: boolean;",
+		anchor: "export interface ClassifyDifficultyDeps {\n",
+		patched: "export interface ClassifyDifficultyDeps {\n\txhighAsMax?: boolean;\n",
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: "\txhighAsMax = false,\n",
+		anchor: "\tmodel: Model,\n): SupportedLevelQuestion {",
+		patched: "\tmodel: Model,\n\txhighAsMax = false,\n): SupportedLevelQuestion {",
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: '(xhighAsMax && label === "xhigh")',
+		anchor: "\t\tif (!isLevel(label) || !supported.includes(LEVEL_EFFORT[label])) continue;",
+		patched: '\t\tif (!isLevel(label) || !(supported.includes(LEVEL_EFFORT[label]) || (xhighAsMax && label === "xhigh"))) continue;',
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: "\tconst xhighAsMax = deps.xhighAsMax === true &&",
+		anchor: "\tconst ceiling = autoEffortCeiling(deps);\n\tconst level = filterSupportedLevels(ceiling === Effort.Max ? questions.levelWithMax : questions.level, deps.model);",
+		patched: `	const supported = getSupportedEfforts(deps.model);
+	const xhighAsMax = deps.xhighAsMax === true && supported.includes(Effort.Max) && !supported.includes(Effort.XHigh);
+	const levelEffort = (label: Level): Effort => xhighAsMax && label === "xhigh" ? Effort.Max : LEVEL_EFFORT[label];
+	const ceiling = xhighAsMax ? Effort.Max : autoEffortCeiling(deps);
+	const level = filterSupportedLevels(
+		xhighAsMax ? questions.level : ceiling === Effort.Max ? questions.levelWithMax : questions.level,
+		deps.model, xhighAsMax,
+	);`,
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: 'otherLevels.length === 0 && onlyLevel !== "max") return levelEffort(onlyLevel);',
+		anchor: 'otherLevels.length === 0 && onlyLevel !== "max") return LEVEL_EFFORT[onlyLevel];',
+		patched: 'otherLevels.length === 0 && onlyLevel !== "max") return levelEffort(onlyLevel);',
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: "effort: xhighAsMax && answers.bucket.choice ===",
+		anchor: "\t\t\treturn { effort: BUCKET_EFFORT[answers.bucket.choice], ceiling: Effort.XHigh };",
+		patched: `			return {
+				effort: xhighAsMax && answers.bucket.choice === "hard" ? Effort.Max : BUCKET_EFFORT[answers.bucket.choice],
+				ceiling: xhighAsMax ? Effort.Max : Effort.XHigh,
+			};`,
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: "otherLevels.length === 0) return { effort: levelEffort(onlyLevel), ceiling };",
+		anchor: "otherLevels.length === 0) return { effort: LEVEL_EFFORT[onlyLevel], ceiling };",
+		patched: "otherLevels.length === 0) return { effort: levelEffort(onlyLevel), ceiling };",
+	}, {
+		file: "src/auto-thinking/classifier.ts",
+		marker: "return { effort: levelEffort(chosen), ceiling };",
+		anchor: "return { effort: LEVEL_EFFORT[chosen], ceiling };",
+		patched: "return { effort: levelEffort(chosen), ceiling };",
+	});
+}
+
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는

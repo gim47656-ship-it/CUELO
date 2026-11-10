@@ -5,28 +5,31 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 /**
- * plugin_lab: the agent side of CUELO's Plugin Lab (trial plugins for this user's own profile).
+ * plugin_lab: the agent side of CUELO's Plugin Lab (plugins in this user's profile, installed from
+ * `Tools/OMP_Global_Config/agent/cuelo-plugins/` in the repository).
  * list / enable / disable go through the CUELO server's in-process host (`globalThis.__cueloPluginLab`,
  * lib/plugin-lab.ts), so the manifest rules live in one place; outside CUELO those actions report that.
  * inspect reads the current session's tools. check validates a plugin and imports its extension entry in a
- * child Bun process with a timeout, so a broken or hanging plugin cannot take the session down.
+ * child Bun process with a timeout, so a broken or hanging plugin cannot take the session down; it accepts the
+ * repository source copy, so a plugin can be checked before it is installed.
  */
 
 type LabPlugin = {
-  id: string; name: string; description: string; createdAt: string; origin: "trial" | "promoted"; enabled: boolean;
-  promoted: boolean; hasExtension: boolean; tools: string[]; hasPanel: boolean; problem?: string;
+  id: string; name: string; description: string; createdAt: string; enabled: boolean;
+  hasExtension: boolean; tools: string[]; hasPanel: boolean; problem?: string;
 };
 type LabUsage = {
   id: string; sessions: number; toolCalls: number; toolFailures: number; panelOpens: number; activeDays: number;
   lastUsedAt: string | null; recentSessionFailures: number;
 };
+export type PluginLabLocation = { plugin: LabPlugin; dir: string; source: "repository" | "installed"; extensionPath?: string };
 export type PluginLabHost = {
   version: 1;
-  roots(): { trial: string; promoted: string };
+  root(): string;
   list(): Promise<LabPlugin[]>;
   usage(sinceMs: number): Promise<LabUsage[]>;
   setEnabled(id: string, enabled: boolean): Promise<LabPlugin | undefined>;
-  locate(id: string): Promise<{ plugin: LabPlugin; dir: string; extensionPath?: string } | undefined>;
+  locate(id: string, from: string): Promise<PluginLabLocation | undefined>;
 };
 export type ToolSummary = { name: string; description: string; parameters?: unknown; source: string; active: boolean };
 
@@ -41,6 +44,8 @@ export interface PluginLabDeps {
   tools: () => ToolSummary[];
   /** Bun binary for the check probe. */
   bun: string;
+  /** The session cwd: `check` looks for the repository source copy of a plugin up from here. */
+  cwd: string;
   timeoutMs?: number;
   now?: () => number;
 }
@@ -126,8 +131,7 @@ export async function probeExtension(entry: string, cwd: string, bun: string, ti
 }
 
 function describePlugin(plugin: LabPlugin, usage: LabUsage | undefined): string {
-  const state = plugin.origin === "trial" && plugin.promoted ? "shadowed by promoted copy" : plugin.enabled ? "enabled" : "disabled";
-  const parts = [`${plugin.id} [${plugin.origin}, ${state}] ${plugin.name}`];
+  const parts = [`${plugin.id} [${plugin.enabled ? "enabled" : "disabled"}] ${plugin.name}`];
   if (plugin.tools.length) parts.push(`tools: ${plugin.tools.join(", ")}`);
   if (plugin.hasPanel) parts.push("panel");
   if (usage) {
@@ -164,12 +168,11 @@ export async function runPluginLab(input: PluginLabInput, deps: PluginLabDeps): 
       case "list": {
         if (!deps.host) return { text: NO_HOST, isError: true };
         const [plugins, usage] = await Promise.all([deps.host.list(), deps.host.usage((deps.now?.() ?? Date.now()) - USAGE_WINDOW_MS)]);
-        const roots = deps.host.roots();
         const usageById = new Map(usage.map((entry) => [entry.id, entry]));
         const lines = plugins.length === 0
-          ? ["No plugins yet."]
+          ? ["No plugins installed."]
           : plugins.map((plugin) => describePlugin(plugin, usageById.get(plugin.id)));
-        return { text: [`trial root: ${roots.trial}`, `promoted root: ${roots.promoted}`, ...lines].join("\n"), isError: false };
+        return { text: [`root: ${deps.host.root()}`, ...lines].join("\n"), isError: false };
       }
       case "enable":
       case "disable": {
@@ -185,17 +188,24 @@ export async function runPluginLab(input: PluginLabInput, deps: PluginLabDeps): 
       case "check": {
         if (!deps.host) return { text: NO_HOST, isError: true };
         if (!input.id) return { text: "id is required.", isError: true };
-        const located = await deps.host.locate(input.id);
-        if (!located) return { text: `No plugin folder "${input.id}" in ${deps.host.roots().trial}.`, isError: true };
-        const { plugin, dir, extensionPath } = located;
+        const located = await deps.host.locate(input.id, deps.cwd);
+        if (!located) {
+          return {
+            text: `No plugin folder "${input.id}": neither a repository copy under Tools/OMP_Global_Config/agent/cuelo-plugins/ nor an installed one in ${deps.host.root()}.`,
+            isError: true,
+          };
+        }
+        const { plugin, dir, source, extensionPath } = located;
         const problems: string[] = [];
-        const notes: string[] = [`${plugin.id} [${plugin.origin}] at ${dir}`];
+        const notes: string[] = [
+          `${plugin.id} [${source === "repository" ? "repository source, not installed yet" : "installed"}] at ${dir}`,
+        ];
         if (plugin.problem) problems.push(plugin.problem);
         if (extensionPath) {
           const probe = await probeExtension(extensionPath, dir, deps.bun, deps.timeoutMs ?? CHECK_TIMEOUT_MS);
           if ("error" in probe) {
             const hint = /Cannot find (package|module)/i.test(probe.error)
-              ? " (lab plugins cannot import packages at runtime; keep `import type` only and use the `pi` API)"
+              ? " (an installed plugin cannot resolve packages at runtime; keep `import type` only and use the `pi` API)"
               : "";
             problems.push(`extension failed to load: ${probe.error}${hint}`);
           } else {
@@ -204,21 +214,27 @@ export async function runPluginLab(input: PluginLabInput, deps: PluginLabDeps): 
             const undeclared = probe.tools.filter((tool) => !plugin.tools.includes(tool));
             if (missing.length) problems.push(`declared in plugin.json but not registered: ${missing.join(", ")}`);
             if (undeclared.length) problems.push(`registered but not declared in plugin.json "tools" (usage is counted by that list): ${undeclared.join(", ")}`);
-            // This plugin's own tools, already loaded in the session, are not a clash.
-            const realDir = await realpath(dir).catch(() => dir);
+            // This plugin's own tools, already loaded in the session, are not a clash. The session loads the
+            // installed copy, so a check of the repository copy has to count that folder as its own too.
+            const installedDir = join(deps.host.root(), plugin.id);
+            const ownDirs = [dir, installedDir];
+            for (const own of [dir, installedDir]) ownDirs.push(await realpath(own).catch(() => own));
             const inside = (source: string, root: string) => {
               const rel = relative(root, source);
               return rel !== "" && !isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.startsWith(`..${sep}`);
             };
             const clashes = deps.tools().filter((tool) =>
-              probe.tools.includes(tool.name) && !inside(tool.source, dir) && !inside(tool.source, realDir));
+              probe.tools.includes(tool.name) && !ownDirs.some((own) => inside(tool.source, own)));
             if (clashes.length) problems.push(`name already used in this session: ${clashes.map((tool) => `${tool.name} (${tool.source})`).join(", ")}`);
           }
         } else if (!plugin.problem) {
           notes.push("no extension entry (panel-only plugin)");
         }
-        if (plugin.origin === "trial" && plugin.promoted) notes.push("a promoted copy with this id exists, so this trial copy never loads");
-        notes.push(problems.length ? `PROBLEMS:\n- ${problems.join("\n- ")}` : "OK. Next: start a new session or /reload, call the tool once, then tell the user.");
+        notes.push(problems.length
+          ? `PROBLEMS:\n- ${problems.join("\n- ")}`
+          : source === "repository"
+            ? "OK. Next: add a focused test, then ship it through the normal review, version, CI and deploy path. No new session is needed until that deploy has restarted the server."
+            : "OK. Next: start a new session or /reload, call the tool once, then tell the user.");
         return { text: clip(notes.join("\n"), OUTPUT_LIMIT), isError: problems.length > 0 };
       }
       default:
@@ -247,7 +263,7 @@ export default function pluginLab(pi: ExtensionAPI): void {
   };
   pi.registerTool({
     name: "plugin_lab", label: "Plugin Lab", loadMode: "essential", approval: "read",
-    description: "CUELO Plugin Lab (trial plugins for this user's own profile; read skill://plugin-lab before writing one). action list: plugins in the trial and promoted roots with problems and 14-day usage. inspect: this session's tool names and sources (tool=<name> adds its description and parameter schema) so a new tool name does not clash. check id=<plugin>: validate plugin.json and paths, import the extension entry in a child Bun process with a timeout and compare the tools it registers with the manifest. enable/disable id=<plugin>: turn a plugin on or off for new sessions and /reload. Nothing is promoted, deleted or deployed here; promotion happens through the nightly loop.",
+    description: "CUELO Plugin Lab (plugins for this user's own profile; read skill://plugin-lab before writing one). action list: installed plugins with problems and 14-day usage. inspect: this session's tool names and sources (tool=<name> adds its description and parameter schema) so a new tool name does not clash. check id=<plugin>: validate plugin.json and paths, import the extension entry in a child Bun process with a timeout and compare the tools it registers with the manifest; it checks the repository source folder Tools/OMP_Global_Config/agent/cuelo-plugins/<id>/ when there is one and says which copy it read, so a plugin can be validated before it is installed. enable/disable id=<plugin>: turn an installed plugin on or off for new sessions and /reload. Nothing is written, deleted or deployed here: the plugin itself ships through the normal review, version, CI and deploy path.",
     parameters: z.object({
       action: z.enum(["list", "inspect", "check", "enable", "disable"]),
       id: z.string().optional(),
@@ -257,6 +273,7 @@ export default function pluginLab(pi: ExtensionAPI): void {
       const result = await runPluginLab(params as PluginLabInput, {
         host: globalThis.__cueloPluginLab as PluginLabHost | undefined,
         bun: Bun.which("bun") ?? process.execPath,
+        cwd: _ctx.cwd,
         tools: () => {
           const active = new Set(pi.getActiveTools());
           return pi.getAllTools().map((tool) => ({

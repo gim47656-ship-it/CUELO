@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { settingsLike } from "./core-test-settings";
+import { decideAutoEffort, parseAutoEffortConfig } from "../agent/extensions/lib/auto-effort-policy";
 
 const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
 const candidates = process.env.OMP_CORE_PATCH_TARGET
@@ -136,6 +137,7 @@ const controls = (
 			sessionId: () => "your-floor-session",
 			promptGeneration: () => 1,
 			magicKeywordEnabled: () => true,
+			clearInheritedProviderPromptCacheKey() {},
 			emit() {},
 		} as never,
 		{ thinkingLevel: options.thinkingLevel ?? "auto", thinkingLevelCeiling: options.thinkingLevelCeiling } as never,
@@ -273,4 +275,158 @@ const full = ladderModel(["low", "medium", "high", "xhigh"]);
 	assert.equal(await controls(lowOnly, { settings: child }).turn("medium"), "medium");
 	console.log("  PASS  child auto 는 high~xhigh(Opus 도 max 없음, 선언 단계만)이고 Main medium~xhigh·concrete child 는 그대로다");
 }
-console.log("결과 11 pass");
+// [auto-policy] Exercise the real core seam without an external model request.
+const policyKey = Symbol.for("cuelo.autoThinkingPolicy");
+const previousPolicy = Reflect.get(globalThis, policyKey);
+try {
+	setFloor("medium");
+	let policyCalls = 0;
+	Reflect.set(globalThis, policyKey, () => { policyCalls++; return { floor: "high" }; });
+	const high = controls(full);
+	for (const answer of ["low", "medium", "high", "xhigh"] as const) {
+		assert.equal(await high.turn(answer), answer === "xhigh" ? "xhigh" : "high");
+	}
+	assert.equal(policyCalls, 4, "consult the policy once per ordinary auto call");
+	const classifiedCapped = controls(full);
+	classifiedCapped.control.setThinkingLevelCeiling("medium");
+	assert.equal(await classifiedCapped.turn("low"), "medium");
+	classifiedCapped.control.setThinkingLevelCeiling("xhigh");
+	assert.equal(classifiedCapped.control.thinkingLevel, "high", "policy floor also applies to the uncapped classified value");
+	console.log("  PASS  policy high replaces settings medium and preserves classified xhigh");
+
+	setFloor("high");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "medium" }));
+	assert.equal(await controls(full).turn("low"), "medium", "policy medium replaces the child high floor");
+	console.log("  PASS  a policy medium floor overrides the child-style settings high floor");
+
+	setFloor("medium");
+	const held = controls(full);
+	assert.equal(await held.turn("xhigh"), "xhigh");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "medium", hold: true }));
+	const beforeHold = judgeCalls;
+	assert.equal(await held.turn("low"), "xhigh");
+	assert.equal(judgeCalls, beforeHold);
+	held.control.setThinkingLevelCeiling("medium");
+	assert.equal(await held.turn("low"), "medium");
+	held.control.setThinkingLevelCeiling("xhigh");
+	assert.equal(held.control.thinkingLevel, "xhigh", "hold preserves the last uncapped classification");
+	assert.equal(judgeCalls, beforeHold);
+	console.log("  PASS  hold skips judging and preserves classified xhigh across temporary session ceilings");
+
+	const rising = controls(full);
+	assert.equal(await rising.turn("fail"), "medium", "first hold ignores provisional high");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", hold: true }));
+	assert.equal(await rising.turn("low"), "high", "a higher tier floor raises the held resolution");
+	assert.equal(await controls(full).turn("xhigh"), "high", "first held turn resolves at the floor");
+	const capped = controls(ladderModel(["low", "medium", "high", "xhigh"], "xhigh"));
+	capped.control.setThinkingLevelCeiling("medium");
+	assert.equal(await capped.turn("xhigh"), "medium");
+	capped.control.setThinkingLevelCeiling("xhigh");
+	assert.equal(capped.control.thinkingLevel, "high", "first hold stores the floor, never provisional high/xhigh");
+	assert.equal(judgeCalls, beforeHold);
+	console.log("  PASS  first holds start at the floor, higher floors raise holds and session ceilings still win");
+
+	const beforeRaise = [...rising.persisted];
+	await rising.control.applyAutoThinkingLevel("accumulated request", 1, undefined, { raiseOnly: true, added: "yes" });
+	assert.equal(rising.control.thinkingLevel, "high");
+	assert.deepEqual(rising.persisted, beforeRaise);
+	assert.equal(judgeCalls, beforeHold);
+	console.log("  PASS  raise-only hold keeps state and persistence unchanged");
+
+	const sparseConfig = parseAutoEffortConfig('autoEffort:\n  floorHigh: "fixture/*"\n');
+	Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, sparseConfig));
+	for (const efforts of [["low", "high", "max"], ["minimal", "low", "medium", "high"]]) {
+		assert.equal(await controls(ladderModel(efforts)).turn("low"), "high");
+	}
+	assert.equal(judgeCalls, beforeHold, "rule C skips the judge when only high is eligible");
+	console.log("  PASS  both sparse ladder shapes skip judging through the registered policy seam");
+
+	let observed: Record<string, unknown> | undefined;
+	Reflect.set(globalThis, policyKey, (input: Record<string, unknown>) => { observed = input; return { hold: true }; });
+	await rising.control.applyAutoThinkingLevel("accumulated", 1, "solution", { raiseOnly: true, added: "new" });
+	assert.deepEqual(observed, {
+		provider: full.provider, modelId: full.id, supportedEfforts: ["low", "medium", "high", "xhigh"],
+		request: "accumulated", added: "new", solutionSpace: "solution", raiseOnly: true, current: "high",
+	});
+	console.log("  PASS  policy receives model, new evidence, solution space and last resolution");
+
+	Reflect.set(globalThis, policyKey, () => { throw new Error("fixture policy failure"); });
+	const beforeThrow = judgeCalls;
+	assert.equal(await controls(full).turn("low"), "medium");
+	assert.equal(judgeCalls, beforeThrow + 1, "throwing policy follows the unmodified classifier path");
+	for (const value of [42, () => ({ floor: "max", hold: "yes" }), () => null]) {
+		Reflect.set(globalThis, policyKey, value);
+		assert.equal(await controls(full).turn("low"), "medium");
+	}
+	Reflect.set(globalThis, policyKey, () => { throw new Error("ultrathink must bypass the policy"); });
+	const beforeMagic = judgeCalls;
+	assert.equal(await controls(ladderModel(["low", "medium", "high", "xhigh", "max"])).turn("low", "ultrathink please"), "max");
+	assert.equal(judgeCalls, beforeMagic);
+	console.log("  PASS  invalid/throwing policies fall back and ultrathink keeps priority");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", hold: true }));
+	assert.equal(await controls(ladderModel(["minimal", "low"], "low")).turn("low"), "low", "M2: unreachable first-hold floor keeps the normal provisional effort");
+	console.log("  PASS  an unreachable first-hold floor falls back to the normal provisional effort");
+	for (const [efforts, expected] of [
+		[["low", "medium", "high", "xhigh", "max"], "xhigh"],
+		[["low", "high", "max"], "high"],
+	] as const) {
+		const afterMagic = controls(ladderModel([...efforts]));
+		assert.equal(await afterMagic.turn("low", "ultrathink please"), "max");
+		const beforeHeldMagic = judgeCalls;
+		assert.equal(await afterMagic.turn("low", "ok"), expected, "M1: ultrathink bypass ends on the next held turn");
+		afterMagic.control.setThinkingLevelCeiling("low");
+		afterMagic.control.setThinkingLevelCeiling("max");
+		assert.equal(afterMagic.control.thinkingLevel, expected, "M1: the uncapped held value obeys the auto ceiling too");
+		assert.equal(judgeCalls, beforeHeldMagic);
+	}
+	const maxSettings = settingsLike({ get: (key: string) =>
+		key === "providers.autoThinkingMaxEffort" ? "max" : key === "providers.autoThinkingMinEffort" ? "medium" : undefined });
+	const permittedMax = controls(ladderModel(["low", "high", "max"]), { settings: maxSettings });
+	assert.equal(await permittedMax.turn("low", "ultrathink please"), "max");
+	assert.equal(await permittedMax.turn("low", "ok"), "max", "M1: an explicit auto max ceiling still permits held max");
+	console.log("  PASS  holds cap previous ultrathink at the auto ceiling, including sparse ladders and explicit max");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", xhighAsMax: true }));
+	const promoted = controls(ladderModel(["low", "high", "max"]));
+	assert.equal(await promoted.turn("xhigh"), "max", "M3: ordinary xhigh evidence maps to supported max");
+	assert.deepEqual(askedLevels, ["low", "high", "xhigh"], "M3: use the ordinary xhigh question, never the max rubric");
+	assert.equal(await promoted.turn("high"), "high");
+	assert.equal(await promoted.turn("low"), "high");
+	assert.equal(await promoted.turn("xhigh"), "max");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", xhighAsMax: true, hold: true }));
+	const beforePromotedHold = judgeCalls;
+	assert.equal(await promoted.turn("low", "ok"), "max");
+	assert.equal(judgeCalls, beforePromotedHold);
+	promoted.control.setThinkingLevelCeiling("high");
+	assert.equal(await promoted.turn("low", "ok"), "high");
+	promoted.control.setThinkingLevelCeiling("max");
+	assert.equal(promoted.control.thinkingLevel, "max", "M3: capped promoted hold retains uncapped max");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", xhighAsMax: true }));
+	assert.equal(await controls(ladderModel(["low", "high", "max"]), { thinkingLevelCeiling: "high" }).turn("xhigh"), "high");
+	assert.equal(await controls(ladderModel(["low", "medium", "high", "xhigh", "max"])).turn("xhigh"), "xhigh");
+	assert.ok(!askedLevels.includes("max"), "M3: a declared xhigh ladder ignores promotion");
+	Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, sparseConfig));
+	const beforeUnpromoted = judgeCalls;
+	assert.equal(await controls(ladderModel(["low", "high", "max"])).turn("xhigh"), "high");
+	assert.equal(judgeCalls, beforeUnpromoted, "M3: no flag keeps sparse rule C");
+	console.log("  PASS  promoted sparse xhigh evidence reaches max while holds, floors and session ceilings remain correct");
+
+	const nativeCandidate = ChainJudge.prototype.withCandidate;
+	try {
+		let bucket = "hard";
+		ChainJudge.prototype.withCandidate = async function withLocalCandidate(run: (judge: unknown, kind: string) => Promise<unknown>) {
+			return run({ judge: async () => ({ answers: { bucket: { choice: bucket } } }) }, "local");
+		};
+		Reflect.set(globalThis, policyKey, () => ({ floor: "high", xhighAsMax: true }));
+		const local = controls(ladderModel(["low", "high", "max"]));
+		assert.equal(await local.turn("low"), "max", "M3: on-device hard also maps to max");
+		bucket = "moderate";
+		assert.equal(await local.turn("low"), "high");
+	} finally {
+		ChainJudge.prototype.withCandidate = nativeCandidate;
+	}
+	console.log("  PASS  promoted local hard reaches max and local moderate remains high");
+} finally {
+	if (previousPolicy === undefined) Reflect.deleteProperty(globalThis, policyKey);
+	else Reflect.set(globalThis, policyKey, previousPolicy);
+}
+console.log("결과 23 pass");

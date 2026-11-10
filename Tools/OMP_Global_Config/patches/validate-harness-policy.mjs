@@ -606,6 +606,7 @@ const requiredPolicyShapes = [
   ["routing.effortSelection.owner", "string"],
   ["routing.effortSelection.mechanism", "string"],
   ["routing.effortSelection.range", "string"],
+  ["routing.effortSelection.modelBase", "string"],
   ["routing.effortSelection.decidedAt", "string"],
   ["routing.effortSelection.gradingInput", "string"],
   ["routing.effortSelection.failure", "string"],
@@ -690,7 +691,7 @@ const preEditContractKeys = [
 ];
 const highRiskFinalReviewKeys = ["added", "unapproved"];
 const effortSelectionKeys = [
-  "owner", "mechanism", "range", "decidedAt", "gradingInput", "riskIsOrthogonal",
+  "owner", "mechanism", "range", "modelBase", "decidedAt", "gradingInput", "riskIsOrthogonal",
   "failure", "retry", "rework", "parallelism", "validationExecution",
 ];
 const steeringCheckpointKeys = [

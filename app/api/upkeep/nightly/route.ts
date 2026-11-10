@@ -6,7 +6,7 @@ import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
-import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox, readPromotedPluginIds } from "@/lib/upkeep/nightly-inbox";
+import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox } from "@/lib/upkeep/nightly-inbox";
 import { collectNightlyCoreUpdate, type CoreUpdateLookup } from "@/lib/upkeep/nightly-core";
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
@@ -56,7 +56,6 @@ function describeJobs(jobs: NightlyJobs): string {
     jobs.weeklyReview ? "weekly performance review" : null,
     jobs.handoff?.length ? `handoff ${jobs.handoff.join(", ")}` : null,
     jobs.skillHealth?.length ? `skill health ${jobs.skillHealth.join(", ")}` : null,
-    jobs.labPromotions?.length ? `lab promotion ${jobs.labPromotions.join(", ")}` : null,
     jobs.issueLookup ? `issues ${jobs.issueLookup}${jobs.issues?.length ? ` #${jobs.issues.join(", #")}` : ""}` : null,
     jobs.improvementReview ? "existing-feature review" : null,
     jobs.coreUpgrade ? `OMP core ${jobs.coreUpgrade.from} -> ${jobs.coreUpgrade.to}` : null,
@@ -99,13 +98,11 @@ async function planAndRun(dryRun: boolean) {
         for (const warning of cleaned.warnings) log(`worktree prune: ${warning}`);
         if (cleaned.removed.length) log(`removed worktrees ${cleaned.removed.join(", ")}`);
       }
-      // 저장소에 이미 정식 사본이 있는 실험 플러그인은 다시 승격하지 않는다(PC가 업데이트를 받기 전까지 묶음에 남는다).
-      const promoted = repoOverride && handoffs?.base ? await readPromotedPluginIds(repoOverride, handoffs.base.sha) : new Set<string>();
       // 공개 저장소 열린 이슈(읽기 전용, 인증 없음). 읽지 못하면 unavailable로 프롬프트에 그대로 싣는다.
       const issues = await collectOpenIssues();
       log(`issues: ${issues.status === "ok" ? `${issues.issues.length} open${issues.partial ? " (partial)" : ""}` : `unavailable (${issues.reason})`}`);
       coreUpdate = await collectNightlyCoreUpdate(repoOverride, handoffs?.base ? [handoffs.base.sha] : [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, promoted, coreUpdate);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, coreUpdate);
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);

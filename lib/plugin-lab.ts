@@ -1,29 +1,24 @@
 /**
- * Plugin Lab: trial plugins the agent writes for this user's own profile, and the
- * promoted copies the nightly loop ships through the repository.
- *
- * Trial root `<agentDir>/plugin-lab/<id>/`, promoted root `<agentDir>/cuelo-plugins/<id>/`,
- * same layout in both: `plugin.json` plus the files it names. A promoted id shadows the
- * trial copy of the same id (listed with `promoted: true`, never loaded). A broken
- * plugin is listed with `problem` set; it never breaks listing or session start.
+ * Plugin Lab: one root of plugins, `<agentDir>/cuelo-plugins/<id>/`, installed by the
+ * profile sync from `Tools/OMP_Global_Config/agent/cuelo-plugins/` in the repository:
+ * `plugin.json` plus the files it names. A broken plugin is listed with `problem` set;
+ * it never breaks listing or session start. Runtime files (`state.json`, `usage.jsonl`,
+ * `load-problems.json`) live next to the root in `<agentDir>/plugin-lab/`.
  */
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { appendFile, lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
-import { maskSecrets } from "./upkeep/sessions";
 
 export type LabPlugin = {
   id: string;
   name: string;
   description: string;
   createdAt: string;
-  origin: "trial" | "promoted";
   enabled: boolean;
-  promoted: boolean;
   hasExtension: boolean;
   tools: string[];
   hasPanel: boolean;
@@ -42,14 +37,11 @@ export type LabUsage = {
   recentSessionFailures: number;
 };
 
-export type LabExportEntry = { plugin: LabPlugin; usage: LabUsage; files: { path: string; text: string }[] };
-
 export type LabEvent = "panel_open" | "draft";
 
 /** An enabled, loadable extension entry for session start. `signature` changes when any file of the plugin changes. */
 export type LabExtensionEntry = { id: string; path: string; signature: string };
 
-export const LAB_EXPORT_LIMIT_BYTES = 64 * 1024;
 export const LAB_PANEL_LIMIT_BYTES = 512 * 1024;
 /** Headers that keep the panel HTML inert unless the host frames it in `sandbox="allow-scripts"`. */
 export const LAB_PANEL_HEADERS: Record<string, string> = {
@@ -67,33 +59,32 @@ const EXTENSION_SUFFIXES = [".ts", ".js", ".mjs"];
 const MANIFEST = "plugin.json";
 const MANIFEST_LIMIT_BYTES = 64 * 1024;
 const WALK_FILE_LIMIT = 500;
-const TEXT_SUFFIXES = new Set([
-  ".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".json", ".md", ".txt", ".html", ".css", ".svg", ".yml", ".yaml", ".csv",
-]);
 const YIELD_EVERY_MS = 8;
 
 export function isLabPluginId(id: unknown): id is string {
   return typeof id === "string" && id.length <= 64 && ID_PATTERN.test(id);
 }
 
-export function labTrialRoot(agentDir = getAgentDir()): string {
-  return join(agentDir, "plugin-lab");
-}
-
-export function labPromotedRoot(agentDir = getAgentDir()): string {
+/** The installed plugins the profile sync writes. */
+export function labPluginRoot(agentDir = getAgentDir()): string {
   return join(agentDir, "cuelo-plugins");
 }
 
+/** Runtime files only (state, usage, load problems): the folder where plugins used to be authored. */
+function labStateRoot(agentDir: string): string {
+  return join(agentDir, "plugin-lab");
+}
+
 function statePath(agentDir: string): string {
-  return join(labTrialRoot(agentDir), "state.json");
+  return join(labStateRoot(agentDir), "state.json");
 }
 
 function usagePath(agentDir: string): string {
-  return join(labTrialRoot(agentDir), "usage.jsonl");
+  return join(labStateRoot(agentDir), "usage.jsonl");
 }
 
 function loadProblemsPath(agentDir: string): string {
-  return join(labTrialRoot(agentDir), "load-problems.json");
+  return join(labStateRoot(agentDir), "load-problems.json");
 }
 
 function isInside(child: string, root: string): boolean {
@@ -223,96 +214,89 @@ async function readLoadProblems(agentDir: string): Promise<Record<string, string
   }
 }
 
-async function scanRoot(root: string, origin: LabPlugin["origin"]): Promise<ScannedPlugin[]> {
+/** One plugin folder. A folder whose name is not a kebab-case id, or whose files break the rules, gets a `problem`. */
+async function scanPluginDir(dir: string, name: string): Promise<ScannedPlugin | null> {
+  let info;
+  try {
+    info = await lstat(dir);
+  } catch {
+    return null;
+  }
+  // Files next to the plugins (state.json, usage.jsonl) are not plugins.
+  if (!info.isDirectory() && !info.isSymbolicLink()) return null;
+  if (name.startsWith(".")) return null;
+  const plugin: LabPlugin = {
+    id: name, name, description: "", createdAt: "", enabled: false,
+    hasExtension: false, tools: [], hasPanel: false,
+  };
+  const entry: ScannedPlugin = { plugin, dir };
+  if (!isLabPluginId(name)) {
+    plugin.problem = "folder name must be a kebab-case plugin id (a-z, 0-9, single dashes)";
+    return entry;
+  }
+  if (info.isSymbolicLink()) {
+    plugin.problem = "plugin folder must be a real folder, not a symlink";
+    return entry;
+  }
+  try {
+    const manifestFile = await resolvePluginFile(dir, MANIFEST);
+    if ("problem" in manifestFile) fail(`plugin.json: ${manifestFile.problem}`);
+    const manifest = parseManifest(await readJson(manifestFile.path, MANIFEST_LIMIT_BYTES), name);
+    entry.manifest = manifest;
+    Object.assign(plugin, {
+      name: manifest.name, description: manifest.description, createdAt: manifest.createdAt, tools: manifest.tools,
+    });
+    if (manifest.extension) {
+      const resolved = await resolvePluginFile(dir, manifest.extension);
+      if ("problem" in resolved) fail(`extension: ${resolved.problem}`);
+      entry.extensionPath = resolved.path;
+      plugin.hasExtension = true;
+    }
+    if (manifest.panel) {
+      const resolved = await resolvePluginFile(dir, manifest.panel);
+      if ("problem" in resolved) fail(`panel: ${resolved.problem}`);
+      entry.panelPath = resolved.path;
+      plugin.hasPanel = true;
+    }
+  } catch (error) {
+    plugin.problem = error instanceof SyntaxError ? `plugin.json is not valid JSON: ${error.message}` : (error as Error).message;
+  }
+  return entry;
+}
+
+async function scanRoot(root: string): Promise<ScannedPlugin[]> {
   let names: string[];
   try {
     names = (await readdir(root)).sort();
   } catch {
     return [];
   }
-  const scanned: ScannedPlugin[] = [];
-  for (const name of names) {
-    const dir = join(root, name);
-    let info;
-    try {
-      info = await lstat(dir);
-    } catch {
-      continue;
-    }
-    // Files next to the plugins (state.json, usage.jsonl) are not plugins.
-    if (!info.isDirectory() && !info.isSymbolicLink()) continue;
-    if (name.startsWith(".")) continue;
-    const plugin: LabPlugin = {
-      id: name, name, description: "", createdAt: "", origin, enabled: false, promoted: false,
-      hasExtension: false, tools: [], hasPanel: false,
-    };
-    const entry: ScannedPlugin = { plugin, dir };
-    scanned.push(entry);
-    if (!isLabPluginId(name)) {
-      plugin.problem = "folder name must be a kebab-case plugin id (a-z, 0-9, single dashes)";
-      continue;
-    }
-    if (info.isSymbolicLink()) {
-      plugin.problem = "plugin folder must be a real folder, not a symlink";
-      continue;
-    }
-    try {
-      const manifestFile = await resolvePluginFile(dir, MANIFEST);
-      if ("problem" in manifestFile) fail(`plugin.json: ${manifestFile.problem}`);
-      const manifest = parseManifest(await readJson(manifestFile.path, MANIFEST_LIMIT_BYTES), name);
-      entry.manifest = manifest;
-      Object.assign(plugin, {
-        name: manifest.name, description: manifest.description, createdAt: manifest.createdAt, tools: manifest.tools,
-      });
-      if (manifest.extension) {
-        const resolved = await resolvePluginFile(dir, manifest.extension);
-        if ("problem" in resolved) fail(`extension: ${resolved.problem}`);
-        entry.extensionPath = resolved.path;
-        plugin.hasExtension = true;
-      }
-      if (manifest.panel) {
-        const resolved = await resolvePluginFile(dir, manifest.panel);
-        if ("problem" in resolved) fail(`panel: ${resolved.problem}`);
-        entry.panelPath = resolved.path;
-        plugin.hasPanel = true;
-      }
-    } catch (error) {
-      plugin.problem = error instanceof SyntaxError ? `plugin.json is not valid JSON: ${error.message}` : (error as Error).message;
-    }
+  const scanned = await Promise.all(names.map((name) => scanPluginDir(join(root, name), name)));
+  return scanned.filter((entry): entry is ScannedPlugin => entry !== null);
+}
+
+async function scanAll(agentDir: string): Promise<ScannedPlugin[]> {
+  const [scanned, state, loadProblems] = await Promise.all([
+    scanRoot(labPluginRoot(agentDir)),
+    readLabState(agentDir),
+    readLoadProblems(agentDir),
+  ]);
+  const disabled = new Set(state.disabled);
+  for (const { plugin } of scanned) {
+    plugin.enabled = plugin.problem === undefined && state.problem === undefined && !disabled.has(plugin.id);
+    if (plugin.problem === undefined && state.problem !== undefined) plugin.problem = `${state.problem}; every plugin stays off until it is fixed`;
+    if (plugin.problem === undefined && loadProblems[plugin.id]) plugin.problem = loadProblems[plugin.id];
   }
   return scanned;
 }
 
-async function scanAll(agentDir: string): Promise<ScannedPlugin[]> {
-  const [trial, promoted, state, loadProblems] = await Promise.all([
-    scanRoot(labTrialRoot(agentDir), "trial"),
-    scanRoot(labPromotedRoot(agentDir), "promoted"),
-    readLabState(agentDir),
-    readLoadProblems(agentDir),
-  ]);
-  const promotedIds = new Set(promoted.map((entry) => entry.plugin.id));
-  const disabled = new Set(state.disabled);
-  const all = [...promoted, ...trial];
-  for (const { plugin } of all) {
-    plugin.promoted = plugin.origin === "promoted" || promotedIds.has(plugin.id);
-    const shadowed = plugin.origin === "trial" && promotedIds.has(plugin.id);
-    plugin.enabled = !shadowed && plugin.problem === undefined && state.problem === undefined && !disabled.has(plugin.id);
-    if (plugin.problem === undefined && state.problem !== undefined) plugin.problem = `${state.problem}; every plugin stays off until it is fixed`;
-    if (plugin.problem === undefined && !shadowed && loadProblems[plugin.id]) plugin.problem = loadProblems[plugin.id];
-  }
-  return all;
-}
-
-/** Every plugin in both roots: promoted first, then trial copies (a shadowed trial copy has `promoted: true`). */
+/** Every installed plugin, in folder-name order. */
 export async function listLabPlugins(agentDir = getAgentDir()): Promise<LabPlugin[]> {
   return (await scanAll(agentDir)).map((entry) => entry.plugin);
 }
 
-/** The copy that would load for `id`: the promoted one when it exists. */
 async function activePlugin(id: string, agentDir: string): Promise<ScannedPlugin | undefined> {
-  const all = await scanAll(agentDir);
-  return all.find((entry) => entry.plugin.id === id && entry.plugin.origin === "promoted")
-    ?? all.find((entry) => entry.plugin.id === id);
+  return (await scanAll(agentDir)).find((entry) => entry.plugin.id === id);
 }
 
 export async function getLabPlugin(id: string, agentDir = getAgentDir()): Promise<LabPlugin | undefined> {
@@ -333,7 +317,7 @@ export async function setLabPluginEnabled(id: string, enabled: boolean, agentDir
     const disabled = new Set(state.disabled);
     if (enabled) disabled.delete(id);
     else disabled.add(id);
-    await mkdir(labTrialRoot(agentDir), { recursive: true });
+    await mkdir(labStateRoot(agentDir), { recursive: true });
     const file = statePath(agentDir);
     const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temp, `${JSON.stringify({ disabled: [...disabled].sort() }, null, 2)}\n`, "utf8");
@@ -406,14 +390,14 @@ export async function recordLabLoadResults(results: Record<string, string | null
     }
   }
   if (!changed) return;
-  await mkdir(labTrialRoot(agentDir), { recursive: true });
+  await mkdir(labStateRoot(agentDir), { recursive: true });
   await writeFile(loadProblemsPath(agentDir), `${JSON.stringify(current, null, 2)}\n`, "utf8");
 }
 
 export async function recordLabEvent(id: string, event: LabEvent, agentDir = getAgentDir()): Promise<void> {
   if (!isLabPluginId(id)) throw new Error(`invalid plugin id: ${String(id)}`);
   if (event !== "panel_open" && event !== "draft") throw new Error(`invalid lab event: ${String(event)}`);
-  await mkdir(labTrialRoot(agentDir), { recursive: true });
+  await mkdir(labStateRoot(agentDir), { recursive: true });
   await appendFile(usagePath(agentDir), `${JSON.stringify({ ts: new Date().toISOString(), id, event })}\n`, "utf8");
 }
 
@@ -563,74 +547,43 @@ export async function readLabUsage(sinceMs: number, sessionsDir: string, agentDi
   }));
 }
 
-function isTextName(name: string): boolean {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && TEXT_SUFFIXES.has(name.slice(dot).toLowerCase());
-}
+/** Where a plugin lives, for the `plugin_lab check` action. */
+export type LabPluginLocation = {
+  plugin: LabPlugin;
+  dir: string;
+  /** `repository`: the source folder a change is authored in, not yet installed. `installed`: the profile copy sessions load. */
+  source: "repository" | "installed";
+  extensionPath?: string;
+};
 
-async function readPluginTextFiles(dir: string): Promise<{ files: { path: string; text: string }[]; problem?: string }> {
-  const files: { path: string; text: string }[] = [];
-  let bytes = 0;
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  // A symlinked plugin folder could point anywhere; only real folders are exported.
-  if (!(await lstat(dir)).isDirectory()) return { files: [], problem: "plugin folder is not a real folder; not exported" };
-  const walk = async (current: string): Promise<string | undefined> => {
-    const names = (await readdir(current)).sort();
-    for (const name of names) {
-      const path = join(current, name);
-      const info = await lstat(path);
-      // Symlinks are skipped so an export never reads outside the plugin folder.
-      if (info.isSymbolicLink()) continue;
-      if (info.isDirectory()) {
-        const problem = await walk(path);
-        if (problem) return problem;
-        continue;
-      }
-      if (!info.isFile() || !isTextName(name)) continue;
-      if (info.size > LAB_EXPORT_LIMIT_BYTES) return `plugin text exceeds ${LAB_EXPORT_LIMIT_BYTES} bytes`;
-      const raw = await readFile(path);
-      let text: string;
-      try {
-        text = decoder.decode(raw);
-      } catch {
-        continue;
-      }
-      if (text.includes("\u0000")) continue;
-      const masked = maskSecrets(text);
-      bytes += Buffer.byteLength(masked, "utf8");
-      if (bytes > LAB_EXPORT_LIMIT_BYTES) return `plugin text exceeds ${LAB_EXPORT_LIMIT_BYTES} bytes`;
-      files.push({ path: relative(dir, path).split(sep).join("/"), text: masked });
-    }
-    return undefined;
-  };
-  const problem = await walk(dir);
-  return problem ? { files: [], problem } : { files };
-}
+/** Plugin source folder inside the repository. The profile sync installs it as `<agentDir>/cuelo-plugins/`. */
+export const REPO_PLUGIN_DIR = "Tools/OMP_Global_Config/agent/cuelo-plugins";
 
 /**
- * Trial plugins (not yet promoted) with their usage and masked text files for the nightly
- * bundle. A plugin whose text exceeds 64 KiB travels with `files: []` and `problem` set.
+ * The repository copy of `id`, found by walking up from `from`. A plugin is authored there and
+ * checked before it is installed, so this has to work from any folder inside the checkout.
  */
-export async function collectLabExport(sinceMs: number, sessionsDir: string, agentDir = getAgentDir()): Promise<LabExportEntry[]> {
-  const [scanned, usage] = await Promise.all([scanAll(agentDir), readLabUsage(sinceMs, sessionsDir, agentDir)]);
-  const usageById = new Map(usage.map((entry) => [entry.id, entry]));
-  const entries: LabExportEntry[] = [];
-  for (const { plugin, dir } of scanned) {
-    if (plugin.origin !== "trial" || plugin.promoted) continue;
-    const read = await readPluginTextFiles(dir).catch((error: Error) => ({ files: [], problem: `export failed: ${error.message}` }));
-    entries.push({
-      plugin: read.problem ? { ...plugin, problem: plugin.problem ? `${plugin.problem}; ${read.problem}` : read.problem } : plugin,
-      usage: usageById.get(plugin.id) ?? {
-        id: plugin.id, sessions: 0, toolCalls: 0, toolFailures: 0, panelOpens: 0, activeDays: 0, lastUsedAt: null, recentSessionFailures: 0,
-      },
-      files: read.files,
-    });
+async function findRepositoryPlugin(id: string, from: string): Promise<string | undefined> {
+  for (let current = resolve(from); ; current = dirname(current)) {
+    const dir = join(current, REPO_PLUGIN_DIR, id);
+    if ((await lstat(dir).catch(() => null))?.isDirectory()) return dir;
+    if (dirname(current) === current) return undefined;
   }
-  return entries;
 }
 
-/** Where a plugin lives, for the `plugin_lab check` action. */
-export type LabPluginLocation = { plugin: LabPlugin; dir: string; extensionPath?: string };
+/** The repository source copy when there is one, else the installed copy. */
+export async function locateLabPlugin(id: string, from: string, agentDir = getAgentDir()): Promise<LabPluginLocation | undefined> {
+  if (!isLabPluginId(id)) return undefined;
+  const sourceDir = await findRepositoryPlugin(id, from);
+  if (sourceDir) {
+    const scanned = await scanPluginDir(sourceDir, id);
+    if (scanned) return { plugin: scanned.plugin, dir: scanned.dir, source: "repository", ...(scanned.extensionPath ? { extensionPath: scanned.extensionPath } : {}) };
+  }
+  const scanned = await activePlugin(id, agentDir);
+  return scanned
+    ? { plugin: scanned.plugin, dir: scanned.dir, source: "installed", ...(scanned.extensionPath ? { extensionPath: scanned.extensionPath } : {}) }
+    : undefined;
+}
 
 /**
  * The `plugin_lab` harness tool runs inside this server process but ships in the agent
@@ -639,11 +592,13 @@ export type LabPluginLocation = { plugin: LabPlugin; dir: string; extensionPath?
  */
 export type PluginLabHost = {
   version: 1;
-  roots(): { trial: string; promoted: string };
+  /** The root the `plugin_lab` tool reports, and where those plugins are installed. */
+  root(): string;
   list(): Promise<LabPlugin[]>;
   usage(sinceMs: number): Promise<LabUsage[]>;
   setEnabled(id: string, enabled: boolean): Promise<LabPlugin | undefined>;
-  locate(id: string): Promise<LabPluginLocation | undefined>;
+  /** `from` is the session cwd: the repository source copy wins over the installed one. */
+  locate(id: string, from: string): Promise<LabPluginLocation | undefined>;
 };
 
 declare global {
@@ -652,13 +607,9 @@ declare global {
 
 globalThis.__cueloPluginLab = {
   version: 1,
-  roots: () => ({ trial: labTrialRoot(), promoted: labPromotedRoot() }),
+  root: () => labPluginRoot(),
   list: () => listLabPlugins(),
   usage: (sinceMs) => readLabUsage(sinceMs, getSessionsDir(getAgentDir())),
   setEnabled: (id, enabled) => setLabPluginEnabled(id, enabled),
-  locate: async (id) => {
-    if (!isLabPluginId(id)) return undefined;
-    const scanned = await activePlugin(id, getAgentDir());
-    return scanned ? { plugin: scanned.plugin, dir: scanned.dir, ...(scanned.extensionPath ? { extensionPath: scanned.extensionPath } : {}) } : undefined;
-  },
+  locate: (id, from) => locateLabPlugin(id, from),
 };

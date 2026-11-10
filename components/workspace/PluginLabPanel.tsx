@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ActionButton, Badge, Switch } from "@seed-design/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActionButton, Switch } from "@seed-design/react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import type { LabPlugin } from "@/lib/plugin-lab";
@@ -68,9 +68,9 @@ async function errorText(response: Response): Promise<string> {
   return `HTTP ${response.status}`;
 }
 
-/** A panel that can run: it has a panel file, is switched on, and is not replaced by a promoted copy. */
+/** A panel that can run: it has a panel file and is switched on. */
 function canOpenPanel(plugin: LabPlugin): boolean {
-  return plugin.hasPanel && plugin.enabled && !(plugin.origin === "trial" && plugin.promoted);
+  return plugin.hasPanel && plugin.enabled;
 }
 
 export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsertDraft }: PluginLabPanelProps) {
@@ -114,10 +114,9 @@ export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsert
       if (!response.ok) throw new Error(await errorText(response));
       const body = await response.json() as { plugin: LabPlugin };
       setList((current) => current.kind === "ready"
-        ? { kind: "ready", plugins: current.plugins.map((item) => (item.id === body.plugin.id && item.origin === body.plugin.origin ? body.plugin : item)) }
+        ? { kind: "ready", plugins: current.plugins.map((item) => (item.id === body.plugin.id ? body.plugin : item)) }
         : current);
-      // Read the list again: a list request still in flight was answered before this change, and
-      // the response may name another copy (a trial promoted meanwhile) that no shown row matches.
+      // Read the list again: a list request still in flight was answered before this change.
       void load();
     } catch (error) {
       setRowErrors((current) => ({ ...current, [plugin.id]: error instanceof Error ? error.message : String(error) }));
@@ -150,21 +149,13 @@ export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsert
     );
   }
 
-  const trialCount = plugins.filter((plugin) => plugin.origin === "trial" && !plugin.promoted).length;
-  const promotedCount = plugins.filter((plugin) => plugin.origin === "promoted").length;
-  // A trial copy whose id was promoted is listed but never loads; it is neither counted as a trial nor hidden.
-  const shadowedCount = plugins.filter((plugin) => plugin.origin === "trial" && plugin.promoted).length;
   const showApplyHint = plugins.some((plugin) => plugin.hasExtension);
 
   return (
     <section className={styles.view} aria-label={title}>
       <PanelHeader
         title={title}
-        subtitle={list.kind === "ready"
-          ? shadowedCount > 0
-            ? t("pluginLab.countsShadowed", { trial: trialCount, promoted: promotedCount, shadowed: shadowedCount })
-            : t("pluginLab.counts", { trial: trialCount, promoted: promotedCount })
-          : undefined}
+        subtitle={list.kind === "ready" ? t("pluginLab.counts", { count: plugins.length }) : undefined}
         actions={[{ id: "refresh", label: t("pluginLab.refresh"), icon: REFRESH_ICON, onClick: () => void load() }]}
       />
       <div className={styles.toolbar}>
@@ -192,7 +183,7 @@ export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsert
           <ul className={styles.list} aria-label={t("pluginLab.listLabel")}>
             {plugins.map((plugin) => (
               <PluginRow
-                key={`${plugin.origin}:${plugin.id}`}
+                key={plugin.id}
                 plugin={plugin}
                 busy={pending.has(plugin.id)}
                 error={rowErrors[plugin.id] ?? null}
@@ -215,18 +206,13 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
   onOpen: () => void;
 }) {
   const { t } = useI18n();
-  const shadowed = plugin.origin === "trial" && plugin.promoted;
-  const active = plugin.enabled && !shadowed;
-  const shadowNoteId = useId();
+  const active = plugin.enabled;
   return (
     <li className={styles.card} data-enabled={active ? "true" : "false"} aria-busy={busy || undefined}>
       <div className={styles.cardHead}>
         <div className={styles.titleBlock}>
           <div className={styles.titleLine}>
             <span className={styles.name} title={plugin.name}>{plugin.name}</span>
-            <Badge size="medium" variant="weak" tone={plugin.origin === "promoted" ? "positive" : "neutral"}>
-              {plugin.origin === "promoted" ? t("pluginLab.promoted") : t("pluginLab.trial")}
-            </Badge>
           </div>
           <span className={styles.id} title={plugin.id}>{plugin.id}</span>
         </div>
@@ -236,11 +222,11 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
             size="24"
             tone="brand"
             checked={plugin.enabled}
-            disabled={busy || shadowed}
+            disabled={busy}
             onCheckedChange={onToggle}
             aria-label={t("pluginLab.toggleLabel", { name: plugin.name })}
           >
-            <Switch.HiddenInput aria-describedby={shadowed ? shadowNoteId : undefined} />
+            <Switch.HiddenInput />
             <Switch.Label className={styles.switchLabel}>
               {busy ? t("pluginLab.saving") : plugin.enabled ? t("pluginLab.on") : t("pluginLab.off")}
             </Switch.Label>
@@ -248,7 +234,6 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
               <Switch.Thumb />
             </Switch.Control>
           </Switch.Root>
-          {shadowed && <p id={shadowNoteId} className={styles.controlNote}>{t("pluginLab.shadowed")}</p>}
         </div>
       </div>
       {plugin.description && <p className={styles.description}>{plugin.description}</p>}
@@ -341,11 +326,6 @@ function PluginPanelHost({ plugin, sessionId, labWidgets, onInsertDraft, onBack 
       <PanelHeader
         back={{ label: t("pluginLab.back"), onClick: onBack }}
         title={plugin.name}
-        titleAdornment={(
-          <Badge size="medium" variant="weak" tone={plugin.origin === "promoted" ? "positive" : "neutral"}>
-            {plugin.origin === "promoted" ? t("pluginLab.promoted") : t("pluginLab.trial")}
-          </Badge>
-        )}
         subtitle={t("pluginLab.panelSubtitle", { id: plugin.id })}
       />
       <div className={styles.stage}>
