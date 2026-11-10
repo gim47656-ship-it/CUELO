@@ -131,6 +131,24 @@ describe("Anthropic daily-share policy", () => {
     expect((await selectNewSessionModel(scope, fresh, storage, async () => sharedSpent)).initial.model).toBe(sol);
   });
 
+  test("a Fable default outside the enabled scope is judged on the window of the model that actually starts (#85)", async () => {
+    const scoped = (model: ModelScopeResult["visible"][number]) => ({ model }) as ModelScopeResult["scopedModels"][number];
+    const opusFirst = { ...scope, scopedModels: [scoped(opus), scoped(sol)] } as ModelScopeResult;
+    const fableDefault = { ...fresh, defaultModel: { provider: "anthropic", modelId: "claude-fable-5-2" } };
+    const both = (sharedUsed: number, fableUsed: number) => snapshot([9, 11].map((id) => {
+      const a = account(id, sharedUsed);
+      a.limits.push({ id: "anthropic:7d:fable", usedFraction: 0.05, resetsAt: 100, windowId: "7d", shared: false,
+        daySlot: { usedPct: fableUsed, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } });
+      return a;
+    }));
+    // Opus starts, so a spent Fable window alone must not move the session to YUKI.
+    const kept = await selectNewSessionModel(opusFirst, fableDefault, storage, async () => both(1, 15));
+    expect(kept.initial.model).toBe(opus); expect(kept.notice).toBeNull();
+    // Opus starts, so the spent shared window moves it even though Fable's own window is free.
+    const switched = await selectNewSessionModel(opusFirst, fableDefault, storage, async () => both(15, 1));
+    expect(switched.initial.model).toBe(sol); expect(switched.notice).toBe(DAY_SLOT_START_NOTICE);
+  });
+
   test("sidecar adapter feeds the same predicate", async () => {
     const server = Bun.serve({ port: 0, fetch: () => Response.json({ reports: [9, 11].map((credentialId) => ({
       provider: "anthropic", credentialId, limits: [{ id: "anthropic:7d", scope: { windowId: "7d", shared: true },

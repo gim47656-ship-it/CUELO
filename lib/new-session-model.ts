@@ -34,9 +34,12 @@ export async function selectNewSessionModel(
       resolve({ state: "unavailable", observedAt: Date.now(), reason: "new-session quota budget exceeded" });
     }, 2_000);
     const quota = await Promise.race([readQuota(["anthropic"], controller.signal), timeout]);
-    // Fable counts against its own weekly window, so a Fable default is judged on that window's daily share.
-    const window = options.defaultModel?.provider === "anthropic" && options.defaultModel.modelId.startsWith("claude-fable-") ? "fable" : "shared";
-    if (!anthropicOverDaySlot(quota, enabledAnthropicCredentialIds(storage), window)) return normal();
+    // Fable counts against its own weekly window. Judge the window of the model this session would actually start on:
+    // a stored default outside the enabled scope falls back to the resolver's first model, and that model's window applies.
+    const start = normal();
+    const startModel = start.initial.model;
+    const window = startModel?.provider === "anthropic" && startModel.id.startsWith("claude-fable-") ? "fable" : "shared";
+    if (!anthropicOverDaySlot(quota, enabledAnthropicCredentialIds(storage), window)) return start;
     return { initial: selectInitialModelScope(scope, { ...options, requestedModel: target }), notice: DAY_SLOT_START_NOTICE };
   } catch {
     return normal();

@@ -23298,6 +23298,118 @@ function planSpawns(
 	absorbed(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')), bundleSkip);
 }
 
+// 18.18.6: upstream edited lines CUELO patches anchor on; every purpose still holds, so each entry
+// gains a candidate carrying the upstream change. wait (#16052) passes delivery timing as a 7th
+// buildJobResult argument, a late usage-limit error from a replaced provider is now `staleUsageLimit`,
+// and MCP `!command` values are invalidated before the server configs are cleared.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.18.6 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.18.6 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+
+	// The agents roster stays the 6th argument; upstream's delivery options follow it.
+	{
+		const discriminator = "settledJobIds";
+		const jobControl = names => `import { ${names} } from "../async/job-control";`;
+		alternate(byMarker("runningAgentsOutsideJobs,"), {
+			marker: jobControl("buildJobResult, runningAgentsOutsideJobs, settledJobIds, snapshotJobs, undeliveredJobs"),
+			anchor: jobControl("buildJobResult, settledJobIds, snapshotJobs, undeliveredJobs"),
+			patched: jobControl("buildJobResult, runningAgentsOutsideJobs, settledJobIds, snapshotJobs, undeliveredJobs"),
+		}, discriminator);
+		alternate(byMarker("Same roster source as the empty result and `read proc://`"), {
+			marker: "Same roster source as `read proc://`",
+			anchor: [
+				'\t\t\treturn buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], {',
+				"\t\t\t\tstartedAtMs: callStartedAt,",
+				"\t\t\t\tsettledAtEntry,",
+				"\t\t\t});",
+			].join("\n"),
+			patched: [
+				"\t\t\t// Same roster source as `read proc://`: the 6th argument (`agents`);",
+				"\t\t\t// the 5th stays the empty cancel-outcome list.",
+				'\t\t\treturn buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], runningAgentsOutsideJobs(this.session), {',
+				"\t\t\t\tstartedAtMs: callStartedAt,",
+				"\t\t\t\tsettledAtEntry,",
+				"\t\t\t});",
+			].join("\n"),
+		}, discriminator);
+		alternate(byMarker("A job-backed wait must not be the one snapshot that hides a running"), {
+			marker: "A job-backed wait result must not hide a running agent with no job row.",
+			anchor: [
+				'\t\t\t\tconst result = buildJobResult(this.session, manager, "wait", jobs, [], [], {',
+				"\t\t\t\t\tstartedAtMs,",
+				"\t\t\t\t\tsettledAtEntry,",
+				"\t\t\t\t});",
+			].join("\n"),
+			patched: [
+				"\t\t\t\t// A job-backed wait result must not hide a running agent with no job row.",
+				'\t\t\t\tconst result = buildJobResult(this.session, manager, "wait", jobs, [], runningAgentsOutsideJobs(this.session), {',
+				"\t\t\t\t\tstartedAtMs,",
+				"\t\t\t\t\tsettledAtEntry,",
+				"\t\t\t\t});",
+			].join("\n"),
+		}, discriminator);
+	}
+
+	{
+		const discriminator = "kUsageLimitRequestProvider";
+		const stale = "\t\t\t\t!staleUsageLimit &&\n";
+		const whitespace = byMarker("(codexWhitespaceLoopFallback && (retryBudgetExhausted || codexWhitespaceCommittedText))");
+		alternate(whitespace, {
+			marker: whitespace.marker,
+			anchor: swap(whitespace.anchor, "\t\t\t\t!thinkingLoop &&\n", `${stale}\t\t\t\t!thinkingLoop &&\n`),
+			patched: swap(whitespace.patched, "\t\t\t\t!thinkingLoop &&\n", `${stale}\t\t\t\t!thinkingLoop &&\n`),
+		}, discriminator);
+
+		// Upstream now reads the current model above this block. A pinned account is reported as
+		// limited only for its own provider's error, never for a replaced provider's late one.
+		const fallbackGate = byMarker("const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined;");
+		const previous = fallbackGate.alternates.find(candidate => candidate.requires === "modelFallbackDisabled?.()");
+		const currentModel = "\t\tconst currentModel = this.#host.model();\n";
+		alternate(fallbackGate, {
+			marker: previous.marker,
+			anchor: swap(previous.anchor, currentModel, ""),
+			patched: swap(
+				swap(previous.patched, currentModel, ""),
+				"\t\tif (exactAccountLabel && AIError.is(id, AIError.Flag.UsageLimit)) {",
+				"\t\tif (exactAccountLabel && !staleUsageLimit && AIError.is(id, AIError.Flag.UsageLimit)) {",
+			),
+		}, discriminator);
+	}
+
+	{
+		const cleared = byMarker("\t\tthis.#selectionConnected.clear();");
+		const previous = cleared.alternates.find(candidate => candidate.requires === "static #deferred:");
+		const configs = "\t\tthis.#serverConfigs.clear();";
+		const invalidated = [
+			"\t\t// The next connect (`/mcp reload` rediscovery) runs every `!command` again.",
+			"\t\tfor (const config of this.#serverConfigs.values()) invalidateCommandValues(config);",
+			configs,
+		].join("\n");
+		alternate(cleared, {
+			marker: cleared.marker,
+			anchor: swap(previous.anchor, configs, invalidated),
+			patched: swap(previous.patched, configs, invalidated),
+		}, "function invalidateCommandValues(");
+	}
+
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&QUe(c))continue';
+	const advisor = one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+}
+
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
