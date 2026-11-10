@@ -1115,6 +1115,8 @@
  "pluginLab.toggleLabel": "{name} 사용",
  "pluginLab.toggleFailed": "상태를 바꾸지 못했습니다: {error}",
  "pluginLab.tools": "도구",
+ "pluginLab.lastEnhancement": "마지막 보강",
+ "pluginLab.lastEnhancementHint": "이 플러그인의 기능이 마지막으로 보강된 날짜입니다.",
  "pluginLab.problem": "문제",
  "pluginLab.openPanel": "패널 열기",
  "pluginLab.openPanelLabel": "{name} 패널 열기",

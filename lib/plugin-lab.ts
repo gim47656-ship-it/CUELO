@@ -13,6 +13,9 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 
+/** What a plugin's last meaningful change did, as its manifest states it. Display only. */
+export type LabEnhancement = { at: string; summary: string };
+
 export type LabPlugin = {
   id: string;
   name: string;
@@ -22,6 +25,8 @@ export type LabPlugin = {
   hasExtension: boolean;
   tools: string[];
   hasPanel: boolean;
+  /** Absent when the manifest has none or a malformed one: the card then shows no enhancement line. */
+  lastEnhancement?: LabEnhancement;
   problem?: string;
 };
 
@@ -122,6 +127,7 @@ type Manifest = {
   extension?: string;
   tools: string[];
   panel?: string;
+  lastEnhancement?: LabEnhancement;
 };
 
 type ScannedPlugin = {
@@ -136,6 +142,27 @@ type ScannedPlugin = {
 
 function fail(message: string): never {
   throw new Error(message);
+}
+
+/**
+ * `lastEnhancement` is display metadata, not a load gate: a plugin without one, or with one that does not
+ * parse, still loads, and only its card loses the enhancement line.
+ */
+function parseEnhancement(value: unknown): LabEnhancement | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const { at, summary } = value as Record<string, unknown>;
+  if (typeof at !== "string" || !ISO_DATE_TIME.test(at)) return undefined;
+  const time = Date.parse(at);
+  if (Number.isNaN(time)) return undefined;
+  // Date.parse rolls an impossible day over (2026-02-30 becomes 2 March), so the parsed instant has to
+  // carry the same day the manifest wrote. The offset stays in effect: compare in the writer's own zone.
+  const offset = /(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(at);
+  const minutes = offset?.[1] ? (offset[1] === "-" ? -1 : 1) * (Number(offset[2]) * 60 + Number(offset[3])) : 0;
+  const written = at.slice(0, 10);
+  const sameDay = new Date(time + minutes * 60_000).toISOString().slice(0, 10) === written;
+  if (!sameDay) return undefined;
+  if (typeof summary !== "string" || summary.trim() === "") return undefined;
+  return { at, summary: summary.trim() };
 }
 
 function parseManifest(raw: unknown, id: string): Manifest {
@@ -153,6 +180,8 @@ function parseManifest(raw: unknown, id: string): Manifest {
   // ISO 8601 date-time only; Date.parse alone also takes free-form dates such as "March 1, 2026".
   if (!ISO_DATE_TIME.test(createdAt) || Number.isNaN(Date.parse(createdAt))) fail('plugin.json "createdAt" must be an ISO date string');
   const manifest: Manifest = { id, name, description, createdAt, tools: [] };
+  const lastEnhancement = parseEnhancement(value.lastEnhancement);
+  if (lastEnhancement) manifest.lastEnhancement = lastEnhancement;
   if (value.extension !== undefined) {
     const entry = text("extension");
     if (!EXTENSION_SUFFIXES.some((suffix) => entry.endsWith(suffix))) {
@@ -245,6 +274,7 @@ async function scanPluginDir(dir: string, name: string): Promise<ScannedPlugin |
     entry.manifest = manifest;
     Object.assign(plugin, {
       name: manifest.name, description: manifest.description, createdAt: manifest.createdAt, tools: manifest.tools,
+      ...(manifest.lastEnhancement ? { lastEnhancement: manifest.lastEnhancement } : {}),
     });
     if (manifest.extension) {
       const resolved = await resolvePluginFile(dir, manifest.extension);

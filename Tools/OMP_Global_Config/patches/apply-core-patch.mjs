@@ -3060,13 +3060,13 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		patched: `- \`app.relay: true\`: drive the user's Chrome through the omp relay. \`app.target\` selects a tab by URL/title substring; without it, the relay opens a new tab for this \`name\` and leaves the user's tabs alone. Reopening the same \`name\` reuses that tab; closing it releases the tab without closing the page.`,
 	},
 	{
-		// 2026-10-31 사용자 결정(효과 있는 held 항목 적용): 집 PC 최근 7일 Maker 요청 8,600회,
-		// 91세션 중 computer eval 사용 0회인데 매 요청에 computer.md 18,725자가 실렸다.
-		// Main은 60세션 중 12세션이 사용하므로 inline을 유지하고, Maker만 기존 xd topic으로 읽는다.
+		// 2026-11-11 사용자 요청: 작업 시작 입력 낭비를 줄인다. Main에도 Maker와 같은
+		// xd://eval/computer 안내를 쓰되 전문과 read-disabled inline 대체는 그대로 둔다.
 		file: "src/tools/computer.ts",
-		marker: "inlineDocumentation: (session.taskDepth ?? 0) === 0",
+		marker: "inlineDocumentation: false",
 		anchor: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: true,",
-		patched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: (session.taskDepth ?? 0) === 0,",
+		legacyPatched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: (session.taskDepth ?? 0) === 0,",
+		patched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: false,",
 	},
 	{
 		// 2026-10-09 사용자 결정: computer 승인 창은 control.acquire에서만 뜬다. 모델이
@@ -9612,8 +9612,8 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		file: "src/tools/learn.ts",
 		marker: '"topic?": type("string").describe("stable topic key',
-		anchor: '\t"context?": type("string").describe("optional source context for the lesson"),',
-		patched: '\t"context?": type("string").describe("optional source context for the lesson"),\n\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),',
+		anchor: '\t"context?": type("string").describe("optional source context for the lesson"),\n\t"skill?": learnSkillSchema,\n});',
+		patched: '\t"context?": type("string").describe("optional source context for the lesson"),\n\t"topic?": type("string").describe("stable topic key; later lessons with this key replace the prior project lesson"),\n\t"skill?": learnSkillSchema,\n});',
 	},
 	{
 		file: "src/tools/learn.ts",
@@ -23408,6 +23408,21 @@ function planSpawns(
 	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&QUe(c))continue';
 	const advisor = one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
 	alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+}
+
+// 18.18.7: upstream still excludes advisor transcripts; only the bundle helper name changed.
+// Keep the absorbed purpose as a version-exclusive RETIRE no-op.
+{
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&ZUe(c))continue';
+	const entries = EDITS.filter(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	if (entries.length !== 1) throw new Error(`18.18.7 advisor candidate: ${entries.length}/1 entries`);
+	const advisor = entries[0];
+	for (const old of [advisor, ...(advisor.alternates ?? [])]) {
+		old.excludes = [...[old.excludes ?? []].flat(), bundleSkip];
+	}
+	(advisor.alternates ??= []).push({
+		file: advisor.file, marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip, requires: bundleSkip,
+	});
 }
 
 // Per-model auto policy is a harness extension. Fold into the existing owners so

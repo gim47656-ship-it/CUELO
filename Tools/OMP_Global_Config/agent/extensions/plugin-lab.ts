@@ -17,6 +17,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 type LabPlugin = {
   id: string; name: string; description: string; createdAt: string; enabled: boolean;
   hasExtension: boolean; tools: string[]; hasPanel: boolean; problem?: string;
+  lastEnhancement?: { at: string; summary: string };
 };
 type LabUsage = {
   id: string; sessions: number; toolCalls: number; toolFailures: number; panelOpens: number; activeDays: number;

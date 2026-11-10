@@ -83,7 +83,7 @@ export const CHARACTER_VOICES: Readonly<Record<BuiltinCharacterAlias, CharacterV
 
 export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, CharacterTarget>> = {
   "YUKI(유키)": {
-    model: "openai-codex/gpt-6.1-sol",
+    model: "openai-codex/gpt-6-astra",
     toolCapable: true,
   },
   "ISANA(이사나)": {

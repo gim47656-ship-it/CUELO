@@ -1067,6 +1067,8 @@ export const zhCNLocale: LocalePlugin = {
     "pluginLab.toggleLabel": "使用 {name}",
     "pluginLab.toggleFailed": "无法更改状态：{error}",
     "pluginLab.tools": "工具",
+    "pluginLab.lastEnhancement": "最近增强",
+    "pluginLab.lastEnhancementHint": "显示此插件最近一次获得功能优化的日期。",
     "pluginLab.problem": "问题",
     "pluginLab.openPanel": "打开面板",
     "pluginLab.openPanelLabel": "打开 {name} 面板",

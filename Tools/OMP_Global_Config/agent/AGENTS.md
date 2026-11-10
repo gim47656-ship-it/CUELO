@@ -31,7 +31,7 @@
 
 ## 역할
 
-역할은 **Main, `maker`** 둘이며 위임 child도 `maker` 하나다. Main은 `modelRoles.default`의 Claude Fable 프론티어로 생각하고 요구, 전체 설계, 계약, 승인, 라우팅, 중간 검수와 최종 수용을 소유하며 위임하지 않은 일은 직접 끝낸다(사용자가 명시한 세션 모델과 alias 선택, 실행 중인 Main과 child는 바꾸지 않는다). Maker는 맡은 조각을 조사부터 구현, 재작업, 검증과 실제 표면 확인까지 end-to-end로 맡는다. 기본 Maker는 DeepSeek이며 방향과 수용 조건이 분명한 구현, 테스트와 반복 수정을 맡는다. 어려운 UI는 Opus(2026-11-10 사용자 결정으로 Sonnet에서 옮김), 기존 소유자와 승인된 계약 안의 한정된 설계와 실패 재작업은 Sol이다. 모든 활성 Anthropic 계정의 오늘 하루 몫 소진이 관측되면 어려운 UI의 Opus 추천도 Sol이고, 모델을 명시하지 않은 새 최상위 세션은 기본 모델이 쓰는 주간 구간(Fable이면 Fable 전용 구간)의 하루 몫이 모든 계정에서 소진됐을 때만 YUKI selector로 시작한다. 미관측은 소진이 아니며 재개, fork와 child에는 적용하지 않는다. 새 상태 소유권이나 공개 계약이 필요한 큰 교차 경계 재설계와 반복 실패는 Main으로 돌아온다. 현재 model role은 `config.yml` `modelRoles`가 정본이고 발주 분류, 후보와 재사용은 `rule://subagent`, `routing.modelSelection`과 `routing.effortSelection`을 따른다. Maker는 `:auto`로 발주하며 child가 `solutionSpace`와 이후 Main 지시마다 모델이 선언한 high~xhigh 안에서 고른다(일반 작업은 high, 깊은 추론이 필요할 때만 xhigh). 프로필 `autoEffort`에 등급이 적힌 모델은 Main과 child 모두 그 등급의 기본 강도(비싼 모델 medium, 싼 모델 high)에서 시작해 xhigh까지 오르고(xhigh 없이 max만 선언한 지정 모델은 그 판정에서 max까지), 재시작 알림과 내용 없는 짧은 말은 강도를 새로 정하지 않는다. 폐지된 별도 검수, 디자인, 검증과 정찰 역할을 되살리지 않는다.
+역할은 **Main, `maker`** 둘이며 위임 child도 `maker` 하나다. Main은 `modelRoles.default`의 GPT-6 Astra 프론티어로 생각하고 요구, 전체 설계, 계약, 승인, 라우팅, 중간 검수와 최종 수용을 소유하며 위임하지 않은 일은 직접 끝낸다(사용자가 명시한 세션 모델과 alias 선택, 실행 중인 Main과 child는 사용자 지시 없이 바꾸지 않는다). Maker는 맡은 조각을 조사부터 구현, 재작업, 검증과 실제 표면 확인까지 end-to-end로 맡는다. 기본 Maker는 DeepSeek이며 방향과 수용 조건이 분명한 구현, 테스트와 반복 수정을 맡는다. 어려운 UI는 Opus(2026-11-10 사용자 결정으로 Sonnet에서 옮김), 기존 소유자와 승인된 계약 안의 한정된 설계와 실패 재작업은 Sol이다. 모든 활성 Anthropic 계정의 오늘 하루 몫 소진이 관측되면 어려운 UI의 Opus 추천도 Sol이고, 모델을 명시하지 않은 새 최상위 세션은 기본 모델이 쓰는 주간 구간(Fable이면 Fable 전용 구간)의 하루 몫이 모든 계정에서 소진됐을 때만 YUKI selector로 시작한다. 미관측은 소진이 아니며 재개, fork와 child에는 적용하지 않는다. 새 상태 소유권이나 공개 계약이 필요한 큰 교차 경계 재설계와 반복 실패는 Main으로 돌아온다. 현재 model role은 `config.yml` `modelRoles`가 정본이고 발주 분류, 후보와 재사용은 `rule://subagent`, `routing.modelSelection`과 `routing.effortSelection`을 따른다. Maker는 `:auto`로 발주하며 child가 `solutionSpace`와 이후 Main 지시마다 모델이 선언한 high~xhigh 안에서 고른다(일반 작업은 high, 깊은 추론이 필요할 때만 xhigh). 프로필 `autoEffort`에 등급이 적힌 모델은 Main과 child 모두 그 등급의 기본 강도(비싼 모델 medium, 싼 모델 high)에서 시작해 xhigh까지 오르고(xhigh 없이 max만 선언한 지정 모델은 그 판정에서 max까지), 재시작 알림과 내용 없는 짧은 말은 강도를 새로 정하지 않는다. 폐지된 별도 검수, 디자인, 검증과 정찰 역할을 되살리지 않는다.
 
 ## 작업 모드
 
@@ -112,7 +112,7 @@ SHION은 역할이 아니라 선택적 상담이다. 사용자가 명시했을 �
 
 | 별칭 | exact selector | `호출해` | `교체해` |
 |---|---|---|---|
-| **YUKI(유키)** | `openai-codex/gpt-6.1-sol` | 이 모델의 task child | 현재 세션만 전환 |
+| **YUKI(유키)** | `openai-codex/gpt-6-astra` | 이 모델의 task child | 현재 세션만 전환 |
 | **ISANA(이사나)** | `hive/deepseek-ai/deepseek-v4.1-flash-1017` | 이 모델의 task child | 현재 세션만 전환 |
 | **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |

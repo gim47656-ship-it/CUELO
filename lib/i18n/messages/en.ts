@@ -1067,6 +1067,8 @@ export const enLocale = {
     "pluginLab.toggleLabel": "Use {name}",
     "pluginLab.toggleFailed": "Could not change the state: {error}",
     "pluginLab.tools": "Tools",
+    "pluginLab.lastEnhancement": "Last enhancement",
+    "pluginLab.lastEnhancementHint": "Shows the date this plugin was last improved.",
     "pluginLab.problem": "Problem",
     "pluginLab.openPanel": "Open panel",
     "pluginLab.openPanelLabel": "Open the {name} panel",

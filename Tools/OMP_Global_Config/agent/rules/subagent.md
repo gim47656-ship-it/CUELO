@@ -54,7 +54,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   모든 Maker 후보 slot은 `:auto`다. 강도는 발주 항목의 `solutionSpace`를 입력으로 child auto가 그 모델이 선언한 단계 중 high~xhigh 안에서만 고른다(2026-11-08 사용자 결정: 일반 작업은 high, 정말 추론이 필요할 때만 xhigh, low·medium·max는 auto가 고르지 않는다. 모델이 그 범위의 단계를 선언하지 않으면 지원하지 않는 단계로 올리지 않는다). Main의 auto 범위(medium~xhigh)는 그대로다.
   2026-11-10 사용자 결정으로 모델 등급이 이 범위보다 먼저다. 프로필 `config.yml`의 `autoEffort`에 적힌 모델은 Main과 child 어디서 돌든 그 등급의 기본 강도에서 시작한다(`floorMedium`의 비싼 모델은 medium, `floorHigh`의 싼 모델은 high, 상한은 둘 다 xhigh이고 모델이 선언한 단계 안에서만 고른다). 같은 날 사용자 결정(「근거가 있을때 MAX 로 올리자 중국쪽 모델들」)으로 `xhighAsMax`에 적힌 모델은 xhigh를 선언하지 않고 max를 선언했을 때 xhigh 판정을 max로 받는다(지금은 DeepSeek V4.1 Flash와 GLM 5.3 Flash). 목록에 없는 모델은 위 범위(Main medium, child high)를 그대로 쓴다. 판별은 `extensions/auto-effort.ts`가 맡는다. 재시작과 업데이트 알림(`[자동 재개]`, `[하네스 통지]`)과 20자 이하의 짧은 말은 강도를 바꿀 근거가 없으므로 분류기를 부르지 않고 하던 강도를 유지하며, 내용이 있는 요청과 `solutionSpace`만 분류해 그 결과에 따라 오르내린다.
   **2026-11-09 구성: Main이 요구, 전체 설계, 발주와 수용을 맡는다. DeepSeek는 방향이 정해진 구현, 테스트와 반복 수정, Opus는 어려운 UI, Sol은 기존 소유자와 승인된 계약 안의 한정된 설계와 실패 재작업을 맡는다(어려운 UI를 2026-11-10 사용자 결정으로 Sonnet에서 Opus로 옮겼다).** 500K/450K 문맥 관리 값은 구독 한도가 아니다.
-  Main의 프론티어는 `modelRoles.default`의 Claude Fable이다(2026-11-10 사용자 결정으로 Opus에서 옮김). 사용자가 명시한 세션 모델·alias 선택과 실행 중인 Main·child는 바꾸지 않는다.
+  Main의 프론티어는 `modelRoles.default`의 GPT-6 Astra다(2026-11-11 사용자 결정으로 Main과 YUKI를 롤백). 사용자가 명시한 세션 모델·alias 선택과 실행 중인 Main·child는 사용자 지시 없이 바꾸지 않는다.
   예외로 모든 활성 Anthropic 계정을 관측했고 각각 기존 규칙상 사용 불가이거나 live shared `7d`의 `daySlot.usedPct >= daySlot.quotaPct`이면 어려운 UI의 Opus 추천도 Sol(`NORMAL_SOL`, `HARD_CODE_SOL61`)로 보낸다. 유한 수치가 없거나 unknown인 계정은 소진으로 보지 않는다. runtime credential 목록을 알면 모두 관측되어야 하고 모르면 서로 다른 계정을 최소 둘 관측해야 한다. 모델을 명시하지 않은 새 최상위 CUELO 세션은 같은 판정을 기본 모델이 쓰는 주간 구간으로 해서 소진일 때만 YUKI selector로 시작하고 짧은 안내를 남긴다(기본이 Fable이면 공유 구간이 아니라 `anthropic:7d:fable` 구간을 본다, 2026-11-10). 조회는 2초 이내로 제한하며 실패하면 일반 시작을 유지한다. 실행 중, 재개, fork, child와 명시 모델 선택은 바꾸지 않는다.
   Main은 설계·원인·상태 소유자·호출 계약·수용 조건을 구현 가능한 범위로 먼저 정리한다(모든 줄을 미리 풀지는 않는다). Maker는 국소 탐색·구현·검증을 맡는다.
   `maker_route`는 Jev 판단으로 다음을 추천한다. 우선순위는 반복 실패 → 큰 교차 경계 재설계 → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 일반 구현이다.
@@ -72,7 +72,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
     Jev가 불가이거나 답이 없거나 열린 설계·UI 난이도·한정된 설계를 `UNKNOWN`으로 두면 실패도 열린 설계도 어려운 UI도 아닌 모름이다. 추천 없이 Main에게 알리지만 막지 않고, 더 비싼 모델의 근거로도 쓰지 않으며 기존 `ROUTING_REASON` 경로로만 발주한다.
   - 승인된 하루 몫 예외 외에는 한도 여유 비교나 과거 성공률만으로 후보를 바꾸지 않는다. 미관측은 소진이 아니며 해당 결정의 후보가 없으면 null과 Main 재판단 사유를 돌려준다. DeepSeek 기본값은 유지하고 Sol 또는 Sonnet 후보가 없다고 다른 모델로 자동 대체하지 않는다.
   - Sonnet(`NORMAL_SONNET`, `HARD_UI_SONNET`, `HARD_CODE_SONNET`), `HARD_CODE_OPUS`, `HARD_CODE_TERRA`, Gemini(`implGemini`)와 GLM(`implGlm`)은 명시 선택 전용이다. `NORMAL_OPUS`와 `HARD_UI_OPUS`는 어려운 UI에서만 추천하고 그 밖의 선택은 명시 전용이다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다. Sol의 `NORMAL_SOL`과 `HARD_CODE_SOL61`은 위 추천 조건에서 자동 추천한다.
-    Sol 식별자는 기존 계약으로 유지하고 그 슬롯의 실제 모델은 `config.yml`이 정한다(`skim`·`draftFallback`의 Terra는 그대로다). GPT-6 Astra는 Maker 후보가 아니며 교차검토 slot `crossReviewOpenAI`로만 쓴다. 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
+    Sol 식별자는 기존 계약으로 유지하고 그 슬롯의 실제 모델은 `config.yml`이 정한다(`skim`·`draftFallback`의 Terra는 그대로다). GPT-6 Astra는 Main과 YUKI 및 교차검토 slot `crossReviewOpenAI`에 쓰며 일반 Maker 추천 후보는 아니다. 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
     추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
   - 기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다(child 하한은 core 설정 overlay가 건다). 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.

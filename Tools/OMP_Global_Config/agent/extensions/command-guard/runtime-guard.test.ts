@@ -548,7 +548,7 @@ describe("command guard runtime gates", () => {
   test("explicit multi-character summon requires exact markers and covers every pending alias", async () => {
     const taskBody = (marker: string) =>
       `${marker}\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.`;
-    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]';
+    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]';
     const mioMarker = '[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]';
 
     const unmarked = createGuardHarness();
@@ -794,7 +794,7 @@ describe("command guard runtime gates", () => {
       input: {
         tasks: [{
           agent: "maker",
-          task: '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.',
+          task: '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.',
         }],
       },
     }) as { input?: unknown } | undefined;
@@ -1009,7 +1009,7 @@ describe("command guard runtime gates", () => {
       toolCallId: "task-yuki-failed",
       input: {
         agent: "maker",
-        task: '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.',
+        task: '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.',
       },
     })).toMatchObject({ input: expect.anything() });
     await yuki.emit("tool_result", {
@@ -1050,7 +1050,7 @@ describe("command guard runtime gates", () => {
 
       const accepted = createGuardHarness();
       await accepted.emit("input", { type: "input", text: "테스타 불러와", source: "rpc" });
-      const allowed = await call(accepted, '[character-summon alias="TESTA(테스타)" model="openai-codex/gpt-6.1-sol"]', "office-ok");
+      const allowed = await call(accepted, '[character-summon alias="TESTA(테스타)" model="openai-codex/gpt-6-astra"]', "office-ok");
       expect(allowed?.block).toBeUndefined();
       expect(allowed?.input?.task).toContain('alias="TESTA(테스타)"');
       expect(allowed?.input?.task).toContain("느긋한 선배형");
@@ -1152,7 +1152,7 @@ describe("command guard runtime gates", () => {
         type: "tool_call",
         toolName: "task",
         toolCallId: "task-after-reissue",
-        input: { agent: "maker", task: `[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.1-sol"]\n${body}` },
+        input: { agent: "maker", task: `[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]\n${body}` },
       })).toMatchObject({ input: expect.anything() });
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

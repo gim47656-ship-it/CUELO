@@ -3,6 +3,10 @@
   "name": "넓은 읽기 넘김 안내",
   "description": "Main과 Maker가 한 작업에서 고치지 않을 파일을 4개째 직접 읽어 성공하면 skim 활용을 한 번 안내합니다. 읽기를 막지 않으며, 안내와 이후 skim 사용 기록을 에이전트 폴더의 cuelo-scan-nudge-events.jsonl에 남깁니다. 실패하거나 다른 가드가 막은 읽기, 실패한 skim이나 task는 세지 않습니다.",
   "createdAt": "2026-11-09T11:40:00.000Z",
+  "lastEnhancement": {
+    "at": "2026-11-10T20:02:34Z",
+    "summary": "성공한 도구 결과만 세므로 실패한 읽기와 차단되거나 실패한 skim이나 task 호출, 실패한 편집과 쓰기는 탐색에 넣지 않습니다. 편집 대상은 도구 이벤트의 path에서 먼저 가져옵니다."
+  },
   "extension": "index.ts",
   "tools": []
 }

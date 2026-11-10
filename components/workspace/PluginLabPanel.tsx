@@ -73,6 +73,19 @@ function canOpenPanel(plugin: LabPlugin): boolean {
   return plugin.hasPanel && plugin.enabled;
 }
 
+// One formatter per locale: `Intl.DateTimeFormat` construction is the cost, and a locale switches rarely.
+const enhancementDateFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** The manifest states a date-time; the card shows the calendar day it fell on in the reader's locale. */
+function formatEnhancementDate(at: string, locale: string): string {
+  let format = enhancementDateFormats.get(locale);
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
+    enhancementDateFormats.set(locale, format);
+  }
+  return format.format(new Date(at));
+}
+
 export function PluginLabPanel({ title, visible, sessionId, labWidgets, onInsertDraft }: PluginLabPanelProps) {
   const { t } = useI18n();
   const [list, setList] = useState<ListState>({ kind: "loading" });
@@ -205,7 +218,7 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
   onToggle: (enabled: boolean) => void;
   onOpen: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const active = plugin.enabled;
   return (
     <li className={styles.card} data-enabled={active ? "true" : "false"} aria-busy={busy || undefined}>
@@ -237,6 +250,17 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
         </div>
       </div>
       {plugin.description && <p className={styles.description}>{plugin.description}</p>}
+      {plugin.lastEnhancement && (
+        <div className={styles.enhancement}>
+          <p className={styles.enhancementHead}>
+            <span className={styles.metaLabel}>{t("pluginLab.lastEnhancement")}</span>
+            <time className={styles.enhancementDate} dateTime={plugin.lastEnhancement.at} title={t("pluginLab.lastEnhancementHint")}>
+              {formatEnhancementDate(plugin.lastEnhancement.at, locale)}
+            </time>
+          </p>
+          <p className={styles.enhancementSummary}>{plugin.lastEnhancement.summary}</p>
+        </div>
+      )}
       {plugin.tools.length > 0 && (
         <div className={styles.tools}>
           <span className={styles.metaLabel}>{t("pluginLab.tools")}</span>
