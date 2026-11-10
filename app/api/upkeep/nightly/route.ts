@@ -143,7 +143,7 @@ async function planAndRun(dryRun: boolean) {
     session = started.session;
     sessionId = started.realSessionId;
     invalidateSessionListCache();
-    await session.send({ type: "prompt", message: plan.prompt });
+    await session.send({ type: "prompt", message: plan.prompt.replaceAll("<이번 세션 ID>", sessionId) });
     accepted = true;
     writeNightlyState(agentDir, nightlyStateAfterRun(plan, state, started.realSessionId, worktree, new Date().toISOString()));
     log(`started ${started.realSessionId} in ${worktree} for ${describeJobs(plan.jobs)}${plan.sources ? ` | ${describeSources(plan.sources)}` : ""}`);

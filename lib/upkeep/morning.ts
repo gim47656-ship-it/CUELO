@@ -7,12 +7,17 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { writePrivateFileAtomicSync } from "../atomic-file";
 import { buildMorningPrompt } from "./morning-prompt";
 import { type NightlyResult, parseNightlyResult, REPORTABLE_OUTCOMES } from "./nightly-result";
+import { nightlySourceName } from "./nightly-inbox";
+import { parseMetricOutcomes, releaseVersion, type NightlyMetricOutcome } from "./nightly-outcomes";
+import { CHECK_MARKS_FILE, readCheckMarks, setCheckMark, clearCheckMark } from "./checks";
+import { FIX_MARKS_FILE, readFixMarks, setFixMark, fixMarkTimeFrom } from "./fixes";
+import { compareVersions } from "../omp-updates";
 
 const exec = promisify(execFile);
 
@@ -33,15 +38,16 @@ export interface MorningBase {
 
 export interface MorningState {
   /** 마지막 보고 세션 */
-  sessionId: string;
+  sessionId?: string;
   /** ISO 시각 */
-  startedAt: string;
+  startedAt?: string;
   /** 그때 본 origin/main(40자 sha). 다음 보고는 이 커밋에 이미 들어간 것을 빼고 센다. origin/main을 못 봤으면 없다. */
   reportedSha?: string;
   /** 그때 알린 최신 공개 릴리스 버전 */
   releaseVersion?: string;
   /** 그때 알린 클라우드 야간 실행 결과의 `finishedAt`(ISO). 같은 결과를 다시 알리지 않는다. */
   nightlyResultAt?: string;
+  nightlyImport?: { source: string; outcomes: NightlyMetricOutcome[]; settled: string[]; resultAt?: string };
 }
 
 export interface CloudCommit {
@@ -122,18 +128,31 @@ export function readMorningState(agentDir: string): MorningState | null {
   }
   const parsed = JSON.parse(text) as Partial<MorningState> | null;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
-    || typeof parsed.sessionId !== "string" || !parsed.sessionId
-    || typeof parsed.startedAt !== "string" || Number.isNaN(Date.parse(parsed.startedAt))
+    || (parsed.sessionId !== undefined && (typeof parsed.sessionId !== "string" || !parsed.sessionId))
+    || (parsed.startedAt !== undefined && (typeof parsed.startedAt !== "string" || Number.isNaN(Date.parse(parsed.startedAt))))
+    || Boolean(parsed.sessionId) !== Boolean(parsed.startedAt)
+    || (!parsed.sessionId && parsed.nightlyImport === undefined)
     || (parsed.reportedSha !== undefined && (typeof parsed.reportedSha !== "string" || !SHA_RE.test(parsed.reportedSha)))
     || (parsed.releaseVersion !== undefined && (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion))
     || (parsed.nightlyResultAt !== undefined && (typeof parsed.nightlyResultAt !== "string" || !Number.isFinite(Date.parse(parsed.nightlyResultAt))))) {
     throw new Error(`${MORNING_STATE_FILE} is not a morning report record`);
+  }
+  if (parsed.nightlyImport !== undefined && (!parsed.nightlyImport || typeof parsed.nightlyImport !== "object"
+    || !parseMetricOutcomes(parsed.nightlyImport.outcomes, Number.MAX_SAFE_INTEGER)
+    || typeof parsed.nightlyImport.source !== "string" || !/^[a-z0-9-]{1,63}$/.test(parsed.nightlyImport.source)
+    || (parsed.nightlyImport.resultAt !== undefined && (typeof parsed.nightlyImport.resultAt !== "string"
+      || !Number.isFinite(Date.parse(parsed.nightlyImport.resultAt))))
+    || parsed.nightlyImport.outcomes.some((row) => row.source !== parsed.nightlyImport!.source)
+    || !Array.isArray(parsed.nightlyImport.settled) || parsed.nightlyImport.settled.some((id) => typeof id !== "string"
+      || !parsed.nightlyImport!.outcomes.some((row) => row.metricId === id)))) {
+    throw new Error(`${MORNING_STATE_FILE} has invalid nightly import state`);
   }
   return {
     sessionId: parsed.sessionId, startedAt: parsed.startedAt,
     ...(parsed.reportedSha ? { reportedSha: parsed.reportedSha } : {}),
     ...(parsed.releaseVersion ? { releaseVersion: parsed.releaseVersion } : {}),
     ...(parsed.nightlyResultAt ? { nightlyResultAt: parsed.nightlyResultAt } : {}),
+    ...(parsed.nightlyImport ? { nightlyImport: parsed.nightlyImport } : {}),
   };
 }
 
@@ -152,7 +171,100 @@ export function morningStateAfterRun(plan: RunPlan, previous: MorningState | nul
     ...(reportedSha ? { reportedSha } : {}),
     ...(releaseVersion ? { releaseVersion } : {}),
     ...(nightlyResultAt ? { nightlyResultAt } : {}),
+    ...(previous?.nightlyImport ? { nightlyImport: previous.nightlyImport } : {}),
   };
+}
+
+/** Import before report guards; the existing morning record retains pending evidence and replay watermarks. */
+export function importNightlyOutcomes(input: {
+  agentDir: string; state: MorningState | null; result?: unknown; now: Date; dryRun?: boolean;
+  env?: Record<string, string | undefined>; release?: ReleaseInfo | null;
+}): { state: MorningState | null; changed: boolean } {
+  if (input.dryRun) return { state: input.state, changed: false };
+  const env = input.env ?? process.env;
+  const source = nightlySourceName(env, hostname());
+  const result = parseNightlyResult(input.result);
+  const previous = input.state?.nightlyImport;
+  const outcomes = previous?.source === source ? [...previous.outcomes] : [];
+  const settled = new Set(previous?.source === source ? previous.settled : []);
+  let resultAt = previous?.source === source ? previous.resultAt : undefined;
+  if (result?.version === 2 && result.source === source && Date.parse(result.finishedAt) <= input.now.getTime()
+    && (!resultAt || Date.parse(result.finishedAt) > Date.parse(resultAt))) {
+    resultAt = result.finishedAt;
+    for (const row of result.outcomes ?? []) {
+      if (Date.parse(row.checkedAt) > input.now.getTime()) continue;
+      const index = outcomes.findIndex((old) => old.metricId === row.metricId);
+      if (index >= 0 && Date.parse(outcomes[index].checkedAt) >= Date.parse(row.checkedAt)) continue;
+      const importedRow = row.disposition === "fixed" && (result.outcome !== "clean" || result.leftoverCount > 0 || result.unpushed.length > 0)
+        ? { source: row.source, metricId: row.metricId, checkedAt: row.checkedAt, disposition: "checked" as const, note: row.note, evidence: row.evidence }
+        : row;
+      // A failed re-review cannot revoke an already published fix still awaiting this PC's install.
+      if (index >= 0 && row.disposition === "fixed" && importedRow.disposition === "checked"
+        && outcomes[index].disposition === "fixed" && !settled.has(row.metricId)) continue;
+      if (index >= 0) outcomes[index] = importedRow;
+      else outcomes.push(importedRow);
+      settled.delete(row.metricId);
+    }
+  }
+  if (!outcomes.length && !resultAt) return { state: input.state, changed: false };
+  // Read both stores before any write so an unreadable store cannot destroy unrelated marks.
+  const checks = readCheckMarks(input.agentDir), fixes = readFixMarks(input.agentDir);
+  for (const [file, marks] of [[CHECK_MARKS_FILE, checks], [FIX_MARKS_FILE, fixes]] as const) {
+    try {
+      const raw = JSON.parse(readFileSync(join(input.agentDir, file), "utf8"));
+      if (Object.keys(raw).length !== Object.keys(marks).length
+        || (file === CHECK_MARKS_FILE && Object.values(raw).some((value) => {
+          const mark = value as { note?: unknown };
+          return mark.note !== null && typeof mark.note !== "string";
+        }))) throw new Error(`${file} has malformed marks; left unchanged`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  let installedAt: string | null = null;
+  try {
+    const id = env.CUELO_DEPLOY_REQUEST_ID, hash = env.CUELO_DEPLOY_STAGE_HASH;
+    if (id && /^[a-f0-9]{32}$/.test(id) && hash && /^[a-f0-9]{64}$/.test(hash)) {
+      const receipt = JSON.parse(readFileSync(join(env.CUELO_EXTERNAL_UPDATE_ROOT || join(homedir(), ".omp/external-update"), "results", `${id}.json`), "utf8"));
+      const d = receipt.deployment, service = d?.service;
+      if (receipt.success === true && receipt.status === "succeeded" && receipt.requestId === id && receipt.stageHash === hash
+        && d?.completed === true && d.writeSafe === true && d.requestId === id && d.stageHash === hash
+        && service?.ready === true && service.exact === true && service.requestId === id && service.stageHash === hash
+        && typeof d.completedAtUtc === "string" && fixMarkTimeFrom({ at: d.completedAtUtc }, input.now)) installedAt = d.completedAtUtc;
+    }
+  } catch { /* Missing or failed installation is pending, never a current-time fix. */ }
+  let changed = false;
+  for (const row of outcomes) {
+    if (settled.has(row.metricId)) continue;
+    const checked = Date.parse(row.checkedAt), check = checks[row.metricId], fix = fixes[row.metricId];
+    if ((check && Date.parse(check.at) > checked) || (fix && Date.parse(fix) >= checked)) {
+      settled.add(row.metricId);
+      continue;
+    }
+    const current = input.release?.current;
+    const published = input.release?.latest;
+    const canFix = row.disposition === "fixed" && installedAt && releaseVersion(current) && releaseVersion(published)
+      && compareVersions(current, row.requiredVersion) >= 0 && compareVersions(published, row.requiredVersion) >= 0;
+    if (canFix) {
+      if (!fix || Date.parse(fix) < Date.parse(installedAt!)) setFixMark(input.agentDir, row.metricId, new Date(installedAt!));
+      if (check && Date.parse(check.at) === checked && check.note === row.note) clearCheckMark(input.agentDir, row.metricId);
+      changed = true;
+      settled.add(row.metricId);
+    } else {
+      if (checked >= input.now.getTime() - 7 * DAY_MS && (!check || Date.parse(check.at) < checked)) {
+        setCheckMark(input.agentDir, row.metricId, new Date(row.checkedAt), row.note);
+        changed = true;
+      }
+      if (row.disposition === "checked") settled.add(row.metricId);
+    }
+  }
+  const kept = outcomes.filter((row) => !settled.has(row.metricId) || Date.parse(row.checkedAt) >= input.now.getTime() - 7 * DAY_MS);
+  const state: MorningState = { ...input.state, nightlyImport: {
+    source, outcomes: kept, settled: kept.filter((row) => settled.has(row.metricId)).map((row) => row.metricId),
+    ...(resultAt ? { resultAt } : {}),
+  } };
+  if (JSON.stringify(state) !== JSON.stringify(input.state)) writeMorningState(input.agentDir, state);
+  return { state, changed };
 }
 
 /** 요청 본문의 스킬 이름. 규칙에 맞는 것만 겹치지 않게 남긴다. */

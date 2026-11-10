@@ -52,6 +52,7 @@ export interface NightlyJobs {
   improvementReview?: boolean;
   /** Source pin and stable npm target, only when a newer core is queued. */
   coreUpgrade?: { from: string; to: string };
+  pluginReview?: boolean;
 }
 
 /** 받은편지함 모드에서 출처 하나가 맡은 일 */
@@ -191,6 +192,14 @@ export function nightlyAuditRules(date: string): string {
     "- 코드를 바꿨으면 기존 `cross_review` 호출의 `references`에 이 결정 기록 경로를 넣습니다. acceptance에는 근거가 약하거나 없는 결정, 건너뛴 검증, 위험한 선택과 기록의 빈틈을 행 번호와 함께 지적해 달라고 덧붙입니다. 다른 계열 reviewer는 `cross_review` 경로로만 고릅니다. `consult`나 별도 모델 호출로 검토를 대신하지 않습니다.",
     "- 검토 결과의 skippedReferences를 확인합니다. 기록이 빠졌으면 복사본을 만들거나 기록을 커밋해 우회하지 않고 「주의할 점」 첫 줄에 `검토 없음: 기록이 리뷰에 실리지 않음`을 씁니다. 검토할 코드가 바뀌지 않았으면 다른 모델 검토를 실행하지 않은 이유를 씁니다. 검토 실패도 성공으로 보고하지 않습니다.",
     "- 필수 검토자가 공급자 한도(429, `rate_limit_error`, usage limit)로 답하지 못하면 한도가 풀리길 기다리거나 다른 검토자로 바꾸지 않습니다. 사용자 상시 결정(2026-11-09 「아그리고 교차검토 한도초과일때는 걍넘기자」)에 따라 그 인용, reviewId, 원문 오류를 `git_finalize` 또는 `git_integrate`의 `crossReviewWaiver`에 적어 게시를 이어 가고, 「주의할 점」 첫 줄에 `검토 없음: 교차 검토 한도 초과(<reviewId>)`를 씁니다. 시간 초과나 해석 불가 같은 다른 실패는 이 예외가 아닙니다.",
+    "",
+    `## PC별 지표 결과: \`.audit/nightly-outcomes-${date}.json\``,
+    '스키마: {version:1, sessionId:<이번 세션 ID>, outcomes:[{source, metricId, checkedAt, disposition:"checked"|"fixed", note, evidence, requiredVersion?}]}',
+    "네이티브 metricId는 번들 ID에서 첫 번째 섹션 슬래시(/) 앞부분만 제거하고 이후 슬래시는 유지한다(예: cost/purpose:draft -> purpose:draft).",
+    "실제 명시적으로 확인한 항목만 기록한다. 전체 입력이나 단순 성공 상태, 일반 서술에서 결과를 추론하지 않는다. checkedAt은 실행 시간 내 실제 ISO 타임스탬프를 기재한다.",
+    "note는 300자 이하, evidence는 500자 이하로 작성하며 검증 가능한 영구 URL 또는 파일:라인(file:line)을 포함한다. 근거가 불충분한 항목은 생략한다.",
+    "fixed는 지원되는 지표이고 게시된 requiredVersion이 있을 때만 사용한다. PC는 그 버전의 로컬 설치 영수증을 확인할 때까지 점검 표시와 보류 상태로 둔다. PC별로 항목을 분리한다.",
+    "결과 아티팩트는 커밋하지 않는다. 최대 레코드 수는 100개, 파일 크기는 128KiB를 초과할 수 없다.",
   ].join("\n");
 }
 
@@ -234,6 +243,17 @@ export const NIGHTLY_SUMMARY_RULES = [
   "5. 고친 것마다 고른 수준(구조·검사·테스트·스킬·문서)과, 더 위 수준을 쓰지 못한 이유를 한 줄씩 씁니다.",
   "커밋 해시나 실행 번호는 맨 끝에 덧붙일 수만 있고 첫머리에 두지 않습니다.",
   NIGHTLY_ATTENTION_RULES,
+].join("\n");
+
+export const NIGHTLY_PLUGIN_REVIEW = [
+  "## 컨텍스트 낭비와 작업 유실을 줄이는 런타임 플러그인",
+  "긴급한 신뢰성 결함을 먼저 처리한다. 사용자는 이 목표의 실제 플러그인 구현을 승인했다. 지침을 늘리는 것으로 대신하지 않는다.",
+  "skill://plugin-lab을 읽고 plugin_lab list/inspect/check로 현재 명단과 도구를 확인한다. 원인이 같으면 기존 scan-nudge를 개선하고, 새 플러그인은 Tools/OMP_Global_Config/agent/cuelo-plugins/<id>/에 구현한다. 플러그인이 사용자 권한으로 실행된다는 점을 요약에 알린다.",
+  "제공된 출처별 지표와 실패 발췌, 현재 런타임 근거의 작은 관련 구간만 사용한다. 집과 사무실 근거를 섞지 않는다. 중복 지시 주입, 반복 읽기, 불필요한 헬퍼 호출이 실제 낭비인지 확인하고 가장 작은 메커니즘을 고른다. 전체 대화 기록을 넣지 않는다.",
+  "사용자 의도와 필요한 요구사항 및 작업 사실을 보존한다. 토큰 감소와 함께 요구사항 누락이나 작업 손실이 늘면 실패다. 무분별한 잘라내기, 강제 요약이나 자동 압축, 임의 컨텍스트 문턱, 영구 게이트, 모델 한도나 창 변경은 금지한다.",
+  "변경 전후 같은 시나리오에서 요구사항 유지와 의미 있는 출력 및 재개 상태를 비교한다. 토큰 효과는 실제 측정 근거가 있을 때만 주장하고, 없으면 미측정으로 남긴다.",
+  "실제 코드를 집중 검사하고 plugin_lab check를 통과시킨 뒤 patch 버전, cross_review, 게시와 공개 CI 확인까지 끝낸다. 설치는 기존 설치기가 맡는다. 야간 세션은 배포, 재시작, 라이브 프로필 변경을 하지 않는다.",
+  "근거가 부족하면 필요한 관측과 차단 이유를 남긴다. 아침 요약은 구현, 게시, 설치, 보류 및 효과 측정 여부를 구분한다.",
 ].join("\n");
 
 const WEEK_DAYS = 7;

@@ -6,16 +6,17 @@
  * 답이 오류) > 깨끗함. 깨끗한 실행은 아침 보고에 싣지 않는다(게시된 실행은 커밋으로 이미 보고된다).
  */
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { writePrivateFileAtomicSync } from "../atomic-file";
 import { nightlyBranch, type NightlyState } from "./nightly";
+import { NIGHTLY_ARTIFACT_BYTES, parseMetricOutcomes, type NightlyMetricOutcome } from "./nightly-outcomes";
 
 const exec = promisify(execFile);
 
 export const NIGHTLY_RESULT_FILE = "nightly-result.json";
-export const NIGHTLY_RESULT_VERSION = 1;
+export const NIGHTLY_RESULT_VERSION = 2;
 /** 받은편지함 파일 이름 규칙(`readNightlyInbox`가 받는 출처 이름과 같다). */
 const INBOX_FILE_RE = /^([a-z0-9-]{1,63})\.json$/;
 /** 프롬프트에 실을 남은 변경 줄 수와 게시하지 않은 커밋 수. 총 개수는 따로 센다. */
@@ -43,7 +44,9 @@ export interface LastAssistant {
 }
 
 export interface NightlyResult {
-  version: typeof NIGHTLY_RESULT_VERSION;
+  version: 1 | 2;
+  source?: string;
+  outcomes?: NightlyMetricOutcome[];
   /** KST 실행 날짜(YYYY-MM-DD) */
   date: string;
   sessionId: string;
@@ -224,8 +227,22 @@ export async function inspectNightlyResult(input: {
     ?? (failedBySession ? clip(last?.errorMessage || "세션의 마지막 답이 오류로 끝났습니다.", ERROR_LIMIT) : undefined)
     ?? unverified;
 
+  let outcomes: NightlyMetricOutcome[] = [];
+  const artifact = join(worktree, ".audit", `nightly-outcomes-${state.date}.json`);
+  try {
+    const stat = lstatSync(artifact);
+    if (!stat.isFile() || stat.size > NIGHTLY_ARTIFACT_BYTES || lstatSync(join(worktree, ".audit")).isSymbolicLink()) throw new Error("invalid artifact file");
+    const raw = JSON.parse(readFileSync(artifact, "utf8"));
+    const rows = parseMetricOutcomes(raw.outcomes);
+    if (raw.version !== 1 || raw.sessionId !== state.sessionId || !rows
+      || rows.some((row) => Date.parse(row.checkedAt) < Date.parse(state.startedAt) || Date.parse(row.checkedAt) > Date.parse(finishedAt)
+        || !Object.hasOwn(state.sources ?? {}, row.source))) throw new Error("outcomes do not belong to this execution");
+    outcomes = rows;
+  } catch (failure) {
+    if ((failure as NodeJS.ErrnoException).code !== "ENOENT") warn("야간 지표 결과 파일이 이번 실행과 맞지 않아 표시를 반영하지 않았습니다.");
+  }
   return {
-    version: NIGHTLY_RESULT_VERSION,
+    version: state.sources ? NIGHTLY_RESULT_VERSION : 1,
     date: state.date,
     sessionId: state.sessionId,
     branch: nightlyBranch(state.date),
@@ -238,6 +255,7 @@ export async function inspectNightlyResult(input: {
     unpushed,
     summary: clip(last?.text ?? "", SUMMARY_LIMIT),
     ...(errorText ? { error: errorText } : {}),
+    ...(state.sources ? { outcomes } : {}),
     warnings,
   };
 }
@@ -255,7 +273,6 @@ export function writeNightlyResult(outboxDir: string, inboxDir: string, result: 
     return { written: [], failed: [] };
   }
   const written: string[] = [], failed: string[] = [];
-  const contents = `${JSON.stringify(result, null, 2)}\n`;
   for (const file of files) {
     const source = INBOX_FILE_RE.exec(file)?.[1];
     if (!source) continue;
@@ -267,7 +284,8 @@ export function writeNightlyResult(outboxDir: string, inboxDir: string, result: 
         failed.push(source);
         continue;
       }
-      writePrivateFileAtomicSync(join(dir, NIGHTLY_RESULT_FILE), contents);
+      const payload = result.version === 2 ? { ...result, source, outcomes: (result.outcomes ?? []).filter((row) => row.source === source) } : result;
+      writePrivateFileAtomicSync(join(dir, NIGHTLY_RESULT_FILE), `${JSON.stringify(payload, null, 2)}\n`);
       written.push(source);
     } catch {
       failed.push(source);
@@ -296,7 +314,7 @@ function strList(value: unknown, limit: number, cap: number): string[] | null {
 export function parseNightlyResult(value: unknown): NightlyResult | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
-  if (raw.version !== NIGHTLY_RESULT_VERSION) return null;
+  if (raw.version !== 1 && raw.version !== 2) return null;
   const date = str(raw.date, 10);
   const sessionId = str(raw.sessionId, 64);
   const branch = str(raw.branch, 120);
@@ -312,6 +330,10 @@ export function parseNightlyResult(value: unknown): NightlyResult | null {
   const leftoverCount = Number.isSafeInteger(raw.leftoverCount) && (raw.leftoverCount as number) >= 0 ? raw.leftoverCount as number : null;
   const summary = typeof raw.summary === "string" && raw.summary.length <= SUMMARY_LIMIT ? raw.summary : null;
   const error = raw.error === undefined ? undefined : str(raw.error, ERROR_LIMIT);
+  const outcomes = raw.version === 2 ? parseMetricOutcomes(raw.outcomes) : null;
+  if (raw.version === 2 && (!outcomes || typeof raw.source !== "string" || !/^[a-z0-9-]{1,63}$/.test(raw.source)
+    || outcomes.some((row) => row.source !== raw.source || Date.parse(row.checkedAt) < Date.parse(startedAt ?? "")
+      || Date.parse(row.checkedAt) > Date.parse(finishedAt ?? "")))) return null;
   if (!date || !sessionId || !branch || !worktree || !startedAt || !finishedAt || !outcome
     || !leftovers || !unpushed || !warnings || leftoverCount === null || summary === null
     || (raw.error !== undefined && !error)
@@ -319,7 +341,8 @@ export function parseNightlyResult(value: unknown): NightlyResult | null {
     return null;
   }
   return {
-    version: NIGHTLY_RESULT_VERSION,
+    version: raw.version,
+    ...(raw.version === 2 ? { source: raw.source as string, outcomes: outcomes! } : {}),
     date, sessionId, branch, worktree, startedAt, finishedAt, outcome,
     leftovers, leftoverCount, unpushed, summary, warnings,
     ...(error ? { error } : {}),

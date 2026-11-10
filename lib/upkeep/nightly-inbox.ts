@@ -13,7 +13,7 @@ import { NIGHTLY_BRANCH_RETENTION_DAYS, nightlyBranchStart } from "./criteria";
 import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
 import {
   candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyBase, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
-  nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue,
+  nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue, NIGHTLY_PLUGIN_REVIEW,
 } from "./nightly";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
@@ -747,10 +747,11 @@ export function planInboxRun(
       skillCandidates: candidates.length,
       weeklyReview: weeklyReviewDue(previous, date),
       ...(skillHealth.length ? { skillHealth } : {}),
+      pluginReview: true,
     };
     const plan = { source: bundle.source, jobs, skillsScannedAt: bundle.generatedAt };
     scanned.push(plan);
-    if (jobs.problems.length || jobs.skillCandidates || jobs.weeklyReview || skillHealth.length) {
+    if (jobs.problems.length || jobs.skillCandidates || jobs.weeklyReview || skillHealth.length || jobs.pluginReview) {
       active.push({ bundle, candidates, plan });
     }
   }
@@ -773,7 +774,7 @@ export function planInboxRun(
     sections.push(block.join("\n"));
   }
   if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));
-  sections.push(IMPROVEMENT_REVIEW_BLOCK, INBOX_SUMMARY_RULES);
+  sections.push(IMPROVEMENT_REVIEW_BLOCK, NIGHTLY_PLUGIN_REVIEW, INBOX_SUMMARY_RULES);
   const skillHealthTotal = active.flatMap(({ bundle, plan }) => (plan.jobs.skillHealth ?? []).map((name) => `${bundle.source}:${name}`));
   return {
     action: "run",
@@ -789,6 +790,7 @@ export function planInboxRun(
       issueLookup: issues.status === "unavailable" ? "unavailable" : issues.partial ? "partial" : "ok",
       issues: issues.status === "ok" ? issues.issues.map((issue) => issue.number) : [],
       improvementReview: true,
+      pluginReview: true,
       ...(coreUpdate?.status === "newer" ? { coreUpgrade: { from: coreUpdate.current, to: coreUpdate.latest } } : {}),
     },
     skillsScannedAt: now.toISOString(),
