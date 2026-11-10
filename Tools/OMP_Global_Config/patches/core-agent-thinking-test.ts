@@ -118,7 +118,7 @@ const ladderModel = (efforts: string[], defaultLevel = "high") => ({
 });
 const controls = (
 	model: object,
-	options: { thinkingLevel?: string; thinkingLevelCeiling?: string; settings?: unknown } = {},
+	options: { thinkingLevel?: string; thinkingLevelCeiling?: string; settings?: unknown; branch?: object[] } = {},
 ) => {
 	const persisted: string[] = [];
 	const control = new ModelControls(
@@ -129,6 +129,7 @@ const controls = (
 			sessionManager: {
 				getSessionId: () => "your-floor-session",
 				getLeafId: () => null,
+				getBranch: () => options.branch ?? [],
 				appendModelUsage: () => undefined,
 				appendThinkingLevelChange: (level: string) => persisted.push(level),
 			},
@@ -341,6 +342,39 @@ try {
 	assert.equal(judgeCalls, beforeHold, "rule C skips the judge when only high is eligible");
 	console.log("  PASS  both sparse ladder shapes skip judging through the registered policy seam");
 
+	// A session loaded from its file (idle unload, server restart) has no in-memory resolution.
+	Reflect.set(globalThis, policyKey, () => ({ floor: "medium", hold: true }));
+	const userTurn = { type: "message", message: { role: "user" } };
+	const levelChange = (thinkingLevel: string, configured = "auto") => ({ type: "thinking_level_change", thinkingLevel, configured });
+	const loaded = (branch: object[], model: object = full) => controls(model, { branch });
+	const withMax = ladderModel(["low", "medium", "high", "xhigh", "max"]);
+	const beforeLoaded = judgeCalls;
+	assert.equal(await loaded([userTurn, levelChange("xhigh")]).turn("low"), "xhigh", "a loaded session keeps the auto level its transcript recorded");
+	assert.equal(await loaded([levelChange("xhigh"), userTurn]).turn("low"), "xhigh", "a first-turn classification is recorded before its user entry");
+	assert.equal(await loaded([levelChange("xhigh")]).turn("low"), "medium", "a session without a user turn still starts at the floor");
+	assert.equal(await loaded([userTurn]).turn("low"), "high", "no recorded change means the session worked at the provisional level");
+	assert.equal(await loaded([userTurn, levelChange("low")]).turn("low"), "medium", "a recorded level below the tier floor is raised");
+	assert.equal(await loaded([userTurn, levelChange("xhigh"), levelChange("low", "low")]).turn("low"), "medium", "a concrete last change is not an auto level");
+	assert.equal(await loaded([userTurn, levelChange("bogus")]).turn("low"), "medium", "an unknown recorded level is ignored");
+	assert.equal(await loaded([userTurn, levelChange("max")], withMax).turn("low"), "xhigh", "a recorded ultrathink maximum resumes inside the auto ceiling");
+	const loadedCapped = loaded([userTurn, levelChange("xhigh")]);
+	loadedCapped.control.setThinkingLevelCeiling("medium");
+	assert.equal(await loadedCapped.turn("low"), "medium");
+	loadedCapped.control.setThinkingLevelCeiling("xhigh");
+	assert.equal(loadedCapped.control.thinkingLevel, "xhigh", "the session ceiling wins and lifting it restores the recorded level");
+	const sparseLadder = ladderModel(["low", "high", "max"]);
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", hold: true }));
+	assert.equal(await loaded([userTurn, levelChange("max")], sparseLadder).turn("low"), "high", "without promotion a recorded maximum resumes at high");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "high", hold: true, xhighAsMax: true }));
+	assert.equal(await loaded([userTurn, levelChange("max")], sparseLadder).turn("low"), "max", "a promotion model keeps its recorded maximum");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "medium" }));
+	const reclassified = loaded([userTurn, levelChange("low")]);
+	assert.equal(await reclassified.turn("xhigh"), "xhigh");
+	Reflect.set(globalThis, policyKey, () => ({ floor: "medium", hold: true }));
+	assert.equal(await reclassified.turn("low"), "xhigh", "a resolution made in this process outranks the transcript");
+	assert.equal(judgeCalls, beforeLoaded + 1, "loaded holds never call the judge");
+	console.log("  PASS  a session loaded from its file resumes the recorded auto level on a hold");
+
 	let observed: Record<string, unknown> | undefined;
 	Reflect.set(globalThis, policyKey, (input: Record<string, unknown>) => { observed = input; return { hold: true }; });
 	await rising.control.applyAutoThinkingLevel("accumulated", 1, "solution", { raiseOnly: true, added: "new" });
@@ -429,4 +463,4 @@ try {
 	if (previousPolicy === undefined) Reflect.deleteProperty(globalThis, policyKey);
 	else Reflect.set(globalThis, policyKey, previousPolicy);
 }
-console.log("결과 23 pass");
+console.log("결과 24 pass");

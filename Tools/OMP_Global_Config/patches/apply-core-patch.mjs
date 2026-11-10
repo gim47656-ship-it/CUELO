@@ -23531,10 +23531,13 @@ function planSpawns(
 		let resolved: Effort | undefined;
 `,
 	}, {
+		// 0.10.197: a session loaded from its file (idle unload, server restart) has no in-memory
+		// resolution, so its first hold fell back to the tier floor. It now resumes the auto level
+		// the transcript recorded. The 0.10.196 body stays as legacyPatched and upgrades to this one.
 		file: "src/session/model-controls.ts",
-		marker: "\t\t} else if (policyHold) {\n",
+		marker: "\t\t\t\tconst branch = this.#host.sessionManager.getBranch();\n",
 		anchor: "\t\t} else {\n\t\t\tconst controller = new AbortController();\n",
-		patched: `		} else if (policyHold) {
+		legacyPatched: `		} else if (policyHold) {
 			const autoCeiling = policyMax || cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max ? Effort.Max : Effort.XHigh;
 			const floorIndex = THINKING_EFFORTS.indexOf(policyFloor ?? cfgProvidersAutoThinkingMinEffort.get(this.#host.settings));
 			const ceilingIndex = THINKING_EFFORTS.indexOf(autoCeiling);
@@ -23547,6 +23550,49 @@ function planSpawns(
 				model,
 				this.#autoResolvedLevel === undefined
 					? firstHeld
+					: clampAutoThinkingEffort(model, this.#autoUncappedLevel ?? this.#autoResolvedLevel, autoCeiling),
+				this.#host.settings,
+				policyFloor,
+				policyMax,
+			);
+		} else {
+			const controller = new AbortController();
+`,
+		patched: `		} else if (policyHold) {
+			const autoCeiling = policyMax || cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max ? Effort.Max : Effort.XHigh;
+			const floorIndex = THINKING_EFFORTS.indexOf(policyFloor ?? cfgProvidersAutoThinkingMinEffort.get(this.#host.settings));
+			const ceilingIndex = THINKING_EFFORTS.indexOf(autoCeiling);
+			const firstHeld = getSupportedEfforts(model).find(effort => {
+				const index = THINKING_EFFORTS.indexOf(effort);
+				return index >= floorIndex && index <= ceilingIndex;
+			}) ?? resolveProvisionalAutoLevel(model);
+			// A session loaded from its file has no in-memory resolution. Once it has a user turn,
+			// the level it was working at is the last auto level its transcript recorded, or the
+			// provisional level when no change was ever recorded. A new session starts at the floor.
+			let recorded: Effort | undefined;
+			if (this.#autoResolvedLevel === undefined) {
+				let hasUserTurn = false;
+				let change: { level?: string | null; auto: boolean } | undefined;
+				const branch = this.#host.sessionManager.getBranch();
+				for (let index = branch.length - 1; index >= 0 && !(hasUserTurn && change !== undefined); index--) {
+					const entry = branch[index];
+					if (entry.type === "message" && entry.message.role === "user") hasUserTurn = true;
+					else if (change === undefined && entry.type === "thinking_level_change") {
+						change = { level: entry.thinkingLevel, auto: entry.configured === AUTO_THINKING };
+					}
+				}
+				if (hasUserTurn) {
+					const level = change?.auto ? change.level : undefined;
+					recorded = change === undefined
+						? resolveProvisionalAutoLevel(model)
+						: THINKING_EFFORTS.find(effort => effort === level);
+				}
+			}
+			// A keyword's maximum bypass applies to that turn, not later holds.
+			resolved = raiseToAutoThinkingFloor(
+				model,
+				this.#autoResolvedLevel === undefined
+					? recorded === undefined ? firstHeld : clampAutoThinkingEffort(model, recorded, autoCeiling)
 					: clampAutoThinkingEffort(model, this.#autoUncappedLevel ?? this.#autoResolvedLevel, autoCeiling),
 				this.#host.settings,
 				policyFloor,
