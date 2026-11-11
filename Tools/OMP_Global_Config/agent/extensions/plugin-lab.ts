@@ -17,7 +17,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 type LabPlugin = {
   id: string; name: string; description: string; createdAt: string; enabled: boolean;
   hasExtension: boolean; tools: string[]; hasPanel: boolean; problem?: string;
-  lastEnhancement?: { at: string; summary: string };
+  enhancements?: { at: string; summary: string }[];
 };
 type LabUsage = {
   id: string; sessions: number; toolCalls: number; toolFailures: number; panelOpens: number; activeDays: number;
@@ -138,6 +138,7 @@ function describePlugin(plugin: LabPlugin, usage: LabUsage | undefined): string 
   if (usage) {
     parts.push(`14d: ${usage.toolCalls} calls / ${usage.toolFailures} failures in ${usage.sessions} sessions, ${usage.panelOpens} panel opens, ${usage.activeDays} active days`);
   }
+  for (const entry of plugin.enhancements ?? []) parts.push(`${entry.at}: ${entry.summary}`);
   if (plugin.problem) parts.push(`PROBLEM: ${plugin.problem}`);
   return parts.join(" — ");
 }

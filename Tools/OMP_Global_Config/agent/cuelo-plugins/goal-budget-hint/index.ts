@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { onSessionLifecycle } from "./lib/session-identity";
+import { onSessionLifecycle } from "../../extensions/lib/session-identity";
 
 // 전역 AGENTS.md 「사용자가 명시하지 않으면 `goal`에 `token_budget`을 두지 않는다」를 글 대신 지키는 안내다.
 // 막지 않는다(2026-11-11 사용자 결정: 안내). Main이 이번 요청의 사용자 글에 없는 예산을 걸면 입력당 한 번 aside로 알린다.

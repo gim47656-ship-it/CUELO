@@ -220,6 +220,8 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
 }) {
   const { t, locale } = useI18n();
   const active = plugin.enabled;
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const enhancements = useMemo(() => [...(plugin.enhancements ?? [])].reverse(), [plugin.enhancements]);
   return (
     <li className={styles.card} data-enabled={active ? "true" : "false"} aria-busy={busy || undefined}>
       <div className={styles.cardHead}>
@@ -250,15 +252,26 @@ function PluginRow({ plugin, busy, error, onToggle, onOpen }: {
         </div>
       </div>
       {plugin.description && <p className={styles.description}>{plugin.description}</p>}
-      {plugin.lastEnhancement && (
+      {enhancements.length > 0 && (
         <div className={styles.enhancement}>
-          <p className={styles.enhancementHead}>
-            <span className={styles.metaLabel}>{t("pluginLab.lastEnhancement")}</span>
-            <time className={styles.enhancementDate} dateTime={plugin.lastEnhancement.at} title={t("pluginLab.lastEnhancementHint")}>
-              {formatEnhancementDate(plugin.lastEnhancement.at, locale)}
-            </time>
-          </p>
-          <p className={styles.enhancementSummary}>{plugin.lastEnhancement.summary}</p>
+          <span className={styles.metaLabel}>{t("pluginLab.enhancements")}</span>
+          {enhancements.slice(0, historyExpanded ? enhancements.length : 3).map((entry, index) => (
+            <div className={styles.enhancement} key={`${entry.at}-${index}`}>
+              <p className={styles.enhancementHead}>
+                <time className={styles.enhancementDate} dateTime={entry.at} title={t("pluginLab.enhancementDateHint")}>
+                  {formatEnhancementDate(entry.at, locale)}
+                </time>
+              </p>
+              <p className={styles.enhancementSummary}>{entry.summary}</p>
+            </div>
+          ))}
+          {enhancements.length > 3 && (
+            <div className={styles.cardActions}>
+              <ActionButton variant="neutralWeak" size="small" aria-expanded={historyExpanded} onClick={() => setHistoryExpanded((expanded) => !expanded)}>
+                {historyExpanded ? t("pluginLab.showFewerEnhancements") : t("pluginLab.showAllEnhancements", { count: enhancements.length })}
+              </ActionButton>
+            </div>
+          )}
         </div>
       )}
       {plugin.tools.length > 0 && (

@@ -1,56 +1,45 @@
 import { enLocale } from "./messages/en";
 import { koLocale } from "./messages/ko";
-import { zhCNLocale } from "./messages/zh-CN";
 import { BUILT_IN_LOCALES, type Locale, type LocalePlugin } from "./types";
 
 const localePlugins = new Map<string, LocalePlugin>();
 
-/** 注册一个语言包；重复注册会抛出异常，避免静默覆盖翻译。 */
+/** Registers a locale; registering the same id twice throws instead of silently replacing translations. */
 export function registerLocale(plugin: LocalePlugin): void {
   if (!plugin.id.trim()) throw new Error("Locale id must not be empty");
   if (localePlugins.has(plugin.id)) throw new Error(`Locale already registered: ${plugin.id}`);
   localePlugins.set(plugin.id, plugin);
 }
 
-/**
- * 根据标识获取已注册的语言包。
- * @param id 要查询的语言标识
- * @returns 已注册的语言包，不存在时返回 undefined
- */
+/** Returns the registered locale for `id`, or undefined. */
 export function getLocalePlugin(id: string): LocalePlugin | undefined {
   return localePlugins.get(id);
 }
 
-/** 获取当前已注册语言的稳定顺序列表。 */
+/** Registered locale ids in a stable order. */
 export function getSupportedLocales(): string[] {
   return [...localePlugins.keys()];
 }
 
-/** 判断值是否为内置语言标识。 */
+/** Whether the value is a built-in locale id. */
 export function isLocale(id: string | null | undefined): id is Locale {
   return typeof id === "string" && BUILT_IN_LOCALES.includes(id as Locale);
 }
 
-/** 优先使用已保存的内置语言，否则按浏览器语言解析。 */
+/** Uses the stored built-in locale when there is one, otherwise the browser languages. */
 export function resolveLocalePreference(stored: string | null, languages: readonly string[]): Locale {
   return isLocale(stored) ? stored : resolveBrowserLocale(languages);
 }
 
-/**
- * 将浏览器语言列表解析为 CUELO 内置语言。
- * @param languages 浏览器按优先级排列的语言列表
- * @returns 匹配的内置语言，无法匹配时返回韩语
- */
+/** Maps the browser's language list to a built-in locale; Korean when nothing matches. */
 export function resolveBrowserLocale(languages: readonly string[]): Locale {
   for (const language of languages) {
     const normalized = language.toLowerCase();
     if (normalized === "en" || normalized.startsWith("en-")) return "en";
     if (normalized === "ko" || normalized.startsWith("ko-")) return "ko";
-    if (normalized === "zh" || normalized.startsWith("zh-")) return "zh-CN";
   }
   return "ko";
 }
 
 registerLocale(enLocale);
-registerLocale(zhCNLocale);
 registerLocale(koLocale);

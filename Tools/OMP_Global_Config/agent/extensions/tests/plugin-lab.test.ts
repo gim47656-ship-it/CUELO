@@ -45,6 +45,18 @@ const registers = (name: string) => `export default function (pi) {
 
 const noTools = (): ToolSummary[] => [];
 
+test("list reports every enhancement with its timestamp", async () => {
+  const { host } = labWith("dated", [], "export default function () {}");
+  const plugin = (await host.list())[0]!;
+  plugin.enhancements = [
+    { at: "2026-11-06T10:03:30+09:00", summary: "첫 보강" },
+    { at: "2026-11-07T18:08:35+09:00", summary: "다음 보강" },
+  ];
+  const result = await runPluginLab({ action: "list" }, { host, tools: noTools, cwd, bun });
+  expect(result.isError).toBe(false);
+  for (const entry of plugin.enhancements) expect(result.text).toContain(`${entry.at}: ${entry.summary}`);
+});
+
 describe("plugin_lab check", () => {
   test("passes when the extension registers exactly the declared tools", async () => {
     const { host } = labWith("echo", ["lab_echo"], registers("lab_echo"));

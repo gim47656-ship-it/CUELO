@@ -1,0 +1,9 @@
+{
+  "id": "unreaped-jobs",
+  "name": "회수 안 한 작업 안내",
+  "description": "턴 종료 시 실행 중인 자체 bash, eval 작업과 서비스를 알리며 하위 작업과 test_session이 맡은 서비스는 제외합니다.",
+  "createdAt": "2026-11-12T00:07:10+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": []
+}

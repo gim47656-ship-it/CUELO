@@ -52,7 +52,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R13 | 일회성 산출물 정리·근거 후보 보고 | 문서 | — | |
 | R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서. 2026-11-11부터 RULES.md에는 한 줄만 두고 세부는 도구 설명이 정본 |
 | R15 | 도구 평가는 `tool_trial`로 기준·후보 분리 기록 | 구조 | `extensions/tool-trial.ts`(PASS 없음·보수 판정), `extensions/tests/tool-trial.test.ts` | 쓸지는 문서. R14와 같은 한 줄 |
-| R16 | 같은 조건의 같은 조치 반복 금지 | 안내 | `extensions/jev-runtime.ts` `pre-retry` advisory, `extensions/lsp-timeout-hint.ts`, `extensions/tool-recovery-hint.ts`(사라진 job id, eval `ENOBUFS`, read 텍스트 JSON 파싱 오류에 다음 행동 안내), `evals/cases/security/same-failure-twice.json` | |
+| R16 | 같은 조건의 같은 조치 반복 금지 | 안내 | `extensions/jev-runtime.ts` `pre-retry` advisory, `extensions/lsp-timeout-hint.ts`, `cuelo-plugins/tool-recovery-hint/index.ts`(플러그인, 사라진 job id, eval `ENOBUFS`, read 텍스트 JSON 파싱 오류에 다음 행동 안내), `evals/cases/security/same-failure-twice.json` | |
 | R17 | 도구로 할 수 있는 일은 끝까지, "해줘"는 실행 지시 | 안내 | `extensions/turn-end-guard.ts`(미완 todo·이어 하기 약속 뒤 종료 판정) | |
 | R18 | MCP 설치·인증·권한 변경은 승인 뒤 에이전트가 실행 | 구조(부분) | `extensions/mcp-selection.ts`(허용된 서버만 연결, 설치·활성화 안 함) | 승인 요청·실행 순서는 문서 |
 | R19 | 호스트 OS 시스템 변경은 정확한 변경 승인 | 안내 | `extensions/command-guard/host-change-hint.ts`(`reg`·`sc`·`netsh`·`bcdedit` 쓰기 명령의 bash 결과에 규칙 안내), `extensions/command-guard/host-change-hint.test.ts` | 2026-10-06 지적(보안 필터 드라이버 비활성화 제안). 2026-11-03 사용자 결정: 막지 않고 경고만. 결과에 붙으므로 그 호출은 멈추지 못한다. 조회와 PowerShell cmdlet은 보지 않는다 |
@@ -93,7 +93,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A3 | 원인·검사 결과·다음 단계마다 한두 문장 먼저 | 문서 | — | `patches/core-narration-display-test.ts`는 표시 경로만 본다 |
 | A4 | 긴 job은 `wait` 대신 `read proc://`·산출물로 관측 | 차단 | `extensions/lib/job-observation.ts`(jev-runtime의 `wait` 진입 차단), `patches/core-job-observation-test.ts` | Main이 띄운 bash·eval job만 |
 | A5 | 진행 감시 경고가 오면 snapshot 대조 뒤 알림 | 안내 | `patches/core-activity-watch-test.ts`(경고 발송) | 경고 뒤 행동은 문서 |
-| A6 | `yield` 직전 띄운 job 회수·취소 | 안내 | `extensions/turn-end-guard.ts` `reap`, `extensions/lib/turn-jobs.ts`(`UnreapedJobs`, `LiveServices`), `extensions/tests/turn-end-guard.test.ts` 「turn-end unreaped jobs」 | 2026-11-11 사용자 결정(안내). Main 턴 끝에 실행 중 bash·eval job과 이름 붙은 bash 서비스를 입력당 한 번, 같은 실행은 세션당 한 번 알린다. task child와 `test_session`이 맡은 서비스는 빼고 막지 않는다. 세션 밖 프로세스(systemd, nohup)는 보지 못한다 |
+| A6 | `yield` 직전 띄운 job 회수·취소 | 안내 | `cuelo-plugins/unreaped-jobs/index.ts`(플러그인, `extensions/turn-end-guard.ts`의 턴 끝 안내에 합쳐짐), `extensions/lib/turn-jobs.ts`(`UnreapedJobs`, `LiveServices`), `extensions/tests/unreaped-jobs.test.ts` | 2026-11-11 사용자 결정(안내). Main 턴 끝에 실행 중 bash·eval job과 이름 붙은 bash 서비스를 입력당 한 번, 같은 실행은 세션당 한 번 알린다. task child와 `test_session`이 맡은 서비스는 빼고 막지 않는다. 세션 밖 프로세스(systemd, nohup)는 보지 못한다. 2026-11-12 사용자 결정으로 플러그인 패널에서 켜고 끌 수 있다 |
 | A7 | 유지 중인 `test_session` 자원은 일반 job과 구분 | 구조 | `extensions/test-session.ts` | |
 | A8 | 장기 프로세스는 띄우기 전에 무엇·왜·예상 종료를 알림 | 문서 | — | |
 | A9 | 할 일이 남았으면 혼자 턴을 닫지 않는다 | 안내 | `extensions/turn-end-guard.ts`, `extensions/lib/turn-publication.ts`, `extensions/tests/turn-end-guard.test.ts` | 게시 근거가 없는 소유 변경은 배포 대기와 별도로 확인한다. 보류 감지는 휴리스틱이며 권한을 부여하지 않는다 |
@@ -112,8 +112,8 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A22 | 세션 밖 프로세스는 job마다 감시 `bash` async | 문서 | — | 2026-10-10 집계 감시 사고 |
 | A23 | 발주에 `TASK_GUARD`·`TASK_TITLE`·`TODO_TASKS` | 차단 | `extensions/command-guard/task-guard.ts` `reserveTaskCall`, `patches/validate-harness-policy.mjs`(`dispatchGuidePaths`) | `sourceSession`이 있는 `seance` 읽기 전용 조회는 `TASK_GUARD` 대상이 아니고 `총 child` 한 자리만 쓴다 |
 | A24 | Skill은 필요할 때만 열고, 대신한 부분은 Skill 결과로 부르지 않는다 | 안내(부분) | `extensions/lib/skill-evidence.ts`(frontend 필수 스킬 읽기 관측) | 나머지는 문서 |
-| A25 | `goal`에 `token_budget` 임의 설정 금지 | 안내 | `extensions/goal-budget-hint.ts`, `extensions/tests/goal-budget-hint.test.ts` | 2026-11-11 사용자 결정(안내). 이번 요청의 사용자 글에 토큰과 예산·한도 낱말이 함께 없으면 입력당 한 번 aside. 숫자만 준 요청은 놓치는 휴리스틱이며 호출을 막지 않는다 |
-| A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `extensions/todo-language-guard.ts`, `extensions/lib/todo-language.ts`, `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서 |
+| A25 | `goal`에 `token_budget` 임의 설정 금지 | 안내 | `cuelo-plugins/goal-budget-hint/index.ts`(플러그인), `extensions/tests/goal-budget-hint.test.ts` | 2026-11-11 사용자 결정(안내). 이번 요청의 사용자 글에 토큰과 예산·한도 낱말이 함께 없으면 입력당 한 번 aside. 숫자만 준 요청은 놓치는 휴리스틱이며 호출을 막지 않는다 |
+| A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `cuelo-plugins/todo-language/index.ts`, `cuelo-plugins/todo-language/todo-language.ts`(플러그인), `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서. 플러그인을 끄면 차단도 꺼진다 |
 | A27 | 절차 Skill은 원인 모를 버그·두 번째 실패에만 | 문서 | — | |
 | A28 | 독립 읽기 묶기, 거절된 edit은 그대로 재전송 | 구조(부분) | `patches/core-edit-batch-test.ts`(거절 파일 전부 표시·재전송 성공) | 묶기는 문서 |
 | A29 | 별칭 호출·교체, SHION은 상담만 | 차단 | `extensions/command-guard/index.ts` CharacterSummonGuard, `extensions/character-voice.ts`, `patches/validate-harness-policy.mjs`(`mainLane.characterRouting`) | |
@@ -142,6 +142,6 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | Maker 모델 배분·추론 강도·Anthropic 하루 몫 세부(A12·A16) | `maker_route` 도구 설명, `extensions/lib/maker-routing.ts`, `extensions/auto-effort.ts`, `rule://subagent` |
 | 별칭 summon marker·voice block 처리(A29) | `extensions/character-voice.ts`(호출 순간 정확한 marker 지시 주입), command-guard CharacterSummonGuard |
 | typed judgment routing·검수·검증 소유권 세부(A16·A18) | `rule://subagent`, `harness-policy.json` |
-| `goal` `token_budget`(A25) | `extensions/goal-budget-hint.ts` |
+| `goal` `token_budget`(A25) | `cuelo-plugins/goal-budget-hint/index.ts` |
 
 아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, A32 child·다른 모델 사용 고지, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.

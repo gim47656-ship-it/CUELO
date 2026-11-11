@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import goalBudgetHint from "../goal-budget-hint";
+import goalBudgetHint from "../../cuelo-plugins/goal-budget-hint";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 

@@ -225,7 +225,7 @@ export interface LiveOfferRequest {
   sdp: string;
   voice?: string;
   /**
-   * UI language the call should speak, as a locale id (`ko`, `en`, `zh-CN`).
+   * UI language the call should speak, as a locale id (`ko`, `en`).
    * The live prompt ships in English, so without this the model answers in
    * English even when the surface around it is Korean.
    */

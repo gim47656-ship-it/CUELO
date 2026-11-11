@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import { onSessionLifecycle } from "./lib/session-identity";
-import { hasJapaneseTodoProse, introducedTodoFields, requestedTodoJapanese } from "./lib/todo-language";
+import { onSessionLifecycle } from "../../extensions/lib/session-identity";
+import { hasJapaneseTodoProse, introducedTodoFields, requestedTodoJapanese } from "./todo-language";
 
 export default function todoLanguageGuard(pi: ExtensionAPI): void {
   let japaneseRequested = false;

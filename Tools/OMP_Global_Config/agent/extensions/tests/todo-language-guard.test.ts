@@ -9,12 +9,12 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { hasJapaneseTodoProse, requestedTodoJapanese } from "../lib/todo-language";
+import { hasJapaneseTodoProse, requestedTodoJapanese } from "../../cuelo-plugins/todo-language/todo-language";
 
 const japanese = ["コア直接変更とアプリ側機能の境界を確認", "現在のパッチ一覧と適用状態を確認", "利用者向けに効果と更新時の注意を整理"];
 
 async function harness() {
-  const loaded = await loadExtensions([fileURLToPath(new URL("../todo-language-guard.ts", import.meta.url))], process.cwd());
+  const loaded = await loadExtensions([fileURLToPath(new URL("../../cuelo-plugins/todo-language/index.ts", import.meta.url))], process.cwd());
   expect(loaded.errors).toEqual([]);
   let phases: TodoPhase[] = [{ name: "작업", tasks: [{ content: "기존 작업", status: "pending" }] }];
   let writes = 0;
@@ -260,7 +260,7 @@ test("isolated HOME real SDK hooked tool smoke", async () => {
     const child = Bun.spawn([process.execPath, "-e", script], {
       cwd: process.cwd(),
       env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".omp/agent"),
-        TODO_GUARD_ENTRY: fileURLToPath(new URL("../todo-language-guard.ts", import.meta.url)) },
+        TODO_GUARD_ENTRY: fileURLToPath(new URL("../../cuelo-plugins/todo-language/index.ts", import.meta.url)) },
       stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

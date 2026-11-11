@@ -1,0 +1,9 @@
+{
+  "id": "goal-budget-hint",
+  "name": "목표 예산 안내",
+  "description": "사용자가 요청하지 않은 token_budget 설정을 요청당 한 번 안내하며 호출을 막지 않습니다.",
+  "createdAt": "2026-11-12T00:07:10+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": []
+}

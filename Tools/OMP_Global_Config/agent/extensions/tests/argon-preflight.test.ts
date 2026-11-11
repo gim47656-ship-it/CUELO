@@ -2,12 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import { fileURLToPath } from "node:url";
 import { AuthStorage, ModelRegistry } from "@oh-my-pi/pi-coding-agent";
 import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import argonPreflight from "../../cuelo-plugins/argon-preflight/index";
+import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
 
 // The plugin's real handlers make the real completion call; a local OpenAI-compatible server stands in for the
 // opposite-family review role, records the user prompt and reports which model id was actually served.
@@ -28,6 +29,7 @@ const onRequest = new Map<string, () => void>();
 let server: ReturnType<typeof Bun.serve>;
 let root: string;
 let registry: ModelRegistry;
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 beforeAll(async () => {
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -70,6 +72,8 @@ beforeAll(async () => {
     return new Response(`${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
   }
   root = mkdtempSync(join(tmpdir(), "argon-preflight-test-"));
+  process.env.PI_CODING_AGENT_DIR = root;
+  refreshDirsFromEnv();
   registry = new ModelRegistry(await AuthStorage.create(join(root, "agent.db")), join(root, "models.yml"));
   const catalog = (id: string) => ({ id, name: id, reasoning: false, input: ["text"] as ("text" | "image")[], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 });
   // Fable 5.2's real ladder starts at medium; the fixture carries it so the request options are exercised end to end.
@@ -90,6 +94,9 @@ beforeAll(async () => {
 });
 afterAll(() => {
   server.stop(true);
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  refreshDirsFromEnv();
   rmSync(root, { recursive: true, force: true });
 });
 beforeEach(() => { prompts.length = 0; served.length = 0; via.length = 0; efforts.length = 0; behavior.clear(); onRequest.clear(); inFlight = 0; maxInFlight = 0; });
@@ -100,17 +107,21 @@ type ToolDef = { execute: (callId: string, params: unknown, signal: AbortSignal 
 type Dispatched = { block?: boolean; reason?: string } | undefined;
 
 /** One Main session on `mainModel` with `restored` user turns already on its saved branch. */
-async function mainSession(restored: string[] = [], mainModel = "openai-codex/gpt-main", kind: "main" | "sub" = "main") {
+async function mainSession(restored: string[] = [], mainModel = "openai-codex/gpt-main", kind: "main" | "sub" = "main", routing = true) {
   const handlers = new Map<string, Handler[]>();
   const tools = new Map<string, ToolDef>();
   /** Asides the plugin sent (mid-work direction checks). */
   const messages: string[] = [];
-  const pi = {
-    zod: z, on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
-    registerTool: (tool: ToolDef & { name: string }) => tools.set(tool.name, tool),
-    sendMessage: (message: { content: string }) => messages.push(message.content),
-  };
-  argonPreflight(pi as never);
+  const paths = [fileURLToPath(new URL("../../cuelo-plugins/argon-preflight/index.ts", import.meta.url))];
+  if (routing) paths.push(fileURLToPath(new URL("../../cuelo-plugins/preflight-routing/index.ts", import.meta.url)));
+  const loaded = await loadExtensions(paths, root);
+  if (loaded.errors.length) throw new Error(JSON.stringify(loaded.errors));
+  loaded.runtime.sendMessage = (message) => messages.push(String(message.content));
+  for (const extension of loaded.extensions) {
+    for (const [name, callbacks] of extension.handlers) handlers.set(name, [...(handlers.get(name) ?? []), ...callbacks]);
+    // The fixture only calls lab_preflight, whose returned content is text.
+    for (const [name, tool] of extension.tools) tools.set(name, tool.definition as unknown as ToolDef);
+  }
   // A model id can itself contain a slash (hive/deepseek-ai/deepseek-v4.1-flash-1017), so only the provider is split off.
   const cut = mainModel.indexOf("/");
   const model = registry.find(mainModel.slice(0, cut), mainModel.slice(cut + 1));
@@ -1158,4 +1169,40 @@ test("R1-ANT-2 a route-setting error does not reject dispatch or suppress the co
     });
     expect(via).toEqual(["aistudio", "anthropic"]);
   } finally { getter.mockRestore(); }
+});
+
+test("routing disabled leaves lab_preflight usable without automatic holds", async () => {
+  await withBoth(async () => {
+    const s = await mainSession([], "openai-codex/gpt-main", "main", false);
+    expect(await s.dispatch()).toBeUndefined();
+    expect(await s.call("maker_route", { tasks: [{ name: "Export", task: "Write CSV" }] })).toBeUndefined();
+    expect(await s.call("lab_goal", { op: "frame", goal: "Export" })).toBeUndefined();
+    expect(served).toEqual([]);
+    const result = await s.preflight({ plan: "Export CSV only." });
+    expect(result.content[0]!.text).toContain(GEMINI);
+    expect(result.content[0]!.text).toContain(FABLE);
+    expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+  });
+});
+
+test("manual and automatic checks retain their combined panel history", async () => {
+  await withBoth(async () => {
+    const s = await mainSession();
+    await s.preflight({ plan: "Export CSV only." });
+    await s.dispatch();
+    expect(s.notes.join("\n")).toContain("직접 점검");
+    expect(s.notes.join("\n")).toContain("발주 조언");
+    await s.switchSession();
+    await s.dispatch();
+    expect(s.notes.join("\n")).not.toContain("직접 점검");
+  });
+});
+
+test("R1-ANT-1 steering immediately after dispatch still holds the superseded plan", async () => {
+  await withBoth(async () => {
+    const s = await mainSession();
+    const pending = s.call("lab_goal", { op: "frame", goal: "Export", deliverables: [{ id: "export" }] });
+    await s.steer("Only export Excel, never CSV.");
+    expect((await pending)?.block).toBe(true);
+  });
 });

@@ -13,7 +13,7 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 
-/** What a plugin's last meaningful change did, as its manifest states it. Display only. */
+/** A meaningful improvement recorded by the plugin manifest. Display only. */
 export type LabEnhancement = { at: string; summary: string };
 
 export type LabPlugin = {
@@ -25,8 +25,8 @@ export type LabPlugin = {
   hasExtension: boolean;
   tools: string[];
   hasPanel: boolean;
-  /** Absent when the manifest has none or a malformed one: the card then shows no enhancement line. */
-  lastEnhancement?: LabEnhancement;
+  /** Valid entries sorted oldest first; absent when no usable history is recorded. */
+  enhancements?: LabEnhancement[];
   problem?: string;
 };
 
@@ -127,7 +127,7 @@ type Manifest = {
   extension?: string;
   tools: string[];
   panel?: string;
-  lastEnhancement?: LabEnhancement;
+  enhancements?: LabEnhancement[];
 };
 
 type ScannedPlugin = {
@@ -144,10 +144,7 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-/**
- * `lastEnhancement` is display metadata, not a load gate: a plugin without one, or with one that does not
- * parse, still loads, and only its card loses the enhancement line.
- */
+/** Invalid history entries are ignored without preventing the plugin from loading. */
 function parseEnhancement(value: unknown): LabEnhancement | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const { at, summary } = value as Record<string, unknown>;
@@ -180,8 +177,13 @@ function parseManifest(raw: unknown, id: string): Manifest {
   // ISO 8601 date-time only; Date.parse alone also takes free-form dates such as "March 1, 2026".
   if (!ISO_DATE_TIME.test(createdAt) || Number.isNaN(Date.parse(createdAt))) fail('plugin.json "createdAt" must be an ISO date string');
   const manifest: Manifest = { id, name, description, createdAt, tools: [] };
-  const lastEnhancement = parseEnhancement(value.lastEnhancement);
-  if (lastEnhancement) manifest.lastEnhancement = lastEnhancement;
+  if (Array.isArray(value.enhancements)) {
+    const enhancements = value.enhancements
+      .map(parseEnhancement)
+      .filter((entry): entry is LabEnhancement => entry !== undefined)
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    if (enhancements.length) manifest.enhancements = enhancements;
+  }
   if (value.extension !== undefined) {
     const entry = text("extension");
     if (!EXTENSION_SUFFIXES.some((suffix) => entry.endsWith(suffix))) {
@@ -274,7 +276,7 @@ async function scanPluginDir(dir: string, name: string): Promise<ScannedPlugin |
     entry.manifest = manifest;
     Object.assign(plugin, {
       name: manifest.name, description: manifest.description, createdAt: manifest.createdAt, tools: manifest.tools,
-      ...(manifest.lastEnhancement ? { lastEnhancement: manifest.lastEnhancement } : {}),
+      ...(manifest.enhancements ? { enhancements: manifest.enhancements } : {}),
     });
     if (manifest.extension) {
       const resolved = await resolvePluginFile(dir, manifest.extension);

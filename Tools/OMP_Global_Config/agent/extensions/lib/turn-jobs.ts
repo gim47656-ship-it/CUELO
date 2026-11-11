@@ -1,5 +1,5 @@
 // 이 세션 Main이 띄운 실행 중 bash·eval job과 이름 붙은 bash 서비스를 본다. jev-runtime(정리 전 자기 job 점유 차단)과
-// turn-end-guard(턴 끝 미회수 안내)가 같은 관측을 쓴다. 이름 붙은 서비스는 AsyncJobManager 행이 아니어서 bash·proc 결과로만 보인다.
+// unreaped-jobs 플러그인(턴 끝 미회수 안내)이 같은 관측을 쓴다. 이름 붙은 서비스는 AsyncJobManager 행이 아니어서 bash·proc 결과로만 보인다.
 // 전역 AGENTS.md 「`yield` 직전 띄운 job 회수·취소」를 글 대신 지키는 안내이며 막지 않는다(2026-11-11 사용자 결정: 안내).
 import { eligible } from "./job-observation";
 

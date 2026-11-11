@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import toolRecoveryHint, { ENOBUFS_HINT, READ_TEXT_JSON_HINT } from "../tool-recovery-hint";
+import toolRecoveryHint, { ENOBUFS_HINT, READ_TEXT_JSON_HINT } from "../../cuelo-plugins/tool-recovery-hint";
 
 type Handler = (event: Record<string, unknown>) => unknown;
 

@@ -17,6 +17,13 @@ deploy has restarted the server.
   sessions load. `plugin_lab` `action: "list"` shows the installed root.
 - `<id>` is kebab-case (`a-z`, `0-9`, single dashes) and equals the folder name.
 
+## New capability or enhancement
+
+User decision, 2026-11-12: give an independent new capability a separate plugin ID.
+For improvements to the same capability, append an entry to that plugin's `enhancements`
+array in oldest-first order. A user-facing capability someone may want to switch on or off
+ships as a plugin, not as an always-on extension.
+
 ## plugin.json
 
 ```json
@@ -25,6 +32,9 @@ deploy has restarted the server.
   "name": "Word count",
   "description": "Counts words in a file and shows the last result in a panel.",
   "createdAt": "2026-11-04T10:00:00.000Z",
+  "enhancements": [
+    { "at": "2026-11-12T10:00:00.000Z", "summary": "줄별 단어 수를 함께 표시합니다." }
+  ],
   "extension": "index.ts",
   "tools": ["lab_word_count"],
   "panel": "panel.html"
@@ -34,6 +44,12 @@ deploy has restarted the server.
 `extension`, `tools` and `panel` are optional, but `tools` must list exactly the tool names the extension registers:
 usage is counted by that list. Paths are relative, stay inside the folder, and may not be symlinks that point
 outside it.
+
+`enhancements` is optional display metadata: an array of `{ at, summary }` entries.
+Use an ISO date-time with a timezone for `at` and one user-facing Korean sentence for
+`summary`. The loader trims summaries, drops invalid entries without blocking the plugin,
+and sorts valid entries oldest first. The card shows the newest three entries with dates
+and an expand control for the full history.
 
 ## Extension template
 

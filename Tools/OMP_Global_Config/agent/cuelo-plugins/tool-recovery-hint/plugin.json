@@ -1,0 +1,9 @@
+{
+  "id": "tool-recovery-hint",
+  "name": "복구 안내",
+  "description": "사라진 작업, eval ENOBUFS 오류와 read 결과의 JSON 파싱 오류에 다음 행동을 덧붙입니다.",
+  "createdAt": "2026-11-09T17:48:55+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": []
+}

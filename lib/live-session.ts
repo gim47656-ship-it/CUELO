@@ -196,7 +196,6 @@ function liveHeaders(
  */
 const SPOKEN_LANGUAGE_RULES: Record<string, string> = {
   ko: "MUST speak Korean by default, including the first greeting. Keep code identifiers, file paths, commands, and API names in their original form.",
-  "zh-CN": "MUST speak Simplified Chinese by default, including the first greeting. Keep code identifiers, file paths, commands, and API names in their original form.",
   en: "MUST speak English by default, including the first greeting.",
 };
 

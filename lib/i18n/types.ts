@@ -1,17 +1,17 @@
-/** 内置的可用界面语言。 */
-export const BUILT_IN_LOCALES = ["en", "zh-CN", "ko"] as const;
+/** Built-in interface languages. */
+export const BUILT_IN_LOCALES = ["en", "ko"] as const;
 
 export type Locale = (typeof BUILT_IN_LOCALES)[number];
 
-/** 翻译字符串使用的简单插值参数。 */
+/** Simple interpolation parameters for translated strings. */
 export type TranslationParams = Record<string, string | number>;
 
-/** 可注册的语言包定义。 */
+/** A registrable locale. */
 export interface LocalePlugin {
-  /** 语言包唯一标识。 */
+  /** Unique locale id. */
   id: string;
-  /** 用于语言选择菜单的显示名称。 */
+  /** Name shown in the language menu. */
   label: string;
-  /** 以稳定 key 索引的翻译消息。 */
+  /** Translated messages keyed by stable keys. */
   messages: Record<string, string>;
 }

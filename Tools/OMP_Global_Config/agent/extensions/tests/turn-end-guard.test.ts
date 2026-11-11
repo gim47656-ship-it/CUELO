@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { EventEmitter } from "node:events";
 import turnEndGuard, { createTurnEndGuard } from "../turn-end-guard";
 import { draftDocument } from "../draft";
 
@@ -23,6 +24,7 @@ function harness(
     answered: summary && classifyAnswers ? await classifyAnswers(summary, context, signal) : [],
     solo: "unknown",
   })))({
+    events: new EventEmitter(),
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: unknown, options: unknown) => { sent.push(message); deliveries.push(options); },
   } as unknown as Parameters<typeof turnEndGuard>[0]);
@@ -1077,84 +1079,5 @@ describe("turn-end publication", () => {
       expect(t.notices()[0]).toContain("node_modules/vendor/a.js");
       expect(t.notices()[0]).not.toContain("dist/out.js");
     } finally { t.done(); }
-  });
-});
-
-describe("turn-end unreaped jobs", () => {
-  const job = (id: string, extra: Record<string, unknown> = {}) => ({ id, type: "bash", status: "running", startTime: 1, label: "watch", ...extra });
-  const withJobs = (rows: unknown[], kind?: "sub") => {
-    const h = harness();
-    Object.assign(h.ctx, { getAsyncJobSnapshot: () => ({ running: rows, recent: [], delivery: [] }), agent: kind ? { kind } : undefined });
-    return h;
-  };
-  const texts = (h: { sent: unknown[] }) => (h.sent as { content: string }[]).map((message) => message.content);
-
-  test("a Main turn ending with its own bash or eval job running gets one aside naming it", async () => {
-    const h = withJobs([job("bg_1"), job("bg_2", { type: "eval" })]);
-    await h.emit("input", { source: "rpc", text: "빌드 돌려 줘" });
-    await h.end("빌드를 돌리는 중입니다.");
-    expect(texts(h)).toHaveLength(1);
-    expect(texts(h)[0]).toContain("bg_1");
-    expect(texts(h)[0]).toContain("bg_2");
-    expect(h.deliveries[0]).toEqual({ deliverAs: "aside" });
-  });
-
-  test("the same run is not announced twice, while a new job or a restarted id is", async () => {
-    const rows = [job("bg_1")];
-    const h = withJobs(rows);
-    await h.emit("input", { source: "rpc", text: "첫 요청" });
-    await h.end("진행 중입니다.");
-    await h.end("아직 진행 중입니다.");
-    await h.emit("input", { source: "rpc", text: "다음 요청" });
-    await h.end("여전히 진행 중입니다.");
-    expect(texts(h)).toHaveLength(1);
-    rows.push(job("bg_9"));
-    rows[0] = job("bg_1", { startTime: 2 });
-    await h.emit("input", { source: "rpc", text: "또 다음" });
-    await h.end("진행 중입니다.");
-    expect(texts(h)).toHaveLength(2);
-    expect(texts(h)[1]).toContain("bg_9");
-    expect(texts(h)[1]).toContain("bg_1");
-  });
-
-  test("task-backed jobs, settled jobs and child sessions stay silent", async () => {
-    const h = withJobs([job("task_1", { type: "task" }), job("bg_3", { agentId: "0-Maker" }), job("bg_4", { status: "completed" })]);
-    await h.emit("input", { source: "rpc", text: "맡겨 줘" });
-    await h.end("맡겼습니다.");
-    expect(texts(h)).toHaveLength(0);
-    const child = withJobs([job("bg_5")], "sub");
-    await child.end("끝났습니다.");
-    expect(texts(child)).toHaveLength(0);
-  });
-
-  test("a named bash service is announced until proc:// shows it gone or test_session takes it over", async () => {
-    const service = (name: string) => ({ toolName: "bash", isError: false, input: { command: "next start" }, details: { service: { name, state: "ready" } } });
-    const h = withJobs([]);
-    await h.emit("input", { source: "rpc", text: "서버 띄워 줘" });
-    await h.emit("tool_result", service("dev-a"));
-    await h.emit("tool_result", service("dev-b"));
-    await h.emit("tool_result", service("dev-c"));
-    await h.emit("tool_result", { toolName: "read", isError: false, input: { path: "proc://" }, details: { proc: { daemons: [{ name: "dev-a", state: "running" }, { name: "dev-c", state: "running" }] } } });
-    await h.emit("tool_result", { toolName: "test_session", isError: false, input: { action: "track", service: "dev-c" }, details: {} });
-    await h.emit("tool_result", service("dev-c"));
-    await h.end("서버를 띄웠습니다.");
-    expect(texts(h)).toHaveLength(1);
-    expect(texts(h)[0]).toContain("dev-a");
-    expect(texts(h)[0]).not.toContain("dev-b");
-    expect(texts(h)[0]).not.toContain("dev-c");
-  });
-
-  test("the job notice joins the TODO nudge in the same single aside", async () => {
-    const plain = withJobs([]);
-    await plain.emit("input", { source: "rpc", text: "고쳐 줘" });
-    await plain.todo(["in_progress"]);
-    await plain.end("원인은 확인했습니다.");
-    const h = withJobs([job("bg_7")]);
-    await h.emit("input", { source: "rpc", text: "고쳐 줘" });
-    await h.todo(["in_progress"]);
-    await h.end("원인은 확인했습니다.");
-    expect(texts(h)).toHaveLength(1);
-    expect(texts(h)[0].startsWith(texts(plain)[0])).toBe(true);
-    expect(texts(h)[0]).toContain("bg_7");
   });
 });
