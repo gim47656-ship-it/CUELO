@@ -809,7 +809,8 @@ export function anthropicCharacterForAccounts(
       if (matched !== undefined) return undefined;
       matched = alias;
     }
-    return matched && canonicalAlias(matched, officeState());
+    // An unmapped seat (a third account) keeps the Anthropic default character; voice only, no OAuth pin.
+    return canonicalAlias(matched ?? "RIN(린)", officeState());
   }
   return undefined;
 }

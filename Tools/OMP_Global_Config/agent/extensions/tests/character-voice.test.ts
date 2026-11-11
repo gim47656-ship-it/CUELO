@@ -231,10 +231,10 @@ describe("character voice identity", () => {
     ])).toBe("MIO(미오)");
   });
 
-  test("a known unmapped Anthropic account is not the unselected default", () => {
+  test("an unmapped Anthropic account seat uses the default character", () => {
     expect(characterForProvider("anthropic", [
       { position: 2, credentialId: 17, active: true },
-    ])).toBeUndefined();
+    ])).toBe("RIN(린)");
   });
 
   test("effective Main prompt omits generic report personality and keeps conversational voice authoritative", async () => {
@@ -1244,23 +1244,24 @@ describe("configured seat identity through runtime hooks", () => {
       writeFileSync(join(dir, "config.yml"), "characterSeats:\n");
       await expectHookVoice(harness, "RIN(린)");
       await harness.emit("session_start", {});
-      await expectHookVoice(harness, undefined);
+      // With no seat mapping the active account falls back to the default character; the duplicate-seat test proves the reset.
+      await expectHookVoice(harness, "RIN(린)");
       expect(harness.calls).toEqual(calls);
     });
   });
 
-  test("missing, invalid, duplicate and other-provider seats never invent an Anthropic identity", async () => {
+  test("missing, invalid and other-provider seats fall back to the default; duplicate seats never invent an identity", async () => {
     await withOfficeProfile({}, async (dir) => {
       const harness = createRuntimeHarness();
       harness.selectModel("anthropic/claude-opus-5-5");
-      for (const content of [
-        "",
-        'characterSeats:\n  "RIN(린)": -1\n  "MIO(미오)": 9007199254740992\n',
-        'characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 1\n',
-        'characterSeats:\n  "YUKI(유키)": 1\n  "HIKARI(히카리)": 1\n',
-      ]) {
+      for (const [content, expected] of [
+        ["", "RIN(린)"],
+        ['characterSeats:\n  "RIN(린)": -1\n  "MIO(미오)": 9007199254740992\n', "RIN(린)"],
+        ['characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 1\n', undefined],
+        ['characterSeats:\n  "YUKI(유키)": 1\n  "HIKARI(히카리)": 1\n', "RIN(린)"],
+      ] as const) {
         writeFileSync(join(dir, "config.yml"), content);
-        await expectHookVoice(harness, undefined);
+        await expectHookVoice(harness, expected);
         harness.selectModel("openai-codex/gpt-6.1-sol");
         await expectHookVoice(harness, "YUKI(유키)");
         harness.selectModel("anthropic/claude-opus-5-5");
@@ -1435,6 +1436,7 @@ describe("office mode character seat", () => {
       expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
+      expect(anthropicCharacterForAccounts([{ active: true, position: 2 }])).toBe("BIRCH(버치)");
       expect(characterTarget("CEDAR(시더)")).toEqual(CHARACTER_TARGETS["SHION(시온)"]);
       expect(characterTarget("CEDAR(시더)")?.toolCapable).toBe(false);
       expect(characterTarget("BIRCH(버치)")).toEqual({ ...CHARACTER_TARGETS["RIN(린)"], oauthPosition: 0 });
