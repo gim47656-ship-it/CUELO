@@ -308,12 +308,11 @@ check("[4] 부모 메시지는 다시 분류해 강도를 올린다", seen.after
 check("[4] 짧은 부모 답도 다시 분류하고, 낮게 나오면 내려간다", seen.afterParentDown === "low", `after=${seen.afterParentDown}`);
 const parentRequests = Array.isArray(seen.parentRequests) ? (seen.parentRequests as string[]) : [];
 check(
-	"[4] 분류 입력은 최초 과제에 지금까지의 부모 메시지를 이어 붙인 것이고 다른 입력은 섞이지 않는다",
-	parentRequests.length === 2 &&
-		parentRequests[1]!.includes("로그 파서를 고쳐 (child 과제)") &&
-		parentRequests[1]!.includes("스키마 검증과 마이그레이션까지 맡아 줘") &&
-		parentRequests[1]!.includes("승인합니다") &&
-		!parentRequests.some(request => request.includes("ultrathink")),
+	"[4] each parent classification contains the assignment and only the latest parent message",
+	JSON.stringify(parentRequests) === JSON.stringify([
+		"로그 파서를 고쳐 (child 과제)\n\n스키마 검증과 마이그레이션까지 맡아 줘",
+		"로그 파서를 고쳐 (child 과제)\n\n승인합니다",
+	]),
 	JSON.stringify(parentRequests),
 );
 
@@ -326,13 +325,11 @@ await runPhase("solution", "low", NOISY_BRIEF, SOLUTION_SPACE);
 check("[5] 입력 시점에 턴이 스트리밍 중이었다", seen["solution:streaming"] === true);
 const solutionInputs = Array.isArray(seen.solutionInputs) ? (seen.solutionInputs as Array<{ request?: string; solutionSpace?: string }>) : [];
 check(
-	"[5] 부모 메시지 재분류는 request 가 아니라 solution_space 입력이고, solutionSpace 와 지금까지의 부모 메시지를 담는다",
-	solutionInputs.length === 2 &&
-		solutionInputs.every(input => input.request === undefined && input.solutionSpace?.includes(SOLUTION_SPACE) === true) &&
-		solutionInputs[0]!.solutionSpace!.includes("마이그레이션 롤백도 확인해") &&
-		solutionInputs[1]!.solutionSpace!.includes("마이그레이션 롤백도 확인해") &&
-		solutionInputs[1]!.solutionSpace!.includes("승인") &&
-		!solutionInputs.some(input => input.solutionSpace?.includes("참고 로그 줄")),
+	"[5] solution space contains only the latest parent message",
+	JSON.stringify(solutionInputs) === JSON.stringify([
+		{ solutionSpace: `${SOLUTION_SPACE}\n\nLater parent instructions:\n마이그레이션 롤백도 확인해` },
+		{ solutionSpace: `${SOLUTION_SPACE}\n\nLater parent instructions:\n승인` },
+	]),
 	JSON.stringify(solutionInputs).slice(0, 600),
 );
 await session.dispose?.();

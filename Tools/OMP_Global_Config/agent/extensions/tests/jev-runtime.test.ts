@@ -157,7 +157,7 @@ function createHarness(options: HarnessOptions = {}) {
                   ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }
                   // UI 난이도와 재작업 성격은 해결된 일반 구현으로 답한다(모름이면 추천이 없다).
                   : id === "uiDifficulty" || id === "reworkNature" || id === "boundedDesign"
-                    ? { type: "choice", choice: id === "uiDifficulty" ? "ROUTINE" : "NONE", probabilities: { ok: 1 }, confidence: 1 }
+                    ? { type: "choice", choice: "NONE", probabilities: { ok: 1 }, confidence: 1 }
                     : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
           }
           return { answers, provider: "fake", model: "jev" };

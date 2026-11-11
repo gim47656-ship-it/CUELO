@@ -16,10 +16,12 @@ export interface AutoEffortConfig {
   noticePrefixes: string[];
   tiers: { floor: AutoEffortFloor; models: string[] }[];
   xhighAsMax?: string[];
+  capHigh?: string[];
 }
 
 export interface AutoEffortDecision {
   floor?: AutoEffortFloor;
+  ceiling?: AutoEffortFloor;
   hold?: boolean;
   xhighAsMax?: true;
 }
@@ -38,7 +40,7 @@ export function parseAutoEffortConfig(raw: unknown): AutoEffortConfig {
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i]!;
     if (!/^\s/u.test(line) && line.trim() !== "" && !line.startsWith("#")) break;
-    const match = /^ {2}(holdMaxChars|floorMedium|floorHigh|xhighAsMax):\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^#"'\r\n]*?))\s*(?:#.*)?$/u.exec(line);
+    const match = /^ {2}(holdMaxChars|floorMedium|floorHigh|xhighAsMax|capHigh):\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^#"'\r\n]*?))\s*(?:#.*)?$/u.exec(line);
     if (match) fields[match[1]!] = (match[2] ?? match[3] ?? match[4] ?? "").trim();
   }
   const chars = fields.holdMaxChars;
@@ -46,13 +48,14 @@ export function parseAutoEffortConfig(raw: unknown): AutoEffortConfig {
     const value = Number(chars);
     if (Number.isSafeInteger(value)) config.holdMaxChars = value;
   }
-  for (const key of ["floorMedium", "floorHigh", "xhighAsMax"] as const) {
+  for (const key of ["floorMedium", "floorHigh", "xhighAsMax", "capHigh"] as const) {
     const value = fields[key];
     const models = value && !/^(?:[\[{]|-?\d+(?:\.\d+)?$|true$|false$|null$|~$)/u.test(value)
       ? value.split(",").map(pattern => pattern.trim()).filter(Boolean)
       : [];
     if (models?.length) {
       if (key === "xhighAsMax") config.xhighAsMax = models;
+      else if (key === "capHigh") config.capHigh = models;
       else config.tiers.push({ floor: key === "floorMedium" ? "medium" : "high", models });
     }
   }
@@ -66,14 +69,17 @@ export function decideAutoEffort(input: AutoEffortInput, config: AutoEffortConfi
     return new RegExp(`^${escaped}$`, "isu").test(selector);
   };
   const floor = config.tiers.find(tier => tier.models.some(matches))?.floor;
+  const ceiling = config.capHigh?.some(matches) ? "high" : undefined;
   const xhighAsMax = config.xhighAsMax?.some(matches) === true;
   const promoteMax = xhighAsMax && input.supportedEfforts.includes("max") && !input.supportedEfforts.includes("xhigh");
   const fromSolution = input.added === undefined && Boolean(input.solutionSpace?.trim());
   const evidence = (input.added ?? (fromSolution ? input.solutionSpace! : input.request)).trim();
-  const onlyOneLevel = floor !== undefined && input.supportedEfforts.filter(level =>
-    (FLOORS.includes(level) && FLOORS.indexOf(level) >= FLOORS.indexOf(floor)) ||
-    (promoteMax && level === "max")).length === 1;
+  const ceilingIndex = ceiling === undefined ? FLOORS.length : FLOORS.indexOf(ceiling);
+  const floorIndex = floor === undefined ? 0 : Math.min(FLOORS.indexOf(floor), ceilingIndex);
+  const onlyOneLevel = (floor !== undefined || ceiling !== undefined) && input.supportedEfforts.filter(level =>
+    (FLOORS.includes(level) && FLOORS.indexOf(level) >= floorIndex && FLOORS.indexOf(level) <= ceilingIndex) ||
+    (promoteMax && level === "max" && ceiling === undefined)).length === 1;
   const hold = onlyOneLevel || config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ||
     (!fromSolution && [...evidence].length <= config.holdMaxChars);
-  return { ...(floor === undefined ? {} : { floor }), ...(hold ? { hold: true } : {}), ...(xhighAsMax ? { xhighAsMax: true } : {}) };
+  return { ...(floor === undefined ? {} : { floor }), ...(ceiling === undefined ? {} : { ceiling }), ...(hold ? { hold: true } : {}), ...(xhighAsMax ? { xhighAsMax: true } : {}) };
 }

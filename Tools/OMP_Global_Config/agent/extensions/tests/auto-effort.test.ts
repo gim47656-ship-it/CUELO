@@ -121,23 +121,47 @@ test("promotion list survives the core YAML rewrite and ignores malformed fields
   expect(parseAutoEffortConfig("autoEffort:\n  xhighAsMax: [broken]\n")).toEqual(defaults);
 });
 
+describe("per-model Auto ceiling", () => {
+  test("capHigh parses flat wildcard lists with the existing guards and YAML rewrite", () => {
+    const raw = 'autoEffort:\n  capHigh: "*claude-opus-*, 302synthetic/*"\nnext:\n  capHigh: "ignored/*"\n';
+    expect(parseAutoEffortConfig(raw).capHigh).toEqual(["*claude-opus-*", "302synthetic/*"]);
+    expect(parseAutoEffortConfig(Bun.YAML.stringify(Bun.YAML.parse(raw), null, 2))).toEqual(parseAutoEffortConfig(raw));
+    for (const value of ["[broken]", "true", "42", "null"]) {
+      expect(parseAutoEffortConfig(`autoEffort:\n  capHigh: ${value}\n`)).toEqual(defaults);
+    }
+  });
+  test("ceiling matches independently while an unmatched model keeps its floor and range", () => {
+    const config = parseAutoEffortConfig('autoEffort:\n  floorMedium: "*claude-*"\n  capHigh: "*claude-opus-*"\n');
+    expect(decideAutoEffort(input({ modelId: "CLAUDE-OPUS-FIXTURE" }), config)).toEqual({ floor: "medium", ceiling: "high" });
+    expect(decideAutoEffort(input({ modelId: "claude-other" }), config)).toEqual({ floor: "medium" });
+    expect(decideAutoEffort(input(), config)).toEqual({});
+  });
+  test("single eligible level counts only the inclusive floor to ceiling range", () => {
+    const config = parseAutoEffortConfig('autoEffort:\n  floorHigh: "synthetic/*"\n  capHigh: "synthetic/*"\n  xhighAsMax: "synthetic/*"\n');
+    expect(decideAutoEffort(input(), config)).toEqual({ floor: "high", ceiling: "high", hold: true, xhighAsMax: true });
+    expect(decideAutoEffort(input({ supportedEfforts: ["low", "high", "max"] }), config)).toEqual({ floor: "high", ceiling: "high", hold: true, xhighAsMax: true });
+    expect(decideAutoEffort(input(), { ...config, tiers: [{ floor: "xhigh", models: ["*"] }] })).toEqual({ floor: "xhigh", ceiling: "high", hold: true, xhighAsMax: true });
+  });
+});
+
 test("registered policy matches pure policy across reload, mtime change and missing file", () => {
   const dir = mkdtempSync(join(tmpdir(), "auto-effort-"));
   scratch.push(dir);
   process.env.PI_CODING_AGENT_DIR = dir;
   const path = join(dir, "config.yml");
-  const raw = 'autoEffort:\n  holdMaxChars: 2\n  floorHigh: "synthetic/*"\n';
+  const raw = 'autoEffort:\n  holdMaxChars: 2\n  floorHigh: "synthetic/*"\n  capHigh: "synthetic/*"\n';
   writeFileSync(path, raw);
   register({} as never);
   register({} as never);
   const policy = Reflect.get(globalThis, key) as (value: AutoEffortInput) => unknown;
+  expect(policy(input())).toEqual({ floor: "high", ceiling: "high", hold: true });
   for (const value of [input(), input({ request: "hi" }), input({ added: "new evidence longer than two" })]) {
     expect(policy(value)).toEqual(decideAutoEffort(value, parseAutoEffortConfig(raw)));
   }
   writeFileSync(path, raw.replace("floorHigh", "floorMedium"));
   const future = new Date(Date.now() + 2000);
   utimesSync(path, future, future);
-  expect(policy(input())).toEqual({ floor: "medium" });
+  expect(policy(input())).toEqual({ floor: "medium", ceiling: "high" });
   process.env.PI_CODING_AGENT_DIR = join(dir, "missing");
   expect(policy(input({ request: "hi" }))).toEqual({ hold: true });
 });

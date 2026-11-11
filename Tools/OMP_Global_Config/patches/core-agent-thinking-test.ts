@@ -77,11 +77,13 @@ type Reply = "fail" | "low" | "medium" | "high" | "xhigh" | "max";
 let reply: Reply = "low";
 let judgeCalls = 0;
 let askedLevels: string[] = [];
-type LevelRequest = { questions?: { level?: { criteria?: Record<string, string> } } };
+type LevelRequest = { state?: { request?: string; solution_space?: string }; questions?: { level?: { criteria?: Record<string, string> } } };
+const classifiedInputs: Array<LevelRequest["state"]> = [];
 const fixtureJudge = {
 	label: "fixture",
 	async judge(request: LevelRequest) {
 		judgeCalls += 1;
+		classifiedInputs.push(request.state);
 		// 질문이 허용하는 단계(criteria 키)로만 답한다: auto ceiling 이 xhigh 면 max 는 질문에 없어 고를 수 없다.
 		askedLevels = Object.keys(request.questions?.level?.criteria ?? {});
 		if (reply === "fail" || !askedLevels.includes(reply)) throw new Error("fixture classifier failure");
@@ -463,4 +465,135 @@ try {
 	if (previousPolicy === undefined) Reflect.deleteProperty(globalThis, policyKey);
 	else Reflect.set(globalThis, policyKey, previousPolicy);
 }
-console.log("결과 24 pass");
+
+// Regression checks run independently so RED records each failed contract.
+const regressionErrors: string[] = [];
+let regressionCount = 0;
+async function regression(name: string, run: () => Promise<void>): Promise<void> {
+	try {
+		await run();
+		regressionCount++;
+		console.log(`  PASS  ${name}`);
+	} catch (error) {
+		const message = `${name}: ${error instanceof Error ? error.message : String(error)}`;
+		regressionErrors.push(message);
+		console.error(`  RED  ${message}`);
+	}
+}
+try {
+	setFloor("medium");
+	await regression("ceiling clamps classified and remembered levels; session ceiling still wins", async () => {
+		Reflect.set(globalThis, policyKey, () => ({ ceiling: "high" }));
+		const capped = controls(full);
+		capped.control.setThinkingLevelCeiling("medium");
+		assert.equal(await capped.turn("xhigh"), "medium");
+		capped.control.setThinkingLevelCeiling("xhigh");
+		assert.equal(capped.control.thinkingLevel, "high");
+		assert.equal(await controls(full).turn("xhigh"), "high");
+	});
+	await regression("ceiling clamps held and transcript-restored levels even above the floor", async () => {
+		Reflect.set(globalThis, policyKey, () => ({}));
+		const held = controls(full);
+		await held.turn("xhigh");
+		Reflect.set(globalThis, policyKey, () => ({ floor: "xhigh", ceiling: "high", hold: true }));
+		const before = judgeCalls;
+		assert.equal(await held.turn("low"), "high");
+		const restored = controls(full, { branch: [
+			{ type: "message", message: { role: "user" } },
+			{ type: "thinking_level_change", thinkingLevel: "xhigh", configured: "auto" },
+		] });
+		assert.equal(await restored.turn("low"), "high");
+		held.control.setThinkingLevelCeiling("low");
+		held.control.setThinkingLevelCeiling("xhigh");
+		assert.equal(held.control.thinkingLevel, "high");
+		assert.equal(judgeCalls, before);
+		Reflect.set(globalThis, policyKey, () => ({ floor: "xhigh", ceiling: "high" }));
+		assert.equal(await controls(full).turn("low"), "high", "ceiling also wins over floor in the classifier path");
+	});
+	await regression("raise-only candidate respects cap but never lowers an already higher turn", async () => {
+		Reflect.set(globalThis, policyKey, () => ({ ceiling: "high" }));
+		const provisional = controls(full);
+		reply = "low";
+		await provisional.control.applyAutoThinkingLevel("long steering text here", 1, undefined, { raiseOnly: true, added: "long steering text here" });
+		assert.equal(provisional.control.thinkingLevel, "high", "R1-ANT-2: no resolved value yet keeps provisional high");
+		provisional.control.setThinkingLevelCeiling("low");
+		provisional.control.setThinkingLevelCeiling("xhigh");
+		assert.equal(provisional.control.thinkingLevel, "high", "R1-ANT-2: absent uncapped memory remains provisional");
+		console.log("  PROBE R1-ANT-2: fresh raise-only resolves without throwing; high before/after ceiling toggle");
+		const rising = controls(full);
+		await rising.turn("medium");
+		reply = "xhigh";
+		await rising.control.applyAutoThinkingLevel("new substantive steering", 1, undefined, { raiseOnly: true, added: "new substantive steering" });
+		assert.equal(rising.control.thinkingLevel, "high");
+		rising.control.setThinkingLevelCeiling("low");
+		rising.control.setThinkingLevelCeiling("xhigh");
+		assert.equal(rising.control.thinkingLevel, "high");
+		await rising.turn("low", "ultrathink please");
+		assert.equal(rising.control.thinkingLevel, "xhigh");
+		await rising.control.applyAutoThinkingLevel("new substantive steering", 1, undefined, { raiseOnly: true });
+		assert.equal(rising.control.thinkingLevel, "xhigh");
+		rising.control.setThinkingLevelCeiling("low");
+		rising.control.setThinkingLevelCeiling("xhigh");
+		assert.equal(rising.control.thinkingLevel, "high", "a non-keyword raise-only call caps the remembered value even when the turn stays higher");
+		assert.equal(await rising.turn("xhigh"), "high", "next non-raise-only call brings an over-cap turn down");
+	});
+	await regression("matching cap single eligible level holds without judging; ultrathink bypasses", async () => {
+		const config = parseAutoEffortConfig('autoEffort:\n  floorHigh: "fixture/*"\n  capHigh: "fixture/*"\n');
+		Reflect.set(globalThis, policyKey, (value: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(value, config));
+		const before = judgeCalls;
+		assert.equal(await controls(full).turn("xhigh", "a substantive classification request longer than twenty characters"), "high");
+		assert.equal(judgeCalls, before);
+		assert.equal(await controls(ladderModel(["low", "medium", "high", "xhigh", "max"])).turn("low", "ultrathink please"), "max");
+		assert.equal(judgeCalls, before);
+	});
+	await regression("unmatched cap and invalid cap keep the existing Auto behavior", async () => {
+		const config = parseAutoEffortConfig('autoEffort:\n  capHigh: "other/*"\n');
+		assert.equal(decideAutoEffort({ provider: "other", modelId: "test", supportedEfforts: ["medium", "high", "xhigh"], request: "substantive request for classification", raiseOnly: false }, config).ceiling, "high");
+		Reflect.set(globalThis, policyKey, (value: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(value, config));
+		assert.equal(await controls(full).turn("xhigh", "a substantive unmatched request longer than twenty characters"), "xhigh");
+		Reflect.set(globalThis, policyKey, () => ({ ceiling: "max" }));
+		assert.equal(await controls(full).turn("xhigh"), "xhigh");
+	});
+	await regression("real streaming steering classifies new message only and never raises for lower evidence", async () => {
+		Reflect.deleteProperty(globalThis, policyKey);
+		// SDK path is selected by OMP_CORE_PATCH_TARGET, not the checkout dependency.
+		const { createAgentSession } = await import(`${packages}/pi-coding-agent/src/sdk.ts`);
+		const dir = mkdtempSync(join(tmpdir(), "effort-latest-steer-"));
+		const agentDir = join(dir, "agent");
+		mkdirSync(agentDir);
+		writeFileSync(join(agentDir, "config.yml"), "modelRoles:\n  default: fixture/latest\n");
+		writeFileSync(join(agentDir, "models.yml"), "providers:\n  fixture:\n    baseUrl: http://127.0.0.1:1\n    api: openai-completions\n    apiKey: fixture\n    models:\n      - id: latest\n        name: latest\n        reasoning: true\n        input: [text]\n        contextWindow: 32000\n        maxTokens: 1024\n        thinking:\n          mode: effort\n          efforts: [low, medium, high, xhigh]\n          defaultLevel: high\n");
+		const { session } = await createAgentSession({ cwd: dir, agentDir, disableExtensionDiscovery: true });
+		try {
+			session.setThinkingLevel("low");
+			const observed: Array<{ request: string | undefined; level: string | undefined; initial: string | undefined }> = [];
+			session.agent.addBeforeModelCallHook(async () => {
+				session.setThinkingLevel("auto");
+				const initial = session.thinkingLevel;
+				for (const text of ["first substantive steering request", "second substantive steering request"]) {
+					reply = "medium";
+					const before = classifiedInputs.length;
+					await session.prompt(text, { streamingBehavior: "steer" });
+					for (let i = 0; i < 100 && classifiedInputs.length === before; i++) await Bun.sleep(10);
+					await Bun.sleep(10);
+					observed.push({ request: classifiedInputs.at(-1)?.request, level: session.thinkingLevel, initial });
+				}
+				session.agent.clearAllQueues();
+				throw new Error("fixture stops before provider call");
+			});
+			try { await session.prompt("original task must not be included in steering"); } catch {}
+			assert.deepEqual(observed.map(item => item.request), ["first substantive steering request", "second substantive steering request"]);
+			assert.equal(observed.every(item => item.level === item.initial), true);
+		} finally {
+			session.agent.clearAllQueues();
+			await session.dispose();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+} finally {
+	if (previousPolicy === undefined) Reflect.deleteProperty(globalThis, policyKey);
+	else Reflect.set(globalThis, policyKey, previousPolicy);
+}
+assert.deepEqual(regressionErrors, []);
+console.log(`latest-message/ceiling regressions ${regressionCount} pass`);
+console.log(`결과 ${24 + regressionCount} pass`);

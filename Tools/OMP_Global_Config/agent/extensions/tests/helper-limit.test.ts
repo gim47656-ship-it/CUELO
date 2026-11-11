@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as retryUtils from "@oh-my-pi/pi-utils";
-import { DEEPSEEK, GEMINI, DRAFT_FALLBACK, HelperCallError, skimQuestion, withFallback, type HelperModel } from "../skim";
+import { completeRole, DEEPSEEK, GEMINI, DRAFT_FALLBACK, HelperCallError, skimQuestion, withFallback, type HelperModel } from "../skim";
+import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { draftDocument } from "../draft";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -154,4 +156,105 @@ test("retry hint parser failure does not prevent the authorized fallback", async
     expect(calls).toEqual([GEMINI, DRAFT_FALLBACK]);
     expect(parser).toHaveBeenCalledTimes(1);
   } finally { parser.mockRestore(); }
+});
+
+const vertex = "google-vertex/gemini-4-argon";
+const routeSettings = () => Settings.isolated({
+  modelRoles: { draft: primary, draftFallback: target.name },
+  retry: { fallbackChains: { [primary]: [vertex, target.name] } },
+});
+
+test("draft tries the same model route after a raw provider limit, then its exact configured fallback", async () => {
+  for (const routeFails of [false, true]) {
+    const { ctx } = fixture();
+    ctx.models.resolve = ((selector: string) => selector === "@draftFallback"
+      ? { provider: "aistudio", id: "gemini-3.8-flash" }
+      : { provider: "aistudio", id: "gemini-4-argon" }) as never;
+    const calls: string[] = [];
+    const out = await withActiveSettings(routeSettings(), () => draftDocument(
+      { instruction: "Write the fact.", output: "result.md" }, ctx, new AbortController().signal,
+      async (_prompt, _ctx, _signal, marker) => {
+        const model = typeof marker === "object" ? marker.route : marker === GEMINI ? primary : target.name;
+        calls.push(model);
+        if (model === primary || (routeFails && model === vertex)) throw new HelperCallError(quota, model, { providerFailure: true });
+        return { model, text: "# Fact\n\nVisible fact." };
+      },
+    ));
+    expect(calls).toEqual(routeFails ? [primary, vertex, target.name] : [primary, vertex]);
+    expect(out.isError).toBe(false);
+    expect(out.text).toStartWith(`model: ${routeFails ? target.name : vertex}`);
+    expect(out.text).toContain(`${primary} 실패: ${quota}`);
+    if (routeFails) expect(out.text).toContain(`${vertex} 실패: ${quota}`);
+  }
+});
+
+test("a cooling primary retries the route each call without recording a route cooldown", async () => {
+  const { ctx } = fixture();
+  const calls: string[] = [];
+  await withActiveSettings(routeSettings(), async () => {
+    const run = () => withFallback(async (marker) => {
+      const model = typeof marker === "object" ? marker.route : marker === GEMINI ? primary : target.name;
+      calls.push(model);
+      if (model !== target.name) throw new HelperCallError(quota, model, { providerFailure: true });
+      return { model, value: "fact" };
+    }, new AbortController().signal, target, { ctx, role: "draft" });
+    await run(); await run();
+  });
+  expect(calls).toEqual([primary, vertex, target.name, vertex, target.name]);
+});
+
+test("a non-limit provider error records no cooldown and never tries the configured route", async () => {
+  const { ctx } = fixture();
+  const calls: string[] = [];
+  await withActiveSettings(routeSettings(), async () => {
+    const run = () => withFallback(async (marker) => {
+      const model = typeof marker === "object" ? marker.route : marker === GEMINI ? primary : target.name;
+      calls.push(model);
+      if (model === primary) throw new HelperCallError("500 socket closed retry-after-ms=60000", model, { providerFailure: true });
+      return { model, value: "fact" };
+    }, new AbortController().signal, target, { ctx, role: "draft" });
+    await run(); await run();
+  });
+  expect(calls).toEqual([primary, target.name, primary, target.name]);
+});
+
+test("a route equal to the configured fallback is called only in its existing fallback position", async () => {
+  const { ctx } = fixture();
+  const calls: unknown[] = [];
+  const fallback = { ...target, name: vertex };
+  await withActiveSettings(routeSettings(), () => withFallback(async (marker) => {
+    calls.push(marker);
+    if (marker === GEMINI) throw new HelperCallError(quota, primary, { providerFailure: true });
+    throw new HelperCallError("route down", vertex, { providerFailure: true });
+  }, new AbortController().signal, fallback, { ctx, role: "draft" }));
+  expect(calls).toEqual([GEMINI, DRAFT_FALLBACK]);
+});
+
+test("R1-ANT-4 an unnamed no-chain failure keeps the original failure label and fallback", async () => {
+  const { ctx } = fixture();
+  const out = await withFallback(async (marker) => {
+    if (marker === GEMINI) throw new Error("boom");
+    return { model: target.name, value: "document" };
+  }, new AbortController().signal, target, { ctx, role: "draft" });
+  expect(out).toMatchObject({ status: "done", failures: ["Gemini 실패: boom"] });
+});
+
+test("R1-ADV-1 a rejected route resolution does not mark the uncalled fallback as tried", async () => {
+  const { ctx } = fixture();
+  ctx.models.resolve = ((selector: string) => selector === "@draft"
+    ? { provider: "aistudio", id: "gemini-4-argon" }
+    : { provider: "aistudio", id: "gemini-3.8-flash" }) as never;
+  let fallbackCalls = 0;
+  const out = await withActiveSettings(routeSettings(), () => withFallback(async (marker) => {
+    if (marker === GEMINI) throw new HelperCallError(quota, primary, { providerFailure: true });
+    if (typeof marker === "object") {
+      const answer = await completeRole("fact", ctx, new AbortController().signal, marker, { role: "draft" });
+      return { model: answer.model, value: answer.text };
+    }
+    fallbackCalls++;
+    return { model: target.name, value: "document" };
+  }, new AbortController().signal, target, { ctx, role: "draft" }));
+  expect(out).toMatchObject({ status: "done", model: target.name });
+  expect(out.failures[1]).toStartWith(`${vertex} 실패:`);
+  expect(fallbackCalls).toBe(1);
 });

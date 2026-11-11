@@ -16,9 +16,10 @@
  * timeout or secret-looking content lets the call through unchanged. The plugin's enable/disable state, not a
  * separate model slot, decides whether a PC runs it.
  */
-import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import type { Api, AssistantMessage, Model, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { authorFamily, reviewerLanes, SLOT as REVIEW_SLOT, type Lane } from "../../extensions/lib/cross-review";
+import { sameModelRoutes } from "../../extensions/lib/model-routes";
 
 // The core bounds every tool_call handler (`extensionHandlers.toolCallTimeoutMs`, default 30 s) and blocks the tool
 // when it runs out, so the blocking question gives up first and lets the call through (2026-11-07 live test: a 39 s
@@ -48,9 +49,9 @@ const SYSTEM = [
 /** Why one model call produced no advice. Only the operating kinds may send the check to the counterpart. */
 type Failure = "unresolved" | "provider" | "unusable" | "timeout" | "cancelled" | "secret";
 const OPERATING: Partial<Record<Failure, true>> = { unresolved: true, provider: true, unusable: true, timeout: true };
-type Attempt = { ok: true; text: string; model: string } | { ok: false; kind: Failure; why: string; model?: string };
+type Attempt = { ok: true; text: string; model: string } | { ok: false; kind: Failure; why: string; model?: string; usageLimit?: boolean };
 type Advice =
-  | { ok: true; text: string; ms: number; model: string; fallback?: { from: string; why: string } }
+  | { ok: true; text: string; ms: number; model: string; fallback?: { from: string; why: string; sameModel?: boolean } }
   | { ok: false; why: string; ms: number };
 
 const QUOTA = /\b429\b|quota|usage.?limit|rate.?limit|exhausted|한도/i;
@@ -63,7 +64,7 @@ function providerReason(detail: string): string {
 
 /** The line that tells Main which model answered instead, and why the first one did not. */
 function fallbackLine(advice: Extract<Advice, { ok: true }>): string {
-  return advice.fallback ? `우선 점검(${advice.fallback.from})이 실패해(${advice.fallback.why}) 반대 계열 ${advice.model}로 한 번 대체했다.` : "";
+  return advice.fallback ? `우선 점검(${advice.fallback.from})이 실패해(${advice.fallback.why}) ${advice.fallback.sameModel ? "같은 모델의 다른 경로" : "반대 계열"} ${advice.model}로 한 번 대체했다.` : "";
 }
 
 function clip(text: string, max: number): string {
@@ -166,7 +167,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
    * compared with the lane here and a mismatch sends nothing, the way `cross_review` refuses a target of the wrong
    * required family.
    */
-  function counterpart(ctx: ExtensionContext): string | undefined {
+  function counterpart(ctx: ExtensionContext): { slot: string; model: string } | undefined {
     const current = ctx.models.current() ?? ctx.model;
     if (!current) return undefined;
     let slot: string | undefined;
@@ -180,17 +181,17 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     if (!slot || !lane) return undefined;
     try {
       const target = ctx.models.resolve(`@${slot}`);
-      return target && authorFamily(`${target.provider}/${target.id}`) === lane ? slot : undefined;
+      return target && authorFamily(`${target.provider}/${target.id}`) === lane ? { slot, model: `${target.provider}/${target.id}` } : undefined;
     } catch {
       return undefined;
     }
   }
 
-  /** One call to the model behind `@slot`, bounded by what is left of the shared `deadline` and by the caller's cancel signal. */
-  async function attempt(ctx: ExtensionContext, slot: string, prompt: string, deadline: number, signal?: AbortSignal): Promise<Attempt> {
+  /** A role or exact route call, bounded by the shared deadline and the caller's cancel signal. */
+  async function attempt(ctx: ExtensionContext, slot: string, prompt: string, deadline: number, signal?: AbortSignal, exact = false): Promise<Attempt> {
     let target: Model<Api> | undefined;
-    try { target = ctx.models.resolve(`@${slot}`); } catch { /* an unreadable role is an unresolved one */ }
-    if (!target) return { ok: false, kind: "unresolved", why: `modelRoles.${slot} 모델을 이 PC에서 해석하지 못했다` };
+    try { target = ctx.models.resolve(exact ? slot : `@${slot}`); } catch { /* an unreadable role is an unresolved one */ }
+    if (!target || (exact && `${target.provider}/${target.id}` !== slot)) return { ok: false, kind: "unresolved", why: `${exact ? slot : `modelRoles.${slot}`} 모델을 이 PC에서 해석하지 못했다`, ...(exact ? { model: slot } : {}) };
     const model = `${target.provider}/${target.id}`;
     const budget = Math.max(1, deadline - Date.now());
     const timeout = AbortSignal.timeout(budget);
@@ -198,14 +199,21 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     const interrupted = (): Attempt | undefined =>
       signal?.aborted ? { ok: false, kind: "cancelled", why: "점검이 취소됐다", model }
         : timeout.aborted ? { ok: false, kind: "timeout", why: `${Math.round(budget / 1000)}초 안에 답이 없었다`, model } : undefined;
+    // The host rewrites runtime SDK imports for installed plugins.
+    let classify: typeof isUsageLimitOutcome | undefined;
+    let providerCall = false;
     try {
+      const { completeSimple, isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
+      classify = isUsageLimitOutcome;
       const sessionId = crypto.randomUUID();
-      const { completeSimple } = await import("@oh-my-pi/pi-ai");
+      const apiKey = ctx.modelRegistry.resolver(target, sessionId);
+      providerCall = true;
+      // Classify provider errors below before providerReason clips or scrubs their raw message.
       const response: AssistantMessage = await completeSimple(target, {
         systemPrompt: [SYSTEM],
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
       }, {
-        apiKey: ctx.modelRegistry.resolver(target, sessionId), sessionId, maxTokens: 8192,
+        apiKey, sessionId, maxTokens: 8192,
         reasoning: "low" as never,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
@@ -215,18 +223,18 @@ export default function argonPreflight(pi: ExtensionAPI): void {
       if (response.stopReason === "stop" && text) return { ok: true, text, model };
       const cut = interrupted();
       if (cut) return cut;
-      if (response.stopReason === "error") return { ok: false, kind: "provider", why: providerReason(response.errorMessage ?? ""), model };
+      if (response.stopReason === "error") return { ok: false, kind: "provider", why: providerReason(response.errorMessage ?? ""), model, usageLimit: isUsageLimitOutcome(undefined, response.errorMessage ?? "") };
       return { ok: false, kind: "unusable", why: `응답 이상(${response.stopReason === "stop" ? "빈 답" : response.stopReason}${response.errorMessage ? `: ${providerReason(response.errorMessage)}` : ""})`, model };
     } catch (e) {
-      return interrupted() ?? { ok: false, kind: "provider", why: providerReason(e instanceof Error ? e.message : String(e)), model };
+      const detail = e instanceof Error ? e.message : String(e);
+      return interrupted() ?? { ok: false, kind: "provider", usageLimit: providerCall && !!classify?.(undefined, detail), why: providerReason(detail), model };
     }
   }
 
   /**
-   * Asks Gemini first and returns its advice. Only an operating failure of that call (see `OPERATING`) tries the
-   * opposite-family counterpart, once, and only while the check is still wanted (`live`, the caller's cancel
-   * `signal`) and the shared deadline has time left; the counterpart is looked up at that moment and not before.
-   * Secret-looking input never reaches any model.
+   * Asks Gemini first. A provider usage limit tries configured same-model routes before the opposite-family
+   * counterpart. Every further call shares the deadline and checks cancellation and freshness again.
+   * Secret-looking input or output never reaches another model.
    */
   async function ask(ctx: ExtensionContext, plan: string, extra: string, timeoutMs: number, opts: { signal?: AbortSignal; live?: () => boolean } = {}): Promise<Advice> {
     const t0 = Date.now();
@@ -238,14 +246,32 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     const first = await attempt(ctx, PRIMARY_ROLE, prompt, deadline, opts.signal);
     if (first.ok) return { ok: true, text: first.text, model: first.model, ms: Date.now() - t0 };
     if (!OPERATING[first.kind]) return failed(first.why);
-    if (opts.signal?.aborted) return failed(`${first.why}; 점검이 취소돼 대체하지 않았다`);
-    if (opts.live && !opts.live()) return failed(`${first.why}; 점검이 낡아 대체하지 않았다`);
-    if (deadline - Date.now() <= 0) return failed(`${first.why}; 남은 시간이 없어 대체하지 않았다`);
-    const slot = counterpart(ctx);
-    if (!slot) return failed(`${first.why}; 반대 계열 교차 검토 역할을 해석하지 못해 대체하지 않았다`);
-    const second = await attempt(ctx, slot, prompt, deadline, opts.signal);
-    if (second.ok) return { ok: true, text: second.text, model: second.model, ms: Date.now() - t0, fallback: { from: first.model ?? `modelRoles.${PRIMARY_ROLE}`, why: first.why } };
-    return failed(`${first.why}; 대체(${second.model ?? slot}) 실패: ${second.why}`);
+    let why = first.why;
+    const unavailable = (): Advice | undefined => {
+      if (opts.signal?.aborted) return failed(`${why}; 점검이 취소돼 대체하지 않았다`);
+      if (opts.live && !opts.live()) return failed(`${why}; 점검이 낡아 대체하지 않았다`);
+      if (deadline - Date.now() <= 0) return failed(`${why}; 남은 시간이 없어 대체하지 않았다`);
+    };
+    const routes = first.kind === "provider" && first.usageLimit && first.model ? await sameModelRoutes(ctx.cwd, first.model) : [];
+    const tried = new Set(first.model ? [first.model] : []);
+    for (const route of routes) {
+      const stopped = unavailable();
+      if (stopped) return stopped;
+      if (tried.has(route)) continue;
+      tried.add(route);
+      const next = await attempt(ctx, route, prompt, deadline, opts.signal, true);
+      if (next.ok) return { ok: true, text: next.text, model: next.model, ms: Date.now() - t0, fallback: { from: first.model!, why, sameModel: true } };
+      why += `; 대체(${next.model ?? route}) 실패: ${next.why}`;
+      if (!OPERATING[next.kind]) return failed(why);
+    }
+    const stopped = unavailable();
+    if (stopped) return stopped;
+    const alternate = counterpart(ctx);
+    if (!alternate) return failed(`${why}; 반대 계열 교차 검토 역할을 해석하지 못해 대체하지 않았다`);
+    if (routes.length && tried.has(alternate.model)) return failed(`${why}; 대체(${alternate.model})는 이미 시도해 다시 호출하지 않았다`);
+    const second = await attempt(ctx, alternate.slot, prompt, deadline, opts.signal);
+    if (second.ok) return { ok: true, text: second.text, model: second.model, ms: Date.now() - t0, fallback: { from: first.model ?? `modelRoles.${PRIMARY_ROLE}`, why } };
+    return failed(`${why}; 대체(${second.model ?? alternate.slot}) 실패: ${second.why}`);
   }
 
   pi.on("session_start", (_event, ctx) => { reset(); main = ctx.agent?.kind !== "sub"; seedFromBranch(ctx); });
@@ -360,7 +386,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     name: "lab_preflight",
     label: "사전 점검",
     loadMode: "essential",
-    description: "지금 계획(plan)을 사용자의 최근 말과 대 보게 해 빠진 요구·틀린 가정·더 나은 방법을 받는다. 먼저 이 PC의 Gemini 역할(modelRoles.implGemini)에 묻고, Gemini가 해석되지 않거나 공급자 오류(사용량 한도 포함)나 응답 이상으로 답하지 못할 때만 이 세션 Main의 반대 계열 기존 교차 검토 역할에 한 번 대신 묻는다(Anthropic Main이면 crossReviewOpenAI, 그 밖의 Main이면 crossReviewAnthropic). 결과에 실제로 답한 모델과 대체 이유가 적힌다. 발주(task)·큰 작업 목표(lab_goal frame) 직전에는 자동으로 돈다. 이 도구는 그 밖의 시점에 직접 물을 때 쓴다. 비밀값이 의심되거나 취소됐거나 세션이 바뀌면 대체 호출도 하지 않는다. 참고 의견일 뿐 승인·검토 게이트가 아니다.",
+    description: "지금 계획(plan)을 사용자의 최근 말과 대 보게 해 빠진 요구·틀린 가정·더 나은 방법을 받는다. 먼저 이 PC의 Gemini 역할(modelRoles.implGemini)에 묻는다. 공급자 사용량이나 속도 한도 오류이면 설정된 같은 모델의 다른 공급자 경로를 먼저 시도하고, 답을 받지 못하면 이 세션 Main의 반대 계열 기존 교차 검토 역할에 한 번 대신 묻는다(Anthropic Main이면 crossReviewOpenAI, 그 밖의 Main이면 crossReviewAnthropic). 해석 실패나 그 밖의 공급자 오류, 응답 이상은 다른 경로를 거치지 않고 반대 계열로 대체한다. 결과에 실제로 답한 모델과 대체 이유가 적힌다. 발주(task)와 큰 작업 목표(lab_goal frame) 직전에는 자동으로 돈다. 이 도구는 그 밖의 시점에 직접 물을 때 쓴다. 비밀값이 의심되거나 취소됐거나 세션이 바뀌면 대체 호출도 하지 않는다. 참고 의견일 뿐 승인이나 검토 게이트가 아니다.",
     parameters: z.object({
       plan: z.string().describe("점검할 계획·브리프 전문"),
       question: z.string().optional().describe("특히 묻고 싶은 것(선택)"),

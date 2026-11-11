@@ -23510,7 +23510,7 @@ function planSpawns(
 	queued.marker = "{ raiseOnly: true, added: text });";
 	queued.excludes = queuedLegacy;
 	queued.alternates = [{
-		file: queued.file, marker: queued.marker, anchor: "",
+		file: "src/session/agent-session.ts", marker: queued.marker, anchor: "",
 		requires: queuedLegacy, legacyPatched: queuedLegacy,
 		patched: queued.patched.slice(0, -queued.anchor.length),
 	}];
@@ -23523,7 +23523,7 @@ function planSpawns(
 	// Preserve the earlier deployed parent-message body as a disjoint candidate.
 	parent.excludes = olderParent;
 	parent.alternates = [{
-		file: parent.file, marker: parent.marker, anchor: parent.anchor,
+		file: "src/session/agent-session.ts", marker: parent.marker, anchor: parent.anchor,
 		requires: olderParent, legacyPatched: olderParent, patched: parent.patched,
 	}];
 	EDITS.push({
@@ -23705,6 +23705,119 @@ function planSpawns(
 		anchor: "return { effort: LEVEL_EFFORT[chosen], ceiling };",
 		patched: "return { effort: levelEffort(chosen), ceiling };",
 	});
+}
+
+// Re-judge the latest mid-work evidence and bound ordinary Auto by the profile cap.
+// Preserve earlier candidates as well as 0.10.207 upgrades, with disjoint guards.
+{
+	const originals = new Map();
+	const remember = entry => {
+		originals.set(entry, [entry, ...(entry.alternates ?? [])].map(candidate => ({ ...candidate })));
+		return entry;
+	};
+	const one = marker => {
+		const entries = EDITS.filter(entry => entry.marker === marker);
+		if (entries.length !== 1) throw new Error(`auto ceiling owner: ${marker}`);
+		return remember(entries[0]);
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`auto ceiling anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const fields = one("\t#autoThinkingSolutionSpace: string | undefined;");
+	fields.patched = swap(fields.patched, "\t#autoThinkingParentText: string | undefined;\n", "");
+	fields.patched = swap(fields.patched,
+		"이번 사용자 턴의 auto 분류 입력. 실행 중 사용자 steering·follow-up·부모 메시지가 이어 붙어 재판정 입력이 된다.",
+		"Current turn's original prompt; only the latest parent message is appended for classification.");
+	fields.patched = swap(fields.patched,
+		"task 가 넘긴 solutionSpace 와 그 뒤 부모 메시지들. 있으면 부모 메시지 재분류도 solution_space 로 한다.",
+		"Original task solutionSpace, reused with only the latest parent message.");
+	fields.marker = fields.patched;
+	const prompt = one("\t\t\t\tif (options?.solutionSpace?.trim()) {\n\t\t\t\t\tthis.#autoThinkingSolutionSpace = options.solutionSpace;");
+	for (const candidate of [prompt, ...(prompt.alternates ?? [])]) {
+		candidate.patched = swap(candidate.patched, "\n\t\t\t\t\tthis.#autoThinkingParentText = undefined;", "");
+		candidate.marker = candidate.patched;
+	}
+	const queued = one("{ raiseOnly: true, added: text });");
+	for (const candidate of [queued, ...(queued.alternates ?? [])]) {
+		candidate.patched = swap(candidate.patched,
+			"\t\tconst request = this.#autoThinkingTurnText ? `${this.#autoThinkingTurnText}\\n\\n${text}` : text;\n\t\tthis.#autoThinkingTurnText = request;\n\t\tvoid this.#models.applyAutoThinkingLevel(request,",
+			"\t\tvoid this.#models.applyAutoThinkingLevel(text,");
+		candidate.patched = swap(candidate.patched,
+			"이번 턴 요청에 지금까지의 입력을 이어 붙여 분류하고, 같은 턴 안에서는 올리기만 한다.",
+			"Classify only this new message; the running turn's effort can only rise.");
+		candidate.marker = "\t\tvoid this.#models.applyAutoThinkingLevel(text, this.#promptGeneration, undefined, { raiseOnly: true, added: text });";
+	}
+	const parent = one("\t#reclassifyAutoThinkingForParent(text: string): void {\n");
+	for (const candidate of [parent, ...(parent.alternates ?? [])]) {
+		candidate.patched = swap(candidate.patched, "\t\tthis.#autoThinkingTurnText = request;\n", "");
+		candidate.patched = swap(candidate.patched,
+			"\t\tconst parentText = this.#autoThinkingParentText ? `${this.#autoThinkingParentText}\\n\\n${text}` : text;\n\t\tthis.#autoThinkingParentText = parentText;\n", "");
+		candidate.patched = swap(candidate.patched, "${parentText}", "${text}");
+		candidate.patched = swap(candidate.patched,
+			"최초 과제에 지금까지의 부모 메시지를 이어 붙여 분류하므로 짧은 답이 강도를 무너뜨리지 않고, 결과는 오르내린다.",
+			"Classify the original assignment plus only the latest parent message; effort can rise or fall.");
+		candidate.patched = swap(candidate.patched, "그 solutionSpace 에 지금까지의", "그 solutionSpace 에 최신");
+		candidate.marker = candidate.patched;
+	}
+	const policy = one('const autoPolicy = Reflect.get(globalThis, Symbol.for("cuelo.autoThinkingPolicy"));');
+	policy.patched = swap(policy.patched, "let policyFloor: Effort | undefined;", "let policyFloor: Effort | undefined;\n\t\tlet policyCeiling: Effort | undefined;");
+	policy.patched = swap(policy.patched, "const { floor, hold, xhighAsMax }", "const { floor, ceiling, hold, xhighAsMax }");
+	policy.patched = swap(policy.patched, '\t\t\t\t\t\t\tif (typeof hold === "boolean")',
+		'\t\t\t\t\t\t\tif (ceiling === Effort.Low || ceiling === Effort.Medium || ceiling === Effort.High || ceiling === Effort.XHigh) {\n\t\t\t\t\t\t\t\tpolicyCeiling = ceiling;\n\t\t\t\t\t\t\t} else if (ceiling !== undefined) {\n\t\t\t\t\t\t\t\tlogger.debug("auto-thinking: ignoring invalid policy ceiling");\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\tif (typeof hold === "boolean")');
+	policy.patched = swap(policy.patched, "\t\t\t\tpolicyFloor = undefined;", "\t\t\t\tpolicyFloor = undefined;\n\t\t\t\tpolicyCeiling = undefined;");
+	policy.marker = policy.patched;
+	const hold = one("\t\t\t\tconst branch = this.#host.sessionManager.getBranch();\n");
+	hold.patched = swap(hold.patched,
+		"const autoCeiling = policyMax || cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max ? Effort.Max : Effort.XHigh;",
+		"const autoCeiling = policyCeiling ?? (policyMax || cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max ? Effort.Max : Effort.XHigh);");
+	hold.marker = hold.patched;
+	const effective = EDITS.find(entry => entry.file === "src/session/model-controls.ts" && entry.marker.includes("raiseToAutoThinkingFloor(\n\t\t\t\tmodel,"));
+	if (!effective) throw new Error("auto ceiling effective owner");
+	remember(effective);
+	for (const candidate of [effective, ...(effective.alternates ?? [])]) {
+		candidate.patched = swap(candidate.patched, "raiseToAutoThinkingFloor(\n", "clampThinkingLevelToCeiling(model, raiseToAutoThinkingFloor(\n");
+		candidate.patched = swap(candidate.patched, "\t\t\t),\n", "\t\t\t), policyCeiling),\n");
+		candidate.marker = candidate.patched;
+	}
+	const uncapped = one("// CUELO: remember the pre-ceiling resolution so raising the ceiling can restore it.");
+	for (const candidate of [uncapped, ...(uncapped.alternates ?? [])]) {
+		candidate.patched = swap(candidate.patched, "this.#autoUncappedLevel = raiseToAutoThinkingFloor(", "this.#autoUncappedLevel = clampThinkingLevelToCeiling(model, raiseToAutoThinkingFloor(");
+		candidate.patched = swap(candidate.patched, "\t\t);\n", "\t\t), policyCeiling);\n");
+		candidate.marker = candidate.patched;
+	}
+	const raiseOnly = one("// CUELO: raise-only");
+	raiseOnly.patched = swap(raiseOnly.patched, "\t\t\treturn;\n",
+		"\t\t\tif (policyCeiling !== undefined) {\n\t\t\t\tthis.#autoUncappedLevel = clampThinkingLevelToCeiling(model, this.#autoUncappedLevel ?? this.#autoResolvedLevel, policyCeiling);\n\t\t\t}\n\t\t\treturn;\n");
+	raiseOnly.marker = raiseOnly.patched;
+	// Original candidates retain their original legacy body and version guards.
+	// Deployed bodies get separate upgrade candidates; longer bodies win over
+	// suffix-less variants (the parent insertion separates the queued anchor).
+	for (const [entry, before] of originals) {
+		const candidates = [entry, ...(entry.alternates ?? [])];
+		const deployed = before.map(candidate => candidate.patched);
+		const upgrades = [];
+		for (let index = 0; index < candidates.length; index++) {
+			const candidate = candidates[index];
+			const original = before[index];
+			if (!upgrades.some(upgrade => upgrade.legacyPatched === original.patched && upgrade.anchor === original.anchor)) {
+				upgrades.push({
+					...original,
+					marker: candidate.marker,
+					patched: candidate.patched,
+					legacyPatched: original.patched,
+					requires: original.patched,
+					excludes: [
+						...[original.excludes ?? []].flat(),
+						...deployed.filter(body => body !== original.patched && body.includes(original.patched)),
+					],
+				});
+			}
+			candidate.legacyPatched = original.legacyPatched;
+			candidate.excludes = [...[original.excludes ?? []].flat(), ...deployed];
+		}
+		entry.alternates = [...candidates.slice(1), ...upgrades];
+	}
 }
 
 

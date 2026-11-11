@@ -2,6 +2,7 @@ import { lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { sameModelRoutes } from "./lib/model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 // Gemini의 큰 context(1M 토큰)를 무조건 채우지는 않되, 여러 문서·스킬 묶음을 한 번에 대조할 만큼은 받는다.
@@ -22,16 +23,16 @@ const SKIP_DIR: Record<string, true> = { ".git": true, node_modules: true, ".nex
 export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-vertex/gemini-4-argon";
-// 조사 도구 한정 대체. retry.fallbackChains의 모델 키 체인은 같은 모델을 쓰는 다른 slot까지 바꾸므로 사용하지 않는다.
+// 조사 도구의 다른 모델 대체는 고정이다. 같은 모델의 다른 공급자 경로만 retry.fallbackChains에서 읽는다.
 export const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 /** draft 전용 선택 대체 slot(modelRoles.draftFallback)을 부르라는 요청 표지. skim은 이 표지를 쓰지 않는다. */
 export const DRAFT_FALLBACK = "@draftFallback";
 /**
  * 모델 요청 표지다. GEMINI는 "역할 slot(modelRoles.skim·draft)으로 부른다"는 뜻이고 기본 설정의 모델 이름을 겸한다.
  * slot이 가리키는 실제 모델은 응답의 `model`이 말한다. DEEPSEEK는 고정 대체이며 항상 정확히 그 모델만 부른다.
- * DRAFT_FALLBACK은 modelRoles.draftFallback이 해석한 모델을 그대로 부르며 다른 모델로 바꾸지 않는다.
+ * DRAFT_FALLBACK은 modelRoles.draftFallback이 해석한 모델을, route 표지는 정확한 provider/id를 부른다.
  */
-export type HelperModel = typeof GEMINI | typeof DEEPSEEK | typeof DRAFT_FALLBACK;
+export type HelperModel = typeof GEMINI | typeof DEEPSEEK | typeof DRAFT_FALLBACK | { route: string };
 
 export interface SkimInput { paths: string[]; question: string }
 /** 응답이 돌아온 모델의 실제 `provider/id`와 답. 표시·비용 귀속은 요청이 아니라 이 값을 따른다. */
@@ -230,7 +231,7 @@ export interface RoleCall { role: "skim" | "draft"; maxTokens?: number; acceptTr
  */
 function requestedModelName(ctx: ExtensionContext, requested: HelperModel, role: RoleCall["role"]): string {
   const slot = requested === GEMINI ? role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
-  if (!slot) return DEEPSEEK;
+  if (!slot) return typeof requested === "object" ? requested.route : DEEPSEEK;
   try {
     const model = ctx.models.resolve(`@${slot}`);
     if (model) return `${model.provider}/${model.id}`;
@@ -248,17 +249,18 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
   const slotName = requested === GEMINI ? call.role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
-  const selector = slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : DEEPSEEK;
+  const selector = slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : typeof requested === "object" ? requested.route : DEEPSEEK;
   if (!selector) throw new HelperCallError(`modelRoles.${slotName ?? call.role} 설정을 찾지 못했습니다.`, `@${slotName ?? call.role}`);
   // 해석 전에는 설정된 selector가, 해석 뒤에는 실제 provider/id가 이 호출의 이름이다. 그 사이 어디서 던져도(자격 갱신,
   // 호출 예외, 비용 장부 저장 실패) 같은 이름을 단 오류로 다시 던져 호출자가 요청 표지(Gemini)로 오해하지 않게 한다.
   let identity = selector;
   try {
-    const model = ctx.models.resolve(slotName ? `@${slotName}` : DEEPSEEK);
-    if (!model) throw new HelperCallError(`modelRoles.${slotName} 모델을 해석하지 못했습니다: ${selector}`, selector);
-    const name = identity = `${model.provider}/${model.id}`;
-    // 고정 대체는 이름이 정확히 같을 때만 부른다. slot은 어떤 모델로 해석되든 그 모델을 부른다.
-    if (!slotName && name !== DEEPSEEK) throw new HelperCallError(`${DEEPSEEK} 모델을 해석하지 못했습니다: ${name}`, name);
+    const model = ctx.models.resolve(slotName ? `@${slotName}` : selector);
+    if (!model) throw new HelperCallError(`${typeof requested === "object" ? selector : `modelRoles.${slotName}`} 모델을 해석하지 못했습니다: ${selector}`, selector);
+    const name = `${model.provider}/${model.id}`;
+    // 고정 대체와 명시 경로는 이름이 정확히 같을 때만 부른다. slot은 해석된 모델을 부른다.
+    if (!slotName && name !== selector) throw new HelperCallError(`${selector} 모델을 해석하지 못했습니다: ${name}`, typeof requested === "object" ? selector : name);
+    identity = name;
     if (!model.input.includes("text")) throw new HelperCallError(`${name}은 텍스트 입력을 지원하지 않아 ${call.role} 도구에 쓸 수 없습니다.`, name);
     const sessionId = ctx.sessionManager.getSessionId();
     if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name);
@@ -376,10 +378,9 @@ async function limitExpiry(message: string, now: number): Promise<number | undef
 }
 
 /**
- * 역할 slot 모델로 한 번, 실패하면 대체 모델(기본 고정 DeepSeek)로 한 번만 시도한다. slot이 이미 대체 모델로 해석돼 실패했다면
- * 같은 모델을 다시 부르지 않는다(재시도 증가 없음). 사용자 취소는 실패로 세지 않고 다음 모델을 부르지 않는다.
- * 주 모델이 공급자 복구 시각을 밝힌 한도로 실패한 기록이 남아 있으면(scope가 있을 때) 그 시각까지 주 모델을
- * 부르지 않고 같은 대체 모델로 바로 간다. 첫 실패의 원문은 그대로 남고, 건너뛴 호출만 짧은 안내로 대신한다.
+ * 역할 slot 모델이 실패하면 기존 대체 모델을 부른다. 공급자 한도 오류 또는 주 모델의 한도 대기 중에는
+ * 설정된 같은 모델의 다른 공급자 경로를 먼저 시도한다. 각 모델은 한 번만 부르며 사용자 취소는 즉시 멈춘다.
+ * 공급자가 밝힌 복구 시각은 주 모델에만 기록한다. 실패 원문은 남기고, 건너뛴 호출은 짧은 안내로 대신한다.
  */
 export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget = FIXED_FALLBACK, scope?: HelperScope): Promise<FallbackOutcome<T>> {
   const failures: string[] = [];
@@ -390,34 +391,52 @@ export async function withFallback<T>(attempt: (requested: HelperModel) => Promi
   const ready = slot ? slot.map.get(slot.key) ?? 0 : 0;
   const waiting = ready > now;
   if (slot && !waiting) slot.map.delete(slot.key);
-  if (waiting && primary) {
-    failures.push(`${displayName(primary)} 건너뜀: 공급자 한도가 ${waitText(ready - now)} 뒤 풀립니다.`);
-    // 대체가 같은 모델이면 방금 건너뛴 모델을 부르지 않는다(기존 같은 모델 재호출 방지 유지).
-    if (primary === fallback.name) {
-      failures.push(`${displayName(primary)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
-      return { status: "failed", failures };
+  const tried = new Set<string>(waiting && primary ? [primary] : []);
+  if (waiting && primary) failures.push(`${displayName(primary)} 건너뜀: 공급자 한도가 ${waitText(ready - now)} 뒤 풀립니다.`);
+  const requests: HelperModel[] = waiting ? [] : [GEMINI];
+  if (waiting && scope && primary) {
+    for (const route of await sameModelRoutes(scope.ctx.cwd, primary)) {
+      if (route !== fallback.name) requests.push({ route });
     }
   }
-  for (const requested of waiting ? [fallback.marker] as const : [GEMINI, fallback.marker] as const) {
+  requests.push(fallback.marker);
+  for (let index = 0; index < requests.length; index++) {
+    const requested = requests[index]!;
     if (signal.aborted) return { status: "cancelled", failures };
+    const name = typeof requested === "object" ? requested.route : requested === GEMINI ? GEMINI : fallback.name;
+    if (tried.has(name)) {
+      if (name === fallback.name) failures.push(`${displayName(name)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
+      continue;
+    }
+    if (requested !== GEMINI) tried.add(name);
     try {
       return { status: "done", ...(await attempt(requested)), failures };
     } catch (error) {
-      const model = failedModel(error, requested === GEMINI ? requested : fallback.name);
-      const text = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-      failures.push(`${displayName(model)} 실패: ${text}`);
+      const model = failedModel(error, name);
+      tried.add(model);
+      const raw = error instanceof Error ? error.message : String(error);
+      const text = raw.replace(/\s+/g, " ").trim();
+      failures.push(`${typeof requested === "object" ? model : displayName(model)} 실패: ${text}`);
       if (signal.aborted) return { status: "cancelled", failures };
-      if (slot && requested === GEMINI && model === primary && error instanceof HelperCallError && error.providerFailure) {
-        const expiry = await limitExpiry(text, Date.now());
-        if (signal.aborted) return { status: "cancelled", failures };
-        if (expiry !== undefined) {
-          slot.map.set(slot.key, expiry);
+      if (requested === GEMINI && error instanceof HelperCallError && error.providerFailure) {
+        let limited = false;
+        try {
+          // The host loader rewrites runtime SDK imports; static package imports bypass that boundary.
+          const { isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
+          limited = isUsageLimitOutcome(undefined, raw);
+        } catch { /* Optional route classification cannot prevent the existing fallback. */ }
+        if (limited) {
+          if (slot && model === primary) {
+            const expiry = await limitExpiry(raw, Date.now());
+            if (expiry !== undefined && !signal.aborted) slot.map.set(slot.key, expiry);
+          }
+          if (scope) {
+            const routes = await sameModelRoutes(scope.ctx.cwd, model);
+            requests.splice(index + 1, 0, ...routes.filter((route) => route !== fallback.name).map((route) => ({ route })));
+          }
         }
       }
-      if (model === fallback.name && requested === GEMINI) {
-        failures.push(`${displayName(model)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
-        return { status: "failed", failures };
-      }
+      if (signal.aborted) return { status: "cancelled", failures };
     }
   }
   return { status: "failed", failures };

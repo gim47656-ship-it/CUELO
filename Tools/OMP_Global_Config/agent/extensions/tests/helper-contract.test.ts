@@ -23,6 +23,7 @@ type Behavior = "ok" | "fail" | "empty" | "garbage" | "quota";
 
 const roots: string[] = [];
 const requested: string[] = [];
+const requestedRoutes: string[] = [];
 const behavior: Record<string, Behavior> = {};
 let server: ReturnType<typeof Bun.serve>;
 /** 요청이 서버에 닿는 순간 실행할 일(예: draft 저장 직전에 대상 파일을 먼저 만들어 저장 실패를 만든다). */
@@ -34,8 +35,10 @@ beforeAll(() => {
     // 일부 provider는 wire 이름에 추론 강도 접미사(-low)를 붙인다. 모델 id 비교는 접미사를 뗀 값으로 한다.
     body.model = body.model.replace(/-low$/, "");
     requested.push(body.model);
+    const route = `${new URL(request.url).pathname.split("/")[1]}/${body.model}`;
+    requestedRoutes.push(route);
     onRequest?.();
-    const mode = behavior[body.model] ?? "ok";
+    const mode = behavior[route] ?? behavior[body.model] ?? "ok";
     if (mode === "fail") return new Response(JSON.stringify({ error: { message: `${body.model} synthetic outage` } }), { status: 400, headers: { "content-type": "application/json" } });
     if (mode === "quota") return new Response(JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED You've reached your usage limit retry-after-ms=60000" } }), { status: 400, headers: { "content-type": "application/json" } });
     const base = { id: `fake-${requested.length}`, object: "chat.completion.chunk", created: 0, model: body.model };
@@ -50,6 +53,7 @@ beforeAll(() => {
 afterAll(() => server.stop(true));
 afterEach(() => {
   requested.length = 0;
+  requestedRoutes.length = 0;
   onRequest = undefined;
   for (const key of Object.keys(behavior)) delete behavior[key];
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -62,7 +66,7 @@ const spec = (id: string, input: ("text" | "image")[] = ["text"]) => ({
 interface Outcome { isError: boolean; text: string; sessionsDir: string; usage: Array<[string | undefined, string | undefined, string, string]> }
 
 /** hooks: 해당 모델 id의 자격 조회 또는 비용 장부 저장이 던지게 한다(실제 저장소·자격 갱신 실패를 흉내 낸다). */
-interface Hooks { apiKeyThrows?: string; usageThrows?: string; resolverThrows?: string; runs?: number }
+interface Hooks { apiKeyThrows?: string; usageThrows?: string; resolverThrows?: string; runs?: number; chains?: Record<string, string[]> }
 
 /** 부모 모델이 도구를 한 번 부르고 끝나는 세션을 돌려 세션에 남은 toolResult를 읽는다. */
 async function callTool(name: "skim" | "draft", args: Record<string, unknown>, roles: { skim?: string; draft?: string; draftFallback?: string }, cwd?: string, hooks: Hooks = {}): Promise<Outcome> {
@@ -80,7 +84,8 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   const provider = { baseUrl, apiKey: "local", api: "openai-completions" as const };
   registry.registerProvider("fakeparent", { ...provider, models: [spec("parent")] });
   registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("terra-fake"), spec("image-only", ["image"])] });
-  registry.registerProvider("google-vertex", { ...provider, models: [spec("gemini-4-argon")] });
+  registry.registerProvider("google-vertex", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/google-vertex/v1`, models: [spec("gemini-4-argon")] });
+  registry.registerProvider("aistudio", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/aistudio/v1`, models: [spec("gemini-4-argon"), spec("gemini-3.8-flash")] });
   registry.registerProvider("hive", { ...provider, models: [spec("deepseek-ai/deepseek-v4.1-flash-1017")] });
   const model = registry.find("fakeparent", "parent")!;
   const getApiKey = registry.getApiKey.bind(registry);
@@ -93,7 +98,7 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
     if (target.id === hooks.resolverThrows) throw new Error("RESOURCE_EXHAUSTED usage limit retry-after-ms=60000");
     return resolver(target, ...rest);
   };
-  const settings = Settings.isolated({ modelRoles: roles, tools: { approvalMode: "yolo" } } as never);
+  const settings = Settings.isolated({ modelRoles: roles, tools: { approvalMode: "yolo" }, ...(hooks.chains ? { retry: { fallbackChains: hooks.chains } } : {}) } as never);
   const sessionsDir = join(root, "sessions");
   const sessionManager = SessionManager.create(work, sessionsDir);
   const appendModelUsage = sessionManager.appendModelUsage.bind(sessionManager);
@@ -141,6 +146,35 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
 }
 
 describe("helper tool result contract through the SDK", () => {
+  test("draft's real SDK call resolves the explicit Vertex route, saves its answer and attributes usage to it", async () => {
+    const primary = "aistudio/gemini-4-argon";
+    behavior[primary] = "quota";
+    const out = await callTool("draft", { instruction: "Write the visible fact.", output: "result.md" },
+      { draft: primary, draftFallback: "aistudio/gemini-3.8-flash" }, undefined,
+      { chains: { [primary]: [GEMINI, "aistudio/gemini-3.8-flash"] } });
+    expect(out.isError).toBe(false);
+    expect(out.text).toStartWith(`model: ${GEMINI}`);
+    expect(out.text).toContain(`${primary} 실패:`);
+    expect(requestedRoutes).toEqual([primary, GEMINI]);
+    expect(out.usage).toEqual([["draft", "draft", "aistudio", "gemini-4-argon"], [undefined, "draft", "google-vertex", "gemini-4-argon"]]);
+  });
+
+  test("real SDK route failure is named exactly and reaches draftFallback without a second Vertex call", async () => {
+    const primary = "aistudio/gemini-4-argon";
+    const fallback = "aistudio/gemini-3.8-flash";
+    behavior[primary] = "quota";
+    behavior[GEMINI] = "fail";
+    const out = await callTool("draft", { instruction: "Write the visible fact.", output: "result.md" },
+      { draft: primary, draftFallback: fallback }, undefined, { chains: { [primary]: [GEMINI, fallback] } });
+    expect(out.isError).toBe(false);
+    expect(out.text).toStartWith(`model: ${fallback}`);
+    expect(out.text).toContain(`${GEMINI} 실패:`);
+    expect(requestedRoutes).toEqual([primary, GEMINI, fallback]);
+    expect(out.usage.map((row) => row.slice(1))).toEqual([
+      ["draft", "aistudio", "gemini-4-argon"], ["draft", "google-vertex", "gemini-4-argon"], ["draft", "aistudio", "gemini-3.8-flash"],
+    ]);
+  });
+
   test("기본 설정: Gemini 슬롯 성공은 정상 toolResult이고 사용량은 그 모델에 귀속된다", async () => {
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GEMINI });
     expect(out.isError).toBe(false);

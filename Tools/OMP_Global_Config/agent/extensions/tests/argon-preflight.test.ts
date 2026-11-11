@@ -7,6 +7,7 @@ import { AuthStorage, ModelRegistry } from "@oh-my-pi/pi-coding-agent";
 import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import argonPreflight from "../../cuelo-plugins/argon-preflight/index";
+import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 // The plugin's real handlers make the real completion call; a local OpenAI-compatible server stands in for the
 // opposite-family review role, records the user prompt and reports which model id was actually served.
@@ -14,7 +15,7 @@ const prompts: string[] = [];
 const served: string[] = [];
 /** Provider tag of each request, read from the base URL path each fake provider registers under. */
 const via: string[] = [];
-type Behavior = "ok" | "quota" | "empty" | "secret" | "secretCut" | "hang" | { delayMs: number };
+type Behavior = "ok" | "quota" | "outage" | "empty" | "secret" | "secretCut" | "hang" | { delayMs: number };
 /** What the stand-in server does for a model id; an id with no entry answers normally. */
 const behavior = new Map<string, Behavior>();
 /** Runs when a request for that model id reaches the server, before it answers. */
@@ -31,9 +32,10 @@ beforeAll(async () => {
     const user = body.messages.find((m) => m.role === "user")?.content;
     prompts.push(typeof user === "string" ? user : (user as Array<{ text?: string }>).map((p) => p.text ?? "").join(""));
     onRequest.get(body.model)?.();
-    const mode = behavior.get(body.model) ?? "ok";
+    const mode = behavior.get(`${via.at(-1)}/${body.model}`) ?? behavior.get(body.model) ?? "ok";
     // `x-should-retry: false` makes the transport surface this daily-quota 429 at once; a bare 429 would be replayed six times over ~15 s inside completeSimple.
     if (mode === "quota") return new Response(JSON.stringify({ error: { message: "You exceeded your current quota. RESOURCE_EXHAUSTED", code: 429 } }), { status: 429, headers: { "content-type": "application/json", "x-should-retry": "false" } });
+    if (mode === "outage") return new Response(JSON.stringify({ error: { message: "socket failed" } }), { status: 400, headers: { "content-type": "application/json", "x-should-retry": "false" } });
     if (mode === "hang") {
       const aborted = Promise.withResolvers<void>();
       request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
@@ -598,4 +600,90 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
       expect(s.messages).toEqual([]);
     });
   });
+});
+
+const VERTEX = "google-vertex/gemini-4-argon";
+const withRoutes = <T>(fn: () => Promise<T>) => withActiveSettings(Settings.isolated({
+  modelRoles: { ...reviewRoles, implGemini: `${GEMINI}:auto` },
+  retry: { fallbackChains: { [GEMINI]: [VERTEX, "aistudio/gemini-3.8-flash"] } },
+}), fn);
+
+describe("argon-preflight same-model routes", () => {
+  test("a provider limit tries Vertex and reports the same model through another route", async () => {
+    behavior.set(GEMINI, "quota");
+    await withRoutes(async () => {
+      const s = await mainSession();
+      const out = await s.preflight({ plan: "Export CSV." });
+      expect(out.content[0]!.text).toStartWith(VERTEX);
+      expect(out.content[0]!.text).toContain("같은 모델");
+      expect(out.content[0]!.text).toContain("다른 경로");
+      expect(s.resolved.filter((spec) => spec.includes("crossReview"))).toEqual([]);
+    });
+    expect(via).toEqual(["aistudio", "google-vertex"]);
+  });
+
+  test("a failed Vertex attempt reaches the counterpart and retains each failure name", async () => {
+    behavior.set(GEMINI, "quota");
+    behavior.set(VERTEX, "outage");
+    await withRoutes(async () => {
+      const s = await mainSession();
+      const out = await s.preflight({ plan: "Export CSV." });
+      expect(out.content[0]!.text).toStartWith("anthropic/claude-reviewer");
+      expect(out.content[0]!.text).toContain(GEMINI);
+      expect(out.content[0]!.text).toContain(`${VERTEX}) 실패`);
+      expect(out.content[0]!.text).toContain("socket failed");
+    });
+    expect(via).toEqual(["aistudio", "google-vertex", "anthropic"]);
+  });
+
+  test("a non-limit error skips Vertex and goes straight to the counterpart", async () => {
+    behavior.set(GEMINI, "outage");
+    await withRoutes(async () => {
+      const s = await mainSession();
+      expect((await s.preflight({ plan: "Export CSV." })).content[0]!.text).toStartWith("anthropic/claude-reviewer");
+    });
+    expect(via).toEqual(["aistudio", "anthropic"]);
+  });
+
+  for (const stop of ["cancel", "stale", "deadline", "secret-input", "secret-output", "route-secret", "route-stale", "route-cancel", "route-deadline"] as const) {
+    test(`${stop} prevents any further route or counterpart call`, async () => {
+      const realNow = Date.now;
+      let skew = 0;
+      const clock = spyOn(Date, "now").mockImplementation(() => realNow.call(Date) + skew);
+      const cancel = new AbortController();
+      try {
+        await withRoutes(async () => {
+          const s = await mainSession();
+          behavior.set(GEMINI, stop === "secret-output" ? "secret" : "quota");
+          const route = stop.startsWith("route-");
+          if (route) behavior.set(VERTEX, stop === "route-secret" ? "secret" : "outage");
+          let requests = 0;
+          onRequest.set(GEMINI_ID, () => {
+            requests++;
+            if (requests !== (route ? 2 : 1)) return;
+            if (stop.endsWith("cancel")) cancel.abort();
+            if (stop.endsWith("stale")) void s.say("Stop the old plan.");
+            if (stop.endsWith("deadline")) skew += 121_000;
+          });
+          await expect(s.preflight({ plan: stop === "secret-input" ? "password: hunter2hunter2" : "Export CSV." }, cancel.signal)).rejects.toThrow("사전 점검 실패");
+          expect(via).toEqual(stop === "secret-input" ? [] : route ? ["aistudio", "google-vertex"] : ["aistudio"]);
+          expect(s.resolved.filter((spec) => spec.includes("crossReview"))).toEqual([]);
+        });
+      } finally { clock.mockRestore(); }
+    });
+  }
+});
+
+test("R1-ANT-2 a route-setting error does not reject dispatch or suppress the counterpart", async () => {
+  behavior.set(GEMINI, "quota");
+  const getter = spyOn(cfgRetryFallbackChains, "get").mockImplementation(() => { throw new Error("route setting unavailable"); });
+  try {
+    await withRoutes(async () => {
+      const s = await mainSession();
+      const out = await s.dispatch();
+      expect(out?.block).toBe(true);
+      expect(out?.reason).toContain("anthropic/claude-reviewer");
+    });
+    expect(via).toEqual(["aistudio", "anthropic"]);
+  } finally { getter.mockRestore(); }
 });
