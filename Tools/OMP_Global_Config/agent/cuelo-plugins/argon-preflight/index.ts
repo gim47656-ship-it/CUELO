@@ -148,13 +148,17 @@ function frameOf(input: unknown): string | undefined {
   return lines.length ? `# 작업 목표\n${lines.join("\n")}` : undefined;
 }
 
-/** One correction belongs to a tool and its work identity, not to every plan sent during a time window. */
+/**
+ * One correction belongs to a tool and its work identity, not to every plan sent during a time window. A frame's
+ * identity is its deliverable ids and paths, not the goal sentence: advice usually rewrites that sentence, and keying
+ * on it made every folded-in correction look like new work and ask again (2026-11-11 user decision).
+ */
 function correctionIdentity(name: string, input: unknown): string | undefined {
   if (!record(input)) return undefined;
   if (name === "lab_goal") {
     if (typeof input.goal !== "string" || !input.goal.trim() || !Array.isArray(input.deliverables) || !input.deliverables.length) return undefined;
     const targets = input.deliverables.map((d) => record(d) && typeof d.id === "string" && d.id.trim() ? [d.id, d.path ?? ""] : null);
-    return targets.every(Boolean) ? JSON.stringify([name, input.goal, targets]) : undefined;
+    return targets.every(Boolean) ? JSON.stringify([name, targets]) : undefined;
   }
   if (!Array.isArray(input.tasks) || !input.tasks.length) return undefined;
   const contracts = input.tasks.map((task) => {
@@ -482,7 +486,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
           `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
           ...(failedLanes ? [failedLanes] : []),
           identity
-            ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 같은 목표와 작업 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다.`
+            ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. ${name === "lab_goal" ? "산출물 id와 경로가 같으면 목표 문장을 고친 재호출도 한 번 통과하며, 산출물이 바뀌면 다시 점검한다." : "같은 작업 이름과 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다."}`
             : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
           "사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.",
           "",

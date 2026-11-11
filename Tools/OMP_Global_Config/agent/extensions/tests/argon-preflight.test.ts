@@ -634,6 +634,16 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
     });
   });
 
+  test("a correction that rewrites only the goal sentence passes once for the same deliverables", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export", path: "out.csv" }] };
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      expect((await s.call("lab_goal", { ...frame, goal: "Export the active sheet as CSV" }))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
+    });
+  });
+
   test("unrelated goals and tools cannot spend another plan's correction", async () => {
     await withGemini(async () => {
       const s = await mainSession();
