@@ -2037,3 +2037,57 @@ describe("SideQuestGuard USER_REQUEST", () => {
     expect(blockReason(await harness.emit("tool_call", second("sq-4", "가드 감사 보고서도 따로 써줘")))).toBe("");
   });
 });
+
+describe("seance 조회 발주(2026-11-11)", () => {
+  const seanceCall = (toolCallId: string, overrides: Record<string, unknown> = {}) => ({
+    type: "tool_call",
+    toolName: "task",
+    toolCallId,
+    input: {
+      agent: "seance",
+      sourceSession: "2026-11-10T00-00-00-000Z_session.jsonl",
+      task: "그 세션에서 정한 발주 가드 계약만 요약한다.",
+      ...overrides,
+    },
+  });
+
+  test("정확한 seance 과거 세션 조회는 등록된 guard를 그대로 통과한다", async () => {
+    const harness = createGuardHarness({ sessionId: "seance-hook" });
+    const result = await harness.emit("tool_call", seanceCall("seance-ok"));
+    expect(result).toBeUndefined();
+  });
+
+  test("sourceSession이 어긋난 seance와 다른 agent는 등록된 guard가 계속 거절한다", async () => {
+    const harness = createGuardHarness({ sessionId: "seance-hook" });
+    const missing = await harness.emit("tool_call", seanceCall("seance-missing", { sourceSession: "  " })) as { block?: boolean; reason?: string };
+    expect(missing.block).toBe(true);
+    const other = await harness.emit("tool_call", {
+      type: "tool_call",
+      toolName: "task",
+      toolCallId: "seance-other",
+      input: { ...makerTaskEvent("unused", "SeanceOther").input, agent: "explore" },
+    }) as { block?: boolean; reason?: string };
+    expect(other.block).toBe(true);
+    expect(other.reason).toContain("허용 child는 maker뿐입니다: explore");
+  });
+
+  test("시작한 seance 조회는 실행 결과 뒤에도 슬롯을 계속 점유해 24건 뒤 25번째가 막힌다", async () => {
+    const harness = createGuardHarness({ sessionId: "seance-hook" });
+    expect(await harness.emit("tool_call", seanceCall("seance-run"))).toBeUndefined();
+    // 잘못 환급하면 이 결과 처리 뒤 슬롯이 비어 25번째가 통과한다.
+    await harness.emit("tool_result", {
+      type: "tool_result",
+      toolName: "task",
+      toolCallId: "seance-run",
+      isError: false,
+      content: [],
+      details: { progress: [{ index: 0, id: "seance-job", status: "running" }] },
+    });
+    for (let index = 1; index < 24; index += 1) {
+      expect(await harness.emit("tool_call", seanceCall(`seance-fill-${index}`))).toBeUndefined();
+    }
+    const over = await harness.emit("tool_call", seanceCall("seance-over")) as { block?: boolean; reason?: string };
+    expect(over.block).toBe(true);
+    expect(over.reason).toContain("총 child spawn 한도 초과");
+  });
+});

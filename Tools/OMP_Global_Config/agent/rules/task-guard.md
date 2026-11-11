@@ -33,11 +33,12 @@ DONE_WHEN: <이 조각이 끝났다고 볼 조건 한 줄 — 권장>
 - 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock이 있으면 상속한다. 첫 발주에 lock이 없으면 `WORK_CLASS`는 `feature`, `PRIMARY_DELIVERABLE`은 `TASK_TITLE` 값(없으면 task name)으로 채운다. `WORK_CLASS: feat`처럼 유효 enum의 유일한 접두어는 정식 값으로 보정하며, 어느 값인지 정할 수 없는 오값은 거절한다. 보정·파생한 계약은 child에게 전달하는 guard 블록에도 반영한다.
 - lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 이 요청의 추가 완료물로 받아들이고, 기준 값과 새 값을 advisory로 알린다. 첫 lock은 생략 필드의 상속 기준으로 유지하며 누적 budget을 초기화하지 않는다. `maker_route` 준비·발주와 실제 TaskGuard에 같은 동작을 적용한다.
 - `agent`는 생략하면 `maker`로 읽히고 반환 input에도 기록된다. 명시한 다른 값(`task`·`scout` 등), `BLOCKS_PRIMARY:no`, `OWNED_PATHS` 누락, `FINDING_ID` 없는 rework는 계속 거부된다.
+- 예외는 `agent: "seance"`에 빈 값이 아닌 `sourceSession`을 함께 주는 과거 세션 읽기 전용 조회 하나다. 이 호출은 파일을 쓰지 않으므로 `TASK_GUARD` 블록·`OWNED_PATHS`·완료물 lock·모델 후보·owner 검사를 요구하지 않고, `seance`가 아닌 agent나 `sourceSession`이 없거나 공백뿐인 `seance`는 위 거부 그대로다. 번들 `seance` identity·read-only 도구·비격리·비플랜과 `sourceSession` 해석은 core가 실제 실행 전에 검증하므로 가드가 다시 판정하지 않는다. 이 조회도 child 슬롯은 하나를 쓰고 취소·환급·요청 경계 초기화는 다른 child와 같은 회계를 따른다.
 - `feature`의 `PRIMARY_DELIVERABLE`은 테스트 개수나 내부 정리가 아니라 사용자가 실제로 쓸 수 있게 되는 동작·화면으로 적는다.
 - child는 현재 `PRIMARY_DELIVERABLE`을 직접 진전시키거나 완료를 막는 일에만 쓴다. 아니면 `BLOCKS_PRIMARY:no`로 기록하고 backlog로 넘기며 spawn하지 않는다.
 - 첫 child의 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 생략 필드의 기본 lock이다. 사용자가 실행 중 방향을 바꾸면 runtime은 lock만 해제하고 누적 budget은 유지한다. 명시한 다른 완료물은 lock 해제나 별도 인용 없이도 추가 완료물로 받을 수 있다.
 - `USER_REQUEST`는 선택 사항으로 계속 지원한다. 사용자 입력의 직접 인용을 남길 수 있지만, 추가 완료물을 받기 위한 필수 조건은 아니다. 발주가 사용자 요구에 맞는지 판단하는 책임은 Main에게 있다.
-- runtime hard budget은 사용자 입력당 `primary Maker 16`, `rework Maker 8`, `총 child 24`이다. `task.maxConcurrency:8`의 동시 실행 슬롯과 다른 누적 cap이다. 한도가 남았다는 이유로 불필요한 child를 만들거나 역할 별칭·side quest로 우회하지 않는다.
+- runtime hard budget은 사용자 입력당 `primary Maker 16`, `rework Maker 8`, `총 child 24`이다. `task.maxConcurrency:8`의 동시 실행 슬롯과 다른 누적 cap이다. 한도가 남았다는 이유로 불필요한 child를 만들거나 역할 별칭·side quest로 우회하지 않는다. `seance` 과거 세션 조회는 primary·rework 어느 쪽에도 들어가지 않고 `총 child` 한 자리만 쓴다.
 - Maker 수는 Main이 판단해 정한다. 한도는 천장이지 목표가 아니고 남은 자리는 발주 근거가 아니다. 위치와 수정 범위가 명확한 작은 작업은 Main 단독, 조사부터 구현까지 한 흐름인 작업은 Maker 1명, 서로 기다릴 필요가 없는 충분히 큰 조각이 여러 개면 동시 실행 상한까지 Maker를 병렬로 돌린다. 2명으로 좁히지 않는다. `task.maxConcurrency` = 8은 Maker 합산 child 슬롯 수이고 Main 레인은 여기에 포함되지 않는다. 같은 요청에서 두 번째 이후 primary Maker를 발주할 때는 각 child의 소유 경로가 겹치지 않는지, 서로의 산출물을 기다리지 않는지, 따로 실행해야 하는 이유가 무엇인지를 Main이 확인해 브리프에 적는다. `프론트/백엔드`처럼 범주가 다르다는 것만으로는 분리 근거가 아니다.
 - 각 새 발주·재발주 **직전** `maker_route`로 `routing.typedJudgmentRouting`의 `pre-dispatch`
   질문을 한 번에 판정한다. 동일 브리프에 수동 `judge()`를 중복 호출하지 않는다. 확률형 bool은

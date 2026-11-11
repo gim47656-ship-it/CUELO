@@ -5101,6 +5101,37 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		}],
 	},
 	{
+		// The harness exempts historical consultations from Maker ownership checks.
+		// Only core discovery knows whether an extension has shadowed the bundled agent.
+		file: "src/task/seance.ts",
+		marker: "// CUELO: historical sources require the bundled read-only agent.",
+		anchor: "	if (!seanceAdvertised) return undefined;",
+		patched: `	// CUELO: historical sources require the bundled read-only agent.
+	if (!seanceAdvertised) {
+		if (item.sourceSession !== undefined)
+			return "Historical sourceSession requires the bundled read-only seance agent.";
+		return undefined;
+	}`,
+		alternates: [{
+			file: "src/task/index.ts",
+			excludes: "validateSeanceParams",
+			marker: 'import { formatTaskResultSummary } from "./result-summary";',
+			anchor: 'import { formatTaskResultSummary } from "./result-summary";',
+			patched: 'import { formatTaskResultSummary } from "./result-summary";',
+		}],
+	},
+	{
+		// Recheck the selected definition, not just the earlier advertised snapshot.
+		file: "src/task/structured-subagent.ts",
+		marker: "// CUELO: bind historical consultation to the resolved read-only agent.",
+		anchor: "	if (agentName === SEANCE_AGENT_NAME && !isBundledSeance(agent)) assertPlanControlsAllowed(request, planMode);",
+		patched: `	// CUELO: bind historical consultation to the resolved read-only agent.
+	if (request.sourceSession !== undefined && !isBundledSeance(agent)) {
+		throw new StructuredSubagentError("preflight", "Historical sourceSession requires the bundled read-only seance agent.");
+	}
+	if (agentName === SEANCE_AGENT_NAME && !isBundledSeance(agent)) assertPlanControlsAllowed(request, planMode);`,
+	},
+	{
 		// 18.3.3 BLOCK: upstream 은 `task`·`bash` 를 가진 SubAgent 정의에 `wait` 를 자동으로 더한다
 		// (executor.ts:3505-3516). CUELO 계약은 Main 전용 wait 다(harness-policy
 		// `mainLane.waitContract.barrierCall`: subagents have no wait tool, 자기 job 결과는 자동으로

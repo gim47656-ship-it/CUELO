@@ -30,6 +30,7 @@ import {
   reportOwnedChildren,
   reserveTaskCall,
   reservedMakers,
+  resetTaskGuardState,
   settleSharedWriters,
   settleTaskCall,
   stripScopePrefix,
@@ -1409,3 +1410,151 @@ describe("TASK_GUARD 파생", () => {
   });
 });
 
+
+describe("seance 조회 면제(2026-11-11)", () => {
+  const consult = (overrides: Record<string, unknown> = {}) => ({
+    agent: "seance",
+    sourceSession: "session-20261110.jsonl",
+    task: "과거 세션에서 결정 근거만 요약한다.",
+    ...overrides,
+  });
+
+  test("정확한 seance 조회는 maker 계약 없이 child 1로 통과하고 브리프를 바꾸지 않는다", () => {
+    const state = createTaskGuardState();
+    const decision = reserveTaskCall(state, "seance-only", consult());
+    expect(decision.ok).toBe(true);
+    expect(decision.ok && decision.input).toBeUndefined();
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 1 });
+    // writer tree·소유 lock의 대상이 아니다.
+    expect(reservedMakers(state, "seance-only")).toBeUndefined();
+    expect(state.lock).toBeUndefined();
+  });
+
+  test("sourceSession이 없거나 비어 있는 seance는 maker 계약 검사로 그대로 거절한다", () => {
+    // 계약 필드가 갖춰져 있으면 남는 실패는 child 역할 검사 하나뿐이다.
+    for (const input of [consult({ sourceSession: undefined }), consult({ sourceSession: "   " })].map(
+      (item) => ({ ...item, task: brief(), sourceSession: item.sourceSession }),
+    )) {
+      const state = createTaskGuardState();
+      const decision = reserveTaskCall(state, "seance-bad", input);
+      expect(decision.ok).toBe(false);
+      if (!decision.ok) expect(decision.reason).toContain("허용 child는 maker뿐입니다");
+      expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+    }
+    const state = createTaskGuardState();
+    const bare = reserveTaskCall(state, "seance-bare", { agent: "seance", task: "요약만 한다." });
+    expect(bare.ok).toBe(false);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+  });
+
+  test("시작한 seance 조회는 makers[]가 비어도 해제·환급되지 않는다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "seance-run", consult({ name: "SeanceRead" })).ok).toBe(true);
+    const settlement = settleTaskCall(state, "seance-run", {
+      executed: true,
+      isError: false,
+      details: { progress: [{ index: 0, id: "seance-job", status: "running" }] },
+      registry: [{ id: "seance-job", agentId: "seance-job", startTime: Date.now() }],
+    });
+    expect(settlement).toEqual({ released: [], recharged: [] });
+    expect(getTaskGuardUsage(state).total).toBe(1);
+  });
+
+  test("실행 전에 끝난 seance 조회는 기존 회계대로 환급하고 lock도 남기지 않는다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "seance-skip", consult()).ok).toBe(true);
+    const settlement = settleTaskCall(state, "seance-skip", {
+      executed: false,
+      isError: false,
+      details: undefined,
+    });
+    expect(settlement).toEqual({ released: [0], recharged: [] });
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+    expect(state.lock).toBeUndefined();
+  });
+
+  test("혼합 배치는 maker 계약과 seance를 각각 세고, 어긋난 항목 하나면 배치 전체를 예약하지 않는다", () => {
+    const state = createTaskGuardState();
+    const mixed = reserveTaskCall(state, "mixed", {
+      tasks: [{ agent: "maker", name: "Fix", task: brief() }, consult()],
+    });
+    expect(mixed.ok).toBe(true);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 1, reworkMaker: 0, total: 2 });
+    expect(reservedMakers(state, "mixed")?.map((maker) => maker.name)).toEqual(["Fix"]);
+
+    const rejected = reserveTaskCall(state, "mixed-bad", {
+      tasks: [{ agent: "maker", name: "Fix2", task: brief() }, { agent: "seance", task: "x" }],
+    });
+    expect(rejected.ok).toBe(false);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 1, reworkMaker: 0, total: 2 });
+  });
+
+  test("혼합 배치에서 시작 증거가 없는 항목은 기존 회계대로 예약을 유지한다", () => {
+    const state = createTaskGuardState();
+    expect(
+      reserveTaskCall(state, "mixed-partial", {
+        tasks: [{ agent: "maker", name: "Fix", task: brief() }, consult({ name: "SeanceRead" })],
+      }).ok,
+    ).toBe(true);
+    const settlement = settleTaskCall(state, "mixed-partial", {
+      executed: true,
+      isError: true,
+      details: { progress: [{ index: 0, id: "Fix", status: "running" }] },
+      registry: [{ id: "Fix", agentId: "Fix", startTime: Date.now() }],
+    });
+    // 시작 증거가 없는 형제 항목은 기존 회계대로 예약을 유지한다(부분 실패로 단정하지 않는다).
+    expect(settlement).toEqual({ released: [], recharged: [] });
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 1, reworkMaker: 0, total: 2 });
+    // 그 항목의 실행 전 종료 신호는 예약 시각 name이 있어야 취소 환급으로 되돌아온다.
+    expect(releaseCancelledSpawns(state, ["SeanceRead"])).toBe(0);
+  });
+
+  test("seance 조회 결과를 이미 본 호출의 실행 전 종료 신호는 슬롯을 되돌리지 않는다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "seance-both", consult({ name: "SeanceRead" })).ok).toBe(true);
+    settleTaskCall(state, "seance-both", {
+      executed: true,
+      isError: false,
+      details: { progress: [{ index: 0, id: "SeanceRead", status: "running" }] },
+      registry: [{ id: "SeanceRead", agentId: "SeanceRead", startTime: Date.now() }],
+    });
+    expect(settleTaskCall(state, "seance-both", { executed: false, isError: false, details: undefined })).toEqual({
+      released: [],
+      recharged: [],
+    });
+    expect(getTaskGuardUsage(state).total).toBe(1);
+  });
+
+  test("취소가 확인된 seance 조회는 기존 취소 환급 회계를 그대로 쓴다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "seance-cancel", consult({ name: "SeanceRead" })).ok).toBe(true);
+    settleTaskCall(state, "seance-cancel", {
+      executed: true,
+      isError: false,
+      details: { progress: [{ index: 0, id: "seance-read", status: "running" }] },
+      registry: [{ id: "seance-read", agentId: "seance-read", startTime: Date.now() }],
+    });
+    expect(getTaskGuardUsage(state).total).toBe(1);
+    expect(releaseCancelledSpawns(state, ["seance-read"])).toBe(1);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+  });
+
+  test("요청 경계 reset은 seance 예약도 함께 지운다", () => {
+    const state = createTaskGuardState();
+    expect(reserveTaskCall(state, "seance-reset", consult()).ok).toBe(true);
+    resetTaskGuardState(state);
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+    expect(state.reservations.size).toBe(0);
+    expect(state.lock).toBeUndefined();
+  });
+
+  test("seance 조회도 child 슬롯을 세므로 24건 뒤에는 25번째를 거절한다", () => {
+    const state = createTaskGuardState();
+    for (let index = 0; index < TASK_BUDGET_LIMITS.total; index += 1) {
+      expect(reserveTaskCall(state, `seance-${index}`, consult()).ok).toBe(true);
+    }
+    const over = reserveTaskCall(state, "seance-over", consult());
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.reason).toContain("총 child spawn 한도 초과");
+  });
+});

@@ -117,6 +117,8 @@ type SpawnItem = {
   agentOmitted?: true;
   /** 항목 값이 있으면 그것, 없으면 상위 `isolated`가 격리를 요청했다(core spawnParamsFor와 같은 우선순위). */
   isolated?: true;
+  /** 번들 `seance`의 조회 대상 과거 세션. 면제 판정에만 쓰고 브리프·결과는 건드리지 않는다. */
+  sourceSession?: string;
 };
 
 export type TaskCallInput = Record<string, unknown>;
@@ -128,7 +130,25 @@ export type TaskGuardDecision =
 
 /** 위임 정의는 maker 하나이며 같은 소유권·budget 계약을 사용한다. */
 function isMakerAgent(agent: string): boolean {
-  return agent === "maker";
+  // core 기본 agent 이름은 소문자 `maker`다. 정규화가 원래 표기를 보존하므로 비교에서만 접는다.
+  return agent.trim().toLowerCase() === "maker";
+}
+
+/**
+ * 코어가 번들 `seance`로 실행하는 과거 세션 읽기 전용 조회. 정확한 agent 이름과 비어 있지 않은
+ * `sourceSession`이 있어야 하며, 코어가 번들 identity·read-only 도구·비격리·비플랜을 따로 보장한다.
+ * 이 조회는 파일을 쓰지 않으므로 maker 발주 계약(소유 경로·완료물 lock)의 대상이 아니고
+ * child 슬롯 하나로만 센다. 값이 어긋난 `seance` 호출은 면제하지 않고 그대로 거절한다.
+ */
+export function isSeanceConsultation(item: { agent?: unknown; sourceSession?: unknown }): boolean {
+  // core는 agent 이름을 trim한 뒤 대소문자 그대로 `seance`와 비교한다. 소문자로 접지 않는다:
+  // 다른 대소문자의 agent는 core에서 번들 seance가 아니므로 여기서 면제하면 계약이 갈라진다.
+  const agent = typeof item.agent === "string" ? item.agent.trim() : "";
+  return (
+    agent === "seance" &&
+    typeof item.sourceSession === "string" &&
+    item.sourceSession.trim().length > 0
+  );
 }
 
 function zeroUsage(): Usage {
@@ -371,7 +391,7 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
         return "[SpawnGuard] 모든 task 항목은 task 문자열을 가져야 하고 agent는 생략하거나 문자열이어야 합니다.";
       }
       items.push({
-        agent: item.agent === undefined ? "maker" : item.agent.trim().toLowerCase(),
+        agent: item.agent === undefined ? "maker" : item.agent.trim(),
         task: item.task,
         ...(item.agent === undefined ? { agentOmitted: true as const } : {}),
         ...(typeof item.name === "string" && item.name.trim()
@@ -380,6 +400,7 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
         ...(isolationRequested(item.isolated !== undefined ? item.isolated : input.isolated)
           ? { isolated: true as const }
           : {}),
+        ...(typeof item.sourceSession === "string" ? { sourceSession: item.sourceSession } : {}),
       });
     }
     return items;
@@ -390,13 +411,14 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
   }
   return [
     {
-      agent: input.agent === undefined ? "maker" : input.agent.trim().toLowerCase(),
+      agent: input.agent === undefined ? "maker" : input.agent.trim(),
       task: input.task,
       ...(input.agent === undefined ? { agentOmitted: true as const } : {}),
       ...(typeof input.name === "string" && input.name.trim()
         ? { name: input.name.trim() }
         : {}),
       ...(isolationRequested(input.isolated) ? { isolated: true as const } : {}),
+      ...(typeof input.sourceSession === "string" ? { sourceSession: input.sourceSession } : {}),
     },
   ];
 }
@@ -500,6 +522,16 @@ export function reserveTaskCall(
   const notices: string[] = [];
 
   for (const [index, item] of normalized.entries()) {
+    // 번들 seance 과거 세션 조회. 코어가 번들 identity·read-only 도구·비격리·비플랜을 실제 실행
+    // 전에 검증하므로 이 항목은 lock·완료물·소유 경로 검사 없이 child 슬롯 하나로만 센다.
+    // 브리프를 다시 쓰지 않고 makers[]에도 넣지 않는다(쓰기 소유자·worktree 감시 대상이 아니다).
+    if (isSeanceConsultation(item)) {
+      const seanceDelta: Delta = { primaryMaker: 0, reworkMaker: 0, total: 1 };
+      addDelta(delta, seanceDelta);
+      children.push({ index, delta: seanceDelta, refundable: Boolean(item.name), state: "reserved" });
+      continue;
+    }
+
     const raw = parseGuardMetadata(item.task);
     if (typeof raw === "string") return { ok: false, reason: raw };
 

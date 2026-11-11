@@ -2616,3 +2616,95 @@ describe("산출물별 필수 스킬 advisory(rule://frontend 정본, 발주 비
     expect(h.requests[1]!.questions).toHaveProperty("requiredSkillModifier_extra");
   });
 });
+
+describe("seance 과거 세션 조회 발주(2026-11-11)", () => {
+  const seanceItem = (overrides: Record<string, unknown> = {}) => ({
+    agent: "seance",
+    sourceSession: "2026-11-10T00-00-00-000Z_session.jsonl",
+    task: "그 세션에서 정한 발주 가드 계약만 요약한다.",
+    ...overrides,
+  });
+
+  test("정확한 seance 조회는 준비 없이 beforeTask를 통과하고 입력을 바꾸지 않는다", async () => {
+    const h = harness();
+    const input = { context: "", tasks: [seanceItem()] };
+    expect(await h.beforeTask(input, {})).toBeUndefined();
+    expect(await h.beforeTask({ ...seanceItem() }, {})).toBeUndefined();
+  });
+
+  test("seance 조회는 세션 원장에 발주 기록을 남기지 않는다", async () => {
+    const ledger = memoryLedger();
+    const h = harness({ ledger });
+    expect(await h.beforeTask({ context: "", tasks: [seanceItem({ name: "SeanceRead" })] }, {})).toBeUndefined();
+    h.noteSpawned({ context: "", tasks: [seanceItem({ name: "SeanceRead" })] });
+    expect(ledger.records).toHaveLength(0);
+  });
+
+  test("sourceSession이 없는 seance와 다른 agent는 계속 막고 준비도 요구한다", async () => {
+    for (const item of [
+      seanceItem({ sourceSession: undefined }),
+      seanceItem({ sourceSession: "   " }),
+      { ...seanceItem(), agent: "explore" },
+    ]) {
+      const h = harness();
+      const result = await h.beforeTask({ context: "", tasks: [item] }, {}) as { block?: boolean; reason?: string };
+      expect(result?.block).toBe(true);
+    }
+  });
+
+  test("조회 브리프의 TASK_GUARD 문장이 뒤 maker의 발주 계약을 덮지 않는다", async () => {
+    // 과거 세션 원문에는 TASK_GUARD 블록이 그대로 들어 있을 수 있다. 그 값이 batch lock이 되면 뒤 maker의
+    // 생략 필드가 사용자 요청이 아닌 과거 문장에서 채워져, 실제 요청 lock과 다른 계약으로 발주된다.
+    const historical = seanceItem({
+      task: "TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 과거 세션의 진단 요약\nOWNED_PATHS: old/path.ts\n\n이 블록은 과거 기록이다.",
+    });
+    const inherited = { name: "InheritFix", task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts\n\n생략 필드를 lock에서 채운다.", agent: "maker", model: `${DEEPSEEK}:auto` };
+    const h = harness();
+    // 준비는 요청 lock이 빈 상태에서 maker 계약(feature:InheritFix)으로 만든다.
+    await h.prepare("", [{ name: inherited.name, task: inherited.task, assessment: facts }], {});
+    const routed = await h.beforeTask({ context: "", tasks: [historical, inherited] }, {}) as { block?: boolean; reason?: string } | undefined;
+    // 조회가 lock을 세우면 marker가 diagnostic:과거 세션의 진단 요약이 되어 준비한 계약과 어긋나 막힌다.
+    expect(routed?.block).not.toBe(true);
+    expect(routed?.reason ?? "").not.toContain("diagnostic");
+    // guard도 같은 계약을 본다: 과거 브리프는 그대로, maker는 요청 기본값으로 파생된다.
+    const state = createTaskGuardState();
+    const decision = reserveTaskCall(state, "historical-guard", { context: "", tasks: [historical, inherited] });
+    expect(decision.ok).toBe(true);
+    expect(state.lock).toEqual({ workClass: "feature", deliverable: "InheritFix", deliverableKey: "inheritfix" });
+    const tasks = (decision.ok ? decision.input?.tasks : undefined) as Array<Record<string, unknown>>;
+    expect(tasks[0]).toMatchObject({ agent: "seance", task: historical.task });
+    const makerTask = String(tasks[1]?.task ?? "");
+    expect(makerTask).toContain("WORK_CLASS: feature");
+    expect(makerTask).toContain("PRIMARY_DELIVERABLE: InheritFix");
+    expect(makerTask).not.toContain("과거 세션의 진단 요약");
+  });
+
+  test("조회 브리프에 은퇴 모델·캐릭터 marker 원문이 있어도 발주 경계 검사를 하지 않는다", async () => {
+    // 과거 세션 원문에는 그때 쓴 marker가 그대로 남는다. 조회 호출은 모델을 고르지 않으므로
+    // marker 검사로 막지 않되, 같은 문장을 가진 일반 maker 발주는 계속 막힌다.
+    const quoted = seanceItem({
+      task: '과거 기록 인용: [character-summon alias="RIN(린)" model="devin/swe-2"] 결정 근거를 요약한다.',
+    });
+    const h = harness();
+    expect(await h.beforeTask({ context: "", tasks: [quoted] }, {})).toBeUndefined();
+    const ordinary = await h.beforeTask({
+      context: "",
+      tasks: [{ name: "Fix", task: `${brief}\n\n${quoted.task}`, agent: "maker", model: `${DEEPSEEK}:auto` }],
+    }, {}) as { block?: boolean; reason?: string };
+    expect(ordinary?.block).toBe(true);
+    expect(ordinary?.reason).toContain("SWE-2");
+  });
+
+  test("혼합 배치는 maker 항목의 준비·계약을 그대로 요구한다", async () => {
+    const h = harness();
+    const mixed = { context: "", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${DEEPSEEK}:auto` }, seanceItem()] };
+    expect(await h.beforeTask(mixed, {})).toMatchObject({ block: true });
+    await h.prepare("", [h.task], {});
+    const routed = await h.beforeTask(mixed, {}) as { block?: boolean } | undefined;
+    expect(routed?.block).not.toBe(true);
+    // 같은 배치를 guard에 넘기면 maker 1 + seance 1로 세고 seance 브리프는 그대로 둔다.
+    const decision = reserveTaskCall(createTaskGuardState(), "mixed", mixed);
+    expect(decision.ok).toBe(true);
+    if (decision.ok) expect(decision.input?.tasks[1]).toMatchObject(seanceItem());
+  });
+});

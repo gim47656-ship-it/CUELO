@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isSeanceConsultation, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
@@ -1096,6 +1096,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
       locksBefore.push(candidateLock);
+      // seance 조회는 발주 계약이 없고 lock을 세우지 않는다. 여기서 빠져야 뒤 maker의 생략 필드가
+      // 조회 브리프에 우연히 들어 있는 TASK_GUARD 값이 아니라 실제 요청 lock·기본값을 상속한다.
+      if (isSeanceConsultation(item)) return null;
       const contract = dispatchContract(task, candidateLock, String(item.name ?? ""));
       if (!contract) return null;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
@@ -1106,12 +1109,20 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     for (const [itemIndex, item] of tasks.entries()) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
+      // 읽기 전용 조회는 과거 세션 원문을 그대로 브리프로 싣는다. 그 원문에 은퇴 모델 marker나
+      // 캐릭터 marker가 들어 있어도 이 호출은 어느 모델도 고르지 않고 아무것도 발주하지 않으므로
+      // 발주 경계 검사를 하지 않는다(모델이 쓴 marker로 경계를 넘는 경우는 일반 발주에서 계속 막는다).
+      if (isSeanceConsultation(item)) continue;
       if (isRetired(requested) || /\[character-summon[^\]]*model="devin\//.test(task)) return { block: true, reason: "SWE-2 사용은 중단되었습니다. 인증·기록·캐릭터 identity를 바꾸지 않으며 다른 모델로 몰래 대체하지 않습니다." };
       // character-summon child는 일반 구현 발주가 아니다. 정확한 marker가 있거나, 이 session의 사용자가 요청한 캐릭터 호출이
       // 아직 task child로 쓰이지 않았으면(command-guard가 정본을 소유; 단일 alias는 평문 brief를 guard가 marker brief로 다시 쓴다)
       // 면제한다. 그 task는 guard가 pendingSummons로 검증해 요청되지 않은 marker·재사용·혼합 task를 막는다.
       // 정확하지 않은 문자열이나 summon 요청이 없는 marker는 면제하지 않는다.
       if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
+      // 번들 seance 과거 세션 조회는 읽기 전용이고 파일을 쓰지 않는다. 코어가 번들 identity·read-only
+      // 도구·비격리·비플랜과 sourceSession을 실제 실행 전에 검증하므로 발주 계약·후보·owner 판단을
+      // 적용하지 않는다. 어긋난 seance는 여기서 면제하지 않고 아래 검사가 그대로 막는다.
+      if (isSeanceConsultation(item)) continue;
       // core schema는 solutionSpace를 필수 string으로 두지만 task 도구가 lenientArgValidation이라 누락·다른 타입도 원 인자 그대로
       // 실행에 넘어오고, 공백은 schema를 통과한다. child auto 분류기는 trim 뒤 빈 값이면 brief 전문으로 강도를 고른다.
       if (typeof item.solutionSpace !== "string" || !item.solutionSpace.trim()) {

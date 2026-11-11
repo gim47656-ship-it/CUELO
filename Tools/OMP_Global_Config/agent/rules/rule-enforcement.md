@@ -97,7 +97,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A9 | 할 일이 남았으면 혼자 턴을 닫지 않는다 | 안내 | `extensions/turn-end-guard.ts`, `extensions/lib/turn-publication.ts`, `extensions/tests/turn-end-guard.test.ts` | 게시 근거가 없는 소유 변경은 배포 대기와 별도로 확인한다. 보류 감지는 휴리스틱이며 권한을 부여하지 않는다 |
 | A10 | 같은 산출물 상태가 두 번이면 결과부터 확인 | 문서 | — | |
 | A11 | 원인 확인 뒤 예상 초과·같은 막힘이면 Main이 회수 | 문서 | — | 2026-10-18 사용자 결정 |
-| A12 | 역할은 Main·`maker` 둘 | 차단 | `extensions/command-guard/task-guard.ts`(허용 child `maker`), `patches/build-agents.mjs --check`, `patches/validate-harness-policy.mjs` | |
+| A12 | 역할은 Main·`maker` 둘 | 차단 | `extensions/command-guard/task-guard.ts`(허용 child `maker`, 예외는 `sourceSession`이 있는 번들 `seance` 읽기 전용 조회 하나), `patches/build-agents.mjs --check`, `patches/validate-harness-policy.mjs` | 예외의 실제 identity·도구·격리는 core `prepareSeance`가 실행 전에 검증한다 |
 | A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
 | A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내 | `extensions/lib/maker-routing.ts` `maker_route`, `evals/cases/routine/small-grouped.json`·`concurrency-eight-way.json`·`routine-simple.json` | 요청당 child 상한은 task-guard 차단 |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
@@ -108,7 +108,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A20 | Maker가 도는 동안 Main 몫을 먼저 한다 | 문서 | — | 2026-10-19 지적. A4 차단은 Maker 대기를 보지 않음 |
 | A21 | TODO는 상태 전환 자리에서 바로 갱신 | 안내 | `extensions/todo-nudge.ts`, `extensions/lib/task-progress.ts` | |
 | A22 | 세션 밖 프로세스는 job마다 감시 `bash` async | 문서 | — | 2026-10-10 집계 감시 사고 |
-| A23 | 발주에 `TASK_GUARD`·`TASK_TITLE`·`TODO_TASKS` | 차단 | `extensions/command-guard/task-guard.ts` `reserveTaskCall`, `patches/validate-harness-policy.mjs`(`dispatchGuidePaths`) | |
+| A23 | 발주에 `TASK_GUARD`·`TASK_TITLE`·`TODO_TASKS` | 차단 | `extensions/command-guard/task-guard.ts` `reserveTaskCall`, `patches/validate-harness-policy.mjs`(`dispatchGuidePaths`) | `sourceSession`이 있는 `seance` 읽기 전용 조회는 `TASK_GUARD` 대상이 아니고 `총 child` 한 자리만 쓴다 |
 | A24 | Skill은 필요할 때만 열고, 대신한 부분은 Skill 결과로 부르지 않는다 | 안내(부분) | `extensions/lib/skill-evidence.ts`(frontend 필수 스킬 읽기 관측) | 나머지는 문서 |
 | A25 | `goal`에 `token_budget` 임의 설정 금지 | 문서 | — | |
 | A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `extensions/todo-language-guard.ts`, `extensions/lib/todo-language.ts`, `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서 |
