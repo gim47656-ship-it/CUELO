@@ -4,6 +4,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 import { createTurnDocuments } from "./lib/turn-documents";
 import { createTurnPublication } from "./lib/turn-publication";
+import { LiveServices, UnreapedJobs } from "./lib/turn-jobs";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
 // 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, blocked·승인 경계는 진행을 강제하지 않는다.
@@ -280,6 +281,11 @@ export function createTurnEndGuard(
   let shuttingDown = false;
   const documents = createTurnDocuments();
   const publication = createTurnPublication();
+  const services = new LiveServices();
+  // test_session에 넘긴 서비스는 다음 bash 결과가 다시 알려도 세션 끝까지 회수 안내에서 뺀다.
+  const retainedServices = new Set<string>();
+  const unreaped = new UnreapedJobs();
+  let jobsNotedThisInput = false;
   const invalidate = () => {
     generation += 1;
     pendingJudge?.abort();
@@ -291,6 +297,10 @@ export function createTurnEndGuard(
       invalidate();
       documents.reset();
       publication.reset();
+      services.clear();
+      retainedServices.clear();
+      unreaped.reset();
+      jobsNotedThisInput = false;
       shuttingDown = false;
       classifiedThisInput = false;
       nudgedThisInput = false;
@@ -310,6 +320,9 @@ export function createTurnEndGuard(
     invalidate();
     documents.reset();
     publication.reset();
+    services.clear();
+    retainedServices.clear();
+    unreaped.reset();
     shuttingDown = true;
     todos = [];
     classifiedAnswersThisInput = false;
@@ -326,6 +339,7 @@ export function createTurnEndGuard(
     if (ctx.isIdle?.() === true) documents.reset();
     invalidate();
     nudgedThisInput = false;
+    jobsNotedThisInput = false;
     classifiedAnswersThisInput = false;
     classifiedThisInput = false;
     classifiedSoloThisInput = false;
@@ -361,7 +375,16 @@ export function createTurnEndGuard(
   pi.on("tool_result", (event, ctx) => {
     if (shuttingDown) return;
     documents.observe(event, ctx.cwd);
-    if (ctx.agent?.kind !== "sub") publication.observe(event, ctx.cwd);
+    if (ctx.agent?.kind !== "sub") {
+      publication.observe(event, ctx.cwd);
+      services.observe(event);
+      // test_session이 맡은 서비스는 세션 끝까지 남기는 자원이라 턴 끝 회수 대상이 아니다.
+      const input = event.input as { action?: unknown; service?: unknown } | undefined;
+      if (event.toolName === "test_session" && !event.isError && input?.action === "track" && typeof input.service === "string") {
+        services.forget(input.service);
+        retainedServices.add(input.service);
+      }
+    }
     if (event.toolName !== "todo" || event.isError) return;
     const snapshot = readTodoSnapshot(event.details);
     if (snapshot) {
@@ -378,8 +401,18 @@ export function createTurnEndGuard(
     if (lastAssistant?.stopReason === "aborted") return;
     // 게시 안내는 입력당 1회 안내와 승인 경계 낱말에 묶지 않는다. 배포·장비 대기만으로는 Git 보류가 아니다. child 세션은 게시하지 않는다.
     const publish = () => ctx.agent?.kind === "sub" ? undefined : publication.note(ctx.cwd);
+    // 띄운 job·서비스가 남은 채 끝나는 턴은 입력당 한 번, 같은 실행은 세션당 한 번 알린다. 막지 않는다. child 세션은 Main이 회수한다.
+    const reap = () => {
+      if (ctx.agent?.kind === "sub" || jobsNotedThisInput) return undefined;
+      const notice = unreaped.note(
+        ctx.getAsyncJobSnapshot?.()?.running ?? [],
+        services.names().filter((name) => !retainedServices.has(name)),
+      );
+      if (notice) jobsNotedThisInput = true;
+      return notice;
+    };
     if (nudgedThisInput) {
-      const notice = publish();
+      const notice = [publish(), reap()].filter(Boolean).join(" ");
       if (notice) pi.sendMessage({ customType: "turn-end-guard", content: notice, display: false, attribution: "agent" }, { deliverAs: "aside" });
       return;
     }
@@ -438,7 +471,8 @@ export function createTurnEndGuard(
     }
     const documentNudge = documents.note(ctx.cwd);
     const publicationNudge = publish();
-    if (!todoNudge && !soloNudge && unanswered.length === 0 && !documentNudge && !publicationNudge) return;
+    const jobsNudge = reap();
+    if (!todoNudge && !soloNudge && unanswered.length === 0 && !documentNudge && !publicationNudge && !jobsNudge) return;
     // 게시 안내만 나간 경우 입력당 1회 안내 latch를 쓰지 않는다. 게시 안내는 자기 one-shot을 따로 가진다.
     if (todoNudge || soloNudge || unanswered.length > 0 || documentNudge) nudgedThisInput = true;
     const questionNudge = unanswered.length
@@ -448,7 +482,7 @@ export function createTurnEndGuard(
       ? `${NUDGE_TEXT} 이 안내와 JEV 분류는 사용자 승인이 아니며 권한을 추가하지 않는다. 기존 사용자 직접 지시로 허용된 작업만 수행하고, 공개·push·배포·삭제·결제·계정/권한 변경·provider 안전 확인은 필요한 실제 사용자 승인을 받기 전 실행하지 마라.`
       : soloNudge ? SOLO_NUDGE_TEXT : "";
     pi.sendMessage(
-      { customType: "turn-end-guard", content: [questionNudge, todoText, documentNudge, publicationNudge].filter(Boolean).join(" "), display: false, attribution: "agent" },
+      { customType: "turn-end-guard", content: [questionNudge, todoText, documentNudge, publicationNudge, jobsNudge].filter(Boolean).join(" "), display: false, attribution: "agent" },
       { deliverAs: "aside" },
     );
   });

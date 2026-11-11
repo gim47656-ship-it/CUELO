@@ -659,7 +659,7 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - Main은 owner의 수용 조건별 증거 연결(`routing.reviewPacket.acceptanceEvidenceMap`)을 실제 변경
   내역과 대조해, 요구 자체가 빠진 경우를 "발주대로 고쳤다"로 통과시키지 않는다. 조건과 증거의
   연결이 없으면 그 자체가 gap이고, 형식보다 실질 증거가 우선한다.
-- 중간 검수의 시점·범위·경계는 `AGENTS.md`의 「Main의 중간 검수」와 `harness-policy.json`의
+- 중간 검수의 시점·범위·경계는 `AGENTS.md`의 「역할과 위임」과 `harness-policy.json`의
   `mainLane.workerReview`가 정본이다. 확정 delta와 그 증거만 보고, 소유 경로를 중복 수정하지
   않으며 owner의 검사를 반복하지 않는다. 아직 실행 중인 필수 검사는 gap이 아니라 pending이고 그
   revision을 PASS로 닫지 않는다. 중간 검수는 방향 판정이지 최종 합격이 아니다.

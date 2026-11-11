@@ -181,7 +181,7 @@
   sections by line range. Nothing indexes or embeds these files, and `doc/history` is not long-term
   memory. Use the locators Main already put in the brief before searching again, and do not add a
   judge call, index, or wiki for document lookup.
-  `agent/AGENTS.md` 「프로젝트 문서 지도와 기록」 is authoritative.
+  `rule://docs-handoff` is authoritative.
 - Verify web surfaces where the user cannot see them. On a PC with ego lite (where the `ego_browser`
   tool runs), every task that opens a browser (logged-in work, screen verification and headless
   checks included) runs in a separate ego TaskSpace; use the relay (`browser.open`) only to pass an

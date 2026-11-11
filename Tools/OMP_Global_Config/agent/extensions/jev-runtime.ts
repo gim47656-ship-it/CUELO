@@ -14,6 +14,7 @@ import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
 import { onSessionLifecycle } from "./lib/session-identity";
+import { LiveServices } from "./lib/turn-jobs";
 import { readChildSkillReads, renderSkillEvidence, type SkillReadWindow } from "./lib/skill-evidence";
 import { assignTaskResultBlocks, createRoutingLedger, DEFAULT_LEDGER_PATH, deriveRevisionRelation, openHeldVerdicts, pickReportRevision, revisionRelationDiagnostic, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
@@ -1086,7 +1087,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     /** 원래 bash tool_call 명령과 성공한 비동기 결과 id 또는 서비스 이름의 연결. */
     const pendingBashCommands = new Map<string, string>();
     const bashJobs = new Map<string, string>();
-    const bashServices = new Map<string, string>();
+    const bashServices = new LiveServices();
     /**
      * 장기 background bash/eval job의 관측 요구(harness-policy mainLane.waitContract.requiredObservation). 관측 기한이 지난
      * job이 있으면 Main의 `wait` 진입만 막고, 이 session의 wait 실행 중 기한이 오면 aside 하나로 wait를 돌려준다
@@ -2305,7 +2306,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               return { block: true, reason: `[JevRuntime:pre-cleanup] 자기 실행 중 bash job ${id}의 명령에 정리 대상이 들어 있습니다. 먼저 그 job을 끝내거나 write proc://${id}/kill하라. 정리 호출은 실행하지 않았습니다.` };
             }
           }
-          for (const [name, serviceCommand] of bashServices) {
+          for (const [name, serviceCommand] of bashServices.entries()) {
             if (targets.some((target) => jobMentionsTarget(serviceCommand, target))) {
               return { block: true, reason: `[JevRuntime:pre-cleanup] 자기 실행 중 bash 서비스 ${name}의 명령에 정리 대상이 들어 있습니다. 먼저 그 job을 끝내거나 write proc://${name}/kill하라. 정리 호출은 실행하지 않았습니다.` };
             }
@@ -2432,41 +2433,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           if (fieldOf(async, "state") === "running" && typeof jobId === "string" && jobId) {
             bashJobs.set(jobId, command);
           }
-          const service = fieldOf(event.details, "service");
-          const name = fieldOf(service, "name");
-          const state = fieldOf(service, "state");
-          if (typeof name === "string" && name) {
-            if (state === "running" || state === "ready" || state === "starting" || state === "restarting") {
-              bashServices.set(name, command);
-            } else {
-              bashServices.delete(name);
-            }
-          }
+          bashServices.observe(event, command);
         }
       }
       if ((event.toolName === "read" || event.toolName === "write") && !event.isError) {
         const path = fieldOf(event.input, "path");
         if (typeof path === "string" && /^proc:\/\//u.test(path)) {
+          bashServices.observe(event);
           const proc = fieldOf(event.details, "proc");
-          const daemon = fieldOf(proc, "daemon");
-          const name = fieldOf(daemon, "name");
-          if (typeof name === "string" && /^(?:exited|failed)$/u.test(String(fieldOf(daemon, "state")))) {
-            bashServices.delete(name);
-          }
-          if (event.toolName === "read" && /^proc:\/\/\/?$/u.test(path)) {
-            const daemons = fieldOf(proc, "daemons");
-            if (Array.isArray(daemons)) {
-              const active = new Set(daemons.flatMap((item) => {
-                const state = fieldOf(item, "state");
-                const serviceName = fieldOf(item, "name");
-                return typeof serviceName === "string" && /^(?:running|ready|starting|restarting|stopping)$/u.test(String(state))
-                  ? [serviceName] : [];
-              }));
-              for (const serviceName of bashServices.keys()) {
-                if (!active.has(serviceName)) bashServices.delete(serviceName);
-              }
-            }
-          }
           const cancelled = fieldOf(proc, "cancelled");
           const killedJobId = event.toolName === "write" ? PROC_KILL_URL.exec(path.trim())?.[1] : undefined;
           if (Array.isArray(cancelled)) {

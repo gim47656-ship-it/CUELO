@@ -6,6 +6,8 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 
 규칙 글만으로는 아무것도 실패하지 않는다. 같은 실수가 되풀이되면 글을 늘리지 말고 지키는 장치를 한 단계 올린다
 (출처: cursor/plugins `pstack` `correct`). 경로는 미러 `Tools/OMP_Global_Config/` 기준이다. 줄 번호 대신 파일·심볼을 적는다.
+2026-11-11 사용자 결정(「지침은 최대한가볍게 운영정책은 무겁게」, 「3번은 판이 필요한 규칙만 짧은글로남기기」)으로 RULES.md·AGENTS.md는
+판단 기준과 승인 경계만 남기고, 장치가 지키는 세부는 도구 설명·런타임 안내·`rule://`로 넘겼다. 줄인 글과 대신 지키는 장치는 맨 아래 「글에서 줄인 규칙」 표에 있다.
 
 ## 수준 (높은 것부터)
 
@@ -45,11 +47,11 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R8 | obsolete 제거, 삭제만 확인하는 테스트 금지 | 문서 | — | |
 | R9 | 실행 코드 변경 뒤 최소 검사, 지정 명령은 그대로 실행·보고 | eval | `evals/cases/security/missing-evidence.json`, `evals/cases/security/stale-validation-evidence.json`; Maker 검증 지시 유지는 `patches/core-subagent-verify-test.ts` | |
 | R10 | 측정 수치는 횟수·편차·제약 요인과 번갈아 측정 | 문서 | — | |
-| R11 | `\| tail` 성공을 검사 성공으로 보지 않고 exit code 보존 | 문서 | — | 미검증: core bash 결과의 exit status 표시는 보지 않았다 |
+| R11 | 파이프 뒤 명령 성공을 검사 성공으로 보지 않고 exit code 보존 | 안내 | `extensions/command-guard/check-output-hint.ts`(검사+출력 가공 bash 결과에 `[검사 종료 코드]` 안내) | 실사용 관찰은 `Tools/OMP_Global_Config/HANDOFF.md`의 11-13 점검 항목 |
 | R12 | 임시 스크립트의 런타임·의존성 해석 먼저 확인 | 문서 | — | |
 | R13 | 일회성 산출물 정리·근거 후보 보고 | 문서 | — | |
-| R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서 |
-| R15 | 도구 평가는 `tool_trial`로 기준·후보 분리 기록 | 구조 | `extensions/tool-trial.ts`(PASS 없음·보수 판정), `extensions/tests/tool-trial.test.ts` | 쓸지는 문서 |
+| R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서. 2026-11-11부터 RULES.md에는 한 줄만 두고 세부는 도구 설명이 정본 |
+| R15 | 도구 평가는 `tool_trial`로 기준·후보 분리 기록 | 구조 | `extensions/tool-trial.ts`(PASS 없음·보수 판정), `extensions/tests/tool-trial.test.ts` | 쓸지는 문서. R14와 같은 한 줄 |
 | R16 | 같은 조건의 같은 조치 반복 금지 | 안내 | `extensions/jev-runtime.ts` `pre-retry` advisory, `extensions/lsp-timeout-hint.ts`, `extensions/tool-recovery-hint.ts`(사라진 job id, eval `ENOBUFS`, read 텍스트 JSON 파싱 오류에 다음 행동 안내), `evals/cases/security/same-failure-twice.json` | |
 | R17 | 도구로 할 수 있는 일은 끝까지, "해줘"는 실행 지시 | 안내 | `extensions/turn-end-guard.ts`(미완 todo·이어 하기 약속 뒤 종료 판정) | |
 | R18 | MCP 설치·인증·권한 변경은 승인 뒤 에이전트가 실행 | 구조(부분) | `extensions/mcp-selection.ts`(허용된 서버만 연결, 설치·활성화 안 함) | 승인 요청·실행 순서는 문서 |
@@ -77,7 +79,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R40 | 소스 변경 턴은 HANDOFF·작업 기록 마감 | 안내 | `tools/git-finalizer/index.ts` `missingHandoffNote`(`finalizer.test.ts`), `extensions/lib/turn-documents.ts`(turn-end-guard) | 커밋은 막지 않음 |
 | R41 | 게이트가 고른 코드는 `cross_review` 통과 뒤 커밋 | 차단 | `tools/git-finalizer/index.ts` `runGate` | 2026-11-09 사용자 결정: 필수 reviewer가 공급자 한도로 실패하면 기다리지 않고 `crossReviewWaiver`로 넘긴다. 한도 실패 결과의 nextStep이 그 길을 안내한다(`extensions/lib/cross-review.ts` `describeNext`·`LIMIT_ERROR`, `extensions/tests/cross-review.test.ts`). waiver 문구가 맞는지는 장치가 확인하지 않는다 |
 | R42 | 검토·게이트 모델은 `crossReview*`·`slopReviewOpenAI` 슬롯만 | 구조(부분) | `extensions/cross-review.ts`, `extensions/slop-gate.ts`(슬롯에서만 reviewer 해석) | 브리프에 다른 모델을 적는 실수는 문서(2026-10-26 지적) |
-| R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | |
+| R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | 2026-11-11 RULES.md에서 글을 지웠다. raw Git fallback 네 조건만 `rule://subagent`를 가리킨다 |
 | R44 | lock·ancestry·non-ff 우회 금지, rebase·merge·pull·reset 금지 | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.gitIntegrate`·`gitReset`·`gitClean`·`gitDiscard`·`gitDelete` | `index.lock` 삭제는 막지 않음 |
 | R45 | 사용자 관찰은 수용하고 진단과 제안은 근거와 대조하며, 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | 특정 호출 계약 회귀: `extensions/tests/argon-preflight.test.ts`, `extensions/tests/cross-review.test.ts` | 11-08 정정으로 Gemini 우선 사전 점검과 대체 없는 선택적 보조 검토를 회귀 검사한다. 이는 해당 계약의 재발 검사이며 일반적인 사용자 의도 해석을 강제하지는 않는다. R37 안내도 일반 사용자 진단 전체를 검사하지 않는다. 선택적 주장 확인의 비용 제한은 필수 검증을 면제하지 않는다 |
 | R46 | 새 답변과 새 문서 산문에서 U+00B7 낱말 결합을 피하고 원문과 기존 내용을 보존한다 | 차단(부분) | `extensions/slop-gate/review.ts` `buildReviewRequest`, `tools/git-finalizer/index.ts` `runSlopGate` | 기존 검사 대상 산출물에 한해 reviewer가 판단한다. 채팅과 제외된 Markdown은 문서 수준이며 문자 필터나 일괄 치환은 없다 |
@@ -91,7 +93,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A3 | 원인·검사 결과·다음 단계마다 한두 문장 먼저 | 문서 | — | `patches/core-narration-display-test.ts`는 표시 경로만 본다 |
 | A4 | 긴 job은 `wait` 대신 `read proc://`·산출물로 관측 | 차단 | `extensions/lib/job-observation.ts`(jev-runtime의 `wait` 진입 차단), `patches/core-job-observation-test.ts` | Main이 띄운 bash·eval job만 |
 | A5 | 진행 감시 경고가 오면 snapshot 대조 뒤 알림 | 안내 | `patches/core-activity-watch-test.ts`(경고 발송) | 경고 뒤 행동은 문서 |
-| A6 | `yield` 직전 띄운 job 회수·취소 | 문서 | — | 미검증 |
+| A6 | `yield` 직전 띄운 job 회수·취소 | 안내 | `extensions/turn-end-guard.ts` `reap`, `extensions/lib/turn-jobs.ts`(`UnreapedJobs`, `LiveServices`), `extensions/tests/turn-end-guard.test.ts` 「turn-end unreaped jobs」 | 2026-11-11 사용자 결정(안내). Main 턴 끝에 실행 중 bash·eval job과 이름 붙은 bash 서비스를 입력당 한 번, 같은 실행은 세션당 한 번 알린다. task child와 `test_session`이 맡은 서비스는 빼고 막지 않는다. 세션 밖 프로세스(systemd, nohup)는 보지 못한다 |
 | A7 | 유지 중인 `test_session` 자원은 일반 job과 구분 | 구조 | `extensions/test-session.ts` | |
 | A8 | 장기 프로세스는 띄우기 전에 무엇·왜·예상 종료를 알림 | 문서 | — | |
 | A9 | 할 일이 남았으면 혼자 턴을 닫지 않는다 | 안내 | `extensions/turn-end-guard.ts`, `extensions/lib/turn-publication.ts`, `extensions/tests/turn-end-guard.test.ts` | 게시 근거가 없는 소유 변경은 배포 대기와 별도로 확인한다. 보류 감지는 휴리스틱이며 권한을 부여하지 않는다 |
@@ -110,7 +112,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A22 | 세션 밖 프로세스는 job마다 감시 `bash` async | 문서 | — | 2026-10-10 집계 감시 사고 |
 | A23 | 발주에 `TASK_GUARD`·`TASK_TITLE`·`TODO_TASKS` | 차단 | `extensions/command-guard/task-guard.ts` `reserveTaskCall`, `patches/validate-harness-policy.mjs`(`dispatchGuidePaths`) | `sourceSession`이 있는 `seance` 읽기 전용 조회는 `TASK_GUARD` 대상이 아니고 `총 child` 한 자리만 쓴다 |
 | A24 | Skill은 필요할 때만 열고, 대신한 부분은 Skill 결과로 부르지 않는다 | 안내(부분) | `extensions/lib/skill-evidence.ts`(frontend 필수 스킬 읽기 관측) | 나머지는 문서 |
-| A25 | `goal`에 `token_budget` 임의 설정 금지 | 문서 | — | |
+| A25 | `goal`에 `token_budget` 임의 설정 금지 | 안내 | `extensions/goal-budget-hint.ts`, `extensions/tests/goal-budget-hint.test.ts` | 2026-11-11 사용자 결정(안내). 이번 요청의 사용자 글에 토큰과 예산·한도 낱말이 함께 없으면 입력당 한 번 aside. 숫자만 준 요청은 놓치는 휴리스틱이며 호출을 막지 않는다 |
 | A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `extensions/todo-language-guard.ts`, `extensions/lib/todo-language.ts`, `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서 |
 | A27 | 절차 Skill은 원인 모를 버그·두 번째 실패에만 | 문서 | — | |
 | A28 | 독립 읽기 묶기, 거절된 edit은 그대로 재전송 | 구조(부분) | `patches/core-edit-batch-test.ts`(거절 파일 전부 표시·재전송 성공) | 묶기는 문서 |
@@ -122,5 +124,24 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A34 | 사용자 보고는 전문용어를 줄이고 효과부터 | 문서 | — | 2026-11-02 사용자 결정 |
 | A35 | 수치 셋 이상이면 Mermaid 차트 | 안내 | `extensions/report-chart-guard.ts`, `extensions/tests/report-chart-guard.test.ts` | 2026-10-19 누락 뒤 승격됨 |
 | A36 | 규칙은 실제로 할 때만 연다 | 구조 | core system prompt `<domain-rules>`(설명만 싣고 본문은 `rule://`로 읽음) | |
-| A37 | 요청 뒤 목표를 실행 조건·대기·완료 증거에 연결하고 작은 요청은 작게 처리 | 문서 | `AGENTS.md` 「착수 계약과 Skill」·「진행과 대기」 | 11-05 조사에서 목표를 이미 인지한 뒤 놓친 두 사례 확인. 오타 수정 범위는 확인했으나 목표 유지 개선은 미입증이다. 오푸스 후속 비교에서는 공용 학습 혼입·중간 지침 재구성으로 비교 수용을 보류했고 승인된 시험 부작용 복구를 완료했다. 자동 차단·목표 판정기는 추가하지 않는다. 평가 근거와 한계는 `../../doc/history/2026/11/05-goal-retention-stage2/main.md` |
+| A37 | 요청 뒤 목표를 실행 조건·대기·완료 증거에 연결하고 작은 요청은 작게 처리 | 문서 | `AGENTS.md` 「TODO와 착수」·「최우선: 사용자 메시지에 먼저 답한다」(job과 대기) | 11-05 조사에서 목표를 이미 인지한 뒤 놓친 두 사례 확인. 오타 수정 범위는 확인했으나 목표 유지 개선은 미입증이다. 오푸스 후속 비교에서는 공용 학습 혼입·중간 지침 재구성으로 비교 수용을 보류했고 승인된 시험 부작용 복구를 완료했다. 자동 차단·목표 판정기는 추가하지 않는다. 평가 근거와 한계는 `../../doc/history/2026/11/05-goal-retention-stage2/main.md` |
 | A38 | 무거운 빌드·작업은 PC 전체 메모리를 넘기도록 겹치지 않는다(근거 없는 낮은 상한으로 단일 작업을 늦추지 않음) | 차단(부분) | `extensions/command-guard/build-concurrency.ts`, `extensions/command-guard/build-reservations.ts` | 2026-10-17 지적(기억 `25494699ff0ba595`), 2026-11-06 두 Maker 동시 `next build`로 집 PC 재부팅. Next 프로덕션 빌드만 막고 테스트·DB 집계 등 다른 무거운 작업은 문서 |
+
+## 글에서 줄인 규칙 (2026-11-11)
+
+매 턴 들어가는 영어 사본 기준 Main 54,954바이트 → 31,499바이트, Maker 49,737바이트 → 28,886바이트(`prompt-compact.ts` `loadSwaps`·`applyMainOnly`로 같은 파일을 읽어 잰 값). 뜻은 그대로 두고 아래 세부만 장치 쪽으로 넘겼다.
+
+| 줄인 글 | 대신 지키는 곳 |
+|---|---|
+| `test_session`·`tool_trial` 사용 절차와 한계(R14·R15) | 각 도구 설명 |
+| `skim` 대체 모델 1회 규칙(R31) | `extensions/skim.ts`와 도구 설명 |
+| `git_finalize` 경로·저장소 규칙(R43), cross_review 보조 검토자 60초·계열별 reviewer 배정(R41·R42) | `tools/git-finalizer`, `extensions/cross-review.ts`와 각 도구 설명 |
+| 브라우저 relay 세부(R35) | `extensions/command-guard/task-guard.ts`, `rule://surface-verification-procedure` |
+| 파이프 종료 코드 세부(R11) | `extensions/command-guard/check-output-hint.ts` |
+| 관측 시점 표(A4·A5·A6) | `extensions/lib/job-observation.ts`, `patches/core-activity-watch-test.ts`, turn-end-guard 미회수 job 안내 |
+| Maker 모델 배분·추론 강도·Anthropic 하루 몫 세부(A12·A16) | `maker_route` 도구 설명, `extensions/lib/maker-routing.ts`, `extensions/auto-effort.ts`, `rule://subagent` |
+| 별칭 summon marker·voice block 처리(A29) | `extensions/character-voice.ts`(호출 순간 정확한 marker 지시 주입), command-guard CharacterSummonGuard |
+| typed judgment routing·검수·검증 소유권 세부(A16·A18) | `rule://subagent`, `harness-policy.json` |
+| `goal` `token_budget`(A25) | `extensions/goal-budget-hint.ts` |
+
+아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, A32 child·다른 모델 사용 고지, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.

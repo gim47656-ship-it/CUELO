@@ -49,7 +49,7 @@ interface EligibleRow {
  * snapshot running 행 중 관측 대상만 고른다. task(agent-backed) job은 기존 SubagentActivityWatch가 맡고, 이름 붙은
  * bash service는 AsyncJobManager 행이 아니므로 여기 오지 않는다.
  */
-function eligible(raw: unknown): EligibleRow | undefined {
+export function eligible(raw: unknown): EligibleRow | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const row = raw as { id?: unknown; type?: unknown; status?: unknown; startTime?: unknown; agentId?: unknown; label?: unknown };
   if (row.type !== "bash" && row.type !== "eval") return undefined;
