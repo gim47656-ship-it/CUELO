@@ -341,9 +341,28 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const ws = workspace("outside", { "in.txt": { seen: span(1, 10) }, "../outside-ext.txt": { seen: span(1, 10) } });
 	const outside = join(ws.cwd, "..", "outside-ext.txt");
 	const batch = `[in.txt#${ws.tags["in.txt"]}]\nPUT 30.=30:\n+I30\n[${outside}#${ws.tags["../outside-ext.txt"]}]\nPUT 40.=40:\n+E40\n`;
+	const before = ["in.txt", "../outside-ext.txt"].map(ws.disk);
 	const result = await ws.edit(batch);
-	const summary = result.text.split("\n\n")[0] ?? "";
-	check("cwd 밖 파일: 요약 줄에 절대 경로로 적는다", result.isError && summary.endsWith(`in.txt, ${outside}.`) && !summary.includes("../"), JSON.stringify(summary));
+	const nativeBatchRejections = Bun.semver.order(String((await Bun.file(join(core, "package.json")).json()).version), "18.18.8") >= 0;
+	if (nativeBatchRejections) {
+		const blocks = result.text.split("\n\n");
+		check(
+			"cwd 밖 파일: native 거부 둘에 정확한 파일명과 줄을 쓰고 경로는 절대 경로다",
+			result.isError && blocks.length === 2 &&
+				blocks[0]!.includes(`in.txt의 30번 줄`) && blocks[0]!.includes(`[in.txt#${ws.tags["in.txt"]}]`) &&
+				blocks[0]!.includes("30:in.txt line 30") &&
+				blocks[1]!.includes(`${outside}의 40번 줄`) && blocks[1]!.includes(`[${outside}#${ws.tags["../outside-ext.txt"]}]`) &&
+				blocks[1]!.includes("40:../outside-ext.txt line 40") &&
+				blocks.every(block => !block.split("\n")[0]!.includes("../")),
+			JSON.stringify(result.text),
+		);
+	} else {
+		const summary = result.text.split("\n\n")[0] ?? "";
+		check("cwd 밖 파일: 요약 줄에 절대 경로로 적는다", result.isError && summary.endsWith(`in.txt, ${outside}.`) && !summary.includes("../"), JSON.stringify(summary));
+	}
+	check("cwd 밖 파일: 거부되면 안팎 파일 모두 쓰지 않는다", ["in.txt", "../outside-ext.txt"].every((file, i) => ws.disk(file) === before[i]), "디스크가 바뀌었다");
+	const resend = await ws.edit(batch);
+	check("cwd 밖 파일: 동일 재전송으로 두 파일을 모두 쓴다", !resend.isError && ws.disk("in.txt").split("\n")[29] === "I30" && ws.disk("../outside-ext.txt").split("\n")[39] === "E40", JSON.stringify(resend.text));
 }
 
 // [고정] probe 는 임시 store 에서 돌아 세션 store 의 byte-identical no-op 횟수에 들지 않는다. no-op 파일이 낀 배치는 첫 응답에

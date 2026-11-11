@@ -23584,6 +23584,94 @@ function planSpawns(
 	});
 }
 
+// 18.18.8: keep CUELO validation, ask lifecycle/timeout policy and eval-only MCP holds
+// alongside upstream exact-app matching, option notes and inactive-tool retention.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.18.8 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) {
+			old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		}
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.18.8 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const prefix = (text, boundary) => {
+		if (text.split(boundary).length !== 2) throw new Error(`18.18.8 boundary: ${JSON.stringify(boundary)}`);
+		return text.slice(0, text.indexOf(boundary));
+	};
+
+	// matchesFilter became an inline list filter. Its callers still need the same validator;
+	// insert only that helper, leaving upstream exact-app precedence and pid lookup untouched.
+	{
+		const marker = "Number.isSafeInteger(value)) continue;";
+		const entry = one(entry => entry.file === "src/tools/computer/worker.ts" &&
+			[entry, ...(entry.alternates ?? [])].some(candidate => candidate.marker === marker));
+		const previous = entry.alternates.find(candidate => candidate.marker === marker);
+		const validator = prefix(previous.patched, "\nfunction matchesFilter(");
+		const anchor = "async function nativeCall<T>(signal: AbortSignal, call: () => T | Promise<T>): Promise<T> {";
+		alternate(entry, { marker, anchor, patched: `${validator}\n\n${anchor}` },
+			"const exactApp = !!app && windows.some(window => window.app.toLocaleLowerCase() === app);");
+	}
+
+	// The result text moved to a template. Its notes section exists only in 18.18.8;
+	// older source candidates remain available on cores that do not ship this template.
+	alternate(byMarker("no user response, not user approval"), {
+		file: "src/prompts/tools/ask-result.md",
+		marker: "no user response, not user approval",
+		anchor: "No answer before the timeout; submitted the form's current values:",
+		patched: "No user response before the timeout: auto-submitted the form's preselected values for the unanswered fields (no user response, not user approval):",
+	}, "{{#if notes}}");
+	{
+		const entry = byMarker("\t\tconst waitForUser = async <T>(action: () => Promise<T>): Promise<T> => {");
+		const previous = entry.alternates.find(candidate => candidate.requires === "async function askFieldByField(");
+		const before = "data: HtmlFormData; timedOut?: boolean";
+		const after = "data: HtmlFormData; notes?: OptionNote[]; timedOut?: boolean";
+		alternate(entry, {
+			marker: previous.marker,
+			anchor: swap(previous.anchor, before, after),
+			patched: swap(previous.patched, before, after),
+		}, 'import askResultTemplate from "../prompts/tools/ask-result.md" with { type: "text" };');
+	}
+
+	// Upstream preserves existing inactive selections, but still enables newly discovered
+	// manager tools. Held eval connections must suppress those new tools, not active ones.
+	{
+		const entry = byMarker("\t\t// Held servers (connected from eval) keep each tool's previous state instead of activating.");
+		const anchor = `		const nextActive = this.#getActiveNonMCPToolNames();
+		for (const name of this.#toolRegistry.keys()) {
+			if (
+				isMCPToolName(name) &&
+				(previousActiveMcpToolNames.has(name) ||
+					(!vibeActive && this.#mcpManagerToolNames.has(name) && !previousMcpTools.has(name)))
+			) {
+				nextActive.push(name);
+			}
+		}`;
+		const hold = prefix(entry.patched, "\t\tconst nextActive = ");
+		alternate(entry, {
+			marker: entry.marker,
+			anchor,
+			patched: swap(hold, "previousActiveMcpToolNames.includes(name)", "previousActiveMcpToolNames.has(name)") +
+				swap(anchor,
+					"(!vibeActive && this.#mcpManagerToolNames.has(name) && !previousMcpTools.has(name))",
+					"(!vibeActive && this.#mcpManagerToolNames.has(name) && !previousMcpTools.has(name) && !heldInactive.has(name))"),
+		}, "const previousActiveMcpToolNames = new Set(this.getEnabledToolNames().filter(isMCPToolName));");
+	}
+
+	// RETIRE remains absorbed; only the bundled advisor helper name changed (ZUe -> t$e).
+	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&t$e(c))continue';
+	const advisor = one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	alternate(advisor, { marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip }, bundleSkip);
+}
+
 // Per-model auto policy is a harness extension. Fold into the existing owners so
 // HEAD-patched installations upgrade and reverting still restores upstream bytes.
 {
