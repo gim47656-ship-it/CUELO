@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ReviewerCallError, runResolve, runReview, spawnExec, type ReviewDeps } from "../lib/cross-review";
+import { ReviewerCallError, runResolve, runReview, spawnExec, type AdvisoryCooldownEntry, type ReviewDeps } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewRecord } from "../lib/routing-ledger";
 
 const OPUS = "anthropic/claude-opus-5-5";
@@ -58,7 +58,7 @@ interface Route extends Advisor { model: string }
 interface Trace { requiredDoneAt?: number; advisoryCalls: number; advisoryAborted: boolean; routeCalls: string[]; routeAborted: boolean }
 let idCounter = 0;
 /** 필수 reviewer는 OpenAI 자리(Opus 저자)이며 requiredMs 뒤 깨끗한 답을 낸다. advisor가 없으면 보조 slot이 설정되지 않은 것이다. */
-function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; advisor?: Advisor; advisoryModel?: string; graceMs?: number; routes?: Route[] | Error } = {}): ReviewDeps {
+function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; advisor?: Advisor; advisoryModel?: string; graceMs?: number; routes?: Route[] | Error; cooldown?: Map<string, AdvisoryCooldownEntry> } = {}): ReviewDeps {
   const ledger = createRoutingLedger(env.ledger);
   const { advisor } = options;
   return {
@@ -67,6 +67,7 @@ function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; adviso
     newId: () => `xr-adv-${process.pid}-${++idCounter}`,
     requiredModels: { openai: ASTRA, anthropic: OPUS },
     advisoryGraceMs: options.graceMs ?? 2_000,
+    advisoryCooldown: options.cooldown ?? new Map(),
     complete: async (family, _prompt, attempt) => {
       await sleep(options.requiredMs ?? 20, attempt);
       trace.requiredDoneAt = Date.now();
@@ -329,5 +330,37 @@ describe("보조 검토자가 공급자 한도로 실패하면", () => {
     expect(review.findings).toEqual([]);
     expect(review.advisory).toMatchObject({ status: "late", model: VERTEX, limited: { model: ARGON } });
     expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: true });
+  });
+
+  // 2026-11-12 사용자 결정 「세개는고쳐줘라」: 사무실 11-11 세션은 보조 검토자가 모든 라운드에 429만 냈다. 한도로 실패한 모델은 그날 다시 부르지 않는다.
+  test("한도로 실패한 보조 모델은 다음 라운드에서 부르지 않고 건너뜀으로 기록한다", async () => {
+    const t = trace();
+    const cooldown = new Map<string, AdvisoryCooldownEntry>();
+    const first = await runReview(input, deps(repo(), t, { advisor: limited(), cooldown }), signal);
+    expect(first.advisory).toMatchObject({ status: "error", model: ARGON });
+    const second = await runReview(input, deps(repo(), t, { advisor: limited(), cooldown }), signal);
+    expect(t.advisoryCalls).toBe(1);
+    expect(second.passable).toBe(true);
+    expect(second.advisory).toMatchObject({ status: "skipped", model: ARGON });
+    expect(second.advisory?.reason).toContain("provider limit earlier today");
+  });
+
+  test("기억된 모델에 다른 경로가 남아 있으면 원래 경로를 건너뛰고 그 경로를 바로 부른다", async () => {
+    const t = trace();
+    const cooldown = new Map<string, AdvisoryCooldownEntry>();
+    await runReview(input, deps(repo(), t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10 }], cooldown }), signal);
+    const second = await runReview(input, deps(repo(), t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10, text: finding("route objection") }], cooldown }), signal);
+    expect(t.advisoryCalls).toBe(1);
+    expect(t.routeCalls).toEqual([VERTEX, VERTEX]);
+    expect(second.advisory).toMatchObject({ status: "ok", model: VERTEX, findings: 1, limited: { model: ARGON, error: LIMIT } });
+  });
+
+  test("한도가 아닌 실패는 기억하지 않아 다음 라운드에 다시 부른다", async () => {
+    const t = trace();
+    const cooldown = new Map<string, AdvisoryCooldownEntry>();
+    const broken = (): Advisor => ({ ms: 10, error: new ReviewerCallError("HTTP 503 from relay", ARGON) });
+    await runReview(input, deps(repo(), t, { advisor: broken(), cooldown }), signal);
+    await runReview(input, deps(repo(), t, { advisor: broken(), cooldown }), signal);
+    expect(t.advisoryCalls).toBe(2);
   });
 });

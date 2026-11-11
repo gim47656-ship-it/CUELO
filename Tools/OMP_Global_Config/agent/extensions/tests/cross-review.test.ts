@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +27,7 @@ import {
   parseReviewerOutput,
   reviewerLanes,
   ReviewerCallError,
+  clearAdvisoryCooldown,
   runGate,
   runResolve,
   readReferenceFile,
@@ -2959,6 +2960,8 @@ describe("자격 증명 파일 값 전송 차단(#50)", () => {
 // reviewDeps, completeReviewer)를 로컬 OpenAI 호환 서버로 돌려 요청이 간 모델을 그대로 센다. 서버는 대체 후보가 될 만한 모델(반대 계열 필수 자리,
 // Vertex 같은 Argon, Antigravity Flash, Terra)도 등록해 두어 요청이 가면 그대로 기록된다.
 describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
+  // 이 묶음의 테스트는 같은 보조 모델로 한도 오류를 반복해 흉내 내므로, 서버 공용 한도 기억을 테스트마다 비운다.
+  beforeEach(() => clearAdvisoryCooldown());
   const hits: string[] = [];
   let server: ReturnType<typeof Bun.serve>;
   let modelRoot: string;

@@ -171,6 +171,8 @@ const GENERATED_FILE = /(?:^|\/)(?:source-integrity\.json|runtime-integrity\.jso
 // 하위 프로젝트의 작업 기록(`Tools/X/doc/history/…`)에 남긴 측정·판정 데이터는 코드가 아니다(사용자 결정, 2026-10-23).
 // 같은 자리의 스크립트는 그대로 코드로 본다. 맨 위 `doc/`는 아래에서 통째로 빠진다.
 const RECORD_DATA_FILE = /(?:^|\/)docs?\/history\/.+\.(?:jsonl|ndjson|json|csv|tsv|log)$/i;
+// 작업 기록 폴더 아래 경로. 스크립트는 코드로 남지만(위 결정), 게이트가 거절할 때 증거 보존 관례(`.txt`)를 안내하는 데 쓴다.
+const RECORD_PATH = /(?:^|\/)docs?\/history\//i;
 // 맨 위 문서 폴더 이름의 대소문자는 프로젝트마다 다르다(`Docs/`).
 const TOP_DOC_DIR = /^docs?$/i;
 
@@ -1414,6 +1416,11 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   throw new CrossReviewRefusal([
     `cross-family review required before this commit (docs, tests, generated files, binary media/office/font assets, TS/JS edits proven comment-only and edits that only change version strings are excluded). ${decision.uncovered.length} file(s) have no passed review for their current content:`,
     ...list,
+    ...(() => {
+      const records = decision.uncovered.filter((file) => RECORD_PATH.test(file.path));
+      // 2026-11-12 사용자 결정 「세개는고쳐줘라」: 기록으로만 남긴 검증 스크립트는 검토하지 말고 `.txt`로 보존한다(rule://docs-handoff).
+      return records.length > 0 ? [`NOTE: ${records.length} of these are under a doc/history record folder. If they are verification scripts kept only as evidence (no product build or CI runs them), rename them to <name>.<ext>.txt (rule://docs-handoff) and finalize again instead of reviewing them: a .txt file is a record, not a gate target. Review only what the product actually runs.`] : [];
+    })(),
     ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
     `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required reviewer failed on a provider rate or usage limit (quote that decision, the reviewId and the raw error), and is recorded in the routing ledger.`,
@@ -1856,10 +1863,35 @@ export interface ReviewDeps {
   advisory?: AdvisoryReviewer & { limitRoutes?(): Promise<AdvisoryReviewer[]> };
   /** 필수 reviewer가 끝난 뒤 보조 검토자를 더 기다리는 상한(ms). 테스트가 짧게 준다. 기본 ADVISORY_GRACE_MS. */
   advisoryGraceMs?: number;
+  /**
+   * 공급자 한도로 실패한 보조 모델의 기억(모델 → 그날 자정까지, 원래 오류). 2026-11-12 사용자 결정 「세개는고쳐줘라」: 사무실 11-11 세션에서
+   * 보조 검토자가 모든 라운드에 429만 냈다. 기본은 서버 전체 공용(globalThis)이라 여러 Maker의 라운드가 같은 기억을 쓴다. 테스트가 따로 준다.
+   */
+  advisoryCooldown?: Map<string, AdvisoryCooldownEntry>;
   /** reviewer 호출 시작·reviewer마다의 끝(답·실패·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
   onProgress?: (progress: ReviewProgress) => void;
   now?: () => Date;
   newId?: () => string;
+}
+
+export interface AdvisoryCooldownEntry { until: number; error: string }
+
+const ADVISORY_COOLDOWN_KEY = "__cueloAdvisoryCooldown";
+function sharedAdvisoryCooldown(): Map<string, AdvisoryCooldownEntry> {
+  const holder = globalThis as unknown as Record<string, Map<string, AdvisoryCooldownEntry> | undefined>;
+  return (holder[ADVISORY_COOLDOWN_KEY] ??= new Map());
+}
+
+/** 서버 공용 한도 기억을 비운다. 실제 도구 경로를 여러 번 도는 테스트가 앞 테스트의 기억을 물려받지 않게 한다. */
+export function clearAdvisoryCooldown(): void {
+  sharedAdvisoryCooldown().clear();
+}
+
+/** 이 시각이 속한 날의 다음 자정(서버 지역 시각). 한도에 걸린 보조 모델은 그때까지 다시 부르지 않는다. */
+function nextLocalMidnight(now: number): number {
+  const day = new Date(now);
+  day.setHours(24, 0, 0, 0);
+  return day.getTime();
 }
 
 export type ReviewerProgressState = "waiting" | "answered" | "failed" | "cancelled" | "late";
@@ -2554,9 +2586,25 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     chainAuthors.some((author) => isSameModel(author, model)) ? `the advisory model ${model} is an author of this chain`
       : families.some((lane) => { const required = deps.requiredModels?.[lane]; return !!required && isSameModel(required, model); }) ? `the advisory model ${model} is this round's required reviewer`
       : undefined;
+  // 그날 이미 한도로 실패한 보조 모델은 다시 부르지 않는다. 같은 모델의 다른 경로가 남아 있으면 그 경로로 바로 가고, 없으면 건너뛴다.
+  const cooldown = deps.advisoryCooldown ?? sharedAdvisoryCooldown();
+  const coolingOf = (model: string): AdvisoryCooldownEntry | undefined => {
+    const entry = cooldown.get(model);
+    if (entry && entry.until > Date.now()) return entry;
+    if (entry) cooldown.delete(model);
+    return undefined;
+  };
+  const rememberLimit = (model: string, error: string) => cooldown.set(model, { until: nextLocalMidnight(Date.now()), error });
+  const cooled = advisor && !probeRound && !excluded(advisor.model) ? coolingOf(advisor.model) : undefined;
+  let cooledRoute: AdvisoryReviewer | undefined;
+  if (advisor && cooled) {
+    try { cooledRoute = (await advisor.limitRoutes?.() ?? []).find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model)); } catch { /* 경로 조회 실패면 건너뛴다. */ }
+  }
   const advisorySkip = !advisor ? `modelRoles.${ADVISORY_SLOT} is not configured`
     : probeRound ? "probe round: the advisory reviewer is asked on initial and delta rounds only"
-    : excluded(advisor.model);
+    : excluded(advisor.model) ?? (cooled && !cooledRoute
+      ? `the advisory model ${advisor.model} hit a provider limit earlier today and is not asked again until ${new Date(cooled.until).toTimeString().slice(0, 5)} (local); no other route of the same model is available`
+      : undefined);
   const progress: ReviewProgress["reviewers"] = [
     ...families.map((family) => ({ family, state: "waiting" as const })),
     ...(advisorySkip ? [] : [{ family: "advisory" as const, state: "waiting" as const }]),
@@ -2612,8 +2660,22 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     };
     try {
       let completion: LaneCompletion;
-      try {
-        completion = await askLane((prompt, attempt) => advisor.complete(prompt, attempt), advisoryCancel.signal);
+      // 한도로 실패한 경로는 그날 기억한다. 취소로 끊긴 호출과 한도가 아닌 실패는 기억하지 않는다.
+      const askRoute = async (route: AdvisoryReviewer): Promise<LaneCompletion> => {
+        try {
+          return await askLane((prompt, attempt) => route.complete(prompt, attempt), advisoryCancel.signal);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!advisoryCancel.signal.aborted && LIMIT_ERROR.test(message)) rememberLimit(route.model, message);
+          throw error;
+        }
+      };
+      if (cooled && cooledRoute) {
+        advisoryLimited = { model: advisor.model, error: cooled.error };
+        advisoryAsked = cooledRoute.model;
+        completion = await askRoute(cooledRoute);
+      } else try {
+        completion = await askRoute(advisor);
       } catch (error) {
         // 2026-11-11 사용자 결정 「버택스로 넘겨」: 공급자 한도 실패만 같은 모델의 다른 공급자 경로로 한 번 더 묻는다. 같은 취소 신호를 쓰므로 유예 상한은
         // 그대로다. 한도가 아닌 실패, 경로 조회 실패, 쓸 경로 없음은 원래 실패를 그대로 기록한다.
@@ -2621,11 +2683,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
         if (advisoryCancel.signal.aborted || !LIMIT_ERROR.test(message)) throw error;
         let routes: AdvisoryReviewer[] = [];
         try { routes = await advisor.limitRoutes?.() ?? []; } catch { /* 경로 조회 실패는 원래 실패를 가리지 않는다. */ }
-        const route = routes.find((candidate) => !excluded(candidate.model));
+        const route = routes.find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model));
         if (!route || advisoryCancel.signal.aborted) throw error;
         advisoryLimited = { model: advisor.model, error: message };
         advisoryAsked = route.model;
-        completion = await askLane((prompt, attempt) => route.complete(prompt, attempt), advisoryCancel.signal);
+        completion = await askRoute(route);
       }
       finish("answered");
       return { family: "advisory", model: completion.model, text: completion.text, elapsedMs: Date.now() - advisoryStarted, ...(completion.batches ? { batches: completion.batches } : {}) };
