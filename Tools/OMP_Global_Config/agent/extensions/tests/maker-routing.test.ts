@@ -1770,6 +1770,24 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const uiSpent = harness({ uiDifficulty: "DIFFICULT", quota: observed({ anthropic: [spent] }) });
     expect((await uiSpent.prepare("UI Opus 소진", [uiSpent.task], {} as never))[0]!.profile).toBeNull();
   });
+  test("Sol은 관측 사용률이 다 차도 추천·발주되고, Anthropic의 관측 소진은 그대로 추천 없음이다", async () => {
+    // 2026-11-11 사용자 결정: 크레딧이 있으니 미리 빼지 말고 실제 발주가 거절될 때만 돌린다.
+    const codexSpent = async () => ({
+      state: "observed", observedAt: 1,
+      providers: { "openai-codex": [{ credentialId: 17, disabled: false, limitReached: true, autoBlockedUntilMs: null, fetchedAt: 1,
+        limits: [{ id: "openai-codex:primary", windowId: "7d", shared: true, resetsAt: 100, usedFraction: 1, daySlot: null }] }] },
+    }) as never;
+    for (const [workClass, expected] of [["NORMAL", "NORMAL_SOL"], ["HARD", "HARD_CODE_SOL61"]] as const) {
+      const h = harness({ workClass, hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED", quota: codexSpent });
+      const [route] = await h.prepare("Sol 사용률 소진", [h.task], {} as never);
+      expect(route!.profile, workClass).toBe(expected);
+      expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto"), workClass).toBeUndefined();
+    }
+    // 같은 관측이 Anthropic이면 기존대로 추천 없음이다(이 예외는 크레딧으로 이어지는 provider에만 적용된다).
+    const anthropicSpent = harness({ quota: async () => ({ state: "observed", observedAt: 1, providers: {
+      anthropic: [{ credentialId: 9, disabled: false, limitReached: true, autoBlockedUntilMs: null, fetchedAt: 1, limits: [] }] } }) as never });
+    expect((await anthropicSpent.prepare("Sonnet 소진", [anthropicSpent.task], {} as never))[0]!.profile).toBeNull();
+  });
   test("DeepSeek는 어떤 분류에서도 자동 추천되지 않고, 명시 선택은 ROUTING_REASON이 있을 때만 받아들인다", async () => {
     const deepseek = new Set(["NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK"]);
     const options: NonNullable<Parameters<typeof harness>[0]>[] = [

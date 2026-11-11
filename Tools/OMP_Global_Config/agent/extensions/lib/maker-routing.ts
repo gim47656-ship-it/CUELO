@@ -610,10 +610,17 @@ const UNKNOWN_BOUNDED_REASON = "Jev가 남은 설계 판단이 한정된 것인�
 
 
 
+/** 크레딧이 사용 한도를 넘겨 이어 주는 provider다. 관측 사용률이나 계정 신호로 미리 빼지 않고 실제로 발주해 보며,
+ * 실제 거절은 config.yml `retry.fallbackOn: usage-limit`과 그 모델의 fallback 체인이 받는다
+ * (2026-11-11 사용자 결정: 「sol 한도도 크레딧이있으니까 실제 발주가 나갔다가 거절되면 돌리는걸로하자」). */
+const DISPATCH_THEN_FALLBACK_PROVIDERS: Record<string, true> = { "openai-codex": true };
+
 /** 그 모델 provider의 관측된 계정이 모두 쓸 수 없을 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
 function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
   if (quota.state !== "observed") return false;
-  const accounts = quota.providers[model.slice(0, model.indexOf("/"))] ?? [];
+  const provider = model.slice(0, model.indexOf("/"));
+  if (DISPATCH_THEN_FALLBACK_PROVIDERS[provider]) return false;
+  const accounts = quota.providers[provider] ?? [];
   return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
 }
 
