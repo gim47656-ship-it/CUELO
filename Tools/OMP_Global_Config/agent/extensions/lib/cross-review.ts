@@ -1830,6 +1830,8 @@ export class ReviewerCallError extends Error {
   /** partial: 모델이 중간까지 낸 답(출력 한도·오류로 끝난 경우). 통과는 못 하지만 원문은 기록한다. stopReason: 모델이 stop이 아닌 이유로 멈췄을 때 그 이유(length면 출력 한도 잘림). */
   constructor(message: string, readonly model: string, readonly partial?: string, readonly stopReason?: string) { super(message); }
 }
+/** 보조 검토자를 부르는 한 경로. model은 해석한 provider/id이고 complete는 실패를 ReviewerCallError로 던진다. */
+export interface AdvisoryReviewer { model: string; complete(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion> }
 
 export interface ReviewDeps {
   cwd: string;
@@ -1848,8 +1850,10 @@ export interface ReviewDeps {
   /**
    * 보조 검토자(modelRoles.crossReviewAdvisory). slot이 비어 있으면 없고, 그러면 보조 호출이 없다. model은 해석한 provider/id(못 풀면 selector)이며
    * 저자·필수 reviewer와 같은 모델인지 보는 데와 기록에 쓴다. complete는 실패를 ReviewerCallError로 던진다.
+   * limitRoutes(2026-11-11 사용자 결정 「버택스로 넘겨」)는 complete가 공급자 한도(LIMIT_ERROR)로 실패했을 때만 읽는, 같은 모델의 다른 공급자 경로다(설정
+   * 순서). 저자·필수 reviewer와 같은 모델을 뺀 첫 경로를 같은 취소 신호로 한 번 부른다. 없거나 비면 한도 실패도 기록만 한다.
    */
-  advisory?: { model: string; complete(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion> };
+  advisory?: AdvisoryReviewer & { limitRoutes?(): Promise<AdvisoryReviewer[]> };
   /** 필수 reviewer가 끝난 뒤 보조 검토자를 더 기다리는 상한(ms). 테스트가 짧게 준다. 기본 ADVISORY_GRACE_MS. */
   advisoryGraceMs?: number;
   /** reviewer 호출 시작·reviewer마다의 끝(답·실패·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
@@ -2545,11 +2549,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const chainAuthors = [...chain.map((item) => [item.authors, item.mainModel ?? deps.mainModel] as const), [input.authors, deps.mainModel] as const]
     .flatMap(([authors, main]) => authors.map((author) => (author.trim().toLowerCase() === "main" ? main ?? "" : author.trim())))
     .filter(Boolean);
+  // 저자나 이 라운드의 필수 reviewer와 같은 모델은 보조로 부르지 않는다. 한도 때 넘어가는 같은 모델의 다른 경로에도 같은 기준을 쓴다.
+  const excluded = (model: string): string | undefined =>
+    chainAuthors.some((author) => isSameModel(author, model)) ? `the advisory model ${model} is an author of this chain`
+      : families.some((lane) => { const required = deps.requiredModels?.[lane]; return !!required && isSameModel(required, model); }) ? `the advisory model ${model} is this round's required reviewer`
+      : undefined;
   const advisorySkip = !advisor ? `modelRoles.${ADVISORY_SLOT} is not configured`
     : probeRound ? "probe round: the advisory reviewer is asked on initial and delta rounds only"
-    : chainAuthors.some((author) => isSameModel(author, advisor.model)) ? `the advisory model ${advisor.model} is an author of this chain`
-    : families.some((lane) => { const required = deps.requiredModels?.[lane]; return !!required && isSameModel(required, advisor.model); }) ? `the advisory model ${advisor.model} is this round's required reviewer`
-    : undefined;
+    : excluded(advisor.model);
   const progress: ReviewProgress["reviewers"] = [
     ...families.map((family) => ({ family, state: "waiting" as const })),
     ...(advisorySkip ? [] : [{ family: "advisory" as const, state: "waiting" as const }]),
@@ -2595,20 +2602,38 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const forwardAbort = () => advisoryCancel.abort();
   if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
   const advisoryStarted = Date.now();
+  // 지금 부르는 보조 경로와, 한도로 실패해 그 경로로 넘어왔다면 원래 경로의 실패. 유예에서 끊긴 호출(late)도 이 값으로 기록한다.
+  let advisoryAsked = advisor?.model ?? "";
+  let advisoryLimited: CrossReviewAdvisoryOutcome["limited"];
   const advisoryRun = advisorySkip || !advisor ? undefined : (async (): Promise<ReviewerOutcome<"advisory">> => {
     const finish = (state: ReviewerProgressState) => {
       progress[families.length] = { family: "advisory", state, elapsedSec: Math.round((Date.now() - advisoryStarted) / 1000) };
       report();
     };
     try {
-      const completion = await askLane((prompt, attempt) => advisor.complete(prompt, attempt), advisoryCancel.signal);
+      let completion: LaneCompletion;
+      try {
+        completion = await askLane((prompt, attempt) => advisor.complete(prompt, attempt), advisoryCancel.signal);
+      } catch (error) {
+        // 2026-11-11 사용자 결정 「버택스로 넘겨」: 공급자 한도 실패만 같은 모델의 다른 공급자 경로로 한 번 더 묻는다. 같은 취소 신호를 쓰므로 유예 상한은
+        // 그대로다. 한도가 아닌 실패, 경로 조회 실패, 쓸 경로 없음은 원래 실패를 그대로 기록한다.
+        const message = error instanceof Error ? error.message : String(error);
+        if (advisoryCancel.signal.aborted || !LIMIT_ERROR.test(message)) throw error;
+        let routes: AdvisoryReviewer[] = [];
+        try { routes = await advisor.limitRoutes?.() ?? []; } catch { /* 경로 조회 실패는 원래 실패를 가리지 않는다. */ }
+        const route = routes.find((candidate) => !excluded(candidate.model));
+        if (!route || advisoryCancel.signal.aborted) throw error;
+        advisoryLimited = { model: advisor.model, error: message };
+        advisoryAsked = route.model;
+        completion = await askLane((prompt, attempt) => route.complete(prompt, attempt), advisoryCancel.signal);
+      }
       finish("answered");
       return { family: "advisory", model: completion.model, text: completion.text, elapsedMs: Date.now() - advisoryStarted, ...(completion.batches ? { batches: completion.batches } : {}) };
     } catch (error) {
       finish(advisoryCancel.signal.aborted ? "cancelled" : "failed");
       const called = error instanceof ReviewerCallError ? error : undefined;
       return {
-        family: "advisory", model: called?.model || advisor.model, text: called?.partial ?? "", elapsedMs: Date.now() - advisoryStarted,
+        family: "advisory", model: called?.model || advisoryAsked, text: called?.partial ?? "", elapsedMs: Date.now() - advisoryStarted,
         error: error instanceof Error ? error.message : String(error), ...(called?.stopReason ? { stopReason: called.stopReason } : {}),
       };
     }
@@ -2637,11 +2662,13 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     if (read.verdicts) parsedByFamily.set(item.family, read.verdicts);
   }
   // 보조 검토자 결과. 유예 안에 쓸 수 있는 답을 냈으면 그 지적을 이 라운드 지적에 합치고(advisory: true), 그 밖에는 이유와 함께 기록만 한다.
+  // 한도로 같은 모델의 다른 경로에 넘어갔으면 어떤 결과든 원래 경로의 실패(limited)를 함께 남긴다.
   let advisory: CrossReviewAdvisoryOutcome;
+  const limited = advisoryLimited ? { limited: advisoryLimited } : {};
   if (advisorySkip || !advisoryRun) {
     advisory = { status: "skipped", ...(advisor ? { model: advisor.model } : {}), reason: advisorySkip ?? "not called" };
   } else if (!advisoryOutcome) {
-    advisory = { status: "late", model: advisor!.model, elapsedMs: Date.now() - advisoryStarted, reason: `no answer within ${graceMs / 1000} s after the required reviewer(s) finished; the call was aborted and any later answer is ignored (not carried into later rounds)` };
+    advisory = { status: "late", model: advisoryAsked, elapsedMs: Date.now() - advisoryStarted, reason: `no answer within ${graceMs / 1000} s after the required reviewer(s) finished; the call was aborted and any later answer is ignored (not carried into later rounds)`, ...limited };
     progress[families.length] = { family: "advisory", state: "late", elapsedSec: Math.round(advisory.elapsedMs! / 1000) };
     report();
   } else {
@@ -2652,14 +2679,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       const rawFile = read.reviewer.rawFile ? { rawFile: read.reviewer.rawFile } : {};
       if (read.reviewer.status === "ok") {
         findings.push(...read.findings);
-        advisory = { status: "ok", model, elapsedMs, findings: read.findings.length, ...rawFile };
+        advisory = { status: "ok", model, elapsedMs, findings: read.findings.length, ...rawFile, ...limited };
       } else if (read.reviewer.status === "unparsable") {
-        advisory = { status: "unparsable", model, elapsedMs, reason: "answer is not the expected JSON", ...rawFile };
+        advisory = { status: "unparsable", model, elapsedMs, reason: "answer is not the expected JSON", ...rawFile, ...limited };
       } else {
-        advisory = { status: advisoryOutcome.stopReason === "length" ? "truncated" : "error", model, elapsedMs, reason: read.reviewer.error ?? "advisory call failed", ...rawFile };
+        advisory = { status: advisoryOutcome.stopReason === "length" ? "truncated" : "error", model, elapsedMs, reason: read.reviewer.error ?? "advisory call failed", ...rawFile, ...limited };
       }
     } catch (error) {
-      advisory = { status: "error", model: advisoryOutcome.model, elapsedMs: advisoryOutcome.elapsedMs, reason: `the advisory answer could not be recorded: ${error instanceof Error ? error.message : String(error)}` };
+      advisory = { status: "error", model: advisoryOutcome.model, elapsedMs: advisoryOutcome.elapsedMs, reason: `the advisory answer could not be recorded: ${error instanceof Error ? error.message : String(error)}`, ...limited };
     }
   }
   returned = true;

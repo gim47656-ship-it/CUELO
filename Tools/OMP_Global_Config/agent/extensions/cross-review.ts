@@ -21,6 +21,7 @@ import {
   type ReviewProgress,
   type ResolveInput,
 } from "./lib/cross-review";
+import { sameModelRoutes } from "./lib/model-routes";
 import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledger";
 import { onSessionLifecycle } from "./lib/session-identity";
 
@@ -36,18 +37,22 @@ const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: t
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
 /** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. slot은 slop_check가 lane의 기본 slot 대신 slopReviewOpenAI를 부를 때만 준다. */
 /** lane advisory는 보조 검토자(modelRoles.crossReviewAdvisory)이며 provider 계열 검사를 하지 않는다. 필수 자리는 slot 이름의 계열 모델이어야 한다. */
+/** route는 보조 검토자가 공급자 한도로 실패했을 때 같은 모델을 다른 공급자로 부르는 명시 경로(provider/id)다. 해석된 이름이 정확히 같을 때만 부른다. */
 export async function completeReviewer(
-  lane: Lane | "advisory", prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string; slot?: string } = {},
+  lane: Lane | "advisory", prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string; slot?: string; route?: string } = {},
 ): Promise<{ model: string; text: string; usage: { input: number; output: number; cacheRead: number; cost: number } }> {
   const slot = options.slot ?? (lane === "advisory" ? ADVISORY_SLOT : SLOT[lane]);
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
+  const { route } = options;
   const selector = findScopedSettings(ctx.cwd)?.getModelRole(slot);
-  if (!selector) throw new ReviewerCallError(`modelRoles.${slot} is not configured.`, `@${slot}`);
-  const model = ctx.models.resolve(`@${slot}`);
-  if (!model) throw new ReviewerCallError(`Could not resolve modelRoles.${slot} (${selector}).`, selector);
+  if (!selector) throw new ReviewerCallError(`modelRoles.${slot} is not configured.`, route ?? `@${slot}`);
+  const model = ctx.models.resolve(route ?? `@${slot}`);
+  if (!model) throw new ReviewerCallError(route ? `Could not resolve ${route}.` : `Could not resolve modelRoles.${slot} (${selector}).`, route ?? selector);
   const name = `${model.provider}/${model.id}`;
+  // 다른 모델로 풀린 명시 경로는 부르지 않고, 풀린 모델이 아니라 요청한 경로 이름으로 실패시킨다.
+  if (route && name !== route) throw new ReviewerCallError(`${route} resolved to ${name}.`, route);
   // 필수 자리는 slot이 가리키는 모델이 lane의 계열이어야 교차검증이다. 보조 자리는 provider와 무관하다.
   const ok = lane === "advisory" || (lane === "anthropic" ? model.provider === "anthropic" : Object.hasOwn(OPENAI_PROVIDERS, model.provider));
   if (!ok) throw new ReviewerCallError(`modelRoles.${slot} resolved to ${name}, which is not a ${lane} model.`, name);
@@ -79,6 +84,7 @@ export async function completeReviewer(
 /**
  * 보조 검토자 설정. slot이 비어 있으면 undefined(보조 호출 없음)다. 설정했으면 해석한 provider/id(못 풀면 selector)를 이름으로 쓰고, 해석·자격 문제는
  * 호출이 그 이름으로 실패해 error로 기록된다. requiredModels는 보조가 이 라운드의 필수 reviewer와 같은 모델인지 보는 데 쓴다.
+ * limitRoutes는 대체 순서(retry.fallbackChains)의 이 모델 키에 적힌 같은 모델의 다른 공급자만 돌려준다. 적힌 것이 없으면 빈 목록이다.
  */
 async function advisoryDeps(ctx: ExtensionContext): Promise<Pick<ReviewDeps, "advisory" | "requiredModels">> {
   const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
@@ -87,9 +93,16 @@ async function advisoryDeps(ctx: ExtensionContext): Promise<Pick<ReviewDeps, "ad
   for (const lane of ["openai", "anthropic"] as const) { const name = named(SLOT[lane]); if (name) requiredModels[lane] = name; }
   const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_SLOT);
   if (!selector) return { requiredModels };
+  const primary = named(ADVISORY_SLOT);
   return {
     requiredModels,
-    advisory: { model: named(ADVISORY_SLOT) ?? selector, complete: (prompt, attempt) => completeReviewer("advisory", prompt, ctx, attempt) },
+    advisory: {
+      model: primary ?? selector,
+      complete: (prompt, attempt) => completeReviewer("advisory", prompt, ctx, attempt),
+      limitRoutes: async () => (primary ? await sameModelRoutes(ctx.cwd, primary) : []).map((route) => ({
+        model: route, complete: (prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { route }),
+      })),
+    },
   };
 }
 
@@ -186,7 +199,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Cross-family review. Read rule://cross-review-procedure before calling. action is only review or resolve. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses the configured required reviewer of the other family: Anthropic- or DeepSeek-authored code goes to the OpenAI reviewer, OpenAI, Google and unknown authors go to the Anthropic reviewer. Initial and delta rounds also ask the advisory reviewer (modelRoles.crossReviewAdvisory, when set) in parallel and wait at most 60 s after the required reviewer finishes: its in-time findings (R<n>-ADV-k, advisory: true) join the round's findings and must be closed like any other; a late, truncated, failed or skipped advisory is only recorded (result advisory) and never blocks. A review call is one of three rounds chosen by its fields, never by action: initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused); probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security and unreviewed-change handling follow the referenced rule.",
+    description: "Cross-family review. Read rule://cross-review-procedure before calling. action is only review or resolve. review: Main and Maker; resolve: Main only. review: files = changed files relative to cwd, acceptance = acceptance criteria, authors = author model selectors. A subagent session cannot use main, and its first authors must include its own model family. Uses the configured required reviewer of the other family: Anthropic- or DeepSeek-authored code goes to the OpenAI reviewer, OpenAI, Google and unknown authors go to the Anthropic reviewer. Initial and delta rounds also ask the advisory reviewer (modelRoles.crossReviewAdvisory, when set) in parallel and wait at most 60 s after the required reviewer finishes: its in-time findings (R<n>-ADV-k, advisory: true) join the round's findings and must be closed like any other; an advisory that fails on a provider rate or usage limit is asked once more through the same model's other provider route listed in retry.fallbackChains, inside the same 60 s wait (result advisory.limited names the limited route); a late, truncated, failed or skipped advisory is only recorded (result advisory) and never blocks. A review call is one of three rounds chosen by its fields, never by action: initial uses files, acceptance, authors; delta uses previousReviewId (omitted files/acceptance carry over; a delta with no change is refused); probe uses previousReviewId and probeResults[{findingId, command, exitCode, output}]. base is only for the first round of committed changes; inputs are contracts bound to the pass; references are context. Files and excerpts go to the reviewer provider, with secret/excluded-path and size limits. A Maker reports the reviewId chain and per-finding evidence to Main and never resolves. Main resolve takes reviewId and resolutions[{id, status: fixed|refuted|limit, evidence}] for every finding. unreviewedAcknowledgements[{path, evidence}]: one per unreviewed code file, only when no non-probe round remains or the last round skipped policy-excluded files. Detailed limits, security and unreviewed-change handling follow the referenced rule.",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),

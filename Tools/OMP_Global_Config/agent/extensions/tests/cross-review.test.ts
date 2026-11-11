@@ -41,7 +41,7 @@ import {
   type GateOutcome,
 } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewLedgerRecord } from "../lib/routing-ledger";
-import { executeCrossReview } from "../cross-review";
+import { completeReviewer, executeCrossReview } from "../cross-review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
@@ -2954,24 +2954,31 @@ describe("자격 증명 파일 값 전송 차단(#50)", () => {
   });
 });
 
-// 2026-11-08 사용자 정정: 보조 검토자(modelRoles.crossReviewAdvisory)는 대체 없이 건너뛴다. 실제 도구 경로(executeCrossReview, reviewDeps,
-// completeReviewer)를 로컬 OpenAI 호환 서버로 돌려, 한도 오류가 보조 error 기록으로만 남고 필수 검토는 그대로 진행하며 다른 모델로의 요청이 없음을 본다.
-// 서버는 대체 후보가 될 만한 모델(반대 계열 필수 자리, Vertex 같은 Argon, Antigravity Flash, Terra)도 등록해 두어 요청이 가면 그대로 기록된다.
+// 2026-11-08 사용자 정정: 보조 검토자(modelRoles.crossReviewAdvisory)는 다른 모델로 대체하지 않는다. 2026-11-11 사용자 결정 「버택스로 넘겨」: 공급자 한도로
+// 실패했을 때만, 대체 순서(retry.fallbackChains)의 그 모델 키에 적힌 같은 모델의 다른 공급자 경로를 한 번 부른다. 실제 도구 경로(executeCrossReview,
+// reviewDeps, completeReviewer)를 로컬 OpenAI 호환 서버로 돌려 요청이 간 모델을 그대로 센다. 서버는 대체 후보가 될 만한 모델(반대 계열 필수 자리,
+// Vertex 같은 Argon, Antigravity Flash, Terra)도 등록해 두어 요청이 가면 그대로 기록된다.
 describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
   const hits: string[] = [];
   let server: ReturnType<typeof Bun.serve>;
   let modelRoot: string;
   let registry: ModelRegistry;
   const ARGON_AISTUDIO = "aistudio/gemini-4-argon";
+  const ARGON_VERTEX = "google-vertex/gemini-4-argon";
+  type Failure = { status: number; message: string };
+  const QUOTA: Failure = { status: 429, message: "You exceeded your current quota. RESOURCE_EXHAUSTED" };
+  /** 공급자별 실패 응답. 적히지 않은 공급자는 깨끗한 답을 낸다. */
+  let failing: Record<string, Failure> = { aistudio: QUOTA };
 
   beforeAll(async () => {
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
       const body = await request.json() as { model: string };
       const provider = new URL(request.url).pathname.split("/")[1] ?? "";
       hits.push(`${provider}/${body.model}`);
-      // 주 보조 모델만 한도 오류다. x-should-retry: false는 전송 계층이 이 429를 곧바로 올리게 한다(없으면 completeSimple이 15초 동안 6번 되풀이한다).
-      if (provider === "aistudio") {
-        return new Response(JSON.stringify({ error: { message: "You exceeded your current quota. RESOURCE_EXHAUSTED", code: 429 } }), { status: 429, headers: { "content-type": "application/json", "x-should-retry": "false" } });
+      // x-should-retry: false는 전송 계층이 이 실패를 곧바로 올리게 한다(없으면 completeSimple이 15초 동안 6번 되풀이한다).
+      const failure = failing[provider];
+      if (failure) {
+        return new Response(JSON.stringify({ error: { message: failure.message, code: failure.status } }), { status: failure.status, headers: { "content-type": "application/json", "x-should-retry": "false" } });
       }
       const base = { id: "fake", object: "chat.completion.chunk", created: 0, model: body.model };
       const chunks = [
@@ -2996,37 +3003,83 @@ describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
     rmSync(modelRoot, { recursive: true, force: true });
   });
 
-  test("한도 오류는 보조 error 기록으로만 남고 필수 검토는 통과하며 다른 모델로 가는 요청은 없다", async () => {
+  type Round = { reviewId: string; passable: boolean; findings: unknown[]; reviewers: { family: string; status: string }[]; advisory: { status: string; model?: string; reason?: string; findings?: number; limited?: { model: string; error: string } } };
+  /** 실제 도구 경로로 Opus 저자의 한 라운드를 돌리고 resolve 통과까지 본다. chain은 보조 모델 키의 대체 순서다. */
+  async function advisoryRound(options: { chain?: string[]; failing?: Record<string, Failure> } = {}): Promise<{ review: Round; sent: string[] }> {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     hits.length = 0;
+    failing = options.failing ?? { aistudio: QUOTA };
     const saved = { ledger: process.env.OMP_CROSS_REVIEW_LEDGER, dir: process.env.OMP_CROSS_REVIEW_DIR };
     process.env.OMP_CROSS_REVIEW_LEDGER = env.ledger;
     process.env.OMP_CROSS_REVIEW_DIR = env.snapshots;
+    let review: Round | undefined;
     try {
-      await withActiveSettings(Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: ARGON_AISTUDIO } }), async () => {
+      const settings = Settings.isolated({
+        modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: ARGON_AISTUDIO },
+        ...(options.chain ? { retry: { fallbackChains: { [ARGON_AISTUDIO]: options.chain } } } : {}),
+      });
+      await withActiveSettings(settings, async () => {
         const model = registry.find("anthropic", "claude-opus-5-5");
         const ctx = {
           cwd: env.work, agent: { kind: "main" }, model, modelRegistry: registry,
           models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => model),
           sessionManager: { getSessionId: () => "advisory-quota", getLeafId: () => null },
         } as never;
-        const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, ctx, signal) as {
-          reviewId: string; passable: boolean; findings: unknown[]; reviewers: { family: string; status: string }[]; advisory: { status: string; model?: string; reason?: string };
-        };
-        expect(review.passable).toBe(true);
-        expect(review.findings).toEqual([]);
-        expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
-        expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
-        expect(review.advisory.reason).toMatch(/quota|429/i);
-        // 필수 reviewer 한 번과 보조 한 번뿐이다. 같은 Argon의 Vertex 쪽, 반대 계열 필수 자리, Antigravity Flash, Terra로 가는 요청이 있으면 여기에 더 찍힌다.
-        expect([...hits].sort()).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
+        review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, ctx, signal) as Round;
         expect(await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions: [] }, ctx, signal)).toMatchObject({ pass: true, open: [] });
       });
     } finally {
       if (saved.ledger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER; else process.env.OMP_CROSS_REVIEW_LEDGER = saved.ledger;
       if (saved.dir === undefined) delete process.env.OMP_CROSS_REVIEW_DIR; else process.env.OMP_CROSS_REVIEW_DIR = saved.dir;
     }
+    return { review: review!, sent: [...hits].sort() };
+  }
+
+  test("대체 순서에 같은 모델의 다른 경로가 없으면 한도 오류는 보조 error 기록으로만 남고 다른 모델로 가는 요청은 없다", async () => {
+    const { review, sent } = await advisoryRound();
+    expect(review.passable).toBe(true);
+    expect(review.findings).toEqual([]);
+    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
+    expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
+    expect(review.advisory.reason).toMatch(/quota|429/i);
+    // 필수 reviewer 한 번과 보조 한 번뿐이다. 같은 Argon의 Vertex 쪽, 반대 계열 필수 자리, Antigravity Flash, Terra로 가는 요청이 있으면 여기에 더 찍힌다.
+    expect(sent).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
+  });
+
+  test("대체 순서에 같은 모델의 Vertex 경로가 있으면 한도 오류 뒤 그 경로만 한 번 더 부르고 다른 모델은 부르지 않는다", async () => {
+    const { review, sent } = await advisoryRound({ chain: [ARGON_VERTEX, "google-antigravity/gemini-3.8-flash"] });
+    expect(review.passable).toBe(true);
+    expect(review.findings).toEqual([]);
+    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
+    expect(review.advisory).toMatchObject({ status: "ok", model: ARGON_VERTEX, findings: 0, limited: { model: ARGON_AISTUDIO } });
+    expect(review.advisory.limited?.error).toMatch(/quota|429/i);
+    // 보조 한 번, 같은 모델의 Vertex 경로 한 번, 필수 reviewer 한 번이다. 대체 순서의 다른 모델(Antigravity Flash)로는 가지 않는다.
+    expect(sent).toEqual([ARGON_AISTUDIO, ARGON_VERTEX, "openai-codex/gpt-6-astra"]);
+  });
+
+  test("한도가 아닌 실패는 Vertex 경로가 적혀 있어도 부르지 않는다", async () => {
+    // 400은 전송 계층이 되풀이하지 않는다(500은 한 번 더 보낸다).
+    const { review, sent } = await advisoryRound({ chain: [ARGON_VERTEX], failing: { aistudio: { status: 400, message: "request body rejected by relay" } } });
+    expect(review.passable).toBe(true);
+    expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
+    expect(review.advisory).not.toHaveProperty("limited");
+    expect(sent).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
+  });
+
+  test("명시 경로 호출은 보조 자리가 비었거나 경로가 풀리지 않아도 요청한 경로 이름으로 실패하고 요청을 보내지 않는다", async () => {
+    const env = repo();
+    hits.length = 0;
+    const failures: unknown[] = [];
+    for (const modelRoles of [{}, { crossReviewAdvisory: ARGON_AISTUDIO }]) {
+      await withActiveSettings(Settings.isolated({ modelRoles }), async () => {
+        const ctx = { cwd: env.work, models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => undefined), sessionManager: { getSessionId: () => "advisory-route" } } as never;
+        failures.push(await completeReviewer("advisory", "p", ctx, signal, { route: "google-vertex/no-such-model" }).catch((error: unknown) => error));
+      });
+    }
+    expect(failures).toEqual([expect.any(ReviewerCallError), expect.any(ReviewerCallError)]);
+    expect(failures.map((failure) => (failure as ReviewerCallError).model)).toEqual(["google-vertex/no-such-model", "google-vertex/no-such-model"]);
+    expect(hits).toEqual([]);
   });
 
   test("DeepSeek 저자는 실제 도구 경로에서도 설정된 OpenAI 슬롯 모델로만 요청이 가고 Opus로는 가지 않는다", async () => {

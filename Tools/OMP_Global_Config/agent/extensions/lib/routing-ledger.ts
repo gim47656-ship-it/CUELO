@@ -347,6 +347,11 @@ export interface CrossReviewAdvisoryOutcome {
   reason?: string;
   /** 답 원문 파일(사본 디렉터리의 raw-advisory.txt). 부분 답이라도 있으면 남긴다. */
   rawFile?: string;
+  /**
+   * 2026-11-11 사용자 결정: 설정된 보조 모델이 공급자 한도로 실패해 같은 모델의 다른 공급자 경로가 대신 불렸을 때만 있다. 실패한 원래 경로와 그 오류이며,
+   * 이때 model·status·reason은 대신 불린 경로의 결과다.
+   */
+  limited?: { model: string; error: string };
 }
 
 export type CrossReviewProofLevel = "cited-line" | "reasoned" | "needs-run";

@@ -12,6 +12,7 @@ import { createRoutingLedger, readCrossReviewRecords, type CrossReviewRecord } f
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
 const ARGON = "aistudio/gemini-4-argon";
+const VERTEX = "google-vertex/gemini-4-argon";
 const roots: string[] = [];
 const signal = new AbortController().signal;
 afterEach(() => { for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -53,10 +54,11 @@ function sleep(ms: number, abort: AbortSignal): Promise<void> {
 }
 
 interface Advisor { ms: number; text?: string; error?: Error }
-interface Trace { requiredDoneAt?: number; advisoryCalls: number; advisoryAborted: boolean }
+interface Route extends Advisor { model: string }
+interface Trace { requiredDoneAt?: number; advisoryCalls: number; advisoryAborted: boolean; routeCalls: string[]; routeAborted: boolean }
 let idCounter = 0;
 /** 필수 reviewer는 OpenAI 자리(Opus 저자)이며 requiredMs 뒤 깨끗한 답을 낸다. advisor가 없으면 보조 slot이 설정되지 않은 것이다. */
-function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; advisor?: Advisor; advisoryModel?: string; graceMs?: number } = {}): ReviewDeps {
+function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; advisor?: Advisor; advisoryModel?: string; graceMs?: number; routes?: Route[] | Error } = {}): ReviewDeps {
   const ledger = createRoutingLedger(env.ledger);
   const { advisor } = options;
   return {
@@ -80,11 +82,27 @@ function deps(env: RepoEnv, trace: Trace, options: { requiredMs?: number; adviso
           if (advisor.error) throw advisor.error;
           return { model: options.advisoryModel ?? ARGON, text: advisor.text ?? clean };
         },
+        // 같은 모델의 다른 공급자 경로. Error면 경로 조회 자체가 실패한다.
+        ...(options.routes ? {
+          limitRoutes: async () => {
+            if (options.routes instanceof Error) throw options.routes;
+            return options.routes!.map((route) => ({
+              model: route.model,
+              complete: async (_prompt: string, attempt: AbortSignal) => {
+                trace.routeCalls.push(route.model);
+                attempt.addEventListener("abort", () => { trace.routeAborted = true; }, { once: true });
+                await sleep(route.ms, attempt);
+                if (route.error) throw route.error;
+                return { model: route.model, text: route.text ?? clean };
+              },
+            }));
+          },
+        } : {}),
       },
     } : {}),
   } as ReviewDeps;
 }
-const trace = (): Trace => ({ advisoryCalls: 0, advisoryAborted: false });
+const trace = (): Trace => ({ advisoryCalls: 0, advisoryAborted: false, routeCalls: [], routeAborted: false });
 const input = { files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] };
 const recordOf = (env: RepoEnv, reviewId: string) => readCrossReviewRecords(env.ledger).find((record): record is CrossReviewRecord => record.type === "cross-review" && record.reviewId === reviewId)!;
 const resolveDeps = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
@@ -232,5 +250,84 @@ describe("보조 slot이 없거나 쓸 수 없는 자리면 부르지 않는다"
     expect(t.advisoryCalls).toBe(0);
     expect(delta.advisory).toMatchObject({ status: "skipped" });
     expect(delta.findings.filter((item) => item.advisory)).toEqual([]);
+  });
+});
+
+// 2026-11-11 사용자 결정 「버택스로 넘겨」: 보조 검토자가 공급자 한도로 실패하면 대체 순서에 적힌 같은 모델의 다른 공급자 경로를 한 번 부른다.
+// 유예 상한, 저자와 필수 검토자 제외, 「실패는 기록만」은 그 경로에도 그대로 적용된다.
+describe("보조 검토자가 공급자 한도로 실패하면", () => {
+  const LIMIT = "Google API error (429): You've reached your usage limit for this model (resets in 59 minutes). RESOURCE_EXHAUSTED";
+  const OTHER = "google-antigravity/gemini-4-argon";
+  const limited = (): Advisor => ({ ms: 10, error: new ReviewerCallError(LIMIT, ARGON) });
+
+  test("같은 모델의 첫 경로를 한 번 부르고 그 지적이 그 경로 이름으로 합쳐진다", async () => {
+    const env = repo();
+    const t = trace();
+    const d = deps(env, t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10, text: finding("route objection") }, { model: OTHER, ms: 10 }], graceMs: 5_000 });
+    const review = await runReview(input, d, signal);
+    expect(t.advisoryCalls).toBe(1);
+    expect(t.routeCalls).toEqual([VERTEX]);
+    expect(review.findings).toEqual([expect.objectContaining({ id: "R1-ADV-1", advisory: true, reviewer: VERTEX, claim: "route objection" })]);
+    expect(review.advisory).toMatchObject({ status: "ok", model: VERTEX, findings: 1, limited: { model: ARGON, error: LIMIT } });
+    expect(recordOf(env, review.reviewId).advisory).toMatchObject({ status: "ok", model: VERTEX, limited: { model: ARGON, error: LIMIT } });
+    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
+  });
+
+  test("한도가 아닌 실패와 경로 조회 실패는 경로를 부르지 않고 원래 실패만 기록한다", async () => {
+    const t = trace();
+    const other = await runReview(input, deps(repo(), t, { advisor: { ms: 10, error: new ReviewerCallError("HTTP 503 from relay", ARGON) }, routes: [{ model: VERTEX, ms: 10 }] }), signal);
+    expect(other.advisory).toMatchObject({ status: "error", model: ARGON });
+    expect(other.advisory?.reason).toContain("HTTP 503 from relay");
+    expect(other.advisory).not.toHaveProperty("limited");
+    const broken = await runReview(input, deps(repo(), t, { advisor: limited(), routes: new Error("settings unreadable") }), signal);
+    expect(broken.passable).toBe(true);
+    expect(broken.advisory).toMatchObject({ status: "error", model: ARGON });
+    expect(broken.advisory?.reason).toContain("usage limit");
+    expect(broken.advisory).not.toHaveProperty("limited");
+    expect(t.advisoryCalls).toBe(2);
+    expect(t.routeCalls).toEqual([]);
+  });
+
+  test("저자나 필수 검토자와 같은 모델인 경로는 건너뛰고, 남는 경로가 없으면 원래 실패만 기록한다", async () => {
+    const t = trace();
+    // Google 저자의 필수 검토자는 Anthropic 자리(OPUS)다. 보조 모델은 공급자가 달라 불리고, Vertex 경로는 저자 자신이다.
+    const authored = { ...input, authors: [VERTEX] };
+    const next = await runReview(authored, deps(repo(), t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10 }, { model: OPUS, ms: 10 }, { model: OTHER, ms: 10 }] }), signal);
+    expect(t.routeCalls).toEqual([OTHER]);
+    expect(next.advisory).toMatchObject({ status: "ok", model: OTHER, limited: { model: ARGON } });
+    const none = await runReview(authored, deps(repo(), t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10 }, { model: OPUS, ms: 10 }] }), signal);
+    expect(t.routeCalls).toEqual([OTHER]);
+    expect(none.passable).toBe(true);
+    expect(none.advisory).toMatchObject({ status: "error", model: ARGON });
+    expect(none.advisory).not.toHaveProperty("limited");
+  });
+
+  test("경로도 실패하면 그 경로 이름의 error로 기록만 하고 다음 경로는 부르지 않는다", async () => {
+    const env = repo();
+    const t = trace();
+    const d = deps(env, t, { advisor: limited(), routes: [{ model: VERTEX, ms: 10, error: new ReviewerCallError("HTTP 503 from Vertex", VERTEX) }, { model: OTHER, ms: 10 }] });
+    const review = await runReview(input, d, signal);
+    expect(t.routeCalls).toEqual([VERTEX]);
+    expect(review.passable).toBe(true);
+    expect(review.findings).toEqual([]);
+    expect(review.advisory).toMatchObject({ status: "error", model: VERTEX, limited: { model: ARGON, error: LIMIT } });
+    expect(review.advisory?.reason).toContain("HTTP 503 from Vertex");
+    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: true });
+  });
+
+  test("경로 호출도 같은 유예 상한에서 끊기고 late로 기록된다", async () => {
+    const env = repo();
+    const t = trace();
+    const graceMs = 300;
+    const d = deps(env, t, { requiredMs: 50, advisor: limited(), routes: [{ model: VERTEX, ms: 10_000, text: finding("too late") }], graceMs });
+    const review = await runReview(input, d, signal);
+    const waited = Date.now() - t.requiredDoneAt!;
+    expect(waited).toBeGreaterThanOrEqual(graceMs - 20);
+    expect(waited).toBeLessThan(graceMs + 700);
+    expect(t.routeCalls).toEqual([VERTEX]);
+    expect(t.routeAborted).toBe(true);
+    expect(review.findings).toEqual([]);
+    expect(review.advisory).toMatchObject({ status: "late", model: VERTEX, limited: { model: ARGON } });
+    expect(await runResolve({ reviewId: review.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: true });
   });
 });
