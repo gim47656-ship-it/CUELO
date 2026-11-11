@@ -155,12 +155,13 @@ function clampTimeout(value: number | undefined): number {
  * 10-27~11-02 ego_browser 실패 중 스크립트 API 오용이 반복됐다(Node 본문에서 `location` 사용, 없는 `page.fill`·`page.on` 호출).
  * SDK 가이드에 답이 있지만 실패한 자리에서는 보이지 않으므로, 오류 원문이 그 모양일 때만 바른 호출을 붙인다.
  */
-export function misuseHint(raw: string): string {
+export function misuseHint(raw: string, host: EgoHost = "windows"): string {
   const hints: string[] = [];
   const global = /ReferenceError: (document|window|location|navigator|localStorage|sessionStorage) is not defined/.exec(raw)?.[1];
   if (global) hints.push(`스크립트 본문은 Node에서 돈다. 페이지의 \`${global}\`는 \`page.evaluate(...)\` 안에서만 쓴다(주소는 \`await page.evaluate('location.href')\`).`);
   const missing = /TypeError: page\.([\w$]+) is not a function/.exec(raw)?.[1];
-  if (missing) hints.push(`\`page\`에는 \`${missing}\`가 없다. 요소 입력·클릭은 \`page.locator('@N' 또는 CSS 선택자)\`의 \`click\`·\`fill\`·\`press\`로 하고, 다른 API는 도구 설명의 ego-browser 가이드에서 이름을 확인한 뒤 쓴다.`);
+  if (missing === "cdp" && host === "linux") hints.push("Linux ego의 `page`에는 `cdp`가 없다. raw CDP는 전역 `cdp(method, params)`로 부른다(TaskSpace 탭에 적용된다). Linux ego 앱에는 `Page.printToPDF`가 없다.");
+  else if (missing) hints.push(`\`page\`에는 \`${missing}\`가 없다. 요소 입력·클릭은 \`page.locator('@N' 또는 CSS 선택자)\`의 \`click\`·\`fill\`·\`press\`로 하고, 다른 API는 도구 설명의 ego-browser 가이드에서 이름을 확인한 뒤 쓴다.`);
   return hints.length ? `\n${hints.join("\n")}` : "";
 }
 
@@ -204,7 +205,7 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     const hint = /permission prompt for .+ has appeared/i.test(raw)
       ? "\n권한 팝업은 사용자가 허용·거부해야 한다. 같은 스크립트를 다시 보내거나 우회하지 않는다. `await task.handOff()`로 넘기고 사용자에게 무엇을 눌러야 하는지 알린 뒤, 사용자가 계속하라고 하면 이어 간다."
       : "";
-    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}${misuseHint(raw)}`);
+    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}${misuseHint(raw, host)}`);
   }
   const text = `${label}${finish ? " — 정리됨" : ""}\n${body || "(출력 없음)"}`;
   return { text, spaceName: name, profile, finished: finish, result };
@@ -403,6 +404,7 @@ function toolDescription(host: EgoHost): string {
     const guide = join(dirname(linuxHostPath()), "..", "..", "skills", "ego-browser", "SKILL.md");
     return "Drive isolated ego TaskSpaces in the Electron ego lite app on this Linux PC without a bash heredoc. Each space is an Agent Space inside the app, opened in the background and separate from the user's tabs. If the app is not running, the tool starts it (`~/.local/bin/ego-lite --launch` in its own systemd user unit) and waits for it; if the app cannot start, the call fails rather than using another browser. Only a PC without the app launcher uses the separate ego Chromium (CDP 32899) in an isolated new window; a Chromium result does not verify the Electron ego app. Never open agent work in the user's Space, tabs, or the CUELO PWA, including through native GUI controls or raw CDP. "
       + "`script` runs in Linux Node.js (ESM, top-level await, not the page): the tool has already run `taskSpaces.useOrCreate(<name>)` and bound `task` (`id`, `handOff()`, `takeOver()`, `finish({ keep })`); `page` is the space's current tab (`page.goto`, `page.snapshot`, `page.evaluate`, locators), and `browser.openOrReuseTab(url, { wait: true })` opens more tabs. "
+      + "Raw CDP goes through the global `cdp(method, params)` (there is no `page.cdp` here), and the Electron app has no `Page.printToPDF`. Viewport, dark mode, console capture, pre-click occlusion and dialog recipes: `skill://ego-browser-verify-recipes`. "
       + `Read the API guide at \`${guide}\` before first use. `
       + "One TaskSpace is kept per session and resumed on every call (variables do not persist between calls, tabs do). "
       + "Only `profile: \"user\"` exists here (`verify` fails because spaces copy the user's cookies); use it for CUELO screen verification too, and leave only checks that need a logged-out state unverified. "

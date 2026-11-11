@@ -13,8 +13,9 @@ description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분�
   브라우저**에 탭이 열린다. relay 탭을 닫을 때는 `browser.close({ name })`로 자기 탭만
   닫고 `all`·`kill`·`app.path`는 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.
   빌드가 깨진 화면을 사용자에게 띄우지 않는다. HTML·웹 페이지를 PDF로 인쇄하는 것도 브라우저 작업이라 같은 경로를
-  따른다: ego lite PC에서는 TaskSpace에서 `page.cdp("Page.printToPDF")`로 받고, Edge·Chrome `--print-to-pdf`를 따로
-  띄우지 않는다(2026-10-26 사용자 지적). 이미지·문서 확인은 `read`의 `경로?q=<질문>`으로
+  따른다: Windows ego lite PC에서는 TaskSpace에서 `page.cdp("Page.printToPDF")`로 받고, Edge·Chrome `--print-to-pdf`를 따로
+  띄우지 않는다(2026-10-26 사용자 지적). Linux ego 앱(Electron)에는 `Page.printToPDF`가 없으니 실행 환경 지침을 따른다
+  (2026-11-11 실측). 이미지·문서 확인은 `read`의 `경로?q=<질문>`으로
   먼저 해결하고, 실제 DOM 렌더가 필요할 때만 브라우저를 연다. 글자·숫자·표 전사는 `경로?ocr=<질문>`(OCR 전용
   `ocr` 역할 모델)으로, 특정 문구·값 확인과 레이아웃·간격·색·정렬·잘림·좌표 판단은 `?q=`(`vision` 역할 모델)로
   먼저 묻는다. `?q=`·`?ocr=` 없는 이미지 read는 그 경로로 한 번 묻기 전까지 계속 막힌다. 그 답으로 판단할 수
