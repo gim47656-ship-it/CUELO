@@ -45,6 +45,9 @@ const control = {
   /** 세션 id별 저장 기록(없으면 빈 기록). 중단 판정과 재개 직전 재확인이 읽는다. */
   transcripts: new Map<string, unknown[]>(),
   startCalls: [] as string[],
+  /** 실패한 업데이트 뒤 child 복원 호출(`<세션>@<그때까지 보낸 prompt 수>`)과, 복원이 실패하는 세션. */
+  restores: [] as string[],
+  failRestore: new Set<string>(),
   gate: null as Promise<void> | null,
   releaseGate: null as (() => void) | null,
   /** `startRpcSession` 진입 직후 호출된다. 중간 저장 상태를 관측하는 테스트 훅. */
@@ -567,6 +570,7 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     seedPending([SID(92), SID(93)], { writerPid: process.pid, requestId: `update-${requestId}` });
     seedUpdate(requestId, { initiator: SID(92), aborted: [SID(92), SID(93)] });
     failUpdate(requestId);
+    control.failRestore.add(SID(93));
 
     expect(await mod.resumeInterruptedSessions()).toEqual([SID(92), SID(93)]);
     const [notice, other] = control.fullPrompts;
@@ -578,6 +582,8 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     // 대기 화면 탭의 실패 통지와 같은 claim이라, 탭이 뒤늦게 관측해도 다시 보내지 않는다.
     expect(existsSync(join(root, "maintenance", requestId, "wake", `${SID(92)}.failure.json`))).toBe(true);
     expect(readPendingFile()).toBeNull();
+    // 세션마다 깨우기 전에 drain이 내린 child를 다시 올린다. 복원이 실패한 세션도 그대로 잇는다.
+    expect(control.restores).toEqual([`${SID(92)}@0`, `${SID(93)}@1`]);
   },
 
   "대기 화면 탭이 먼저 실패를 알렸으면 주도 세션에 다시 보내지 않는다": async (mod) => {
@@ -615,6 +621,13 @@ if (process.env.UPDATE_INTERRUPT_CASE) {
     resolveSessionPath: async (sessionId: string) => `/fake/sessions/${sessionId}`,
     getSessionEntries: async (filePath: string) => [filePath],
     buildSessionContext: (entries: string[]) => ({ messages: control.transcripts.get(entries[0].split("/").pop() ?? "") ?? [] }),
+  }));
+  mock.module("./subagent-revive", () => ({
+    restoreReleasedChildren: async (filePath: string) => {
+      const sessionId = filePath.split("/").pop() ?? "";
+      control.restores.push(`${sessionId}@${control.prompts.length}`);
+      if (control.failRestore.has(sessionId)) throw new Error(`restore failed: ${sessionId}`);
+    },
   }));
 
   const caseName = process.env.UPDATE_INTERRUPT_CASE;

@@ -15,6 +15,7 @@
  */
 import path from "node:path";
 import { AgentRegistry, type AgentRegistryApi, type AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import {
   AgentLifecycleManager,
   type PersistedSubagentReviverFactory,
@@ -115,4 +116,17 @@ export function registerRootReviver(
     map.delete(rootSessionFile);
     agentIds.delete(rootSessionFile);
   };
+}
+
+/**
+ * 재시작 없이 살아남은 서버에서, 업데이트 drain이 내린 task child를 디스크 기록으로부터 parked ref로 다시 올린다.
+ *
+ * drain은 child를 종료 사유로 끊고(`stopBackgroundWorkForDrain`), core는 그 child를 registry에서 내린 채 재시작
+ * 뒤의 roster 훑기가 복원하게 둔다. 업데이트가 실패해 프로세스가 그대로면 그 훑기는 다시 돌지 않는다. core는 root마다
+ * 한 번 훑은 결과를 걸어 두고 그 훑기가 복원한 ref만 유효성으로 보므로, 훑은 뒤에 태어나 살아 있다가 내려간 child는
+ * 빠진다. 2026-11-11 실패한 drain 뒤 세 세션의 `write agent://<id>`가 `Unknown agent`로 실패해 Main이 같은 일을
+ * 새 Maker에게 다시 맡겼다. 그 걸쇠를 거치지 않고 같은 훑기를 한 번 돌린다. 훑기는 등록돼 있는 ref를 바꾸지 않는다.
+ */
+export async function restoreReleasedChildren(rootSessionFile: string, registry: AgentRegistryApi = AgentRegistry.global()): Promise<void> {
+  await registerPersistedSubagents(registry, rootSessionFile, { hydrateHistory: false });
 }

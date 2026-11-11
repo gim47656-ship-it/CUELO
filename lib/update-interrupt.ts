@@ -29,6 +29,7 @@ import { dirname, join, resolve } from "node:path";
 import { getRpcSession, getRunningRpcSessionIds, startRpcSession } from "./rpc-manager";
 import { buildSessionContext, getSessionEntries, resolveSessionPath } from "./session-reader";
 import { isRunInterrupted } from "./run-interruption";
+import { restoreReleasedChildren } from "./subagent-revive";
 import type { AgentMessage } from "./types";
 import { getFailedUpdateForInterrupt, markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
 import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE, UPDATE_FAILED_RESUME_MESSAGE } from "./harness-notices";
@@ -297,6 +298,16 @@ async function runResumePass(): Promise<string[]> {
   for (const sessionId of snapshot.sessionIds) {
     if (resumedHere.has(sessionId)) continue;
     try {
+      if (failedUpdate) {
+        // 서버가 그대로라 drain이 내린 task child를 core가 다시 찾지 못한다. 세션을 깨우기 전에 올려 둬야
+        // 통지가 시키는 `write agent://<id>`가 닿는다. 복원 실패가 재개를 막지는 않는다.
+        try {
+          const filePath = await resolveSessionPath(sessionId);
+          if (filePath) await restoreReleasedChildren(filePath);
+        } catch (error) {
+          console.error(`[update-interrupt] child restore failed ${sessionId}:`, error);
+        }
+      }
       if (failedUpdate && sessionId === failedUpdate.initiatorSessionId) {
         // 주도 세션은 실패 통지가 재개를 겸한다. 대기 화면 탭과 같은 claim을 써서 한 번만 보낸다.
         // 탭이 먼저 알렸거나(already-claimed) 세션이 이미 돌고 있으면(user-already-active) 이어진 것으로 본다.
