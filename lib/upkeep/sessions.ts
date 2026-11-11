@@ -515,6 +515,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let sessionId = "";
     let cwd = "";
     let lastResultAt: number | null = null;
+    // 토큰 없이 끊긴 응답의 간격은 다음 메시지와 session_exit 중 무엇이 먼저 오는지 볼 때까지 보류한다.
+    let abortedGap: (() => void) | null = null;
     // 지금 턴(사용자 요청 사이)에 연 스킬(→ 연 호출의 기간)과, 같은 도구의 다음 성공을 기다리는 실패. 지난 턴에 연 스킬은
     // 지적 표현 판정에 쓰고, 지적은 연 쪽 기간에 센다. 턴 번호는 앞 턴 호출의 늦은 결과를 이 턴 일로 보지 않게 한다.
     const openedThisTurn = new Map<string, 0 | 1>();
@@ -567,6 +569,14 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           else seenEntries.add(copyKey);
         }
         const rewrite = observeCache(entry, time);
+        // 재시작 drain이 요청을 끊으면 토큰 없는 응답이 요청 시작이 아니라 끊긴 시각으로 남는다(출력 도중 끊긴 응답은 요청 시작
+        // 시각 그대로다). 그 뒤 다음 메시지보다 session_exit가 먼저 오면 그 간격은 세지 않고, 사용자가 멈춘 경우처럼 그렇지 않으면
+        // 센다(2026-11-12 사용자 결정).
+        if (abortedGap && entry.type === "custom" && entry.customType === "session_exit") abortedGap = null;
+        else if (abortedGap && entry.type === "message") {
+          abortedGap();
+          abortedGap = null;
+        }
         // 새 입력을 기다린 시간과 자동 압축 시간은 하네스 지연이 아니다. 압축은 「컨텍스트 압축」 행이 따로 센다(2026-11-07 사용자 결정).
         if (isNewInput(entry) || entry.type === "compaction") lastResultAt = null;
         // 사용자 요청이 새 턴을 연다. 지난 턴에 연 스킬은 이 요청의 지적 표현 판정에 쓴다(복사된 entry도 턴 경계로는 본다).
@@ -664,8 +674,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           if (lastResultAt !== null && typeof m.timestamp === "number") {
             const gap = m.timestamp - lastResultAt;
             if (gap >= 0) {
-              each((w) => w.gaps.push(gap));
-              if (index === 0 && gap > SLOW_GAP_MS) slowGaps.push({ gap, row: example(`도구 결과 뒤 ${Math.round(gap / 1000)}초 대기`) });
+              const record = () => {
+                each((w) => w.gaps.push(gap));
+                if (index === 0 && gap > SLOW_GAP_MS) slowGaps.push({ gap, row: example(`도구 결과 뒤 ${Math.round(gap / 1000)}초 대기`) });
+              };
+              const tokens = (Number(m.usage?.input) || 0) + (Number(m.usage?.cacheRead) || 0) + (Number(m.usage?.cacheWrite) || 0);
+              if (!tokens) abortedGap = record;
+              else record();
             }
             lastResultAt = null;
           }
@@ -795,6 +810,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     } catch {
       warnings.push("세션 파일 일부를 읽지 못했습니다.");
     }
+    // 끝까지(또는 읽기 오류까지) session_exit를 보지 못한 보류 간격은 센다.
+    abortedGap?.();
   }
 
   evidence["slow-gaps"] = slowGaps.sort((a, b) => b.gap - a.gap).slice(0, EVIDENCE_LIMIT).map((x) => x.row);
