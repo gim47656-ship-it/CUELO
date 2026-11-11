@@ -349,11 +349,21 @@ export function argumentShape(tool: string, args: unknown): string {
 const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
 
 /**
- * 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언. 결과 첫 줄이 정확한 안내 표지일 때만 제외한다.
- * eval의 Python bridge는 같은 안내를 RuntimeError로 감싸므로, 그때는 traceback의 마지막 예외를 확인한다.
- * 대소문자가 다른 표지나 본문에서 안내를 인용한 실제 실패, 안내 뒤 이어진 다른 예외는 제외하지 않는다.
+ * 하네스가 호출을 일부러 막거나 안내하고 돌려준 결과. 에이전트가 고쳐 다시 부르면 되는 정상 차단이라 도구 실패로 세지 않는다
+ * (11-12 사용자 결정: 「빼자」). 사전 점검 조언, 이미지 직접 읽기 차단(image-question-router), draft 범위 차단(draft-coverage),
+ * eval 안 게시 도구 차단(EvalGateGuard), 보지 않은 줄을 기준으로 한 edit 안내(코어 문구와 한국어 번역)를 다룬다.
+ * 결과 첫 줄이 정확한 표지일 때만 제외한다. eval의 Python bridge는 같은 안내를 RuntimeError로 감싸므로, 그때는 traceback의
+ * 마지막 예외를 확인한다. 대소문자가 다른 표지나 본문에서 안내를 인용한 실제 실패, 안내 뒤 이어진 다른 예외는 제외하지 않는다.
  */
-const PREFLIGHT_ADVICE = /^(?:Error: )?\[사전 점검\] 오류가 아니다\.|^\[아르곤 사전 점검\] 오류가 아니다\./;
+const HARNESS_NOTICE = new RegExp([
+  /^(?:Error: )?\[사전 점검\] 오류가 아니다\./,
+  /^\[아르곤 사전 점검\] 오류가 아니다\./,
+  /^image-question-router: 이미지는 먼저 vision 모델에게 묻는다\. 직접 읽기를 막았다\./,
+  /^\[draft-coverage\] /,
+  /^\[EvalGateGuard\] eval 안에서 /,
+  /^This edit anchors to lines /,
+  /^이 edit는 .+?번 줄을 기준으로 했지만, /,
+].map((r) => r.source).join("|"));
 
 /**
  * 도구 결과 뒤 이것이 끼면 다음 요청은 도구 결과가 아니라 새 입력(사용자·다른 agent의 메시지, 백그라운드 결과)이나 세션 재개를
@@ -716,13 +726,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);
           const text = m.isError ? textOf(m.content) : "";
-          let preflightAdvice = PREFLIGHT_ADVICE.test(text);
-          if (!preflightAdvice && call.name === "eval" && /^Traceback \(most recent call last\):\r?\n/m.test(text)
+          let harnessNotice = HARNESS_NOTICE.test(text);
+          if (!harnessNotice && call.name === "eval" && /^Traceback \(most recent call last\):\r?\n/m.test(text)
             && /(?:^|\r?\n)Command exited with code 1\s*$/.test(text)) {
             const cause = errorLine(call.name, text.split(/\r?\n/));
-            preflightAdvice = cause.startsWith("RuntimeError: ") && PREFLIGHT_ADVICE.test(cause.slice("RuntimeError: ".length));
+            harnessNotice = cause.startsWith("RuntimeError: ") && HARNESS_NOTICE.test(cause.slice("RuntimeError: ".length));
           }
-          const failed = m.isError === true && !INTENDED_ERROR.test(text) && !preflightAdvice && classifyToolError(call.name, call.command, text) === "failed";
+          const failed = m.isError === true && !INTENDED_ERROR.test(text) && !harnessNotice && classifyToolError(call.name, call.command, text) === "failed";
 
           // 스킬 계기판: 세션 합계와, 같은 턴에서 먼저 연 스킬마다 연 뒤 호출로 센다. 성공한 스킬 읽기는 열람이다.
           const totals = sessionTotals[call.index].get(call.path) ?? { calls: 0, failures: 0 };
