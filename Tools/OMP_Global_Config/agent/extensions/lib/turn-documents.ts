@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { findDocRoot } from "./docmap-search";
 
 // Only explicit filesystem tool contracts are observed; never inspect shell/eval code or result prose.
-type Result = { toolName: string; input?: unknown; details?: unknown; isError?: boolean };
+export type Result = { toolName: string; input?: unknown; details?: unknown; isError?: boolean };
 const SOURCE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?|css|scss|sass|less|jsonc?|ya?ml|toml|ini|cfg|conf|config|xml|resx|vb|frm|bas|cs|fs|csproj|vbproj|slnx?|props|targets|c|cc|cpp|cxx|h|hpp|rs|go|py|rb|php|java|kt|kts|swift|sh|bash|ps1|bat|cmd|sql|gradle|cmake|proto)$/i;
 const SOURCE_NAME = /^(?:Dockerfile|Makefile|CMakeLists\.txt|\.gitignore|\.gitattributes|\.editorconfig|\.npmrc|\.env(?:\..+)?)$/i;
 const EXCLUDED: Record<string, true> = { ".git": true, node_modules: true, dist: true, build: true, coverage: true, ".next": true, doc: true, docs: true, evidence: true };
@@ -18,7 +18,7 @@ const strings = (values: unknown[]) => values.filter((value): value is string =>
 const unwrap = (path: string) => /^\[(.+)#[0-9a-f]{4}\]$/i.exec(path.trim())?.[1] ?? path.trim();
 const internal = (path: string) => !/^file:\/\//i.test(unwrap(path)) && (URI.test(unwrap(path)) || PREFIXED_URI.test(unwrap(path)));
 
-function localPath(path: string, cwd: string, read: boolean): string | undefined {
+export function localPath(path: string, cwd: string, read: boolean): string | undefined {
   let value = unwrap(path);
   if (internal(value)) return undefined;
   try {
@@ -37,14 +37,14 @@ function localPath(path: string, cwd: string, read: boolean): string | undefined
     return join(realpathSync(parent), ...missing);
   } catch { return undefined; }
 }
-function within(root: string, path: string): boolean {
+export function within(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 function isFile(path: string): boolean { try { return statSync(path).isFile(); } catch { return false; } }
 function isDir(path: string): boolean { try { return statSync(path).isDirectory(); } catch { return false; } }
 
-function targets(event: Result): string[] {
+export function targets(event: Result): string[] {
   const input = record(event.input), details = record(event.details);
   const authored = strings([...(Array.isArray(input.paths) ? input.paths : []), input.path]);
   if (event.toolName === "edit" && typeof input.input === "string") {
@@ -67,8 +67,8 @@ function targets(event: Result): string[] {
   return resolved.length ? resolved : authored;
 }
 
-type Boundary = { git?: string; handoff?: string };
-function boundary(dir: string, memo: Map<string, Boundary>): Boundary {
+export type Boundary = { git?: string; handoff?: string };
+export function boundary(dir: string, memo: Map<string, Boundary>): Boundary {
   const cached = memo.get(dir);
   if (cached) return cached;
   const handoff = isFile(join(dir, "HANDOFF.md")) ? dir : undefined;

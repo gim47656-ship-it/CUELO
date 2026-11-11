@@ -349,10 +349,9 @@ export function argumentShape(tool: string, args: unknown): string {
 const INTENDED_ERROR = /^실행하지 않음: 이 호출이 실행되기 전에 사용자 메시지|^Skipped due to|Operation aborted|Request was aborted|Command aborted/i;
 
 /**
- * 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언. 결과 첫 줄이 정확히 `[사전 점검] 오류가 아니다.`,
- * 도구 래퍼가 앞에 붙인 `Error: [사전 점검] 오류가 아니다.`, 옛 문구 `[아르곤 사전 점검] 오류가 아니다.` 중 하나일
- * 때만 제외한다(14일에 7건). 대소문자를 가리지 않으면 `ERROR:` 같은 다른 표기의 실제 실패까지 조언으로 삼키고,
- * 문구가 중간에 섞인 실패도 조언이 아니므로 대소문자를 그대로 본다(2026-11-08 점검판 오판정).
+ * 사전 점검 플러그인(argon-preflight)이 호출을 막고 돌려준 조언. 결과 첫 줄이 정확한 안내 표지일 때만 제외한다.
+ * eval의 Python bridge는 같은 안내를 RuntimeError로 감싸므로, 그때는 traceback의 마지막 예외를 확인한다.
+ * 대소문자가 다른 표지나 본문에서 안내를 인용한 실제 실패, 안내 뒤 이어진 다른 예외는 제외하지 않는다.
  */
 const PREFLIGHT_ADVICE = /^(?:Error: )?\[사전 점검\] 오류가 아니다\.|^\[아르곤 사전 점검\] 오류가 아니다\./;
 
@@ -717,7 +716,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);
           const text = m.isError ? textOf(m.content) : "";
-          const failed = m.isError === true && !INTENDED_ERROR.test(text) && !PREFLIGHT_ADVICE.test(text) && classifyToolError(call.name, call.command, text) === "failed";
+          let preflightAdvice = PREFLIGHT_ADVICE.test(text);
+          if (!preflightAdvice && call.name === "eval" && /^Traceback \(most recent call last\):\r?\n/m.test(text)
+            && /(?:^|\r?\n)Command exited with code 1\s*$/.test(text)) {
+            const cause = errorLine(call.name, text.split(/\r?\n/));
+            preflightAdvice = cause.startsWith("RuntimeError: ") && PREFLIGHT_ADVICE.test(cause.slice("RuntimeError: ".length));
+          }
+          const failed = m.isError === true && !INTENDED_ERROR.test(text) && !preflightAdvice && classifyToolError(call.name, call.command, text) === "failed";
 
           // 스킬 계기판: 세션 합계와, 같은 턴에서 먼저 연 스킬마다 연 뒤 호출로 센다. 성공한 스킬 읽기는 열람이다.
           const totals = sessionTotals[call.index].get(call.path) ?? { calls: 0, failures: 0 };

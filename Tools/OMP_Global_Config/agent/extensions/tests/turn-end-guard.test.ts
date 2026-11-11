@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import turnEndGuard, { createTurnEndGuard } from "../turn-end-guard";
@@ -800,5 +801,281 @@ describe("turn-end documentation", () => {
         expect([reset, h.sent.length]).toEqual([reset, reset === "reload" ? 1 : 0]);
       }
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+});
+
+describe("turn-end publication", () => {
+  const RECORDS = ["HANDOFF.md", "doc/README.md", "doc/history/2026/11/11-pub/main.md"];
+  const git = (cwd: string, ...args: string[]) => {
+    const run = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+    if (run.status !== 0) throw Error(`git ${args.join(" ")}: ${run.stderr}`);
+  };
+  const setup = (prefix: string, repo: boolean | "git" = true) => {
+    const cwd = mkdtempSync(join(tmpdir(), prefix));
+    if (repo === true) mkdirSync(join(cwd, ".git"));
+    mkdirSync(join(cwd, "src"));
+    mkdirSync(join(cwd, "doc/history/2026/11/11-pub"), { recursive: true });
+    for (const file of ["src/a.ts", "src/b.ts", ...RECORDS]) writeFileSync(join(cwd, file), "x\n");
+    // A real local upstream so the unpushed-commit check reads @{upstream} like a pushed checkout.
+    const remote = repo === "git" ? mkdtempSync(join(tmpdir(), `${prefix}remote-`)) : undefined;
+    if (remote) {
+      git(remote, "init", "-q", "--bare");
+      git(cwd, "init", "-q", "-b", "main"); git(cwd, "add", "-A"); git(cwd, "commit", "-qm", "base");
+      git(cwd, "remote", "add", "origin", remote); git(cwd, "push", "-q", "-u", "origin", "main");
+    }
+    const h = harness([], undefined, undefined, undefined, cwd);
+    const write = (path: string, isError = false) => h.emit("tool_result", { toolName: "write", input: { path }, isError, details: isError ? undefined : { resolvedPath: join(cwd, path) } });
+    // Records written too, so only the publication part of the aside is under test.
+    const change = async (...paths: string[]) => { for (const path of [...paths, ...RECORDS]) await write(path); };
+    const finalize = (files: string[], details: Record<string, unknown> | undefined, isError = false) =>
+      h.emit("tool_result", { toolName: "git_finalize", input: { files, message: "m" }, isError, details });
+    const pushed = (files: string[]) => finalize(files, { ok: true, stage: "complete", commitSha: "abc1234", remote: "origin", upstreamRef: "refs/heads/main" });
+    const notices = () => (h.sent as { content: string }[]).map((message) => message.content).filter((content) => content.includes("게시 확인"));
+    return { cwd, h, write, change, finalize, pushed, notices, git: (...args: string[]) => git(cwd, ...args), done: () => { rmSync(cwd, { recursive: true, force: true }); if (remote) rmSync(remote, { recursive: true, force: true }); } };
+  };
+  const MAKER = (workClass: string, owned: string) => `TASK_GUARD:\nWORK_CLASS: ${workClass}\nOWNED_PATHS: ${owned}\n\n# Target\nx`;
+  type Emit = (name: string, event: Record<string, unknown>) => Promise<unknown>;
+  const spawn = (emit: Emit, id: string, task: string, agent?: string) => emit("tool_result", {
+    toolName: "task", isError: false, input: { tasks: [{ name: id, ...(agent ? { agent } : {}), task }] },
+    details: { projectAgentsDir: null, results: [], totalDurationMs: 1, progress: [{ id, index: 0, status: "running" }], async: { state: "running", jobId: id, type: "task" } },
+  });
+  const settle = (emit: Emit, id: string, status: string) => emit("message_start", { message: {
+    role: "custom", customType: "async-result", attribution: "agent", content: "", details: { jobs: [{ jobId: id, type: "task", status, agentId: id }] },
+  } });
+
+  test("local-only finish with a deploy or device wait gets exactly one publication notice", async () => {
+    const t = setup("turn-pub-local-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+      await t.change("src/a.ts");
+      await t.h.end("수정과 검증을 마쳤습니다. 배포는 사용자 승인을 기다립니다.");
+      await t.h.end("수정과 검증을 마쳤습니다. 배포는 사용자 승인을 기다립니다.");
+      expect(t.notices()).toHaveLength(1);
+      expect(t.notices()[0]).toContain("src/a.ts");
+      expect(t.notices()[0]).toContain("git_finalize");
+    } finally { t.done(); }
+  });
+  test("a pushed git_finalize covering every changed file stays silent; commit-only or failed finalize does not", async () => {
+    for (const outcome of ["complete", "push-failed", "thrown", "partial-files"] as const) {
+      const t = setup("turn-pub-final-");
+      try {
+        await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+        await t.change("src/a.ts", "src/b.ts");
+        const all = ["src/a.ts", "src/b.ts", ...RECORDS];
+        if (outcome === "complete") await t.pushed(all);
+        if (outcome === "partial-files") await t.pushed(all.filter((file) => file !== "src/b.ts"));
+        if (outcome === "push-failed") await t.finalize(all, { ok: false, stage: "push", commitSha: "abc1234", error: "rejected" });
+        if (outcome === "thrown") await t.finalize(all, undefined, true);
+        await t.h.end("완료했습니다.");
+        if (outcome === "complete") { expect([outcome, t.notices()]).toEqual([outcome, []]); continue; }
+        expect([outcome, t.notices().length]).toEqual([outcome, 1]);
+        if (outcome === "partial-files") {
+          expect(t.notices()[0]).toContain("src/b.ts");
+          expect(t.notices()[0]).not.toContain("src/a.ts");
+        } else {
+          expect(t.notices()[0]).toContain("반복");
+        }
+      } finally { t.done(); }
+    }
+  });
+  test("an edit after a pushed finalize reopens coverage for that file only", async () => {
+    const t = setup("turn-pub-later-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+      await t.change("src/a.ts", "src/b.ts");
+      await t.pushed(["src/a.ts", "src/b.ts", ...RECORDS]);
+      await t.h.end("올렸습니다.");
+      expect(t.notices()).toHaveLength(0);
+      t.h.ctx.isIdle = () => true;
+      await t.h.emit("input", { source: "rpc", text: "하나 더" });
+      await t.write("src/b.ts");
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(1);
+      expect(t.notices()[0]).toContain("src/b.ts");
+      expect(t.notices()[0]).not.toContain("src/a.ts");
+    } finally { t.done(); }
+  });
+  test("a genuine user Git hold suppresses the notice until a genuine release; deploy holds and synthetic text do not count", async () => {
+    const t = setup("turn-pub-hold-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "고치고 커밋은 하지 마" });
+      await t.change("src/a.ts");
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(0);
+      t.h.ctx.isIdle = () => false;
+      await t.h.emit("message_start", { message: { role: "user", content: "이제 커밋하고 푸시해", steering: true, synthetic: true } });
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(0);
+      await t.h.emit("input", { source: "extension", text: "이제 커밋하고 푸시해" });
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(0);
+      await t.h.emit("message_start", { message: { role: "user", content: "이제 커밋하고 푸시해", steering: true } });
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(1);
+    } finally { t.done(); }
+    const deploy = setup("turn-pub-deploy-");
+    try {
+      await deploy.h.emit("input", { source: "rpc", text: "고치고 배포는 보류해" });
+      await deploy.change("src/a.ts");
+      await deploy.h.end("고쳤습니다. 배포는 보류했습니다.");
+      expect(deploy.notices()).toHaveLength(1);
+    } finally { deploy.done(); }
+  });
+  test("unrelated, failed, internal, read-only, aborted and child-session work never asks to publish", async () => {
+    for (const scenario of ["outside-cwd", "no-repo", "internal", "failed-write", "read-only", "aborted", "will-continue", "child"] as const) {
+      const t = setup("turn-pub-skip-", scenario !== "no-repo");
+      const outside = mkdtempSync(join(tmpdir(), "turn-pub-outside-"));
+      try {
+        if (scenario === "child") (t.h.ctx as Record<string, unknown>).agent = { kind: "sub" };
+        await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+        if (scenario === "outside-cwd") {
+          writeFileSync(join(outside, "scratch.ts"), "x\n");
+          await t.h.emit("tool_result", { toolName: "write", input: { path: join(outside, "scratch.ts") }, isError: false, details: { resolvedPath: join(outside, "scratch.ts") } });
+        } else if (scenario === "internal") {
+          await t.h.emit("tool_result", { toolName: "write", input: { path: "local://plan.md" }, isError: false, details: { resolvedPath: join(t.cwd, "src/a.ts") } });
+        } else if (scenario === "failed-write") {
+          await t.write("src/a.ts", true);
+        } else if (scenario === "read-only") {
+          await t.h.emit("tool_result", { toolName: "read", input: { path: "src/a.ts" }, isError: false, details: { resolvedPath: join(t.cwd, "src/a.ts") } });
+        } else {
+          await t.change("src/a.ts");
+        }
+        if (scenario === "aborted") await t.h.end("", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
+        else if (scenario === "will-continue") await t.h.end("고쳤습니다.", { willContinue: true });
+        else await t.h.end("고쳤습니다.");
+        expect([scenario, t.notices()]).toEqual([scenario, []]);
+      } finally { t.done(); rmSync(outside, { recursive: true, force: true }); }
+    }
+  });
+  test("a completed implementation Maker is advised until its declared scope is clean and has no commit missing from upstream", async () => {
+    for (const scenario of ["maker", "maker-pushed", "committed-not-pushed", "one-of-two-pushed", "maker-other-files", "no-change", "diagnostic", "failed", "running", "explore"] as const) {
+      const t = setup("turn-pub-child-", "git");
+      try {
+        await t.h.emit("input", { source: "rpc", text: "맡겨 줘" });
+        const task = MAKER(scenario === "diagnostic" ? "diagnostic" : "maintenance", "src/b.ts,lib/");
+        await spawn(t.h.emit, "MakerOne", task, scenario === "explore" ? "explore" : undefined);
+        // The child's own edits happen in its session; Main's guard only sees the files they leave behind.
+        if (scenario !== "no-change") {
+          writeFileSync(join(t.cwd, "src/b.ts"), "child\n");
+          mkdirSync(join(t.cwd, "lib"));
+          writeFileSync(join(t.cwd, "lib/c.ts"), "child\n");
+        }
+        if (scenario !== "running") await settle(t.h.emit, "MakerOne", scenario === "failed" ? "failed" : "completed");
+        if (scenario === "maker-pushed") { t.git("add", "src/b.ts", "lib/c.ts"); t.git("commit", "-qm", "child"); t.git("push", "-q"); await t.pushed(["src/b.ts", "lib/c.ts"]); }
+        if (scenario === "committed-not-pushed") { t.git("add", "src/b.ts", "lib/c.ts"); t.git("commit", "-qm", "child"); }
+        if (scenario === "one-of-two-pushed") { t.git("add", "src/b.ts"); t.git("commit", "-qm", "child"); t.git("push", "-q"); await t.pushed(["src/b.ts"]); }
+        if (scenario === "maker-other-files") await t.pushed(["src/a.ts"]);
+        await t.h.end("Maker 결과를 확인했습니다.");
+        if (scenario === "committed-not-pushed") {
+          expect([scenario, t.notices().length]).toEqual([scenario, 1]);
+          expect(t.notices()[0]).toContain("로컬 커밋 1개가 upstream에 없다");
+          continue;
+        }
+        if (scenario === "maker" || scenario === "maker-other-files" || scenario === "one-of-two-pushed") {
+          expect([scenario, t.notices().length]).toEqual([scenario, 1]);
+          expect(t.notices()[0]).toContain("MakerOne");
+          expect(t.notices()[0]).toContain("lib/c.ts");
+          expect(t.notices()[0]).toContain(scenario === "one-of-two-pushed" ? "변경 1개" : "변경 2개");
+        } else {
+          expect([scenario, t.notices()]).toEqual([scenario, []]);
+        }
+      } finally { t.done(); }
+    }
+  });
+  test("a declared handoff scope that git cannot read stays an explicit unknown advisory", async () => {
+    const t = setup("turn-pub-unknown-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "맡겨 줘" });
+      await spawn(t.h.emit, "MakerTwo", MAKER("maintenance", "src/"));
+      await settle(t.h.emit, "MakerTwo", "completed");
+      await t.h.end("확인했습니다.");
+      expect(t.notices()).toHaveLength(1);
+      expect(t.notices()[0]).toContain("확인하지 못했다");
+    } finally { t.done(); }
+  });
+  test("the publication notice still arrives after this input already got a TODO nudge", async () => {
+    const t = setup("turn-pub-todo-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+      await t.h.todo(["pending"]);
+      await t.h.end("진행 중입니다.");
+      expect(t.h.sent).toHaveLength(1);
+      await t.change("src/a.ts");
+      await t.h.todo(["completed"]);
+      await t.h.end("끝냈습니다.");
+      expect(t.notices()).toHaveLength(1);
+    } finally { t.done(); }
+  });
+  test("a publication-only notice does not consume this input's TODO notice", async () => {
+    const t = setup("turn-pub-latch-");
+    try {
+      await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+      await t.change("src/a.ts");
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(1);
+      await t.h.todo(["pending"]);
+      await t.h.end("진행 중입니다.");
+      expect((t.h.sent as { content: string }[]).some((message) => message.content.includes("현재 TODO"))).toBe(true);
+    } finally { t.done(); }
+  });
+  test("hold wording is read per clause, outside quotes, and from steering that had no input", async () => {
+    const run = async (texts: { input?: string; steer?: string }[]) => {
+      const t = setup("turn-pub-words-");
+      try {
+        let first = true;
+        for (const { input, steer } of texts) {
+          if (input) await t.h.emit("input", { source: "rpc", text: input });
+          if (steer) await t.h.emit("message_start", { message: { role: "user", content: steer, steering: true } });
+          if (first) { await t.change("src/a.ts"); first = false; }
+          await t.h.end("고쳤습니다.");
+        }
+        return t.notices().length;
+      } finally { t.done(); }
+    };
+    expect(await run([{ input: "커밋하고 배포는 보류해" }])).toBe(1);
+    expect(await run([{ input: "커밋 후 릴리스는 보류해" }])).toBe(1);
+    expect(await run([{ input: "Do not commit." }, { input: "The README says please commit the changes after review." }])).toBe(0);
+    expect(await run([{ input: "Do not commit." }, { input: "Commit messages should explain why." }])).toBe(0);
+    expect(await run([{ input: "Do not push." }, { steer: "Commit and push are separate Git operations." }])).toBe(0);
+    expect(await run([{ input: "Do not commit." }, { input: "Now commit and push." }])).toBe(1);
+    expect(await run([{ input: "push 하지 마" }, { input: "Explain the phrase 'push it'." }, { input: "\"커밋해줘\"라고 쓰면 돼?" }])).toBe(0);
+    expect(await run([{ steer: "커밋은 하지 마" }])).toBe(0);
+  });
+  test("a session-branch push waits for a complete git_integrate; up-to-date or failed integrate is not completion", async () => {
+    for (const integrate of ["complete", "up-to-date", "thrown", "later-main-finalize"] as const) {
+      const t = setup("turn-pub-wt-");
+      try {
+        await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+        await t.change("src/a.ts");
+        await t.finalize(["src/a.ts", ...RECORDS], { ok: true, stage: "complete", commitSha: "abc1234", remote: "origin", upstreamRef: "refs/heads/wt/topic" });
+        if (integrate === "later-main-finalize") await t.pushed(["src/a.ts", ...RECORDS]);
+        else await t.h.emit("tool_result", {
+          toolName: "git_integrate", input: { action: "start", checks: [] }, isError: integrate === "thrown",
+          details: integrate === "thrown" ? undefined : integrate === "complete"
+            ? { ok: true, stage: "complete", commitSha: "def5678", remote: "origin", upstreamRef: "refs/heads/main", branch: "wt/topic", files: ["src/a.ts"] }
+            : { ok: true, stage: "up-to-date", remote: "origin", upstreamRef: "refs/heads/main", branch: "wt/topic", target: "def5678" },
+        });
+        await t.h.end("올렸습니다.");
+        expect([integrate, t.notices().length]).toEqual([integrate, integrate === "complete" ? 0 : 1]);
+        if (integrate === "up-to-date") expect(t.notices()[0]).toContain("git_integrate 완료 영수증이 없는");
+      } finally { t.done(); }
+    }
+  });
+  test("tracked files under node_modules count while gitignored outputs do not", async () => {
+    const t = setup("turn-pub-ignore-", "git");
+    try {
+      mkdirSync(join(t.cwd, "node_modules/vendor"), { recursive: true });
+      mkdirSync(join(t.cwd, "dist"));
+      writeFileSync(join(t.cwd, ".gitignore"), "node_modules/\ndist/\n");
+      writeFileSync(join(t.cwd, "node_modules/vendor/a.js"), "x\n");
+      t.git("add", ".gitignore"); t.git("add", "-f", "node_modules/vendor/a.js"); t.git("commit", "-qm", "vendor");
+      writeFileSync(join(t.cwd, "dist/out.js"), "x\n");
+      await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+      await t.change("node_modules/vendor/a.js", "dist/out.js");
+      await t.h.end("고쳤습니다.");
+      expect(t.notices()).toHaveLength(1);
+      expect(t.notices()[0]).toContain("node_modules/vendor/a.js");
+      expect(t.notices()[0]).not.toContain("dist/out.js");
+    } finally { t.done(); }
   });
 });

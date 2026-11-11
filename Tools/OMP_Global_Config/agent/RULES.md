@@ -126,7 +126,10 @@
   판단·검증·남은 일을 작업 기록에 남긴다. 검증이나 승인을 기다리는 경우도 이미 바꾼 범위와 미확인 상태를 적는다.
   바꾼 파일에서 저장소 루트까지 `HANDOFF.md`가 없으면 첫 소스 변경 턴에 작업한 프로젝트 폴더에
   `HANDOFF.md`·`doc/README.md`·`doc/history` 기록을 만든다. 기억 알림이나 `git_finalize` 호출을 기다리지 않는다.
-  커밋할 때는 이 문서와 현재 과제에서 바꾼 정확한 파일 목록·commit message를 함께 넘긴다. 문서 마감이 커밋·배포 승인을 뜻하지는 않는다.
+  **검증을 마친 변경은 기본으로 commit과 push까지 마감한다(사용자 지적 2026-11-11: 0.10.132에서 이 문장이 빠진 뒤 로컬 완료로 끝나는 턴이 늘었다).**
+  Main은 이 문서와 현재 과제에서 바꾸고 소유를 확인한 정확한 파일 목록, commit message로 `git_finalize`를 부르고, push까지 끝난 결과(`stage: complete`)를 확인한다.
+  예외는 사용자의 명시적 Git 보류(커밋이나 push를 하지 말라는 지시)와 실제 실패뿐이다. 실패하면 같은 호출을 반복하지 않고 원인과 남은 차단을 보고한다.
+  배포나 장비 확인 대기만으로는 Git 보류가 아니다. 소유가 불분명한 dirty 파일은 넣지 않으며, commit과 push가 배포 승인을 뜻하지는 않는다.
   맞출 때는 남은 행동·관찰 조건·새 경계만 남기고, 이번에 끝난 행은 지운다. 그 자리에서 끝난 작업은
   HANDOFF가 아니라 `doc/history`에 기록한다(`rule://docs-handoff`).
 - 코드 변경을 `git_finalize`할 때 그 게이트가 고르는 파일(high-risk 선언·트리거 marker·결정적 10% 표본, 대상·제외 범위는 `git_finalize` 도구 설명이 정본)은 먼저 `cross_review`로 다른 모델 계열의 검토를 받고 모든 finding을 근거와 함께 닫는다(`rule://cross-review-procedure`). 그 밖의 일반 수정은 Main이 `maker_route` 검토 필요성 자문을 보고 정하며, 자문은 게이트 요구를 면제하지 못한다. 검토는 자문 증거이며 PASS가 아니다. 사용자의 명시 지시 없이 이 gate를 면제하지 않는다. 상시 예외는 하나다(2026-11-09 사용자 결정 「아그리고 교차검토 한도초과일때는 걍넘기자」): 필수 reviewer가 공급자 사용량이나 속도 한도(429, `rate_limit_error`, usage limit)로 답하지 못하면 한도가 풀리길 기다리거나 다른 reviewer로 바꾸지 않고, 그 결정 인용과 reviewId, 원문 오류를 `crossReviewWaiver`에 적어 넘긴 뒤 작업 기록과 보고에 교차 검토 없이 들어갔다고 밝힌다. 시간 초과나 해석 불가 같은 다른 실패는 해당하지 않는다. 정본은 `harness-policy.json` `mainLane.workerReview.crossFamilyReview`다.

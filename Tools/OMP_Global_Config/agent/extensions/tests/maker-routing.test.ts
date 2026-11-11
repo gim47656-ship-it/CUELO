@@ -1717,28 +1717,37 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       }
     }
   });
-  test("difficult UI changes to Sol only with every Anthropic account over its day slot", async () => {
+  test("Anthropic 하루 몫 소진은 Maker 추천·발주를 바꾸지 않고, 실제 사용 불가는 관측 소진으로 남는다", async () => {
+    // 2026-11-11 사용자 정정: 하루 몫 예외는 새 최상위 세션(모델 미지정)만이며 Maker는 동작해야 한다.
+    const anthropic = (used: number, over: { limitReached?: boolean } = {}) => async () => ({
+      state: "observed", observedAt: 1,
+      providers: { anthropic: [9, 11].map((credentialId) => ({
+        credentialId, disabled: false, limitReached: over.limitReached ?? false, autoBlockedUntilMs: null, fetchedAt: 1,
+        limits: [{ id: "anthropic:7d", windowId: "7d", shared: true, resetsAt: 100,
+          usedFraction: 0.2, daySlot: { usedPct: used, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } }],
+      })) },
+    }) as never;
+    const overDaySlot = anthropic(15);
     for (const workClass of ["NORMAL", "HARD"]) {
-      for (const used of [10, 15]) {
-        const h = harness({ workClass, uiDifficulty: "DIFFICULT", quota: async () => ({
-          state: "observed", observedAt: 1,
-          providers: { anthropic: [9, 11].map((credentialId) => ({
-            credentialId, disabled: false, limitReached: false, autoBlockedUntilMs: null, fetchedAt: 1,
-            limits: [{ id: "anthropic:7d", windowId: "7d", shared: true, resetsAt: 100,
-              usedFraction: 0.2, daySlot: { usedPct: used, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } }],
-          })) },
-        }) });
+      const expected = workClass === "HARD" ? "HARD_UI_OPUS" : "NORMAL_OPUS";
+      for (const quota of [anthropic(10), overDaySlot]) {
+        const h = harness({ workClass, uiDifficulty: "DIFFICULT", quota });
         const batch = await h.prepareBatch("day slot", [h.task], h.ctx);
-        expect(batch.anthropicOverDaySlot).toBe(used >= 14.29);
-        expect(batch.routes[0]!.profile).toBe(used >= 14.29
-          ? workClass === "HARD" ? "HARD_CODE_SOL61" : "NORMAL_SOL"
-          : workClass === "HARD" ? "HARD_UI_OPUS" : "NORMAL_OPUS");
-        if (used >= 14.29) {
-          expect((batch.routes[0]!.hardAllocation ?? batch.routes[0]!.normalAllocation)!.reason).toContain("오늘 하루 몫");
-          expect(await h.dispatch("openai-codex/gpt-6.1-sol:auto")).toBeUndefined();
-        }
+        expect(batch.routes[0]!.profile).toBe(expected);
+        // 하루 몫만으로는 Opus 발주에 근거를 더 요구하지 않는다.
+        expect(await h.dispatch(`${OPUS}:auto`)).toBeUndefined();
       }
     }
+    // 다른 명시 Anthropic 후보도 하루 몫 때문에 추가로 막히지 않는다(기존 추천 변경 근거 규칙만 적용된다).
+    const settled = harness({ workClass: "NORMAL", quota: overDaySlot });
+    await settled.prepare("명시 후보", [settled.task], {} as never);
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 명시 후보로 선택함");
+    expect(await settled.dispatch(`${OPUS}:auto`, reasoned)).toBeUndefined();
+    expect(await settled.dispatch(`${SONNET}:auto`, reasoned)).toBeUndefined();
+    // 실제 사용 불가(한도 도달)는 대체가 아니라 추천 없음으로 남는다.
+    const spent = harness({ workClass: "NORMAL", uiDifficulty: "DIFFICULT", quota: anthropic(10, { limitReached: true }) });
+    const [spentRoute] = await spent.prepare("실제 소진", [spent.task], {} as never);
+    expect(spentRoute).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
   });
   test("DeepSeek 후보는 한도로 소진돼도 Opus로 내려가지 않고 추천 없음이며, 미관측은 소진이 아니고 막지도 않는다", async () => {
     const spent = { limitReached: true, limits: [] };
