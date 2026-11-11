@@ -1301,6 +1301,7 @@ export function ChatWindow({ session, newSessionCwd, initialSessionData, transit
         onAudioUnlock={unlockAudio}
         draftKey={session?.id ?? (newSessionCwd ? `new:${newSessionCwd}` : undefined)}
         cwd={session?.cwd ?? newSessionCwd}
+        sessionTitle={session?.name}
       />
     </div>
   );

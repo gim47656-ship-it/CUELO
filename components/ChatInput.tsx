@@ -6,6 +6,8 @@ import type { BuiltinSlashCommandResult, CompactResultInfo } from "@/hooks/useAg
 import type { DeliveryRow } from "@/lib/answer-status/delivery";
 import { DeliveryRows } from "./answer-status/DeliveryRows";
 import { useAnswerStatusText } from "./answer-status/i18n";
+import { SavedPromptMenu, type SavedPromptMenuHandle } from "./SavedPromptMenu";
+import { findSavedPromptToken, type SavedPromptToken } from "@/lib/saved-prompts";
 import { SoundToggle } from "./SoundToggle";
 import { LiveVoiceButton } from "./LiveVoiceButton";
 import { Gpt6HandleBadge } from "./Gpt6HandleBadge";
@@ -247,6 +249,7 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  sessionTitle?: string | null;
   /** Session this composer writes to — enables the live voice call. */
   sessionId?: string;
   /** Creates the session for an unsent conversation so a call can start from it. */
@@ -689,6 +692,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  sessionTitle,
   sessionId,
   onEnsureSession,
   onLiveTranscriptPersisted,
@@ -752,6 +756,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const bashExcluded = bashMode && commandValue.startsWith("!!");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [savedPromptMatch, setSavedPromptToken] = useState<{ value: string; draftKey?: string; token: SavedPromptToken } | null>(null);
+  const savedPromptToken = savedPromptMatch?.value === value && savedPromptMatch.draftKey === draftKey
+    ? savedPromptMatch.token : null;
+  const [savedPromptOpen, setSavedPromptOpen] = useState(false);
+  const [savedPromptNotice, setSavedPromptNotice] = useState(false);
+  const savedPromptMenuRef = useRef<SavedPromptMenuHandle>(null);
   const [atQuery, setAtQuery] = useState<AtQueryMatch | null>(null);
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
@@ -1464,6 +1474,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     valueRef.current = "";
     setValue("");
     setAtQuery(null);
+    setSavedPromptToken(null);
+    setSavedPromptOpen(false);
     setHistoryMenuOpen(false);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
@@ -1584,7 +1596,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     sendHoldingAttachments,
   ]);
 
-  const slashQuery = commandValue.startsWith("/") && !/\s/.test(commandValue.slice(1))
+  const slashQuery = commandValue.startsWith("/") && !commandValue.startsWith("//") && !/\s/.test(commandValue.slice(1))
     ? commandValue.slice(1).toLowerCase()
     : null;
 
@@ -1629,13 +1641,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Recomputed from the text before the caret on every change/caret move.
   // Disabled entirely when there is no cwd (new session without a directory).
   const updateAtQuery = useCallback((text: string, cursor: number | null) => {
+    const token = findSavedPromptToken(text, cursor ?? text.length);
+    setSavedPromptToken(token ? { value: text, draftKey, token } : null);
+    setSavedPromptNotice(false);
     if (!cwd) {
       setAtQuery(null);
       return;
     }
     const pos = cursor ?? text.length;
     setAtQuery(extractAtQuery(text.slice(0, pos)));
-  }, [cwd]);
+  }, [cwd, draftKey]);
 
   const atQueryText = atQuery?.query ?? null;
   const atLocalMatches: FileIndexEntry[] = React.useMemo(() => (
@@ -1697,6 +1712,26 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const historyPlacement = usePopupPlacement(composerAnchorRef, historyMenuOpen, { viewportFraction: 0.44, cap: 360 });
   const slashPlacement = usePopupPlacement(composerAnchorRef, slashMenuOpen, { viewportFraction: 0.56, cap: 460 });
   const atPlacement = usePopupPlacement(composerAnchorRef, atMenuOpen, { viewportFraction: 0.48, cap: 400 });
+  const savedPromptPlacement = usePopupPlacement(composerAnchorRef, savedPromptOpen, { viewportFraction: 0.48, cap: 400 });
+  const savedPromptKey = savedPromptToken ? `${savedPromptToken.start}:${savedPromptToken.end}:${savedPromptToken.query}` : null;
+  useEffect(() => { setSavedPromptOpen(savedPromptKey !== null); }, [savedPromptKey]);
+  const replaceSavedPrompt = useCallback((expected: string, next: string, cursor: number, saved = false) => {
+    // A slow save must not replace text the user edited while the request ran.
+    if (valueRef.current !== expected || draftKeyRef.current !== draftKey) return;
+    valueRef.current = next;
+    setValue(next);
+    setSavedPromptToken(null);
+    setSavedPromptOpen(false);
+    setSavedPromptNotice(saved);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(cursor, cursor);
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    });
+  }, [draftKey]);
   useEffect(() => {
     if (!atTokenActive || !cwd) return;
     const meta = fileIndexMetaRef.current;
@@ -1945,6 +1980,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           return;
         }
       }
+      if (savedPromptOpen && savedPromptToken && !isComposing) {
+        if (savedPromptMenuRef.current?.handleKeyDown(e)) return;
+      }
 
       if (slashMenuOpen && slashQuery !== null) {
         if (e.key === "ArrowDown") {
@@ -2030,7 +2068,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       }
     },
-    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, savedPromptOpen, savedPromptToken]
   );
 
   const handleInput = useCallback(() => {
@@ -3176,6 +3214,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             </div>
           )}
+          {savedPromptNotice && <div role="status" style={{ fontSize: 12, color: "var(--text-dim)", padding: "4px 8px" }}>{t("savedPrompts.saved")}</div>}
+          {savedPromptOpen && savedPromptToken && (
+            <SavedPromptMenu ref={savedPromptMenuRef} value={value} token={savedPromptToken} cwd={cwd} sessionTitle={sessionTitle}
+              style={popupOffset(savedPromptPlacement.side)} maxHeight={savedPromptPlacement.maxHeight}
+              onReplace={replaceSavedPrompt} onClose={() => setSavedPromptOpen(false)} />
+          )}
           {slashMenuOpen && slashQuery !== null && (
             <div
               style={{
@@ -3437,6 +3481,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <textarea
             className="chat-composer-textarea"
             ref={textareaRef}
+            aria-controls={savedPromptOpen ? "saved-prompt-menu" : undefined}
             value={value}
             onChange={(e) => {
               valueRef.current = e.target.value;
