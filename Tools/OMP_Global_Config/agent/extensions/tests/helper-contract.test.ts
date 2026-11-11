@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,7 +19,7 @@ const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPd
 const GLM = "fakeglm/glm-fake";
 const TERRA = "fakeglm/terra-fake";
 const IMAGE_ONLY = "fakeglm/image-only";
-type Behavior = "ok" | "fail" | "empty" | "garbage";
+type Behavior = "ok" | "fail" | "empty" | "garbage" | "quota";
 
 const roots: string[] = [];
 const requested: string[] = [];
@@ -37,6 +37,7 @@ beforeAll(() => {
     onRequest?.();
     const mode = behavior[body.model] ?? "ok";
     if (mode === "fail") return new Response(JSON.stringify({ error: { message: `${body.model} synthetic outage` } }), { status: 400, headers: { "content-type": "application/json" } });
+    if (mode === "quota") return new Response(JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED You've reached your usage limit retry-after-ms=60000" } }), { status: 400, headers: { "content-type": "application/json" } });
     const base = { id: `fake-${requested.length}`, object: "chat.completion.chunk", created: 0, model: body.model };
     const chunks = [
       { ...base, choices: [{ index: 0, delta: { role: "assistant", content: mode === "empty" ? "" : mode === "garbage" ? 'a,b\n"unclosed,1\n' : `# 결과\n\n${body.model} 가 쓴 본문 (guide.md:L1)` }, finish_reason: null }] },
@@ -61,7 +62,7 @@ const spec = (id: string, input: ("text" | "image")[] = ["text"]) => ({
 interface Outcome { isError: boolean; text: string; sessionsDir: string; usage: Array<[string | undefined, string | undefined, string, string]> }
 
 /** hooks: 해당 모델 id의 자격 조회 또는 비용 장부 저장이 던지게 한다(실제 저장소·자격 갱신 실패를 흉내 낸다). */
-interface Hooks { apiKeyThrows?: string; usageThrows?: string }
+interface Hooks { apiKeyThrows?: string; usageThrows?: string; resolverThrows?: string; runs?: number }
 
 /** 부모 모델이 도구를 한 번 부르고 끝나는 세션을 돌려 세션에 남은 toolResult를 읽는다. */
 async function callTool(name: "skim" | "draft", args: Record<string, unknown>, roles: { skim?: string; draft?: string; draftFallback?: string }, cwd?: string, hooks: Hooks = {}): Promise<Outcome> {
@@ -87,6 +88,11 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
     if (target.id === hooks.apiKeyThrows) throw new Error("credential refresh down");
     return (getApiKey as (...args: unknown[]) => Promise<string | undefined>)(target, ...rest);
   }) as never;
+  const resolver = registry.resolver.bind(registry);
+  registry.resolver = (target, ...rest) => {
+    if (target.id === hooks.resolverThrows) throw new Error("RESOURCE_EXHAUSTED usage limit retry-after-ms=60000");
+    return resolver(target, ...rest);
+  };
   const settings = Settings.isolated({ modelRoles: roles, tools: { approvalMode: "yolo" } } as never);
   const sessionsDir = join(root, "sessions");
   const sessionManager = SessionManager.create(work, sessionsDir);
@@ -103,11 +109,11 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   let turn = 0;
   session.agent.streamFn = ((_model: unknown) => {
     const stream = createAssistantMessageEventStream();
-    const first = turn++ === 0;
+    const first = turn++ % 2 === 0;
     const message = {
       role: "assistant" as const, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      content: first ? [{ type: "toolCall" as const, id: "call-1", name, arguments: args }] : [{ type: "text" as const, text: "done" }],
+      content: first ? [{ type: "toolCall" as const, id: `call-${turn}`, name, arguments: args }] : [{ type: "text" as const, text: "done" }],
       stopReason: first ? "toolUse" as const : "stop" as const,
     };
     queueMicrotask(() => {
@@ -119,8 +125,8 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
     return stream;
   }) as never;
   try {
-    await session.prompt("run the tool");
-    const result = session.agent.state.messages.find((message) => message.role === "toolResult") as
+    for (let run = 0; run < (hooks.runs ?? 1); run++) await session.prompt("run the tool");
+    const result = session.agent.state.messages.filter((message) => message.role === "toolResult").at(-1) as
       { isError: boolean; content: Array<{ type: string; text?: string }> } | undefined;
     expect(result).toBeDefined();
     const usage = sessionManager.getEntries().filter((entry) => entry.type === "model_usage")
@@ -265,6 +271,37 @@ describe("helper tool result contract through the SDK", () => {
     expect(requested).toEqual(["glm-fake", "terra-fake"]);
     // 실패한 주 모델 시도도 청구된 응답이라 남고, 대체 시도는 실제로 부른 Terra 대역에 draftFallback slot으로 귀속된다.
     expect(out.usage).toEqual([["draft", "draft", "fakeglm", "glm-fake"], ["draftFallback", "draft", "fakeglm", "terra-fake"]]);
+  });
+
+  test("draft: provider quota response is logged once and the next SDK tool call saves through the configured fallback", async () => {
+    behavior["glm-fake"] = "quota";
+    const root = mkdtempSync(join(tmpdir(), "helper-quota-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "보고서", output: "out.md", overwrite: true },
+      { draft: GLM, draftFallback: TERRA }, root, { runs: 2 });
+    expect(out.isError).toBe(false);
+    expect(out.text).toContain(`model: ${TERRA}`);
+    expect(out.text).not.toContain("RESOURCE_EXHAUSTED");
+    expect(readFileSync(join(root, "out.md"), "utf8")).toContain("terra-fake 가 쓴 본문");
+    expect(requested).toEqual(["glm-fake", "terra-fake", "terra-fake"]);
+    expect(out.usage).toEqual([
+      ["draft", "draft", "fakeglm", "glm-fake"],
+      ["draftFallback", "draft", "fakeglm", "terra-fake"],
+      ["draftFallback", "draft", "fakeglm", "terra-fake"],
+    ]);
+    const sessionFile = readdirSync(out.sessionsDir).find((name) => name.endsWith(".jsonl"))!;
+    expect(readFileSync(join(out.sessionsDir, sessionFile), "utf8")).toContain("RESOURCE_EXHAUSTED");
+  });
+
+  test("draft: a local resolver error cannot create a provider cooldown", async () => {
+    const root = mkdtempSync(join(tmpdir(), "helper-resolver-work-"));
+    roots.push(root);
+    const out = await callTool("draft", { instruction: "보고서", output: "out.md", overwrite: true },
+      { draft: GLM, draftFallback: TERRA }, root, { runs: 2, resolverThrows: "glm-fake" });
+    expect(out.isError).toBe(false);
+    expect(out.text).toContain("RESOURCE_EXHAUSTED");
+    expect(out.text).not.toContain("건너뜀");
+    expect(requested).toEqual(["terra-fake", "terra-fake"]);
   });
 
   test("draft: 주 모델의 형식 검증 실패(깨진 CSV)도 draftFallback 한 번으로 넘어간다", async () => {

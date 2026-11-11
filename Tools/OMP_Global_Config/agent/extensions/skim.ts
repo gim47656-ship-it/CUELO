@@ -48,7 +48,11 @@ export function toolResult(result: HelperResult): { content: [{ type: "text"; te
 }
 /** 어느 모델의 실패인지 함께 싣는 오류. 역할이 해석되기 전이면 model은 설정된 selector다. */
 export class HelperCallError extends Error {
-  constructor(message: string, readonly model: string, options?: ErrorOptions) { super(message, options); }
+  readonly providerFailure: boolean;
+  constructor(message: string, readonly model: string, options?: ErrorOptions & { providerFailure?: boolean }) {
+    super(message, options);
+    this.providerFailure = options?.providerFailure === true;
+  }
 }
 const DISPLAY_NAME: Record<string, string> = { [GEMINI]: "Gemini", [DEEPSEEK]: "DeepSeek" };
 /** 기본 모델은 짧은 이름으로, 설정으로 바뀐 모델은 provider/id 그대로 표시한다. */
@@ -221,6 +225,20 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
 export interface RoleCall { role: "skim" | "draft"; maxTokens?: number; acceptTruncated?: boolean }
 
 /**
+ * 요청 표지가 지금 설정에서 가리키는 실제 `provider/id`. 자격·네트워크 없이 별칭만 푸는
+ * `ctx.models.resolve`를 쓰며, 해석하기 전에는 `@slot` 이름 그대로다. 한도 대기 기록의 키로만 쓴다.
+ */
+function requestedModelName(ctx: ExtensionContext, requested: HelperModel, role: RoleCall["role"]): string {
+  const slot = requested === GEMINI ? role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
+  if (!slot) return DEEPSEEK;
+  try {
+    const model = ctx.models.resolve(`@${slot}`);
+    if (model) return `${model.provider}/${model.id}`;
+  } catch { /* 해석 실패는 표지 이름으로 다룬다 */ }
+  return `@${slot}`;
+}
+
+/**
  * 역할 slot(modelRoles.skim·draft가 가리키는 모델, 기본은 Gemini)·draft 전용 선택 대체 slot(modelRoles.draftFallback) 또는
  * 고정 DeepSeek 대체로 한 번 호출하고 응답이 돌아온 시도를 비용 장부에 남긴다. slot은 설정이 해석한 모델을 그대로 부르며
  * 다른 모델로 바꾸지 않는다. 해석·자격·입력 능력이 맞지 않으면 그 모델 이름을 단 오류로 멈춘다.
@@ -245,10 +263,16 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     const sessionId = ctx.sessionManager.getSessionId();
     if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name);
     const maxTokens = call.maxTokens ?? model.maxTokens;
-    const response: AssistantMessage = await completeSimple(model, {
-      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-    }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens,
-      disableReasoning: true, signal });
+    const apiKey = ctx.modelRegistry.resolver(model, sessionId);
+    let response: AssistantMessage;
+    try {
+      response = await completeSimple(model, {
+        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+      }, { apiKey, sessionId, maxTokens: maxTokens ?? undefined,
+        disableReasoning: true, signal });
+    } catch (error) {
+      throw new HelperCallError(error instanceof Error ? error.message : String(error), name, { cause: error, providerFailure: true });
+    }
     // judge·cache-warm과 같은 대화 밖 비용 장부(`model_usage`)에 응답이 돌아온 시도만 남긴다. 오류·빈 답
     // 응답도 청구된 시도라 먼저 기록하고, 응답 없이 던진 예외는 관측한 usage가 없어 남기지 않는다.
     // 장부 저장 실패는 삼키지 않고 그 모델 이름으로 실패시킨다.
@@ -258,7 +282,9 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
       model: model.id, usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
     }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
     const truncated = response.stopReason === "length" && call.acceptTruncated === true;
-    if (response.stopReason !== "stop" && !truncated) throw new HelperCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name);
+    if (response.stopReason !== "stop" && !truncated) {
+      throw new HelperCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, { providerFailure: response.stopReason === "error" });
+    }
     const answer = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
     if (!answer) throw new HelperCallError(`${name}가 빈 답을 반환했습니다.`, name);
     return { model: name, text: truncated ? `${answer}\n\n[출력 상한 ${maxTokens}토큰에서 답이 끊겼습니다. 남은 부분은 질문을 나눠 다시 물어보세요.]` : answer };
@@ -303,19 +329,91 @@ export async function resolveDraftFallback(ctx: ExtensionContext): Promise<Fallb
   return { marker: DRAFT_FALLBACK, name, label: "modelRoles.draftFallback" };
 }
 
+/** withFallback을 부른 자리. 대기 기록은 이 context의 modelRegistry·session·cwd 범위 안에서만 산다. */
+export interface HelperScope { ctx: ExtensionContext; role: RoleCall["role"] }
+
+// Registry and session objects own these transient entries; a different live session cannot evict them.
+const LIMIT_COOLDOWN = new WeakMap<object, WeakMap<object, Map<string, number>>>();
+
+/** 대기 기록의 자리. 자격 풀(modelRegistry)·세션·cwd·해석된 실제 모델이 모두 같을 때만 같은 기록이다. */
+function cooldownSlot(ctx: ExtensionContext, model: string): { map: Map<string, number>; key: string } | undefined {
+  const registry = ctx.modelRegistry;
+  if (!registry) return undefined;
+  let sessions = LIMIT_COOLDOWN.get(registry);
+  if (!sessions) { sessions = new WeakMap(); LIMIT_COOLDOWN.set(registry, sessions); }
+  let map = sessions.get(ctx.sessionManager);
+  if (!map) { map = new Map(); sessions.set(ctx.sessionManager, map); }
+  for (const [key, expiry] of map) if (expiry <= Date.now()) map.delete(key);
+  return { map, key: `${ctx.sessionManager.getSessionId()}\u0000${ctx.cwd}\u0000${model}` };
+}
+
+
+/** 대기 시간을 사람이 읽는 길이로. 표시 전용이며 판정에는 쓰지 않는다. */
+function waitText(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000);
+  if (ms < 60_000) return `${Math.ceil(ms / 1_000)}초`;
+  return minutes < 60 ? `${minutes}분` : `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+}
+
+/**
+ * 공급자가 명시한 복구 시간이 붙은 사용량·속도 한도 오류만 복구 대상으로 삼는다. 시간 표지가 없는 한도,
+ * 네트워크·자격·시간 초과 오류는 적지 않는다 — 언제 다시 시도할지에 대한 근거가 없기 때문이다.
+ * 같은 입력에 대한 분류는 core(`pi-ai`·`pi-utils`)가 이미 하므로 다시 구현하지 않는다.
+ */
+async function limitExpiry(message: string, now: number): Promise<number | undefined> {
+  try {
+    // The extension loader rewrites these runtime SDK imports to the installed host packages.
+    const [{ isUsageLimitOutcome }, { extractRetryHint }] = await Promise.all([
+      import("@oh-my-pi/pi-ai"), import("@oh-my-pi/pi-utils"),
+    ]);
+    if (!isUsageLimitOutcome(undefined, message)) return undefined;
+    const hint = extractRetryHint(undefined, message);
+    return hint !== undefined && Number.isFinite(hint) && hint > 0 && Number.isFinite(now + hint) ? now + hint : undefined;
+  } catch {
+    // Cooldown is optional; parser failure must not prevent the existing authorized fallback.
+    return undefined;
+  }
+}
+
 /**
  * 역할 slot 모델로 한 번, 실패하면 대체 모델(기본 고정 DeepSeek)로 한 번만 시도한다. slot이 이미 대체 모델로 해석돼 실패했다면
  * 같은 모델을 다시 부르지 않는다(재시도 증가 없음). 사용자 취소는 실패로 세지 않고 다음 모델을 부르지 않는다.
+ * 주 모델이 공급자 복구 시각을 밝힌 한도로 실패한 기록이 남아 있으면(scope가 있을 때) 그 시각까지 주 모델을
+ * 부르지 않고 같은 대체 모델로 바로 간다. 첫 실패의 원문은 그대로 남고, 건너뛴 호출만 짧은 안내로 대신한다.
  */
-export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget = FIXED_FALLBACK): Promise<FallbackOutcome<T>> {
+export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget = FIXED_FALLBACK, scope?: HelperScope): Promise<FallbackOutcome<T>> {
   const failures: string[] = [];
-  for (const requested of [GEMINI, fallback.marker] as const) {
+  if (signal.aborted) return { status: "cancelled", failures };
+  const primary = scope ? requestedModelName(scope.ctx, GEMINI, scope.role) : undefined;
+  const slot = scope && primary ? cooldownSlot(scope.ctx, primary) : undefined;
+  const now = Date.now();
+  const ready = slot ? slot.map.get(slot.key) ?? 0 : 0;
+  const waiting = ready > now;
+  if (slot && !waiting) slot.map.delete(slot.key);
+  if (waiting && primary) {
+    failures.push(`${displayName(primary)} 건너뜀: 공급자 한도가 ${waitText(ready - now)} 뒤 풀립니다.`);
+    // 대체가 같은 모델이면 방금 건너뛴 모델을 부르지 않는다(기존 같은 모델 재호출 방지 유지).
+    if (primary === fallback.name) {
+      failures.push(`${displayName(primary)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
+      return { status: "failed", failures };
+    }
+  }
+  for (const requested of waiting ? [fallback.marker] as const : [GEMINI, fallback.marker] as const) {
+    if (signal.aborted) return { status: "cancelled", failures };
     try {
       return { status: "done", ...(await attempt(requested)), failures };
     } catch (error) {
       const model = failedModel(error, requested === GEMINI ? requested : fallback.name);
-      failures.push(`${displayName(model)} 실패: ${(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim()}`);
+      const text = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+      failures.push(`${displayName(model)} 실패: ${text}`);
       if (signal.aborted) return { status: "cancelled", failures };
+      if (slot && requested === GEMINI && model === primary && error instanceof HelperCallError && error.providerFailure) {
+        const expiry = await limitExpiry(text, Date.now());
+        if (signal.aborted) return { status: "cancelled", failures };
+        if (expiry !== undefined) {
+          slot.map.set(slot.key, expiry);
+        }
+      }
       if (model === fallback.name && requested === GEMINI) {
         failures.push(`${displayName(model)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
         return { status: "failed", failures };
@@ -342,7 +440,7 @@ export async function skimQuestion(input: SkimInput, ctx: ExtensionContext, sign
       const answer = await complete(prompt, ctx, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]), requested);
       if (!answer.text.trim()) throw new HelperCallError(`${answer.model}가 빈 답을 반환했습니다.`, answer.model);
       return { model: answer.model, value: answer.text };
-    }, signal);
+    }, signal, FIXED_FALLBACK, { ctx, role: "skim" });
     if (outcome.status === "done") return { text: [`model: ${outcome.model}`, ...outcome.failures, outcome.value, ...suffix].join("\n\n"), isError: false };
     return { text: ["model: none", ...outcome.failures, ...suffix].join("\n\n"), isError: outcome.status === "failed" };
   } catch (error) {

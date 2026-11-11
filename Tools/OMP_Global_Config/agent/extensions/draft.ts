@@ -164,7 +164,7 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       } catch (error) {
         throw new HelperCallError(message(error), answer.model, { cause: error });
       }
-    }, signal, fallback);
+    }, signal, fallback, { ctx, role: "draft" });
     if (outcome.status !== "done") {
       return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: outcome.status === "failed" };
     }
