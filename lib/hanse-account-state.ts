@@ -130,7 +130,7 @@ export async function getSessionAccountState(
       nowMs, trigger: blocked ? "blocked" : "sweep", provider: model.provider, modelId: model.id,
       settings: {
         // This is a read-only recommendation, never consent to redeem a reset.
-        enabled: true, minBlockedMinutes: Math.max(0, cfg.minBlockedMinutes),
+        modes: { "5h": "unset", weekly: "unset" }, minBlockedMinutes: Math.max(0, cfg.minBlockedMinutes),
         keepCredits: Math.max(0, Math.trunc(cfg.keepCredits)),
         salvageHorizonMs: Math.max(0, cfg.salvageHorizonHours) * 3_600_000,
       },
