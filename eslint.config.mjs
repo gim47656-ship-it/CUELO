@@ -5,7 +5,8 @@ const eslintConfig = [
   ...coreWebVitals,
   ...typescript,
   {
-    ignores: ["Tools/**", ".omp/**", ".runtime-patch-home/**", ".gitnexus/**", ".next-verify/**"],
+    // Third-party minified bundles kept beside a private report page are not project source.
+    ignores: ["Tools/**", ".omp/**", ".runtime-patch-home/**", ".gitnexus/**", ".next-verify/**", "doc/history/**/*.min.js"],
   },
   {
     rules: {

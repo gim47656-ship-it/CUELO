@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import characterVoice, { CHARACTER_TARGETS } from "../Tools/OMP_Global_Config/agent/extensions/character-voice";
 import { anthropicOverDaySlot, readSidecarQuota, type QuotaSnapshot, type QuotaAccount } from "../Tools/OMP_Global_Config/agent/extensions/lib/anthropic-quota";
@@ -67,11 +70,22 @@ describe("Anthropic daily-share policy", () => {
     expect(selected.notice).toBe(DAY_SLOT_START_NOTICE);
     type StartHandler = (event: { prompt: string; systemPrompt: string[] }, ctx: unknown) => Promise<{ systemPrompt: string[] }>;
     const handlers = new Map<string, StartHandler>();
-    characterVoice({ on: (name: string, fn: StartHandler) => handlers.set(name, fn) } as never);
-    const ctx = { model: selected.initial.model, sessionManager: { getSessionId: () => "new-yuki" } };
-    const started = await handlers.get("before_agent_start")!({ prompt: "hello", systemPrompt: ["base"] }, ctx);
-    expect(started.systemPrompt.join("\n")).toContain('alias="YUKI(유키)"');
-    expect(started.systemPrompt.join("\n")).not.toContain('alias="RIN(린)"');
+    // The voice extension reads the office character roster from the agent dir. An empty one keeps this
+    // check on the default characters on a PC whose real profile has a roster.
+    const agentDir = mkdtempSync(join(tmpdir(), "new-session-voice-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      characterVoice({ on: (name: string, fn: StartHandler) => handlers.set(name, fn) } as never);
+      const ctx = { model: selected.initial.model, sessionManager: { getSessionId: () => "new-yuki" } };
+      const started = await handlers.get("before_agent_start")!({ prompt: "hello", systemPrompt: ["base"] }, ctx);
+      expect(started.systemPrompt.join("\n")).toContain('alias="YUKI(유키)"');
+      expect(started.systemPrompt.join("\n")).not.toContain('alias="RIN(린)"');
+    } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   test("YUKI does not inherit another default role's thinking pin but honors an explicit level", async () => {
