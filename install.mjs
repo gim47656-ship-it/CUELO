@@ -41,6 +41,7 @@ export const HARNESS_ROLES = [
   "crossReviewOpenAI",
   "crossReviewAnthropic",
   "crossReviewAdvisory",
+  "preflightAnthropic",
   "skim",
   "draft",
   "ocr",

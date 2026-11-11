@@ -16,7 +16,7 @@
     },
     "maker": {
       "kind": "delegated-end-to-end-implementation-owner",
-      "modelConfigPath": "modelRoles.implDeepSeek",
+      "modelConfigPath": "modelRoles.implSonnet",
       "thinkingMode": "auto",
       "defaultThinkingLevel": "auto",
       "definition": "agent/agents/maker.md",
@@ -68,7 +68,7 @@
       "noFixedOrder": "never-a-global-one-way-gate-and-never-a-runtime-engine",
       "selectedOverlapDispatch": "when-main-selects-overlap-it-reviews-the-frozen-revision-itself-while-the-owner-check-still-runs-serial-dispatch-then-violates-the-selected-strategy"
     },
-    "modelConfigPath": "modelRoles.implDeepSeek",
+    "modelConfigPath": "modelRoles.implSonnet",
     "sourceAccess": "owner-writable-inside-its-brief-boundary-only",
     "allowedWrites": "its-own-slice-sources-plus-ordinary-build-cache-temp-artifacts",
     "forbidden": ["other-owners-files", "install", "deploy", "commit", "verdict"],
@@ -263,7 +263,7 @@
         "evidence": "recorded-with-the-model-slot-used-and-the-objections-raised-never-reported-as-a-passing-signal"
       },
       "crossFamilyReview": {
-        "purpose": "code-written-by-one-model-family-is-reviewed-by-another-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled-user-decision-2026-11-08-the-cheap-default-maker-slot-implDeepSeek-is-reviewed-like-anthropic-by-the-configured-openai-reviewer-so-the-cheaper-author-never-reviews-itself-and-the-route-adds-no-model-name-to-the-gate-code",
+        "purpose": "code-written-by-one-model-family-is-reviewed-by-another-family-before-git_finalize-commits-it-when-it-is-high-risk-or-sampled-user-decision-2026-11-08-the-explicit-only-cheap-maker-slot-implDeepSeek-and-the-anthropic-default-maker-slot-implSonnet-are-both-reviewed-by-the-configured-openai-reviewer-so-the-cheaper-author-never-reviews-itself-and-the-route-adds-no-model-name-to-the-gate-code",
         "tool": "cross_review-with-actions-review-and-resolve-a-tool-never-a-revived-reviewer-role-and-never-an-eval-completion-call-review-including-probe-and-delta-rounds-runs-from-main-or-a-maker-session-resolve-is-main-only-and-refused-in-subagent-sessions",
         "familyMapping": {
           "anthropic-or-implDeepSeek-slot-authored-including-main": "reviewed-by-the-openai-reviewer-slot-modelRoles.crossReviewOpenAI",
@@ -986,7 +986,7 @@
         "activeOwnerCollision": "an-active-owner-that-owns-the-path-blocks-dispatch-new-and-a-stale-owner-index-or-a-different-path-owner-is-never-auto-assigned",
         "sessionChange": "a-new-session-discards-every-previous-judgment"
       },
-      "defaultMakerModelConfigPath": "modelRoles.implDeepSeek",
+      "defaultMakerModelConfigPath": "modelRoles.implSonnet",
       "rationale": "grade-the-judgment-left-for-this-slice-not-project-size-file-count-risk-or-past-effort-main-writes-maker_route-assessment-remainingJudgments-only-for-judgments-with-several-viable-designs-unknown-causes-or-evidence-confirmed-contract-conflicts-and-puts-local-details-an-existing-pattern-spec-or-main-direction-already-fixes-into-settledImplementation-or-facts-as-given-constraints-the-same-rule-as-effortSelection-gradingInput-this-is-accurate-description-never-a-lever-for-model-or-effort",
       "profiles": {
         "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL" },
@@ -1043,16 +1043,16 @@
       },
       "designOpenCriteria": "a-large-cross-boundary-redesign-or-an-open-ended-product-or-architecture-direction-remains-the-approved-approach-cannot-meet-acceptance-without-an-unresolved-change-to-the-canonical-state-owner-ownership-a-cross-module-public-data-or-API-contract-or-module-boundaries-or-the-product-direction-itself-is-open-never-because-of-code-volume-file-count-or-complexity-alone-an-unresolved-design-choice-that-stays-inside-the-existing-state-owner-and-approved-contracts-with-a-clear-goal-and-acceptance-is-not-open-it-is-classified-by-boundedDesign-and-visual-or-interaction-design-by-uiDifficulty-direction-settled-implementation-is-not-open-even-when-the-state-handling-is-complex-when-the-facts-cannot-settle-which-it-is-leave-the-answer-empty-as-unknown-never-open",
       "normalAllocation": {
-        "selection": "user-decision-2026-11-10-difficult-UI-recommends-Opus-and-user-decision-2026-11-11-keeps-four-maker-model-families-Sonnet-implDeepSeek-Opus-and-Sol-and-routine-UI-recommends-Sonnet-main-prepares-and-accepts-implDeepSeek-implements-settled-work-including-complex-state-tests-and-iterative-correction-missing-or-exhausted-implDeepSeek-is-no-automatic-replacement-and-main-decides-again-without-blocking-difficult-UI-uiDifficulty-DIFFICULT-selects-NORMAL_OPUS-and-NORMAL_OPUS-is-recommended-only-for-difficult-UI-boundedDesign-BOUNDED-and-reworkNature-BOUNDED_FAILURE-select-NORMAL_SOL-not-every-failing-test-is-failed-rework-after-those-routine-UI-uiDifficulty-ROUTINE-selects-NORMAL_SONNET-and-a-missing-or-exhausted-Sonnet-candidate-is-no-automatic-replacement",
+        "selection": "user-decision-2026-11-11-maker-distribution-general-settled-implementation-defaults-to-Sonnet-and-routine-UI-stays-Sonnet-NORMAL_SONNET-and-HARD_CODE_SONNET-for-settled-work-NORMAL_SONNET-and-HARD_UI_SONNET-for-routine-UI-difficult-UI-uiDifficulty-DIFFICULT-selects-NORMAL_OPUS-Opus-5.5-and-NORMAL_OPUS-is-recommended-only-for-difficult-UI-boundedDesign-BOUNDED-including-a-deep-root-cause-still-open-inside-the-existing-canonical-state-owner-and-approved-contracts-and-reworkNature-BOUNDED_FAILURE-select-NORMAL_SOL-not-every-failing-test-is-failed-rework-and-no-new-diagnostic-label-or-failure-count-gate-exists-implDeepSeek-is-explicit-only-never-recommended-and-main-may-choose-it-with-ROUTING_REASON-for-fully-specified-repetitive-work-a-missing-or-exhausted-Sonnet-default-is-no-automatic-replacement-and-main-decides-again-without-blocking",
         "returnToMain": "large-cross-boundary-redesign-that-needs-new-state-ownership-or-public-contracts-open-ended-product-or-architecture-direction-and-unresolved-repeated-implementation-failure-get-no-recommendation-regardless-of-UI-or-HARD-label-and-the-beforeTask-dispatch-boundary-blocks-every-candidate-for-that-prepared-decision-even-with-ROUTING_REASON-the-remedy-is-main-reviewing-the-cause-and-evidence-changing-approach-scope-contract-or-acceptance-and-re-running-maker_route-so-a-refreshed-decision-with-the-architecture-resolved-and-a-bounded-implementation-or-bounded-design-may-dispatch-failure-is-read-from-evidence-not-from-the-FINDING_ID-marker-or-task-name-unknown-or-judge-unavailable-is-UNKNOWN-never-a-block-and-keeps-the-existing-explicit-ROUTING_REASON-route-no-numeric-retry-cap-and-no-file-count-threshold-repeated-failure-precedes-large-redesign-which-precedes-unknown-and-then-difficult-UI-bounded-design-and-bounded-rework-never-endless-Sonnet-retry-or-frontier-maker-promotion",
         "notFailure": "intentional-RED-tests-transient-infrastructure-failures-and-routine-verification-corrections-are-not-failed-implementation-rework",
         "missing": "missing-quota-is-unknown-not-exhausted-skip-unavailable-or-observed-exhausted-candidates-no-eligible-candidate-means-null-profile-with-a-reason-that-asks-main-to-decide-again-and-an-unavailable-default-candidate-is-an-availability-case-not-a-large-architecture-block",
         "scope": "new-dispatch-recommendation-preserves-credential-selection-warm-pin-rotation-cooldowns-and-resets-same-owner-continuation-never-changes-a-running-model-in-place-and-never-repeats-completed-work-a-newly-observed-UI-UX-boundary-requires-main-to-check-the-existing-owner-freeze-unfinished-delta-and-evidence-and-decide-the-handover",
-        "override": "recommendation-changes-require-ROUTING_REASON-with-no-day-slot-exception-for-maker-candidates-all-observed-Anthropic-accounts-being-unusable-or-over-their-finite-live-shared-7d-daySlot-usedPct-at-least-quotaPct-does-not-change-any-Maker-recommendation-or-explicit-Anthropic-Maker-choice-and-only-a-fresh-top-level-session-without-an-explicit-model-start-on-the-YUKI-character-selector-is-switched-with-one-visible-notice-no-running-resumed-forked-or-child-session-switch-and-bounded-quota-wait-fails-open"
+        "override": "recommendation-changes-require-ROUTING_REASON-with-no-day-slot-exception-for-maker-candidates-an-actual-usage-limit-meaning-all-observed-Anthropic-accounts-unusable-is-observed-exhaustion-and-returns-no-recommendation-while-a-finite-live-shared-7d-daySlot-usedPct-at-least-quotaPct-is-display-only-and-changes-no-Maker-recommendation-explicit-choice-or-session-model-and-bounded-quota-wait-fails-open"
       },
       "hardSelection": {
-        "explicitOnly": "HARD_CODE_OPUS-HARD_CODE_SONNET-and-HARD_CODE_TERRA-are-explicit-only-and-require-ROUTING_REASON-NORMAL_OPUS-and-HARD_UI_OPUS-are-recommended-only-for-difficult-UI-NORMAL_SONNET-and-HARD_UI_SONNET-are-recommended-only-for-routine-UI-and-any-other-choice-of-them-requires-ROUTING_REASON-user-decision-2026-11-11-the-implGemini-and-implGlm-slots-are-no-longer-maker-candidates-and-their-models-are-rejected-as-non-candidates",
-        "selection": "settled-HARD-selects-HARD_CODE_DEEPSEEK-and-when-it-is-absent-or-exhausted-returns-no-recommendation-for-main-to-decide-again-difficult-UI-selects-HARD_UI_OPUS-regardless-of-the-Anthropic-day-slot-bounded-design-and-bounded-failed-rework-select-HARD_CODE_SOL61-after-those-routine-UI-selects-HARD_UI_SONNET-large-redesign-and-repeated-failure-return-to-main-the-HARD-label-alone-never-returns-a-slice-to-main",
+        "explicitOnly": "HARD_CODE_OPUS-HARD_CODE_TERRA-NORMAL_DEEPSEEK-and-HARD_CODE_DEEPSEEK-are-explicit-only-and-require-ROUTING_REASON-the-cheap-slot-is-never-recommended-and-is-for-fully-specified-repetitive-work-only-NORMAL_OPUS-and-HARD_UI_OPUS-are-recommended-only-for-difficult-UI-NORMAL_SONNET-and-HARD_CODE_SONNET-are-recommended-for-settled-work-NORMAL_SONNET-and-HARD_UI_SONNET-are-recommended-for-routine-UI-and-any-other-choice-of-them-requires-ROUTING_REASON-user-decision-2026-11-11-the-implGemini-and-implGlm-slots-are-no-longer-maker-candidates-and-their-models-are-rejected-as-non-candidates",
+        "selection": "settled-HARD-selects-HARD_CODE_SONNET-and-when-it-is-absent-or-exhausted-returns-no-recommendation-for-main-to-decide-again-difficult-UI-selects-HARD_UI_OPUS-regardless-of-the-Anthropic-day-slot-bounded-design-and-bounded-failed-rework-select-HARD_CODE_SOL61-after-those-routine-UI-selects-HARD_UI_SONNET-large-redesign-and-repeated-failure-return-to-main-the-HARD-label-alone-never-returns-a-slice-to-main",
         "unknown": "unclear-or-missing-designOpen-uiDifficulty-or-boundedDesign-is-UNKNOWN-not-a-block-it-returns-no-recommendation-keeps-the-explicit-ROUTING_REASON-route-and-is-never-a-reason-for-a-costlier-model-and-a-known-large-redesign-or-repeated-failure-still-blocks-even-when-the-work-class-answer-is-missing",
         "independence": "cross-frontier-is-an-exception-only-when-a-concrete-independent-judgment-from-the-main-is-required-main-records-that-need-in-ROUTING_REASON-never-mix-an-implementation-maker-with-an-implicit-independent-review-role",
         "scope": "model-selection-only-effort-is-the-child-auto-and-access-program-fields-are-omitted"

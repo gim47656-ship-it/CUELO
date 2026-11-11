@@ -142,13 +142,13 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSol` | 범위가 제한된 설계 선택과 구현 실패 뒤 재작업, 모든 Anthropic 계정이 오늘 몫을 넘겼을 때의 어려운 UI 추천 | OpenAI 쪽 구현 모델(이 저장소 기본은 GPT-6.1 Sol `:auto`) |
-   | `implSonnet` | 비-UI 명시 선택 후보(Main이 `ROUTING_REASON`을 기록해 선택) | Sonnet 모델 지원. 자동 기본 추천 후보가 아닙니다 |
-   | `implOpus` | 시각 또는 상호작용 설계가 열린 어려운 UI 작업의 기본 추천(NORMAL) | Anthropic 쪽 Opus 모델 지원. 모든 Anthropic 계정이 주간 창의 오늘 몫을 넘기면 `implSol`을 추천 |
-   | `implDeepSeek` | 방향과 수용 조건이 정해진 작업의 가장 저렴한 기본 담당 | Hive의 DeepSeek V4.1 Flash 1017 모델 지원. 실패해도 Sonnet으로 자동 대체하지 않고 Main이 다시 판단 |
-   | `makerHardUiOpus` | 시각 또는 상호작용 설계가 열린 어려운 UI 작업의 기본 추천(HARD) | Anthropic 쪽 Opus 모델 지원. 모든 Anthropic 계정이 주간 창의 오늘 몫을 넘기면 `implSol`을 추천 |
-   | `makerHardCodeOpus` | 어려운 코드의 명시 선택 후보(Main이 `ROUTING_REASON`을 기록해 선택) | Opus 모델 지원 |
-   | `makerHardCodeSonnet` | 어려운 코드의 명시 선택 후보(Main이 `ROUTING_REASON`을 기록해 선택) | Sonnet 모델 및 `medium`/`high`/`xhigh` 지원 |
+   | `implSol` | 기존 상태 소유권과 승인된 계약 안의 한정된 설계, 깊은 원인 추적, 범위가 정해진 재작업 | `provider/model[:effort]` 형식으로 지원되는 Sol 모델 selector와 추론 단계를 지정 |
+   | `implSonnet` | 일반 구현과 보통 UI 작업의 기본 추천 | 지원되는 Sonnet 모델과 추론 단계를 지정합니다. |
+   | `implOpus` | 어려운 UI 작업의 기본 추천(NORMAL) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
+   | `implDeepSeek` | 명세가 완전히 정해진 반복 작업에서 Main이 명시적으로 선택하는 후보 (자동 추천 안 함) | `provider/model[:effort]` 형식으로 지원되는 DeepSeek 모델을 설정하고, Main이 직접 선택하여 `ROUTING_REASON`을 기록 |
+   | `makerHardUiOpus` | 어려운 UI 작업의 기본 추천(HARD) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
+   | `makerHardCodeOpus` | Main이 명시적으로 선택하는 HARD 코드 후보 | `provider/model[:effort]` 형식으로 지원되는 Opus 모델을 설정하고 선택 이유를 기록 |
+   | `makerHardCodeSonnet` | 방향이 정해진 구현과 보통 UI 작업의 기본 추천(HARD) | 지원되는 Sonnet 모델과 추론 단계를 지정합니다. |
 
    일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 일곱 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 기본 경로는 [TypeSafe API 키](https://console.typesafe.ai/)를 발급받아 `typesafe/jev-1.14.0`을 직접 지정하는 것이고, 그 키가 없으면 요청은 OpenRouter의 `typesafe/jev-1.14`로 넘어갑니다. OpenRouter를 쓰려면 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **설정 > 모델·계정 > OpenRouter > API Key**에 입력합니다. 어느 쪽이든 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
@@ -174,6 +174,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | `crossReviewOpenAI` | 교차검토의 OpenAI 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
 | `crossReviewAnthropic` | 교차검토의 Anthropic 계열 필수 검토자(슬롭 전용 슬롯이 비면 슬롭 검사에도 사용) | `anthropic` 제공자의 모델을 고릅니다. |
 | `crossReviewAdvisory` | 교차검토의 보조 검토자(선택, 기다리지 않음). 필수 검토자가 끝난 뒤 최대 60초만 기다리며, 그 안에 온 지적은 다른 지적처럼 닫습니다. | 어느 제공자의 텍스트 모델이든 고를 수 있습니다. 작성자나 필수 검토자와 같은 모델이면 호출하지 않고, 비워 두면 보조 호출이 없습니다. |
+| `preflightAnthropic` | `implGemini`와 함께 수행하는 계획 자문. 필수 `crossReviewAnthropic`과 별도로 설정합니다. | 공개 설치에서는 사용자가 지원되는 텍스트 모델을 직접 고릅니다. 자동으로 모델을 채우지 않습니다. |
 | `slopReviewOpenAI` | 슬롭 검사 검토자(선택) | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. OpenAI 모델이 쓴 글은 이 슬롯 대신 `crossReviewAnthropic`이 검토합니다. 비우면 교차검토 슬롯을 씁니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
@@ -199,7 +200,7 @@ node install.mjs harness-update
 
 설치 기록은 이 기능이 적용된 `setup`과 컨테이너 기동에서 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
-`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 범위가 제한된 설계와 실패 재작업, 모든 Anthropic 계정이 오늘 몫을 넘겼을 때의 어려운 UI 추천 자리(`NORMAL_SOL`·`HARD_CODE_TERRA`)로 쓰이므로 이름을 바꾸지 말고, Sonnet 후보는 `implSonnet`에 따로 지정합니다. 역할 설정은 `harness-update`가 바꾸지 않습니다.
+`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 한정된 설계, 깊은 원인 추적과 실패 재작업 자리(`NORMAL_SOL`, `HARD_CODE_SOL61`)로 유지합니다. 일반 구현과 보통 UI는 `implSonnet`에 지정합니다. 하루 사용 몫을 이유로 UI 담당을 바꾸지 않으며, 역할 설정은 `harness-update`가 덮어쓰지 않습니다.
 
 
 ### 다른 프로필에 설치(`--home`)

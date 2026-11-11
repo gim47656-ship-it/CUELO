@@ -3,71 +3,95 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import characterVoice, { CHARACTER_TARGETS } from "../Tools/OMP_Global_Config/agent/extensions/character-voice";
-import { anthropicOverDaySlot, readSidecarQuota, type QuotaSnapshot, type QuotaAccount } from "../Tools/OMP_Global_Config/agent/extensions/lib/anthropic-quota";
-import { selectNewSessionModel, DAY_SLOT_START_NOTICE } from "./new-session-model";
+import characterVoice from "../Tools/OMP_Global_Config/agent/extensions/character-voice";
+import { readSidecarQuota } from "../Tools/OMP_Global_Config/agent/extensions/lib/anthropic-quota";
+import { selectNewSessionModel } from "./new-session-model";
 import type { ModelScopeResult } from "./model-scope";
 
-function account(id: number, used: number | null = 15): QuotaAccount {
-  return { credentialId: id, disabled: false, autoBlockedUntilMs: null, limitReached: false, fetchedAt: 1,
-    limits: [{ id: "anthropic:7d", usedFraction: 0.2, resetsAt: 100, windowId: "7d", shared: true,
-      daySlot: { usedPct: used, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } }] };
-}
-function snapshot(accounts = [account(9), account(11)]): QuotaSnapshot {
-  return { state: "observed", observedAt: 1, providers: { anthropic: accounts } };
-}
-const storage = { credentials: { list: () => [9, 11].map((id) => ({ id, disabledCause: null })) } };
-const yuki = CHARACTER_TARGETS["YUKI(유키)"].model;
-const separator = yuki.indexOf("/");
-const sol = { provider: yuki.slice(0, separator), id: yuki.slice(separator + 1) } as ModelScopeResult["visible"][number];
 const opus = { provider: "anthropic", id: "claude-opus-5-5" } as ModelScopeResult["visible"][number];
-const scope = { visible: [opus, sol], scopedModels: [], thinkingLevelPins: {}, warnings: [] } as ModelScopeResult;
-const fresh = { freshTopLevel: true, sessionFile: "", hasExistingMessages: false,
-  defaultModel: { provider: opus.provider, modelId: opus.id } };
+const fable = { provider: "anthropic", id: "claude-fable-5-2" } as ModelScopeResult["visible"][number];
+const sol = { provider: "openai-codex", id: "gpt-6-astra" } as ModelScopeResult["visible"][number];
+const scope = { visible: [opus, fable, sol], scopedModels: [], thinkingLevelPins: {}, warnings: [] } as ModelScopeResult;
+const fresh = { hasExistingMessages: false, defaultModel: { provider: opus.provider, modelId: opus.id } };
 
-describe("Anthropic daily-share policy", () => {
-  test("requires complete observed coverage and finite live shared weekly slots", () => {
-    expect(anthropicOverDaySlot(snapshot(), [9, 11])).toBe(true);
-    expect(anthropicOverDaySlot(snapshot([account(9, 14.29), account(11)]))).toBe(true);
-    const cases: QuotaSnapshot[] = [
-      snapshot([account(9, 10), account(11)]), snapshot([account(9, null), account(11)]),
-      snapshot([account(9)]), snapshot([]), { state: "unavailable", observedAt: 1, reason: "offline" },
-    ];
-    for (const quota of cases) expect(anthropicOverDaySlot(quota, [9, 11])).toBe(false);
-    expect(anthropicOverDaySlot(snapshot(), [9, 11, 13])).toBe(false);
-    expect(anthropicOverDaySlot(snapshot([account(9), account(9)]))).toBe(false);
-    for (const mutate of [
-      (a: QuotaAccount) => { a.limits[0]!.daySlot!.quotaPct = null; },
-      (a: QuotaAccount) => { a.limits[0]!.daySlot!.usedPct = Infinity; },
-      (a: QuotaAccount) => { a.limits[0]!.daySlot!.quality = "unknown"; },
-      (a: QuotaAccount) => { a.limits[0]!.daySlot = null; },
-      (a: QuotaAccount) => { a.limits[0]!.shared = false; },
-      (a: QuotaAccount) => { a.limits[0]!.windowId = "5h"; },
-      (a: QuotaAccount) => { a.limits[0]!.resetsAt = 1; },
-    ]) {
-      const a = account(9); mutate(a);
-      expect(anthropicOverDaySlot(snapshot([a, account(11)]), [9, 11])).toBe(false);
+describe("New session model selection", () => {
+  test("a fresh unpinned session starts on the configured default model", () => {
+    const selected = selectNewSessionModel(scope, fresh);
+    expect(selected.model).toBe(opus);
+    expect(selected).not.toHaveProperty("notice");
+  });
+
+  test("no quota observation can change the start model", () => {
+    // 2026-11-11: the selector no longer reads account usage at all, so nothing a sidecar
+    // reports — over-share, exhausted, disabled or unavailable — moves a fresh session.
+    const selected = selectNewSessionModel(scope, fresh);
+    expect(selected.model).toBe(opus);
+    expect(selected.scopedModels).toEqual([]);
+  });
+
+  test("the usage sidecar still parses the reference numbers the panel shows", async () => {
+    // Quota display and Maker routing keep reading this adapter; only the model-switch rule is gone.
+    const server = Bun.serve({ port: 0, fetch: () => Response.json({ reports: [9, 11].map((credentialId) => ({
+      provider: "anthropic", credentialId,
+      limits: [{ id: "anthropic:7d", scope: { windowId: "7d", shared: true },
+        daySlot: { usedPct: 15, quotaPct: 14.29, slotsLeft: 7, quality: "exact", paceOver: true } }],
+    })) }) });
+    const previous = process.env.OMP_USAGE_PORT;
+    process.env.OMP_USAGE_PORT = String(server.port);
+    try {
+      const quota = await readSidecarQuota(["anthropic"]);
+      expect(quota.state).toBe("observed");
+      const limits = quota.state === "observed" ? quota.providers.anthropic!.map((account) => account.limits[0]!) : [];
+      expect(limits.map((limit) => [limit.windowId, limit.shared, limit.daySlot?.usedPct, limit.daySlot?.quotaPct,
+        limit.daySlot?.slotsLeft, limit.daySlot?.quality, limit.daySlot?.paceOver]))
+        .toEqual([["7d", true, 15, 14.29, 7, "exact", true], ["7d", true, 15, 14.29, 7, "exact", true]]);
+    } finally {
+      if (previous === undefined) delete process.env.OMP_USAGE_PORT;
+      else process.env.OMP_USAGE_PORT = previous;
+      server.stop(true);
     }
-    const spent = account(9, null); spent.limitReached = true;
-    expect(anthropicOverDaySlot(snapshot([spent, account(11)]), [9, 11])).toBe(true);
   });
 
-  test("a slot without its start value counts as over by its lower bound or by weekly pace", () => {
-    const estimate = (usedPct: number, paceOver: boolean) => {
-      const a = account(11); a.limits[0]!.daySlot = { usedPct, quotaPct: 14.29, slotsLeft: 5, quality: "estimate", paceOver };
-      return a;
-    };
-    expect(anthropicOverDaySlot(snapshot([account(9), estimate(0, true)]), [9, 11])).toBe(true);
-    expect(anthropicOverDaySlot(snapshot([account(9), estimate(15, false)]), [9, 11])).toBe(true);
-    expect(anthropicOverDaySlot(snapshot([account(9), estimate(3, false)]), [9, 11])).toBe(false);
-    const measured = account(11, 3); measured.limits[0]!.daySlot!.paceOver = true;
-    expect(anthropicOverDaySlot(snapshot([account(9), measured]), [9, 11]), "pace only stands in for a missing start value").toBe(false);
+  test("an explicit request, a resumed transcript and a child keep their own choice", () => {
+    const requested = selectNewSessionModel(scope, {
+      ...fresh,
+      requestedModel: { provider: fable.provider, modelId: fable.id },
+    });
+    expect(requested.model).toBe(fable);
+
+    // A conversation that already has messages carries the transcript's model and level.
+    const resumed = selectNewSessionModel(scope, { ...fresh, hasExistingMessages: true });
+    expect(resumed.model).toBeUndefined();
+    expect(resumed.thinkingLevel).toBeUndefined();
+
+    // A child passes its own model the same way an explicit request does.
+    const child = selectNewSessionModel(scope, {
+      hasExistingMessages: false,
+      requestedModel: { provider: sol.provider, modelId: sol.id },
+    });
+    expect(child.model).toBe(sol);
   });
 
-  test("fresh implicit-model startup selects the canonical YUKI selector and actual YUKI voice", async () => {
-    const selected = await selectNewSessionModel(scope, fresh, storage, async () => snapshot());
-    expect(selected.initial.model).toBe(sol);
-    expect(selected.notice).toBe(DAY_SLOT_START_NOTICE);
+  test("an unavailable explicit request still fails loudly instead of silently falling back", () => {
+    expect(() => selectNewSessionModel(scope, {
+      ...fresh,
+      requestedModel: { provider: "anthropic", modelId: "claude-nonexistent" },
+    })).toThrow("Model is not available in the enabled scope");
+  });
+
+  test("the default role's thinking pin applies unless the caller names a level", () => {
+    const xhigh = parseConfiguredThinkingLevel("xhigh")!;
+    const high = parseConfiguredThinkingLevel("high")!;
+    const scoped = (model: ModelScopeResult["visible"][number], level: typeof xhigh) =>
+      ({ model, thinkingLevel: level }) as ModelScopeResult["scopedModels"][number];
+    const pinned = { ...scope, scopedModels: [scoped(opus, xhigh)] } as ModelScopeResult;
+    expect(selectNewSessionModel(pinned, fresh).thinkingLevel).toBe(xhigh);
+    expect(selectNewSessionModel(pinned, { ...fresh, defaultThinkingLevel: high }).thinkingLevel).toBe(high);
+    expect(selectNewSessionModel(pinned, { ...fresh, thinkingLevel: high }).thinkingLevel).toBe(high);
+  });
+
+  test("the selected Opus session still runs as the default-role voice, not YUKI", async () => {
+    const selected = selectNewSessionModel(scope, fresh);
     type StartHandler = (event: { prompt: string; systemPrompt: string[] }, ctx: unknown) => Promise<{ systemPrompt: string[] }>;
     const handlers = new Map<string, StartHandler>();
     // The voice extension reads the office character roster from the agent dir. An empty one keeps this
@@ -77,100 +101,16 @@ describe("Anthropic daily-share policy", () => {
     process.env.PI_CODING_AGENT_DIR = agentDir;
     try {
       characterVoice({ on: (name: string, fn: StartHandler) => handlers.set(name, fn) } as never);
-      const ctx = { model: selected.initial.model, sessionManager: { getSessionId: () => "new-yuki" } };
+      const ctx = { model: selected.model, sessionManager: { getSessionId: () => "new-default" } };
       const started = await handlers.get("before_agent_start")!({ prompt: "hello", systemPrompt: ["base"] }, ctx);
-      expect(started.systemPrompt.join("\n")).toContain('alias="YUKI(유키)"');
-      expect(started.systemPrompt.join("\n")).not.toContain('alias="RIN(린)"');
+      // The day-share override used to hand this session YUKI. Any other alias is fine here:
+      // which Anthropic character a seat maps to is profile state, not this selector's decision.
+      expect(started.systemPrompt.join("\n")).toContain("<character-voice alias=");
+      expect(started.systemPrompt.join("\n")).not.toContain('alias="YUKI(유키)"');
     } finally {
       if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       rmSync(agentDir, { recursive: true, force: true });
     }
-  });
-
-  test("YUKI does not inherit another default role's thinking pin but honors an explicit level", async () => {
-    const xhigh = parseConfiguredThinkingLevel("xhigh")!;
-    const high = parseConfiguredThinkingLevel("high")!;
-    const options = { ...fresh, defaultThinkingLevel: xhigh };
-    const under = await selectNewSessionModel(scope, options, storage, async () => snapshot([account(9, 1), account(11)]));
-    expect(under.initial.thinkingLevel).toBe(xhigh);
-    const over = await selectNewSessionModel(scope, options, storage, async () => snapshot());
-    expect(over.initial.thinkingLevel).toBeUndefined();
-    const explicit = await selectNewSessionModel(scope, { ...options, thinkingLevel: high }, storage, async () => snapshot());
-    expect(explicit.initial.thinkingLevel).toBe(high);
-  });
-
-  test("under share or unavailable quota starts normally; explicit/resume/fork/child paths do not read quota", async () => {
-    for (const quota of [snapshot([account(9, 1), account(11)]), snapshot([account(9)]),
-      { state: "unavailable", observedAt: 1, reason: "offline" } as QuotaSnapshot]) {
-      const result = await selectNewSessionModel(scope, fresh, storage, async () => quota);
-      expect(result.initial.model).toBe(opus); expect(result.notice).toBeNull();
-    }
-    for (const options of [
-      { ...fresh, requestedModel: { provider: opus.provider, modelId: opus.id } },
-      { ...fresh, freshTopLevel: false, sessionFile: "resume.jsonl", hasExistingMessages: true },
-      { ...fresh, freshTopLevel: false, sessionFile: "fork.jsonl", hasExistingMessages: true },
-      { ...fresh, freshTopLevel: false }, // child creation never opts in
-    ]) {
-      let called = false;
-      const result = await selectNewSessionModel(scope, options, storage, async () => { called = true; return snapshot(); });
-      expect(called).toBe(false); expect(result.notice).toBeNull();
-      expect(result.initial.model).toBe(options.hasExistingMessages ? undefined : opus);
-    }
-  });
-
-  test("slow quota fails open within the startup budget", async () => {
-    const { promise } = Promise.withResolvers<QuotaSnapshot>();
-    const result = await selectNewSessionModel(scope, fresh, storage, async () => promise);
-    expect(result.initial.model).toBe(opus); expect(result.notice).toBeNull();
-  });
-
-  test("a Fable default is judged on Fable's own weekly window, not the shared one", async () => {
-    const fable = { provider: "anthropic", id: "claude-fable-5-2" } as ModelScopeResult["visible"][number];
-    const fableScope = { ...scope, visible: [fable, sol] } as ModelScopeResult;
-    const fableFresh = { ...fresh, defaultModel: { provider: fable.provider, modelId: fable.id } };
-    const withFable = (id: number, sharedUsed: number, fableUsed: number): QuotaAccount => {
-      const a = account(id, sharedUsed);
-      a.limits.push({ id: "anthropic:7d:fable", usedFraction: 0.05, resetsAt: 100, windowId: "7d", shared: false,
-        daySlot: { usedPct: fableUsed, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } });
-      return a;
-    };
-    const sharedSpent = snapshot([withFable(9, 24, 5), withFable(11, 20, 0)]);
-    const kept = await selectNewSessionModel(fableScope, fableFresh, storage, async () => sharedSpent);
-    expect(kept.initial.model).toBe(fable); expect(kept.notice).toBeNull();
-    const fableSpent = snapshot([withFable(9, 1, 20), withFable(11, 1, 15)]);
-    const switched = await selectNewSessionModel(fableScope, fableFresh, storage, async () => fableSpent);
-    expect(switched.initial.model).toBe(sol); expect(switched.notice).toBe(DAY_SLOT_START_NOTICE);
-    // An Opus default keeps the shared window.
-    expect((await selectNewSessionModel(scope, fresh, storage, async () => sharedSpent)).initial.model).toBe(sol);
-  });
-
-  test("a Fable default outside the enabled scope is judged on the window of the model that actually starts (#85)", async () => {
-    const scoped = (model: ModelScopeResult["visible"][number]) => ({ model }) as ModelScopeResult["scopedModels"][number];
-    const opusFirst = { ...scope, scopedModels: [scoped(opus), scoped(sol)] } as ModelScopeResult;
-    const fableDefault = { ...fresh, defaultModel: { provider: "anthropic", modelId: "claude-fable-5-2" } };
-    const both = (sharedUsed: number, fableUsed: number) => snapshot([9, 11].map((id) => {
-      const a = account(id, sharedUsed);
-      a.limits.push({ id: "anthropic:7d:fable", usedFraction: 0.05, resetsAt: 100, windowId: "7d", shared: false,
-        daySlot: { usedPct: fableUsed, quotaPct: 14.29, slotsLeft: 7, quality: "exact" } });
-      return a;
-    }));
-    // Opus starts, so a spent Fable window alone must not move the session to YUKI.
-    const kept = await selectNewSessionModel(opusFirst, fableDefault, storage, async () => both(1, 15));
-    expect(kept.initial.model).toBe(opus); expect(kept.notice).toBeNull();
-    // Opus starts, so the spent shared window moves it even though Fable's own window is free.
-    const switched = await selectNewSessionModel(opusFirst, fableDefault, storage, async () => both(15, 1));
-    expect(switched.initial.model).toBe(sol); expect(switched.notice).toBe(DAY_SLOT_START_NOTICE);
-  });
-
-  test("sidecar adapter feeds the same predicate", async () => {
-    const server = Bun.serve({ port: 0, fetch: () => Response.json({ reports: [9, 11].map((credentialId) => ({
-      provider: "anthropic", credentialId, limits: [{ id: "anthropic:7d", scope: { windowId: "7d", shared: true },
-        daySlot: { usedPct: 15, quotaPct: 14.29, quality: "exact" } }],
-    })) }) });
-    const previous = process.env.OMP_USAGE_PORT;
-    process.env.OMP_USAGE_PORT = String(server.port);
-    try { expect(anthropicOverDaySlot(await readSidecarQuota(["anthropic"]), [9, 11])).toBe(true); }
-    finally { if (previous === undefined) delete process.env.OMP_USAGE_PORT; else process.env.OMP_USAGE_PORT = previous; server.stop(true); }
   });
 });

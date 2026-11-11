@@ -21336,6 +21336,24 @@ EDITS.push({
 `,
 });
 
+// 2026-11-11 user decision (비율 전환 제거): Anthropic 사용량 비율·하루 몫에 따른 OAuth↔대체 키 전환과, 비율이
+// 되돌아오면 자동으로 OAuth 로 복귀하던 동작(아래 daily·turn fixation 블록)을 없앤다. 실제 주간 한도 소진 복구, 대체 키
+// 파일, 결제 거절 park 는 그대로 남는다. 배포본이 어느 단계(stepped·over-pace·turn fixation·park)에 있든 새 본문으로
+// 올라가도록 아래 블록들이 각 단계 본문을 스냅샷하고, 파일 끝의 «비율 전환 제거» 블록이 정본을 다시 세운다.
+const CUELO_RATIO_ENTRIES = {
+	weekly: EDITS.find(edit => edit.marker === "async cueloWeeklyExhausted("),
+	passes: EDITS.find(edit => edit.marker === "options?.cueloOnWeeklyExhausted !== undefined &&"),
+	call: EDITS.find(edit => edit.marker === "cueloOnWeeklyExhausted: () => {"),
+	helpers: EDITS.find(edit => edit.marker === "async cueloWeeklyApiKeyFallback("),
+	mark: EDITS.find(edit => edit.marker === "\tcueloMarkKeyFallback(provider: string, sessionId: string | undefined, active: boolean): void {\n"),
+	options: EDITS.find(edit => edit.marker === "\tcueloOnWeeklyExhausted?: () => boolean;\n"),
+	keysApi: EDITS.find(edit => edit.marker === "\tcueloWeeklyApiKeyFallback?(\n"),
+};
+/** 비율 전환 이전(주간 소진 전용) 본문. 새 정본의 출발점이다. */
+const CUELO_RATIO_BASE = Object.fromEntries(
+	Object.entries(CUELO_RATIO_ENTRIES).map(([name, edit]) => [name, edit.patched]),
+);
+
 // Daily budget (over-pace since 2026-10-29) uses the existing fallback decision and cascade, not a second selector.
 {
 	const entry = EDITS.find(edit => edit.marker === "async cueloWeeklyExhausted(");
@@ -21848,6 +21866,116 @@ export function cueloIsFallbackKeyBillingRejection(
 			const before = candidate.legacyPatched ?? candidate.anchor;
 			if (nonAscii(candidate.patched) !== nonAscii(before)) throw new Error(`billing park added non-ASCII text: ${candidate.marker}`);
 			if (candidate.legacyPatched && candidate.patched.includes(candidate.legacyPatched)) throw new Error(`billing park body still contains its legacy body: ${candidate.marker}`);
+		}
+	}
+}
+
+// 2026-11-11 user decision (비율 전환 제거): 위 daily·turn fixation 블록이 넣던 OAuth↔대체 키 비율 전환과 자동 복귀를
+// 걷어낸다. 남는 것은 실제 주간(7d) 한도 소진 복구와 대체 키의 결제 거절 park 뿐이다. 위 두 블록은 설치 단계별 본문을
+// 만드는 계산으로만 남겨 두고(그 자체의 검사는 그대로 돌게 둔다), 정본은 여기서 «주간 소진 본문 + park 추가»로 다시 세운다.
+// 그래야 turn 상태(#cueloTurns·cueloBeginTurn·cueloEndSession·cueloKeyFallbackActive·cueloTurnVerdict)와 dailyBudget
+// 인자가 어느 단계 배포본에도 남지 않는다. 되돌리기(--revert)도 새 정본에서 park 추가만큼만 남기므로 종전과 같다.
+{
+	const swap = (body, from, to) => {
+		if (!body.includes(from)) throw new Error(`ratio removal rewrite did not apply: ${from.slice(0, 60)}`);
+		return body.replace(from, to);
+	};
+	// 되돌릴 본문(비율 단계)은 새 후보의 legacyPatched 로만 남긴다: patched 와 legacyPatched 가 같으면 항상 legacy 로
+	// 판정돼 재적용이 끝나지 않는다. 후보는 requires 로 갈라야 한다 — 같은 marker 를 공유하므로 requires 없이 여러 후보를
+	// 두면 어느 설치에서든 후보가 둘 이상 성립한다(ambiguous). 그래서 정본은 옛 본문 전부를 excludes 로 막고,
+	// 옛 본문마다 그 본문에만 성립하는 후보를 하나 둔다.
+	const upgrade = (edit, body) => {
+		const olds = [...new Set([edit.patched, ...(edit.alternates ?? []).map(alternate => alternate.patched)])]
+			.filter(old => old !== body);
+		// 앞 블록이 남긴 옛 legacyPatched(주간 소진 본문)가 새 patched 와 같으면 항상 legacy 로 판정된다.
+		delete edit.legacyPatched;
+		edit.patched = body;
+		edit.excludes = [...[edit.excludes ?? []].flat(), ...olds];
+		edit.alternates = [
+			...(edit.alternates ?? []).map(alternate => ({ ...alternate, patched: body })),
+			...olds
+				.filter(old => !(edit.alternates ?? []).some(alternate => alternate.requires === old))
+				.map(old => ({ file: edit.file, marker: edit.marker, anchor: edit.anchor, requires: old, legacyPatched: old, patched: body })),
+		];
+	};
+	// 본문은 아래 loop 가 CUELO_RATIO_ENTRIES 이름으로 직접 읽는다. 변수로 꺼내 쓰는 두 항목만 구조 분해한다.
+	const { helpers, keysApi } = CUELO_RATIO_ENTRIES;
+	// 비율 판정에만 쓰던 본문은 주간 소진 전용 본문으로 되돌린다.
+	for (const name of ["weekly", "passes", "call", "mark", "options"]) upgrade(CUELO_RATIO_ENTRIES[name], CUELO_RATIO_BASE[name]);
+	// park 추가는 유지하고 turn 상태만 빠진 본문을 만든다. 두 swap 은 turn fixation 이전 본문에도 같은 문구로 성립한다.
+	let helperBody = swap(CUELO_RATIO_BASE.helpers, `	 * CUELO: the fallback key file's one trimmed line. Undefined when missing, empty or
+	 * unreadable. Read per decision, never cached and never copied into the process environment.
+	 */
+	#cueloReadFallbackKeyFile(): string | undefined {
+		try {
+			return fs.readFileSync(this.#cueloFallbackKeyPath(), "utf8").trim() || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+`, `	 * CUELO: the fallback key file's one trimmed line. Undefined when missing, empty, unreadable or parked after a
+	 * billing rejection. Read per decision, never cached and never copied into the process environment.
+	 */
+	#cueloReadFallbackKeyFile(): string | undefined {
+		let key: string | undefined;
+		try {
+			key = fs.readFileSync(this.#cueloFallbackKeyPath(), "utf8").trim() || undefined;
+		} catch {
+			return undefined;
+		}
+		if (key === undefined) return undefined;
+		// The stream retry driver recognizes a failure of this bearer as a fallback key failure.
+		cueloNoteFallbackKey(key);
+		// A key Anthropic rejected for billing reads as no key until its park ends.
+		return (KeyCascade.#cueloParkedKeys.get(key) ?? 0) > Date.now() ? undefined : key;
+	}
+`);
+	helperBody = swap(helperBody, `	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`, `	/** CUELO: process-wide; each fallback key Anthropic rejected for billing -> until when it stays unused. */
+	static #cueloParkedKeys = new Map<string, number>();
+
+	/**
+	 * CUELO: true when previousKey is the fallback key file's key and Anthropic rejected it for billing (credits used
+	 * up, spend limit or cap reached). That key is parked for an hour: every fallback decision then reads the file as
+	 * no key, so the caller's re-resolve of this request and later turns stay on OAuth. A parked key is not re-parked.
+	 */
+	cueloFallbackKeyRejected(provider: string, previousKey: string | undefined, error: unknown): boolean {
+		if (provider !== "anthropic" || previousKey === undefined) return false;
+		const status = AIError.status(error);
+		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+		if (!cueloIsFallbackKeyBillingRejection(previousKey, status, message)) return false;
+		const now = Date.now();
+		const parked = KeyCascade.#cueloParkedKeys;
+		if (!((parked.get(previousKey) ?? 0) > now)) {
+			for (const [key, until] of parked) if (until <= now) parked.delete(key);
+			parked.set(previousKey, now + 3_600_000);
+			logger.warn("CUELO: Anthropic rejected the fallback API key for billing; using OAuth for 1h", { status });
+		}
+		return true;
+	}
+
+	/**
+	 * CUELO: the answer for a usage-limit retry with no OAuth sibling.`);
+	upgrade(helpers, helperBody);
+	upgrade(keysApi, swap(CUELO_RATIO_BASE.keysApi, "\t): Promise<ResolvedApiKey | undefined>;\n}\n", `	): Promise<ResolvedApiKey | undefined>;
+	/**
+	 * CUELO: true when previousKey is the Anthropic fallback key file's key and error is a billing rejection; that key
+	 * is then parked for an hour, so the caller resolves the request again and gets OAuth.
+	 */
+	cueloFallbackKeyRejected?(provider: string, previousKey: string | undefined, error: unknown): boolean;
+}
+`));
+	// 새 본문에 비율 상태가 남으면 조용히 넘기지 않는다. 턴 상태 호출부 소거는 뒤 블록들이 같은 marker 를 계속 찾으므로
+	// 파일 끝의 별도 블록이 맡는다(그 블록이 marker 를 바꾸면 여기 있는 later port 가 성립하지 않는다).
+	for (const [name, entry] of Object.entries(CUELO_RATIO_ENTRIES)) {
+		for (const candidate of [entry, ...(entry.alternates ?? [])]) {
+			for (const gone of ["dailyBudget", "cueloTurns", "cueloBeginTurn", "cueloEndSession", "cueloTurnVerdict", "cueloKeyFallbackActive"]) {
+				if (candidate.patched.includes(gone)) throw new Error(`ratio removal left ${gone} in ${name}`);
+			}
+			// park 추가는 남아야 한다.
+			if (["helpers", "keysApi"].includes(name) && !candidate.patched.includes("cueloFallbackKeyRejected")) {
+				throw new Error(`ratio removal dropped the billing park from ${name}`);
+			}
 		}
 	}
 }
@@ -23817,6 +23945,32 @@ function planSpawns(
 			candidate.excludes = [...[original.excludes ?? []].flat(), ...deployed];
 		}
 		entry.alternates = [...candidates.slice(1), ...upgrades];
+	}
+}
+
+// 2026-11-11 비율 전환 제거의 마지막 조각: 한 턴 고정이 세션 프롬프트마다 만들고 지우던 turn 상태 호출부를 걷어낸다.
+// 위 블록들이 같은 marker 로 후보를 계속 찾으므로(marker 를 여기서 바꾸면 그 후보들이 성립하지 않는다) 가장 마지막에 한다.
+{
+	for (const marker of [
+		"this.#modelRegistry.authStorage.keys.cueloBeginTurn?.(this.sessionId);",
+		"this.#modelRegistry.authStorage.keys.cueloEndSession?.(this.sessionId);",
+	]) {
+		const entries = EDITS.filter(edit => edit.marker === marker);
+		if (entries.length !== 1) throw new Error(`ratio removal turn-state call site: ${entries.length}/1 entries`);
+		const [entry] = entries;
+		// retire 규약: patched === anchor 이고 marker 가 anchor 안에 있어야 적용 뒤에도 "applied" 로 남아
+		// 재적용이 SKIP 되고 --check 가 APPLIED 를 보고한다. 옛 적용본은 legacyPatched 로 앵커에 되돌린다.
+		// 후보(alternates)는 upstream 판을 가르는 장치라 지우지 않고, 각자도 같은 방식으로 retire 한다.
+		const retire = (candidate, first) => {
+			candidate.legacyPatched = candidate.patched;
+			candidate.patched = candidate.marker = candidate.anchor;
+			// excludes 가 있으면 resolveEdit 이 legacy 검사 전에 후보를 버려 옛 적용본을 되돌리지 못한다.
+			// 첫 후보는 판 선택에 필요한 requires 가 남아 있으므로 지워도 후보가 사라지지 않는다.
+			if (first) delete candidate.excludes;
+			if (candidate.patched !== candidate.anchor) throw new Error(`ratio removal left a turn-state body at ${marker}`);
+		};
+		retire(entry, true);
+		for (const alternate of entry.alternates ?? []) retire(alternate, false);
 	}
 }
 

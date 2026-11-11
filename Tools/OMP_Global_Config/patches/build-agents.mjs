@@ -2,7 +2,7 @@
 //
 // 손으로 관리하던 역할 파일에는 같은 문장이 반복돼 있었다. 한 곳만 고치고 나머지를
 // 잊는 사고가 실제로 났으므로, 공통 문장은 `agent/sop/_common.md` 같은 조각에 한 번만
-// 쓰고 여기서 합친다. 단일 Maker의 모델은 @implDeepSeek, 기본 추론은 auto다.
+// 쓰고 여기서 합친다. 단일 Maker의 모델은 @implSonnet, 기본 추론은 auto다.
 // 발주 selector의 `:auto`가 child auto 분류기를 켜고, 실제 단계는 그 모델이 지원하는 범위 안에서 child가 고른다.
 //
 //   node patches/build-agents.mjs           조각에서 다시 만들어 덮어쓴다

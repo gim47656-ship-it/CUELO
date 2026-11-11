@@ -509,255 +509,68 @@ for (const [tag, key, label] of [
 	check("(r4b) lastChance 는 OAuth bearer 를 돌려주지 않는다(파일은 한 번만 읽는다)", apiKey === FILE_KEY, `actual=${show(apiKey)}`);
 }
 
-// 2026-10-29 user decision: API fallback follows the usage panel's over-pace chip
-// (ResourcePanel paceOf: used − elapsed share of the 7d window ≥ 0.5 %p), not a stepped daily allowance.
-// Fixtures sit 4h into a 168h window: pace 2.38 %, chip at 2.88 %, while the stepped allowance would be 14.3 %.
-console.log("[over-pace allowance]");
-for (const [tag, left, right, expected] of [
-	["pace-over-inside-day", 0.05, 0.05, "api"],
-	["pace-chip-edge", 0.031, 0.3, "api"],
-	["pace-above", 0.2, 0.3, "api"],
-	["pace-under-chip", 0.027, 0.3, "oauth"],
-	["pace-one-below", 0.02, 0.3, "oauth"],
+// 2026-11-11 user decision (비율 전환 제거): Anthropic 사용량 비율·하루 몫(over-pace chip, 누적 일 배분)에 따른
+// OAuth→대체 키 전환과, 비율이 되돌아오면 자동으로 OAuth 로 복귀하던 동작을 없앴다. 남은 것은 실제 주간(7d) 한도
+// 소진 복구뿐이다. 아래는 그 계약을 직접 확인한다: 비율만으로는 키로 넘어가지 않고, 비율이 되돌아와도
+// (이미 OAuth 이므로) 아무 것도 바뀌지 않으며, 실제 주간 소진은 여전히 키로 넘어간다.
+console.log("[ratio switching retired]");
+// Fixtures sit 4h into a 168h window, well over the old pace chip (2.88 %) and over a daily share, with both seats live.
+for (const [tag, left, right] of [
+	["ratio-over-share", 0.2, 0.3],
+	["ratio-far-over-share", 0.6, 0.7],
+	["ratio-over-share-one-seat", 0.9, 0.05],
 ] as const) {
 	const s = await scenario(tag, { rin: seat(0.1, left, 164), mio: seat(0.1, right, 164), key: "file" });
-	const value = await s.get();
-	check(tag, expected === "api" ? value === FILE_KEY : isOAuth(value, tag), `actual=${show(value)}`);
-	if (expected === "api") {
-		check(`${tag}: no false OAuth attribution`, identityOf(s.auth, s.sessionId) === undefined, "unexpected identity");
-		// 48h later the pace is 30.95 %, ahead of every left-seat usage above.
-		clockOffsetMs += 48 * HOUR;
-		for (const v of Object.values(s.seats)) v.fiveResetAt = Date.now() + HOUR;
-		const recovered = await s.get();
-		check(`${tag}: pace catching up resumes OAuth`, isOAuth(recovered, tag), `actual=${show(recovered)}`);
-		clockOffsetMs -= 48 * HOUR;
-	}
-	await s.auth.close();
-}
-for (const tag of ["daily-unknown", "daily-stale", "daily-unsupported", "daily-pin", "daily-no-key"] as const) {
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: tag === "daily-no-key" ? undefined : "file", exactPin: tag === "daily-pin" });
-	s.hooks.weeklyReport = (_token, report) => {
-		if (tag === "daily-unknown") return null;
-		const usage = report as { fetchedAt: number; limits: unknown[] };
-		if (tag === "daily-stale") return { ...usage, fetchedAt: Date.now() - 86_400_000 };
-		if (tag === "daily-unsupported") return { ...usage, limits: [] };
-		return report;
-	};
-	const value = await s.get();
-	check(tag, isOAuth(value, tag), `actual=${show(value)}`);
-	await s.auth.close();
-}
-
-{
-	const tag = "daily-short-window-blocked";
-	const s = await scenario(tag, { rin: seat(1, 0.2, 164), mio: seat(1, 0.3, 164), key: "file" });
-	check(tag, await s.get() === FILE_KEY, "daily budget fallback must also work when short windows are blocked");
-	s.auth.close();
-}
-
-for (const key of ["empty", "dir"] as const) {
-	const tag = `daily-${key}`;
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key });
-	check(tag, isOAuth(await s.get(), tag), "unusable file must preserve OAuth");
+	check(`${tag}: over-share alone keeps OAuth`, isOAuth(await s.get(), tag), `actual=${show(await s.get())}`);
 	s.auth.close();
 }
 {
-	const tag = "daily-disabled";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.01, 164), key: "file" });
-	await s.auth.credentials.disable(s.auth.oauth.accounts("anthropic")[1]!.credentialId, "fixture");
-	check(tag, await s.get() === FILE_KEY, "disabled below-budget account must not block fallback");
-	s.auth.close();
-}
-{
-	const tag = "daily-restricted";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	s.auth.sessions.restrict("anthropic", s.sessionId, [`rin-${tag}`]);
-	check(tag, await s.get() !== FILE_KEY, "restricted session must not use paid fallback");
-	s.auth.close();
-}
-for (const tier of ["opus", "sonnet"] as const) {
-	const tag = `daily-scope-${tier}`;
-	const s = await scenario(tag, { rin: seat(0.1, 0.01, 164), mio: seat(0.1, 0.01, 164), key: "file" });
-	s.hooks.weeklyReport = (_token, report) => {
-		const usage = report as { limits: unknown[] };
-		const scoped = limit("7d", 0.3, Date.now() + 164 * HOUR);
-		return { ...usage, limits: [...usage.limits, { ...scoped, id: `anthropic:7d:${tier}`, scope: { provider: "anthropic", windowId: "7d", shared: false, tier } }] };
-	};
-	const value = await s.get();
-	check(tag, tier === "opus" ? value === FILE_KEY : isOAuth(value, tag), `actual=${show(value)}`);
-	s.auth.close();
-}
-{
-	const tag = "daily-slot-during-await";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.2, 164), key: "file" });
-	s.hooks.weeklyReport = (_token, report) => {
-		if (s.hooks.weeklyReports === 2) clockOffsetMs += 48 * HOUR;
-		return report;
-	};
-	check(tag, isOAuth(await s.get(), tag), "recheck must reject decision crossing the pace boundary");
-	clockOffsetMs -= 48 * HOUR;
-	s.auth.close();
-}
-
-{
-	const tag = "daily-usage-recovery";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	check(`${tag}: initial API`, await s.get() === FILE_KEY, "expected fallback");
+	// The old code switched back on its own when a seat came under the chip. Nothing moves now, in either direction.
+	const tag = "ratio-no-oscillation";
+	const s = await scenario(tag, { rin: seat(0.1, 0.9, 164), mio: seat(0.1, 0.9, 164), key: "file" });
+	const first = await s.get();
+	check(`${tag}: over share starts on OAuth`, isOAuth(first, tag), `actual=${show(first)}`);
 	s.seats.rin.weekly = 0.01;
+	s.seats.mio.weekly = 0.02;
 	clockOffsetMs += 10 * 60_000;
-	const value = await s.get();
-	check(`${tag}: fresh below-budget report`, value === `rin-${tag}`, `actual=${show(value)}`);
-	check(`${tag}: OAuth attribution restored`, identityOf(s.auth, s.sessionId) === `rin-${tag}`, "stale API mark");
-	clockOffsetMs -= 10 * 60_000;
-	s.auth.close();
-}
-
-{
-	const tag = "daily-warm-oauth-api-oauth";
-	const s = await scenario(tag, { rin: seat(0.1, 0.01, 164), mio: seat(0.1, 0.02, 164), key: "file" });
-	const initial = await s.get();
-	check(`${tag}: successful OAuth establishes automatic affinity`, isOAuth(initial, tag) && identityOf(s.auth, s.sessionId) === initial, `actual=${show(initial)}`);
-	const initialVoice = voicePayload(s.auth, s.sessionId)?.system;
-	check(`${tag}: OAuth voice identifies A`, initialVoice?.includes('alias="RIN(린)"') === true, `voice=${show(initialVoice)}`);
-	// Reports refresh after at most 6.25 minutes; Anthropic automatic affinity remains warm for 60.
-	s.seats.rin.weekly = 0.2;
-	s.seats.mio.weekly = 0.3;
+	const under = await s.get();
+	s.seats.rin.weekly = 0.9;
+	s.seats.mio.weekly = 0.9;
 	clockOffsetMs += 10 * 60_000;
-	const paid = await s.get();
-	check(`${tag}: still-warm OAuth yields to daily API fallback`, paid === FILE_KEY, `actual=${show(paid)}`);
-	check(`${tag}: paid request has no OAuth identity`, identityOf(s.auth, s.sessionId) === undefined, "incorrect OAuth attribution");
-	const paidVoice = voicePayload(s.auth, s.sessionId)?.system;
-	check(`${tag}: API preserves A voice`, paidVoice === initialVoice && paidVoice !== undefined, `voice=${show(paidVoice)}`);
-	console.log(JSON.stringify({ phase: "paid-character-probe", accounts: s.auth.oauth.accounts("anthropic", s.sessionId).map(({ credentialId, active, position }) => ({ credentialId, active, position })), hasVoice: paidVoice !== undefined }));
-	s.seats.rin.weekly = 0.01;
-	clockOffsetMs += 10 * 60_000;
-	const recovered = await s.get();
-	check(`${tag}: same session recovers to below-budget OAuth`, recovered === `rin-${tag}`, `actual=${show(recovered)}`);
-	check(`${tag}: recovered identity is OAuth again`, identityOf(s.auth, s.sessionId) === recovered, "stale paid marker");
-	check(`${tag}: recovered OAuth keeps A voice`, voicePayload(s.auth, s.sessionId)?.system === initialVoice, "voice changed on recovery");
+	const over = await s.get();
 	clockOffsetMs -= 20 * 60_000;
+	check(`${tag}: under pace stays OAuth`, isOAuth(under, tag), `actual=${show(under)}`);
+	check(`${tag}: going back over pace does not switch either`, isOAuth(over, tag) && over === under, `under=${show(under)} over=${show(over)}`);
 	s.auth.close();
 }
-
-// 2026-10-29 user decisions: a usage report the usage service still serves from its cache counts as current; the
-// OAuth/API answer is fixed per user turn (KeyCascade.cueloBeginTurn, announced by the coding-agent at each user
-// prompt); a turn boundary with unknown usage keeps the session's previous turn answer, and a first turn stays OAuth.
-console.log("[turn fixation]");
-type TurnKeys = { cueloBeginTurn?: (sessionId: string) => void; cueloEndSession?: (sessionId: string) => void };
-const beginTurn = (s: { auth: { keys: unknown }; sessionId: string }) => (s.auth.keys as TurnKeys).cueloBeginTurn?.(s.sessionId);
-// Usage reports are cached for at most 6.25 minutes; ten minutes guarantees a refetch from the scenario seats.
-const nextReport = () => {
-	clockOffsetMs += 10 * 60_000;
-};
 {
-	// (a) usage.ts serves a cached success until TTL + 25% jitter (up to 6.25 min old) as current.
-	const tag = "fresh-cached-5m30";
+	// A genuine weekly exhaustion still hands the request to the key file: the recovery this change keeps.
+	const tag = "ratio-keeps-real-exhaustion";
+	const s = await scenario(tag, { rin: seat(0.1, 1), mio: seat(0.1, 1), key: "file" });
+	check(`${tag}: real weekly exhaustion still uses the key file`, await s.get() === FILE_KEY, "weekly recovery regressed");
+	s.auth.close();
+}
+{
+	// Cached reports and mid-await pace changes made the old turn lock necessary; with the rule gone they decide nothing.
+	const tag = "ratio-no-turn-lock";
 	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
 	s.hooks.weeklyReport = (_token, report) => ({ ...(report as object), fetchedAt: Date.now() - 5.5 * 60_000 });
-	const value = await s.get();
-	check(`${tag}: a 5.5-minute-old cached report over pace -> API key`, value === FILE_KEY, `actual=${show(value)}`);
-	s.auth.close();
-}
-{
-	// (b) one turn keeps its auth through pace changes and unknown reports; the next boundary decides afresh.
-	const tag = "turn-fixed";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	beginTurn(s);
-	const first = await s.get();
-	s.seats.rin.weekly = 0.01;
-	nextReport();
-	const caughtUp = await s.get();
+	const cached = await s.get();
 	s.hooks.weeklyReport = () => null;
-	nextReport();
+	clockOffsetMs += 10 * 60_000;
 	const unknown = await s.get();
-	s.hooks.weeklyReport = undefined;
-	check(`${tag}: turn 1 starts on the API key`, first === FILE_KEY, `actual=${show(first)}`);
-	check(`${tag}: turn 1 keeps the API key after pace catches up mid-turn`, caughtUp === FILE_KEY, `actual=${show(caughtUp)}`);
-	check(`${tag}: turn 1 keeps the API key when a mid-turn report is unknown`, unknown === FILE_KEY, `actual=${show(unknown)}`);
-	beginTurn(s);
-	nextReport();
-	const second = await s.get();
-	s.seats.rin.weekly = 0.2;
-	nextReport();
-	const overAgain = await s.get();
-	check(`${tag}: turn 2 boundary with a seat under pace -> OAuth`, second === `rin-${tag}`, `actual=${show(second)}`);
-	check(`${tag}: turn 2 keeps OAuth after both seats go over pace mid-turn`, overAgain === `rin-${tag}`, `actual=${show(overAgain)}`);
-	beginTurn(s);
-	nextReport();
-	const third = await s.get();
-	check(`${tag}: turn 3 boundary over pace -> API key`, third === FILE_KEY, `actual=${show(third)}`);
-	s.auth.close();
-}
-for (const unknown of ["null", "stale", "unsupported"] as const) {
-	// (c) usage cannot be judged at the boundary: keep the previous turn's auth; a first turn stays OAuth.
-	const tag = `turn-unknown-${unknown}`;
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	beginTurn(s);
-	const first = await s.get();
-	s.hooks.weeklyReport = (_token, report) => {
-		if (unknown === "null") return null;
-		const usage = report as { fetchedAt: number };
-		return unknown === "stale" ? { ...usage, fetchedAt: Date.now() - 30 * 60_000 } : { ...usage, limits: [] };
-	};
-	beginTurn(s);
-	nextReport();
-	const next = await s.get();
-	check(`${tag}: previous turn API`, first === FILE_KEY, `actual=${show(first)}`);
-	check(`${tag}: unknown usage at the next boundary keeps the API key`, next === FILE_KEY, `actual=${show(next)}`);
-	const fresh = { ...s, sessionId: `${s.sessionId}-new` };
-	beginTurn(fresh);
-	const firstTurn = await s.auth.keys.get("anthropic", fresh.sessionId, { modelId: MODEL });
-	check(`${tag}: a first turn with unknown usage stays OAuth`, isOAuth(firstTurn, tag), `actual=${show(firstTurn)}`);
-	(s.auth.keys as TurnKeys).cueloEndSession?.(s.sessionId);
-	beginTurn(s);
-	const afterEnd = await s.get();
-	check(`${tag}: an ended session starts again without a previous answer (OAuth)`, isOAuth(afterEnd, tag), `actual=${show(afterEnd)}`);
-	s.hooks.weeklyReport = undefined;
+	clockOffsetMs -= 10 * 60_000;
+	check(`${tag}: a stale-but-cached over-pace report decides nothing`, isOAuth(cached, tag), `actual=${show(cached)}`);
+	check(`${tag}: an unknown report decides nothing`, isOAuth(unknown, tag), `actual=${show(unknown)}`);
 	s.auth.close();
 }
 {
-	// An under-pace report from a seat removed while the boundary check awaits is unknown, not an OAuth verdict.
-	const tag = "turn-pool-change";
+	// The removed turn hooks are gone from the auth-storage surface, so nothing can restore the per-turn lock.
+	const tag = "ratio-turn-hooks-removed";
 	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	beginTurn(s);
-	const first = await s.get();
-	const rinId = s.auth.oauth.accounts("anthropic")[0]!.credentialId;
-	s.hooks.weeklyReport = async (token, report) => {
-		if (!token.startsWith("rin-")) return report;
-		s.hooks.weeklyReport = undefined;
-		await s.auth.credentials.removeById("anthropic", rinId);
-		return { ...(report as object), limits: [limit("5h", 0.1, Date.now() + 2 * HOUR), limit("7d", 0.01, Date.now() + 164 * HOUR)] };
-	};
-	beginTurn(s);
-	nextReport();
-	const next = await s.get();
-	s.hooks.weeklyReport = undefined;
-	check(`${tag}: previous turn API`, first === FILE_KEY, `actual=${show(first)}`);
-	check(`${tag}: a removed seat's under-pace report keeps the API key`, next === FILE_KEY, `actual=${show(next)}`);
-	s.auth.close();
-}
-{
-	// The turn lock never pins a rejected key: a 401 recovery resolve (forceRefresh) decides per request as before.
-	const tag = "turn-auth-recovery";
-	const s = await scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
-	beginTurn(s);
-	const first = await s.get();
-	s.seats.rin.weekly = 0.01;
-	nextReport();
-	const resolver = createApiKeyResolver(
-		{
-			getApiKeyWithCredentialForProvider: (provider: string, sessionId?: string, options?: object) =>
-				s.auth.keys.getWithCredential(provider, sessionId, options),
-			authStorage: s.auth,
-		},
-		"anthropic",
-		{ sessionId: s.sessionId, modelId: MODEL },
-	);
-	const recovered = (await resolver({ error: Object.assign(new Error("401"), { status: 401 }), previousKey: FILE_KEY })) as { apiKey?: string } | undefined;
-	const after = await s.get();
-	check(`${tag}: turn starts on the API key`, first === FILE_KEY, `actual=${show(first)}`);
-	check(`${tag}: 401 recovery with a seat under pace -> OAuth, not the locked key`, isOAuth(recovered?.apiKey, tag), `actual=${show(recovered?.apiKey)}`);
-	check(`${tag}: the rest of the turn follows the recovered OAuth`, isOAuth(after, tag), `actual=${show(after)}`);
+	const hooks = s.auth.keys as unknown as Record<string, unknown>;
+	check(`${tag}: cueloBeginTurn is not on the auth surface`, hooks.cueloBeginTurn === undefined, `actual=${show(typeof hooks.cueloBeginTurn)}`);
+	check(`${tag}: cueloEndSession is not on the auth surface`, hooks.cueloEndSession === undefined, `actual=${show(typeof hooks.cueloEndSession)}`);
 	s.auth.close();
 }
 
@@ -765,6 +578,14 @@ for (const unknown of ["null", "stale", "unsupported"] as const) {
 // reached) parks that key for an hour; the same request finishes on OAuth through the stream retry -> resolver path and
 // later turns stay on OAuth until the park ends. Wording: platform.claude.com/docs/en/api/errors and /api/rate-limits.
 // The park is process-wide and keyed on the key value, so every case below writes its own key into the file.
+// 2026-11-11: the per-turn OAuth/key lock is retired, so these are no-ops on the current build; they stay so the park
+// cases below keep their original call shape and would notice if a turn lock ever came back.
+type TurnKeys = { cueloBeginTurn?: (sessionId: string) => void; cueloEndSession?: (sessionId: string) => void };
+const beginTurn = (s: { auth: { keys: unknown }; sessionId: string }) => (s.auth.keys as TurnKeys).cueloBeginTurn?.(s.sessionId);
+// Usage reports are cached for at most 6.25 minutes; ten minutes guarantees a refetch from the scenario seats.
+const nextReport = () => {
+	clockOffsetMs += 10 * 60_000;
+};
 console.log("[billing park]");
 const anthropicError = (status: number, type: string, message: string, details?: object) =>
 	({ status, body: { type: "error", error: { type, message, ...(details ? { details } : {}) }, request_id: "req_fixture" } });
@@ -815,8 +636,9 @@ async function request(apiKey: unknown) {
 	const result = await streamSimple(fakeModel, { systemPrompt: "fixture", messages: [{ role: "user", content: "probe", timestamp: Date.now() }] }, { apiKey, maxTokens: 32 }).result();
 	return { stopReason: result.stopReason as string, errorMessage: result.errorMessage as string | undefined, sent: sentKeys.slice(before) };
 }
-// Over pace on both seats (4h into the week): a turn boundary picks the fallback key.
-const overPace = (tag: string) => scenario(tag, { rin: seat(0.1, 0.2, 164), mio: seat(0.1, 0.3, 164), key: "file" });
+// Both seats at their real weekly limit: the selector picks the fallback key. (The old ratio-only "over pace" trigger
+// is retired; the park cases only need a request that actually goes out on the key file's key.)
+const overPace = (tag: string) => scenario(tag, { rin: seat(0.1, 1), mio: seat(0.1, 1), key: "file" });
 const useKey = (key: string) => writeFileSync(KEY_FILE, `${key}\n`);
 for (const [name, failure] of Object.entries(BILLING)) {
 	// (a) credit balance, (b) spend limit / tier cap / 402: the same request finishes on OAuth, later turns stay OAuth.

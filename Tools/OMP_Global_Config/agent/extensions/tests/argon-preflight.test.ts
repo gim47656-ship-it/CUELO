@@ -15,7 +15,12 @@ const prompts: string[] = [];
 const served: string[] = [];
 /** Provider tag of each request, read from the base URL path each fake provider registers under. */
 const via: string[] = [];
-type Behavior = "ok" | "quota" | "outage" | "empty" | "secret" | "secretCut" | "hang" | { delayMs: number };
+type Behavior = "ok" | "quota" | "outage" | "empty" | "secret" | "secretCut" | "hang" | "clean" | { delayMs: number };
+/** The thinking effort each request asked for, aligned with `served`. */
+const efforts: Array<string | null | undefined> = [];
+/** Highest number of requests the server was handling at once, to prove the participants start together. */
+let inFlight = 0;
+let maxInFlight = 0;
 /** What the stand-in server does for a model id; an id with no entry answers normally. */
 const behavior = new Map<string, Behavior>();
 /** Runs when a request for that model id reaches the server, before it answers. */
@@ -26,9 +31,19 @@ let registry: ModelRegistry;
 
 beforeAll(async () => {
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const body = await request.json() as { model: string; messages: Array<{ role: string; content: unknown }> };
+    const body = await request.json() as { model: string; messages: Array<{ role: string; content: unknown }>; reasoning?: string; reasoning_effort?: string };
     served.push(body.model);
     via.push(new URL(request.url).pathname.split("/")[1] ?? "");
+    efforts.push(body.reasoning_effort ?? body.reasoning);
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    try {
+      return await answer(body, request.signal);
+    } finally {
+      inFlight -= 1;
+    }
+  } });
+  async function answer(body: { model: string; messages: Array<{ role: string; content: unknown }> }, signal: AbortSignal | undefined): Promise<Response> {
     const user = body.messages.find((m) => m.role === "user")?.content;
     prompts.push(typeof user === "string" ? user : (user as Array<{ text?: string }>).map((p) => p.text ?? "").join(""));
     onRequest.get(body.model)?.();
@@ -38,13 +53,13 @@ beforeAll(async () => {
     if (mode === "outage") return new Response(JSON.stringify({ error: { message: "socket failed" } }), { status: 400, headers: { "content-type": "application/json", "x-should-retry": "false" } });
     if (mode === "hang") {
       const aborted = Promise.withResolvers<void>();
-      request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+      signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
       await aborted.promise;
       return new Response("", { status: 499 });
     }
     // The latency is the thing under test (a counterpart slower than the budget left over); a fake clock cannot slow a real socket.
     if (typeof mode === "object") await Bun.sleep(mode.delayMs);
-    const text = mode === "empty" ? "" : mode === "secret" || mode === "secretCut" ? "key " + ["sk", "a".repeat(30)].join("-") : "1. CSV 조건 확인";
+    const text = mode === "empty" ? "" : mode === "secret" || mode === "secretCut" ? "key " + ["sk", "a".repeat(30)].join("-") : mode === "clean" ? EMPTY : "1. CSV 조건 확인";
     // "secretCut" ends on the output limit instead of a normal stop: an unusable response that still carries the secret.
     const finish = mode === "secretCut" ? "length" : "stop";
     const base = { id: "fake", object: "chat.completion.chunk", created: 0, model: body.model };
@@ -53,19 +68,23 @@ beforeAll(async () => {
       { ...base, choices: [{ index: 0, delta: {}, finish_reason: finish }] },
     ];
     return new Response(`${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
-  } });
+  }
   root = mkdtempSync(join(tmpdir(), "argon-preflight-test-"));
   registry = new ModelRegistry(await AuthStorage.create(join(root, "agent.db")), join(root, "models.yml"));
   const catalog = (id: string) => ({ id, name: id, reasoning: false, input: ["text"] as ("text" | "image")[], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 });
-  const provider = (name: string, ids: string[]) => registry.registerProvider(name, {
-    baseUrl: `http://127.0.0.1:${server.port}/${name}/v1`, apiKey: "local", api: "openai-completions", models: ids.map(catalog),
+  // Fable 5.2's real ladder starts at medium; the fixture carries it so the request options are exercised end to end.
+  const fable = { ...catalog("claude-fable-5-2"), reasoning: true, thinking: { mode: "effort" as const, efforts: ["medium", "high", "xhigh"] as const } };
+  // Argon registers a ladder that includes low, so the historical level is preserved where the model accepts it.
+  const argon = { ...catalog("gemini-4-argon"), reasoning: true, compat: { supportsReasoningEffort: true }, thinking: { mode: "effort" as const, efforts: ["low", "medium", "high"] as const } };
+  const provider = (name: string, models: Array<string | typeof fable | typeof argon>) => registry.registerProvider(name, {
+    baseUrl: `http://127.0.0.1:${server.port}/${name}/v1`, apiKey: "local", api: "openai-completions", models: models.map((m) => typeof m === "string" ? catalog(m) : m) as never,
   });
   // Main identities and both review roles keep their real provider families: `authorFamily` reads the family from the
   // provider, so a review role under a family-less provider would be rejected as a wrong-family target.
-  provider("anthropic", ["claude-main", "claude-reviewer"]);
+  provider("anthropic", ["claude-main", "claude-reviewer", fable]);
   provider("openai-codex", ["gpt-main", "gpt-reviewer"]);
-  provider("google-vertex", ["gemini-4-argon"]);
-  provider("aistudio", ["gemini-4-argon"]);
+  provider("google-vertex", [argon]);
+  provider("aistudio", [argon]);
   provider("fakepre", ["reviewer"]);
   provider("hive", ["deepseek-ai/deepseek-v4.1-flash-1017"]);
 });
@@ -73,7 +92,7 @@ afterAll(() => {
   server.stop(true);
   rmSync(root, { recursive: true, force: true });
 });
-beforeEach(() => { prompts.length = 0; served.length = 0; via.length = 0; behavior.clear(); onRequest.clear(); });
+beforeEach(() => { prompts.length = 0; served.length = 0; via.length = 0; efforts.length = 0; behavior.clear(); onRequest.clear(); inFlight = 0; maxInFlight = 0; });
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -120,6 +139,7 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
     call: (toolName: string, input: unknown) => fire("tool_call", { toolName, input }) as Promise<Dispatched>,
     steer: (text: string) => fire("message_start", { message: { role: "user", content: text } }),
     switchSession: () => fire("session_switch", {}),
+    endTurn: () => fire("agent_end", {}),
     preflight: (params: { plan: string; question?: string }, signal?: AbortSignal) => tools.get("lab_preflight")!.execute("call", params, signal, undefined, ctx),
     messages, resolved, get notes() { return notes; },
   };
@@ -134,6 +154,13 @@ const withPreflightRole = <T>(fn: () => Promise<T>): Promise<T> => withRoles({},
 const GEMINI = "aistudio/gemini-4-argon";
 const withGemini = <T>(fn: () => Promise<T>, role = `${GEMINI}:auto`): Promise<T> => withRoles({ implGemini: role }, fn);
 const LATEST = "New requirement: LATEST_CONDITION_EXPORT_ONLY_CSV. Do not produce a PDF.";
+/** What a model answers when it finds nothing to change. */
+const EMPTY = "빠진 것 없음";
+const FABLE = "anthropic/claude-fable-5-2";
+/** Both participants configured: Argon through `implGemini`, Fable 5.2 through its own preflight role. */
+const withBoth = <T>(fn: () => Promise<T>): Promise<T> => withRoles({ implGemini: `${GEMINI}:auto`, preflightAnthropic: FABLE }, fn);
+/** Fable resolves but Argon does not, so only the second participant can answer. */
+const withFableOnly = <T>(fn: () => Promise<T>): Promise<T> => withRoles({ preflightAnthropic: FABLE }, fn);
 const older = (size: number) => Array.from({ length: 5 }, (_, i) => `OLDER_TURN_${i + 1}: ${"x".repeat(size)}`);
 /** The prompt's recent-user section, between its heading and the plan. */
 const recentSection = (prompt: string) => prompt.slice(prompt.indexOf("# 사용자의 최근 말\n"), prompt.indexOf("\n\n# 발주"));
@@ -790,6 +817,323 @@ describe("argon-preflight same-model routes", () => {
       } finally { clock.mockRestore(); }
     });
   }
+});
+
+describe("argon-preflight dual participants (Argon + Fable 5.2)", () => {
+  test("both participants start together on the same prompt and each opinion keeps its own model label", async () => {
+    behavior.set(GEMINI_ID, { delayMs: 60 });
+    behavior.set("claude-fable-5-2", { delayMs: 60 });
+    let text!: string;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      text = (await s.preflight({ plan: "Export CSV only." })).content[0]!.text;
+    });
+    expect(served.sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    // One request each on the same prompt, and the server saw them overlapping rather than one after the other.
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toBe(prompts[1]!);
+    expect(maxInFlight).toBe(2);
+    expect(text).toContain(GEMINI);
+    expect(text).toContain(FABLE);
+    expect(text).toContain("CSV 조건 확인");
+  });
+
+  test("the Fable participant is asked at its lowest registered effort, not the unsupported low", async () => {
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.preflight({ plan: "Export CSV only." });
+    });
+    const fableAt = served.indexOf("claude-fable-5-2");
+    const argonAt = served.indexOf(GEMINI_ID);
+    expect(efforts[fableAt]).toBe("medium");
+    expect(efforts[argonAt]).toBe("low");
+  });
+
+  test("one participant failing keeps the other's advice and names the one that did not review", async () => {
+    behavior.set(GEMINI_ID, "quota");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    expect(out?.block).toBe(true);
+    expect(out!.reason).toContain(FABLE);
+    expect(out!.reason).toContain("참가하지 못한 모델");
+    expect(out!.reason).toContain("한도");
+    expect(out!.reason).not.toContain("claude-reviewer");
+  });
+
+  test("a clean answer from one participant and an issue from the other keeps the correction path", async () => {
+    behavior.set("claude-fable-5-2", "clean");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(out?.block).toBe(true);
+    expect(out!.reason).toContain(`${GEMINI}`);
+    expect(out!.reason).toContain(FABLE);
+  });
+
+  test("both participants clean is a pass with no block", async () => {
+    behavior.set(GEMINI_ID, "clean");
+    behavior.set("claude-fable-5-2", "clean");
+    let out!: Dispatched;
+    let s!: Session;
+    await withBoth(async () => {
+      s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(out?.block).toBeUndefined();
+    expect(s.notes.join("\n")).toContain("빠진 것 없음");
+  });
+
+  test("both participants failing lets the automatic check through without any counterpart call", async () => {
+    behavior.set(GEMINI_ID, "quota");
+    behavior.set("claude-fable-5-2", "quota");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    // The opposite-family role is only used when neither participant yields advice, and it is asked exactly once.
+    expect(served.slice(0, 2).sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    // The opposite-family role only ever runs after both participants have finished failing.
+    expect(served[2]).toBe("claude-reviewer");
+    expect(served).toHaveLength(3);
+    expect(out?.block).toBe(true);
+    expect(out!.reason).toContain("claude-reviewer");
+    expect(out!.reason).toContain(FABLE);
+  });
+
+  test("when neither participant can run, the counterpart still answers once and the failures stay named", async () => {
+    behavior.set(GEMINI_ID, "quota");
+    behavior.set("claude-fable-5-2", "quota");
+    behavior.set("claude-reviewer", "quota");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(served.slice(0, 2).sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    // The opposite-family role only ever runs after both participants have finished failing.
+    expect(served[2]).toBe("claude-reviewer");
+    expect(served).toHaveLength(3);
+    expect(out?.block).toBeUndefined();
+  });
+
+  test("Fable answering alone is never reported as both participants having reviewed", async () => {
+    let out!: Dispatched;
+    await withFableOnly(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(served).toEqual(["claude-fable-5-2"]);
+    expect(out?.block).toBe(true);
+    expect(out!.reason).toContain("참가하지 못한 모델");
+    expect(out!.reason).toContain("implGemini");
+    expect(out!.reason.split("\n")[0]).not.toContain(GEMINI);
+  });
+
+  test("the opposite-family role is never asked when one participant already answered", async () => {
+    let looked: string[] = [];
+    await withBoth(async () => {
+      const s = await mainSession([], "anthropic/claude-main");
+      const result = await s.preflight({ plan: "Export CSV only." });
+      expect(result.content[0]!.text).toContain(FABLE);
+      looked = s.resolved.filter((spec) => spec.includes("crossReview"));
+    });
+    expect(looked).toEqual([]);
+    expect(served).not.toContain("gpt-reviewer");
+  });
+
+  test("a participant's model is never called twice even when it is also the counterpart role", async () => {
+    // Anthropic Main: the opposite-family role is the OpenAI reviewer. Fable failing must not be retried as a fallback.
+    behavior.set("claude-fable-5-2", "quota");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "anthropic/claude-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(served.filter((id) => id === "claude-fable-5-2")).toHaveLength(1);
+    expect(out?.block).toBe(true);
+  });
+
+  test("both participants share one deadline instead of getting one each", async () => {
+    const realNow = Date.now;
+    let skew = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => realNow.call(Date) + skew);
+    try {
+      // Argon spends the whole foreground budget before it fails; the counterpart must not get a fresh one.
+      behavior.set(GEMINI_ID, "quota");
+      behavior.set("claude-fable-5-2", "quota");
+      onRequest.set(GEMINI_ID, () => { skew += 26_000; });
+      let out!: Dispatched;
+      await withBoth(async () => {
+        const s = await mainSession([], "openai-codex/gpt-main");
+        await s.say(LATEST);
+        out = await s.dispatch();
+      });
+      expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+      expect(out?.block).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  test("cancelling the direct call aborts both participants and starts nothing else", async () => {
+    behavior.set(GEMINI_ID, "hang");
+    behavior.set("claude-fable-5-2", "hang");
+    const cancel = new AbortController();
+    let looked: string[] = [];
+    onRequest.set("claude-fable-5-2", () => queueMicrotask(() => cancel.abort()));
+    await withBoth(async () => {
+      const s = await mainSession([], "anthropic/claude-main");
+      await expect(s.preflight({ plan: "Export CSV only." }, cancel.signal)).rejects.toThrow("사전 점검 실패");
+      looked = s.resolved.filter((spec) => spec.includes("crossReview"));
+    });
+    expect(served.sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    expect(looked).toEqual([]);
+  });
+
+  test("a secret-looking plan reaches neither participant", async () => {
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch("Use password: hunter2hunter2 to log in.");
+    });
+    expect(served).toEqual([]);
+    expect(out?.block).toBeUndefined();
+  });
+
+  test("a secret-bearing answer from one participant is dropped and shown to nobody", async () => {
+    behavior.set("claude-fable-5-2", "secret");
+    let out!: Dispatched;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect(out?.block).toBe(true);
+    expect(out!.reason).toContain(FABLE);
+    expect(out!.reason).toContain("참가하지 못한 모델");
+    expect(out!.reason).not.toContain("sk-");
+  });
+
+  test("a stale successful check from both participants still refuses to license the superseded plan", async () => {
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      behavior.set(GEMINI_ID, { delayMs: 80 });
+      behavior.set("claude-fable-5-2", { delayMs: 80 });
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      const pending = s.call("lab_goal", frame);
+      await until(() => served.length === 2);
+      await s.steer("Only export Excel, not CSV.");
+      expect((await pending)?.block).toBe(true);
+      expect(await pending).toMatchObject({ block: true });
+      behavior.delete(GEMINI_ID);
+      behavior.delete("claude-fable-5-2");
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      // Two staled requests, then one fresh pair: still one call per participant per check.
+      expect(served.filter((id) => id === GEMINI_ID)).toHaveLength(2);
+      expect(served.filter((id) => id === "claude-fable-5-2")).toHaveLength(2);
+    });
+  });
+
+  test("with this PC's real config the counterpart is Fable itself, so it is refused rather than asked twice", async () => {
+    // Main is a DeepSeek family model, so the opposite-family role is crossReviewAnthropic, which here points at the
+    // same Fable 5.2 already asked as the second participant.
+    behavior.set(GEMINI_ID, "quota");
+    behavior.set("claude-fable-5-2", "quota");
+    let out!: Dispatched;
+    await withActiveSettings(Settings.isolated({
+      modelRoles: { ...reviewRoles, crossReviewAnthropic: FABLE, implGemini: `${GEMINI}:auto`, preflightAnthropic: FABLE },
+    }), async () => {
+      const s = await mainSession([], "hive/deepseek-ai/deepseek-v4.1-flash-1017");
+      await s.say(LATEST);
+      out = await s.dispatch();
+    });
+    expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    expect(out?.block).toBeUndefined();
+  });
+
+  test("a secret straddling the plan clip boundary still reaches neither participant", async () => {
+    // The token starts inside the budget and continues past it: clipping alone would leave a visible prefix.
+    const plan = `${"x".repeat(23_985)}sk-${"A".repeat(40)}`;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await expect(s.preflight({ plan })).rejects.toThrow("비밀값");
+      // The automatic path is the one the finding named; it must stay fail-open and silent as well.
+      const out = await s.dispatch(plan);
+      expect(out?.block).toBeUndefined();
+    });
+    expect(served).toEqual([]);
+  });
+
+  test("cancelling the automatic check's turn aborts both participants, not only a session reset", async () => {
+    behavior.set(GEMINI_ID, "hang");
+    behavior.set("claude-fable-5-2", "hang");
+    let out!: Dispatched;
+    let elapsed = 0;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      const pending = s.dispatch();
+      await until(() => served.length === 2);
+      const t0 = Date.now();
+      // The core publishes no handler signal, so the cancelled turn reaches the plugin as this settle.
+      await s.endTurn();
+      out = await pending;
+      elapsed = Date.now() - t0;
+    });
+    // Both hanging participants end on the settle, well before the 25 s deadline that would otherwise bound them,
+    // and the cancelled check starts nothing else and grants no pass.
+    expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    expect(elapsed).toBeLessThan(5_000);
+    expect(out?.block).toBeUndefined();
+  });
+
+  test("a session change aborts both in-flight participants instead of letting them run to the deadline", async () => {
+    behavior.set(GEMINI_ID, "hang");
+    behavior.set("claude-fable-5-2", "hang");
+    let out!: Dispatched;
+    let elapsed = 0;
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      await s.say(LATEST);
+      const pending = s.dispatch();
+      await until(() => served.length === 2);
+      const t0 = Date.now();
+      await s.switchSession();
+      out = await pending;
+      elapsed = Date.now() - t0;
+    });
+    // Both hanging lanes end on the session change, not on their answers: far below the 25 s deadline that would
+    // otherwise bound them, and neither starts another request.
+    expect([...served].sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+    expect(elapsed).toBeLessThan(5_000);
+    expect(out?.block).toBeUndefined();
+  });
+
+  test("identical concurrent checks still share one pair of requests", async () => {
+    behavior.set(GEMINI_ID, { delayMs: 60 });
+    behavior.set("claude-fable-5-2", { delayMs: 60 });
+    await withBoth(async () => {
+      const s = await mainSession([], "openai-codex/gpt-main");
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      const results = await Promise.all([s.call("lab_goal", frame), s.call("lab_goal", frame)]);
+      expect(results.map((r) => r?.block)).toEqual([true, true]);
+      expect(served.sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
+      expect((await s.call("lab_goal", frame))?.block).toBeUndefined();
+    });
+  });
 });
 
 test("R1-ANT-2 a route-setting error does not reject dispatch or suppress the counterpart", async () => {

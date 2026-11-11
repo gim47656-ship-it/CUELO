@@ -197,7 +197,7 @@ function harness(options: {
     },
   });
   const task = { name: "ViewFix", task: brief, assessment: facts };
-  const input = { context: "같은 계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${DEEPSEEK}:auto` }] };
+  const input = { context: "같은 계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${SONNET}:auto` }] };
   return {
     ...route,
     policy,
@@ -231,28 +231,28 @@ describe("2026-11-07 dispatch format normalization", () => {
   test("candidate selector suffix and coarse effort normalize without mutating input", async () => {
     const h = harness();
     await h.prepare("", [h.task], {});
-    for (const model of [DEEPSEEK, `${DEEPSEEK}:high`, `${DEEPSEEK}:auto`]) {
+    for (const model of [SONNET, `${SONNET}:high`, `${SONNET}:auto`]) {
       const item = { ...h.input.tasks[0], model, effort: "hi" };
       const result = await h.beforeTask({ ...h.input, tasks: [item] }, {}) as NormalizedDispatch;
       expect(result?.block).not.toBe(true);
-      expect(result.input.tasks[0].model).toBe(`${DEEPSEEK}:auto`);
+      expect(result.input.tasks[0].model).toBe(`${SONNET}:auto`);
       expect(result.input.tasks[0]).not.toHaveProperty("effort");
       expect(result.notices.join("\n")).toContain("auto");
       expect(item.effort).toBe("hi");
     }
     expect(await h.dispatch("unknown/not-a-candidate")).toMatchObject({ block: true });
-    const flat = await h.beforeTask({ context: "", name: h.task.name, task: brief, model: `${DEEPSEEK}:high`, effort: "hi" }, {}) as { input: Record<string, unknown> };
-    expect(flat.input.model).toBe(`${DEEPSEEK}:auto`);
+    const flat = await h.beforeTask({ context: "", name: h.task.name, task: brief, model: `${SONNET}:high`, effort: "hi" }, {}) as { input: Record<string, unknown> };
+    expect(flat.input.model).toBe(`${SONNET}:auto`);
     expect(flat.input).not.toHaveProperty("effort");
   });
   test("prepared additions and mixed full briefs dispatch with restored content", async () => {
     const h = harness();
     const other = { ...h.task, name: "Other", task: brief.replace("src/view.ts", "src/other.ts") };
     const routes = await h.prepare("stored context", [h.task, other], {});
-    const full = { name: other.name, task: other.task, model: `${DEEPSEEK}:auto` };
+    const full = { name: other.name, task: other.task, model: `${SONNET}:auto` };
     const result = await h.beforeTask({
       context: "PREPARED_CONTEXT\nMain context addition",
-      tasks: [{ task: `PREPARED_TASK: ${routes[0].preparedId}\nMain brief addition`, model: `${DEEPSEEK}:auto` }, full],
+      tasks: [{ task: `PREPARED_TASK: ${routes[0].preparedId}\nMain brief addition`, model: `${SONNET}:auto` }, full],
     }, {}) as NormalizedDispatch;
     expect(result?.block).not.toBe(true);
     expect(result.input.context).toBe("stored context\nMain context addition");
@@ -265,7 +265,7 @@ describe("2026-11-07 dispatch format normalization", () => {
       const h = harness();
       const task = `TASK_GUARD:\n${value ? `WORK_CLASS: ${value}\n` : ""}OWNED_PATHS: src/view.ts\nTASK_TITLE: Normalize contract\n\nbody`;
       await h.prepare("", [{ ...h.task, task }], {});
-      const routed = await h.dispatch(`${DEEPSEEK}:auto`, task);
+      const routed = await h.dispatch(`${SONNET}:auto`, task);
       expect(routed ?? {}).not.toMatchObject({ block: true });
       const result = reserveTaskCall(createTaskGuardState(), "first", { name: h.task.name, agent: "maker", task });
       expect(result.ok).toBe(true);
@@ -282,7 +282,7 @@ describe("2026-11-07 dispatch format normalization", () => {
     const other = { ...h.task, name: "Other", task: brief.replace("maintenance", "feature").replace("표시 오류 수정", "another deliverable").replace("src/view.ts", "src/other.ts") };
     const routes = await h.prepare("", [h.task, other], {});
     expect(routes[1].briefGaps?.join("\n")).toContain("maintenance:표시 오류 수정");
-    const input = { tasks: [h.task, other].map((task) => ({ name: task.name, task: task.task, agent: "maker", model: `${DEEPSEEK}:auto` })) };
+    const input = { tasks: [h.task, other].map((task) => ({ name: task.name, task: task.task, agent: "maker", model: `${SONNET}:auto` })) };
     const routed = await h.beforeTask(input, {});
     expect(routed).not.toMatchObject({ block: true });
     const state = createTaskGuardState();
@@ -309,7 +309,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await h.prepare("같은 계약", [h.task], {} as never);
     const dispatch = async (task: string) => (await h.beforeTask({
       context: "같은 계약",
-      tasks: [{ name: h.task.name, task, agent: "maker", model: `${DEEPSEEK}:auto` }],
+      tasks: [{ name: h.task.name, task, agent: "maker", model: `${SONNET}:auto` }],
     }, {} as never)) as { block: boolean; reason: string };
 
     const added = await dispatch(brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts, src/extra.ts"));
@@ -351,7 +351,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: h.task.name,
         task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     }, {} as never);
 
@@ -413,7 +413,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: longName,
         task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: src/view.ts, ${longPath}`),
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     }, {} as never) as { block: boolean; reason: string };
     expect(reason.block).toBe(true);
@@ -526,7 +526,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     ]);
     expect(batch.instruction).toContain("ownershipOverlaps");
     // 경고는 발주 판정을 바꾸지 않는다. 같은 배치를 공유 작업공간으로 내면 기존 검사가 막고, 겹침 없는 항목만 내면 통과한다.
-    const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: `${DEEPSEEK}:auto` });
+    const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: `${SONNET}:auto` });
     expect(await h.beforeTask({ context: "같은 batch", tasks: tasks.map(item) }, {} as never, "batch"))
       .toMatchObject({ block: true, reason: expect.stringContaining("'Left' ↔ 'Right'") });
     expect(await h.beforeTask({ context: "같은 batch", tasks: [item(tasks[0]!), item(tasks[2]!)] }, {} as never, "pair")).toBeUndefined();
@@ -537,7 +537,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       task: brief.replace("OWNED_PATHS: src/view.ts", `OWNED_PATHS: ${paths}`),
       assessment: { ...facts, paths: paths.split(",") },
     });
-    const item = (task: { name: string; task: string }) => ({ name: task.name, task: task.task, agent: "maker", model: `${DEEPSEEK}:auto` });
+    const item = (task: { name: string; task: string }) => ({ name: task.name, task: task.task, agent: "maker", model: `${SONNET}:auto` });
     for (const [right, overlaps] of [
       ["src/view.ts", true], ["src//view.ts", true], ["src/./view.ts", true], ["./src\\view.ts", true],
       ["src/view.tsx", false], ["src/other.ts", false],
@@ -571,7 +571,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       modelRoles[slot] = candidates.find((candidate) => candidate.profile === profile)!.model;
     }
     // 다른 후보와 모델을 공유하지 않는 후보를 registry에서 뺀다.
-    const missing = candidates.find((candidate) => candidate.profile === "NORMAL_DEEPSEEK")!;
+    const missing = candidates.find((candidate) => candidate.profile === "NORMAL_SONNET")!;
     const registry = {
       find: (provider: string, id: string) => {
         const model = `${provider}/${id}`;
@@ -594,16 +594,17 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const batch = await route.prepareBatch("계약", [task], ctx);
     expect(batch.candidates.map((candidate) => candidate.model)).not.toContain(missing.model);
     expect(batch.unavailableCandidates).toEqual([
-      { profile: "NORMAL_DEEPSEEK", model: missing.model, reason: "registry에 없는 Maker 후보" },
-      { profile: "HARD_CODE_DEEPSEEK", model: missing.model, reason: "registry에 없는 Maker 후보" },
+      { profile: "NORMAL_SONNET", model: missing.model, reason: "registry에 없는 Maker 후보" },
+      { profile: "HARD_CODE_SONNET", model: missing.model, reason: "registry에 없는 Maker 후보" },
+      { profile: "HARD_UI_SONNET", model: missing.model, reason: "registry에 없는 Maker 후보" },
     ]);
     expect(batch.routes[0]!.status).toBe("judged");
-    // DeepSeek 자리가 비면 Sonnet으로 자동 대체하지 않고 추천 없음이다. 추천 없는 route는 근거 없이는 막히고, Main이 근거를 남기면 직접 고른 후보가 발주된다.
+    // Sonnet 자리가 비면 DeepSeek·Opus·Sol로 자동 대체하지 않고 추천 없음이다. 추천 없는 route는 근거 없이는 막히고, Main이 근거를 남기면 직접 고른 후보가 발주된다.
     expect(batch.routes[0]!.profile).toBeNull();
-    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: DeepSeek가 registry에 없어 Main이 Sonnet을 직접 선택함");
-    const bare = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${SONNET}:auto` }] };
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Sonnet이 registry에 없어 Main이 DeepSeek를 직접 선택함");
+    const bare = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${DEEPSEEK}:auto` }] };
     expect(await route.beforeTask(withSolutionSpace(bare), ctx)).toMatchObject({ block: true });
-    const input = { context: "계약", tasks: [{ name: task.name, task: reasoned, agent: "maker", model: `${SONNET}:auto` }] };
+    const input = { context: "계약", tasks: [{ name: task.name, task: reasoned, agent: "maker", model: `${DEEPSEEK}:auto` }] };
     expect(await route.beforeTask(withSolutionSpace(input), ctx)).toBeUndefined();
     // 불가한 후보를 지정하면 다른 모델로 대체하지 않고 막는다.
     const blocked = { context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model: `${missing.model}:auto` }] };
@@ -642,14 +643,14 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     // 정책 구간으로 좁히지 않는다. Opus·Sonnet·Sol·DeepSeek 모두 registry가 선언한 단계 그대로다.
     expect(batch.candidates).toEqual(candidates.map((candidate) => ({ ...candidate, efforts: ladders[candidate.model] ?? candidate.efforts })));
     expect(Object.keys(asked[0]!).filter((key) => /effort/i.test(key))).toEqual([]);
-    expect(batch.routes[0]!.profile).toBe("HARD_CODE_DEEPSEEK");
+    expect(batch.routes[0]!.profile).toBe("HARD_CODE_SONNET");
     const dispatch = (model: string) => withSolutionSpace({ context: "계약", tasks: [{ name: "Deep", task: brief, agent: "maker", model }] });
-    for (const concrete of [`${DEEPSEEK}:low`, `${DEEPSEEK}:max`, DEEPSEEK]) {
+    for (const concrete of [`${SONNET}:low`, `${SONNET}:max`, SONNET]) {
       expect(await route.beforeTask(dispatch(concrete), ctx)).toMatchObject({
-        input: { tasks: [expect.objectContaining({ model: `${DEEPSEEK}:auto` })] },
+        input: { tasks: [expect.objectContaining({ model: `${SONNET}:auto` })] },
       });
     }
-    expect(await route.beforeTask(dispatch(`${DEEPSEEK}:auto`), ctx)).toBeUndefined();
+    expect(await route.beforeTask(dispatch(`${SONNET}:auto`), ctx)).toBeUndefined();
   });
   test("reset은 candidate·judge·beforeTask await의 stale 결과 게시와 dispatch를 막는다", async () => {
     {
@@ -739,7 +740,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     }));
     await h.prepare("독립 경로 다섯 개", tasks, {} as never);
     candidateCalls = 0;
-    const batch = { tasks: tasks.map(({ name, task }) => ({ name, task, model: `${DEEPSEEK}:auto` })) };
+    const batch = { tasks: tasks.map(({ name, task }) => ({ name, task, model: `${SONNET}:auto` })) };
     expect(await h.beforeTask(batch, {} as never, "five")).toBeUndefined();
     // 준비의 한 번을 제외하면 admission은 task 수와 무관하게 한 번이다.
     expect(candidateCalls).toBe(2);
@@ -799,7 +800,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: "ViewFix",
         task: reasonTask,
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     };
     const owner = {
@@ -898,7 +899,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: second.name,
         task: second.task,
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     };
     for (const active of [true, false]) {
@@ -932,7 +933,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ ledger });
       const tasks = [make("Left", left), make("Right", right)];
       await h.prepare("같은 batch", tasks, {} as never);
-      const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: `${DEEPSEEK}:auto` });
+      const item = (task: typeof tasks[number]) => ({ name: task.name, task: task.task, agent: "maker", model: `${SONNET}:auto` });
       const batch = { context: "같은 batch", tasks: tasks.map(item) };
       const result = await h.beforeTask(batch, {} as never, "batch");
       if (!overlaps) {
@@ -964,7 +965,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       assessment: { ...facts, paths: paths.split(",") },
     });
     const single = (task: PreparedTask, extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}) =>
-      ({ context: "호출 간", ...top, tasks: [{ name: task.name, task: task.task, agent: "maker", model: `${DEEPSEEK}:auto`, ...extra }] });
+      ({ context: "호출 간", ...top, tasks: [{ name: task.name, task: task.task, agent: "maker", model: `${SONNET}:auto`, ...extra }] });
     async function prepared(left: string, right: string) {
       const ledger = memoryLedger();
       const h = harness({ ledger });
@@ -1040,6 +1041,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       expect(await h.beforeTask(isolatedCall, {} as never, "call-a")).toBeUndefined();
       expect(await h.beforeTask(isolatedCall, {} as never, "call-b")).toBeUndefined();
       expect(await h.beforeTask(isolatedCall, {} as never, "call-c")).toBeUndefined();
+      expect(await h.beforeTask(isolatedCall, {} as never, "call-x")).toBeUndefined();
       // 다른 호출의 spawn 없는 종료·selector가 어긋난 spawn은 자기 예약만 정리한다.
       h.releaseCall("call-c");
       h.noteSpawned(isolatedCall, "call-c", ids("Fix-3"));
@@ -1061,7 +1063,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       { name: "Left", task: brief, assessment: facts },
       { name: "Right", task: brief, assessment: facts },
     ];
-    const item = (name: string, extra: Record<string, unknown> = {}) => ({ name, task: brief, agent: "maker", model: `${DEEPSEEK}:auto`, ...extra });
+    const item = (name: string, extra: Record<string, unknown> = {}) => ({ name, task: brief, agent: "maker", model: `${SONNET}:auto`, ...extra });
     const spawnIds = new Map([[0, { agentId: "agent-left", jobId: "job-left" }], [1, { agentId: "agent-right", jobId: "job-right" }]]);
     const cases: [Record<string, unknown>, string[] | null][] = [
       [{ context: "c", tasks: [item("Left", { isolated: true }), item("Right")] }, ["isolated", "shared"]],
@@ -1095,7 +1097,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
   });
   test("active owner 충돌은 양쪽이 공유 작업공간일 때만이고 소유 경로 미상 active owner는 공유 발주 전체를 막는다", async () => {
     const shared = { name: "SharedOwner", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/"], active: true };
-    const isolatedInput = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${DEEPSEEK}:auto`, isolated: true }] };
+    const isolatedInput = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${SONNET}:auto`, isolated: true }] };
     const legacy: Owner = { name: "Legacy", primaryDeliverable: null, ownedPaths: [], ownershipUnknown: true, active: true };
     const cases: [Owner, "shared" | "isolated", boolean][] = [
       [shared, "shared", true],
@@ -1138,7 +1140,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     await expect(stale).rejects.toThrow("더 최신");
     expect(await h.beforeTask({
       ...h.input,
-      tasks: [{ ...h.input.tasks[0], model: `${DEEPSEEK}:auto` }],
+      tasks: [{ ...h.input.tasks[0], model: `${SONNET}:auto` }],
     }, {} as never)).toBeUndefined();
     expect(h.requests).toHaveLength(2);
   });
@@ -1166,7 +1168,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       const h = harness({ fail });
       const prepared = await h.prepare("같은 계약", [h.task], {} as never);
       expect(prepared[0]!.status).toBe(fail ? "unavailable" : "judged");
-      // 추천(NORMAL_DEEPSEEK)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
+      // 추천(NORMAL_SONNET)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
       const item = { ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto" };
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
       item.task = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 두 경합 불변식이 새로 확인되어 Main이 결정함");
@@ -1208,14 +1210,14 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     // prepared 참조도 복원한 뒤 같은 검사를 받는다.
     const referenced = (solutionSpace: unknown) => ({
       context: "PREPARED_CONTEXT",
-      tasks: [{ task: `PREPARED_TASK: ${routes[0]!.preparedId}`, model: `${DEEPSEEK}:auto`, solutionSpace }],
+      tasks: [{ task: `PREPARED_TASK: ${routes[0]!.preparedId}`, model: `${SONNET}:auto`, solutionSpace }],
     });
     expect(await h.beforeTask(referenced("  "), {} as never, "ref")).toMatchObject({ block: true });
     // batch 하나라도 비면 배치 전체를 막고 앞 항목도 예약하지 않는다: 같은 경로의 다른 호출이 승인 중 예약에 막히지 않는다.
     for (const solutionSpace of [" ", undefined]) {
       const batch = {
         context: "같은 계약",
-        tasks: [view("one fix: view label"), { name: other.name, task: other.task, agent: "maker", model: `${DEEPSEEK}:auto`, solutionSpace }],
+        tasks: [view("one fix: view label"), { name: other.name, task: other.task, agent: "maker", model: `${SONNET}:auto`, solutionSpace }],
       };
       expect(await h.beforeTask(batch, {} as never, `blank-batch-${String(solutionSpace)}`)).toMatchObject({ block: true, reason: expect.stringContaining("OtherFix") });
     }
@@ -1253,11 +1255,11 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived }] }, {} as never)).toBeUndefined();
     expect(await h.beforeTask({ ...h.input, tasks: [{ ...h.input.tasks[0], task: derived.replace("src/view.ts", "src/other.ts") }] }, {} as never)).toMatchObject({ block: true });
   });
-  test("NORMAL 한도를 모르면 기본 DeepSeek 후보와 unavailable 사유를 유지한다", async () => {
+  test("NORMAL 한도를 모르면 기본 Sonnet 후보와 unavailable 사유를 유지한다", async () => {
     const h = harness({ workClass: "NORMAL" });
     const batch = await h.prepareBatch("확정 문장 작업", [h.task], {} as never);
-    expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_DEEPSEEK", normalAllocation: { state: "unavailable", profile: "NORMAL_DEEPSEEK" } });
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(batch.routes[0]).toMatchObject({ profile: "NORMAL_SONNET", normalAllocation: { state: "unavailable", profile: "NORMAL_SONNET" } });
+    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
   });
   test("TaskGuard lock이 확립된 뒤 WORK_CLASS와 PRIMARY_DELIVERABLE을 생략한 child도 연결한다", async () => {
     const h = harness();
@@ -1277,7 +1279,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: inheritedTask.name,
         task: inheritedBrief,
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     }, {} as never)).toBeUndefined();
   });
@@ -1295,7 +1297,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     };
     await h.prepare("", [inheritedTask], {});
     const explicitDefault = inheritedTask.task.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second");
-    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicitDefault, model: `${DEEPSEEK}:auto` }] }, {})).toBeUndefined();
+    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicitDefault, model: `${SONNET}:auto` }] }, {})).toBeUndefined();
   });
   test("TaskGuard 계약을 못 만들면 빠진 필드와 양식을 짚고 판정을 호출하지 않는다", async () => {
     const h = harness();
@@ -1323,7 +1325,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
         name: h.task.name,
         task: `PREPARED_TASK: ${preparedId}`,
         agent: "maker",
-        model: `${DEEPSEEK}:auto`,
+        model: `${SONNET}:auto`,
       }],
     };
     const decision = await h.beforeTask(referenced, {} as never) as {
@@ -1349,7 +1351,7 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     const preparedId = routes[0]!.preparedId;
     const dispatch = async (task: string, context = "PREPARED_CONTEXT") => (await h.beforeTask({
       context,
-      tasks: [{ name: h.task.name, task, agent: "maker", model: `${DEEPSEEK}:auto` }],
+      tasks: [{ name: h.task.name, task, agent: "maker", model: `${SONNET}:auto` }],
     }, {} as never)) as { block: boolean; reason: string };
 
     const appended = await dispatch(`PREPARED_TASK: ${preparedId}\n\n덧붙인 본문`);
@@ -1383,12 +1385,12 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
     // 이름을 생략한 참조는 준비한 name으로 복원돼 같은 계약으로 발주된다. 후속 hook은 복원된 name을 본다.
     const restored = resolvePreparedTaskInput({
       context: "PREPARED_CONTEXT",
-      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: `${DEEPSEEK}:auto` }],
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: `${SONNET}:auto` }],
     }, h.sessionId) as { tasks: Array<Record<string, unknown>> };
-    expect(restored.tasks[0]).toMatchObject({ name: "ViewFix", task: brief, model: `${DEEPSEEK}:auto` });
+    expect(restored.tasks[0]).toMatchObject({ name: "ViewFix", task: brief, model: `${SONNET}:auto` });
     const omitted = await h.beforeTask({
       context: "PREPARED_CONTEXT",
-      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: `${DEEPSEEK}:auto` }],
+      tasks: [{ task: `PREPARED_TASK: ${preparedId}`, model: `${SONNET}:auto` }],
     }, {} as never) as { block?: boolean; input?: { tasks: Array<Record<string, unknown>> } };
     expect(omitted.block).toBeUndefined();
     expect(omitted.input?.tasks[0]).toMatchObject({ name: "ViewFix", task: brief });
@@ -1546,7 +1548,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     });
     return { route, ctx, questions, policy: routingPolicy, task: { name: "ViewFix", task: brief, assessment: facts } };
   }
-  const dispatchInput = (task: { name: string }, model = `${DEEPSEEK}:auto`) => ({
+  const dispatchInput = (task: { name: string }, model = `${SONNET}:auto`) => ({
     context: "계약", tasks: [{ name: task.name, task: brief, agent: "maker", model }],
   });
 
@@ -1589,28 +1591,28 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
   test("준비에서 실패한 provider는 같은 발주에서 재조회하지 않고 새 준비에서는 다시 시도한다", async () => {
     const refreshCalls: string[] = [];
     const registry = {
-      find: (provider: string) => provider === "anthropic" ? undefined : { thinking: { efforts: strengths } },
+      find: (provider: string) => provider === "hive" ? undefined : { thinking: { efforts: strengths } },
       refreshDiscoverableProviders: async ([provider]: string[]) => { refreshCalls.push(provider); throw new Error("offline"); },
     };
     const h = registryHarness({ registry });
     // 같은 배치의 공유 작업공간 Maker는 소유 경로가 겹치면 막히므로 task마다 다른 파일을 소유한다.
     const tasks = ["FixA", "FixB", "FixC"].map((name) => ({ name, task: brief.replace("src/view.ts", `src/${name}.ts`), assessment: facts }));
     const batch = await h.route.prepareBatch("계약", tasks, h.ctx);
-    expect(batch.unavailableCandidates.map((entry) => entry.profile)).toEqual(["NORMAL_SONNET", "NORMAL_OPUS", "HARD_UI_OPUS", "HARD_CODE_OPUS", "HARD_CODE_SONNET", "HARD_UI_SONNET"]);
-    expect(refreshCalls.filter((provider) => provider === "anthropic")).toHaveLength(1);
+    expect(batch.unavailableCandidates.map((entry) => entry.profile)).toEqual(["NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK"]);
+    expect(refreshCalls.filter((provider) => provider === "hive")).toHaveLength(1);
     refreshCalls.length = 0;
     const input = {
       context: "계약",
-      tasks: tasks.map((entry) => ({ name: entry.name, task: entry.task, agent: "maker", model: `${DEEPSEEK}:auto` })),
+      tasks: tasks.map((entry) => ({ name: entry.name, task: entry.task, agent: "maker", model: `${SONNET}:auto` })),
     };
     expect(await h.route.beforeTask(withSolutionSpace(input), h.ctx)).toBeUndefined();
     expect(refreshCalls).toEqual([]);
     await h.route.prepareBatch("새 준비", tasks, h.ctx);
-    expect(refreshCalls.filter((provider) => provider === "anthropic")).toHaveLength(1);
+    expect(refreshCalls.filter((provider) => provider === "hive")).toHaveLength(1);
     h.route.reset();
     refreshCalls.length = 0;
     await h.route.prepareBatch("reset 뒤 준비", tasks, h.ctx);
-    expect(refreshCalls.filter((provider) => provider === "anthropic")).toHaveLength(1);
+    expect(refreshCalls.filter((provider) => provider === "hive")).toHaveLength(1);
   });
 
   test("준비 뒤 registry 후보가 바뀌면 공유 갱신으로도 dispatch를 통과하지 않는다", async () => {
@@ -1652,25 +1654,25 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
 
 describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
   type Options = NonNullable<Parameters<typeof harness>[0]>;
-  test("Jev routes settled work to DeepSeek, difficult UI to Opus, bounded design/rework to Sol, and open design/repeated failure to Main", async () => {
+  test("Jev routes settled work to Sonnet, difficult UI to Opus, bounded design/rework to Sol, and open design/repeated failure to Main", async () => {
     const rework = { task: reworkTaskBrief };
     type Row = [string, Options & { task?: string }, string | null];
     const rows: Row[] = [
-      ["확정된 구현 → DeepSeek", {}, "NORMAL_DEEPSEEK"],
+      ["확정된 구현 → Sonnet", {}, "NORMAL_SONNET"],
       ["보통 UI(기존 패턴 안의 UI 판단) → Sonnet", { uiUxBoundary: 1, uiDifficulty: "ROUTINE" }, "NORMAL_SONNET"],
       ["HARD + 보통 UI → HARD UI Sonnet", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "ROUTINE" }, "HARD_UI_SONNET"],
       ["보통 UI와 한정된 설계가 함께면 Sol이 먼저다", { uiDifficulty: "ROUTINE", boundedDesign: "BOUNDED" }, "NORMAL_SOL"],
       ["보통 UI의 한정된 실패 재작업도 Sol이 먼저다", { uiDifficulty: "ROUTINE", reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
       ["보통 UI인데 Sonnet이 없으면 추천 없음(DeepSeek·Opus로 대체하지 않음)", { uiDifficulty: "ROUTINE", candidates: without("NORMAL_SONNET") }, null],
       ["보통 UI여도 반복 실패면 Main이 먼저다", { uiDifficulty: "ROUTINE", reworkNature: "RETURN_TO_MAIN" }, null],
-      ["UI 경계만으로 어렵다고 보지 않는다(NONE)", { uiUxBoundary: 1, uiDifficulty: "NONE" }, "NORMAL_DEEPSEEK"],
+      ["UI 경계만으로 어렵다고 보지 않는다(NONE)", { uiUxBoundary: 1, uiDifficulty: "NONE" }, "NORMAL_SONNET"],
       ["정말 어려운 UI → Opus", { uiUxBoundary: 1, uiDifficulty: "DIFFICULT" }, "NORMAL_OPUS"],
-      ["HARD 코드, 방향 확정 → HARD DeepSeek", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_DEEPSEEK"],
-      ["HARD 라벨·UI_UX 분야만으로는 Opus가 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_CODE_DEEPSEEK"],
+      ["HARD 코드, 방향 확정 → HARD Sonnet", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SONNET"],
+      ["HARD 라벨·UI_UX 분야만으로는 Opus가 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"] }, "HARD_CODE_SONNET"],
       ["HARD + 어려운 UI → HARD UI Opus", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT" }, "HARD_UI_OPUS"],
       ["Bounded design uses Sol", { boundedDesign: "BOUNDED" }, "NORMAL_SOL"],
       ["HARD bounded design uses Sol61", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SOL61"],
-      ["준비된 복잡한 상태 구현(boundedDesign NONE)은 DeepSeek", { boundedDesign: "NONE", designOpen: 0.2 }, "NORMAL_DEEPSEEK"],
+      ["준비된 복잡한 상태 구현(boundedDesign NONE)은 Sonnet", { boundedDesign: "NONE", designOpen: 0.2 }, "NORMAL_SONNET"],
       ["한정된 설계도 큰 교차 경계 재설계(designOpen 높음)면 Main이 먼저다", { boundedDesign: "BOUNDED", designOpen: 0.8 }, null],
       ["한정된 설계도 반복 실패면 Main이 먼저다", { boundedDesign: "BOUNDED", reworkNature: "RETURN_TO_MAIN" }, null],
       ["boundedDesign UNKNOWN은 추천 없음(Opus로 올리지 않음)", { boundedDesign: "UNKNOWN" }, null],
@@ -1687,15 +1689,16 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["HARD bounded rework uses Sol61", { ...rework, reworkNature: "BOUNDED_FAILURE", workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SOL61"],
       ["반복 실패 → Main", { ...rework, reworkNature: "RETURN_TO_MAIN" }, null],
       ["반복 실패는 어려운 UI여도 Main이 먼저다", { ...rework, reworkNature: "RETURN_TO_MAIN", uiDifficulty: "DIFFICULT", uiUxBoundary: 1 }, null],
-      ["의도한 RED·인프라·검증 보정은 실패가 아니라 DeepSeek", { ...rework, reworkNature: "NOT_FAILURE" }, "NORMAL_DEEPSEEK"],
-      ["실패 근거 없는 재작업 표기(NONE)도 DeepSeek", { ...rework, reworkNature: "NONE" }, "NORMAL_DEEPSEEK"],
+      ["의도한 RED·인프라·검증 보정은 실패가 아니라 Sonnet", { ...rework, reworkNature: "NOT_FAILURE" }, "NORMAL_SONNET"],
+      ["실패 근거 없는 재작업 표기(NONE)도 Sonnet", { ...rework, reworkNature: "NONE" }, "NORMAL_SONNET"],
       ["FINDING_ID 표기가 없어도 Jev가 반복 실패로 보면 Main이 먼저다", { reworkNature: "RETURN_TO_MAIN" }, null],
       ["Bounded failed rework without FINDING_ID uses Sol", { reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
-      ["DeepSeek가 없으면 Opus로 자동 대체하지 않고 추천 없음(Main이 다시 판단)", { candidates: without("NORMAL_DEEPSEEK") }, null],
-      ["HARD DeepSeek가 없으면 HARD Opus로 자동 대체하지 않고 추천 없음", { workClass: "HARD", candidates: without("HARD_CODE_DEEPSEEK") }, null],
+      ["Sonnet이 없으면 DeepSeek·Opus로 자동 대체하지 않고 추천 없음(Main이 다시 판단)", { candidates: without("NORMAL_SONNET") }, null],
+      ["HARD Sonnet이 없으면 HARD Opus·DeepSeek로 자동 대체하지 않고 추천 없음", { workClass: "HARD", candidates: without("HARD_CODE_SONNET") }, null],
       ["어려운 UI인데 Opus가 없으면 추천 없음(Sonnet·Sol로 올리지 않음)", { uiDifficulty: "DIFFICULT", candidates: without("NORMAL_OPUS") }, null],
       ["어려운 UI인데 HARD Opus가 없으면 추천 없음", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT", candidates: without("HARD_UI_OPUS") }, null],
-      ["DeepSeek·Opus가 모두 없으면 추천 없음", { candidates: without("NORMAL_DEEPSEEK", "NORMAL_OPUS") }, null],
+      ["Sonnet·Opus가 모두 없으면 추천 없음", { candidates: without("NORMAL_SONNET", "NORMAL_OPUS") }, null],
+      ["Sonnet 후보가 없으면 DeepSeek가 남아 있어도 자동 선택하지 않는다", { candidates: without("NORMAL_SONNET", "HARD_UI_SONNET", "HARD_CODE_SONNET") }, null],
       ["Jev 실패 → 추천 없음", { fail: true }, null],
     ];
     for (const [label, { task: taskBrief, ...options }, expected] of rows) {
@@ -1744,36 +1747,53 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const [spentRoute] = await spent.prepare("실제 소진", [spent.task], {} as never);
     expect(spentRoute).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
   });
-  test("DeepSeek 후보는 한도로 소진돼도 Opus로 내려가지 않고 추천 없음이며, 미관측은 소진이 아니고 막지도 않는다", async () => {
+  test("기본 후보의 관측된 한도 소진은 추천 없음이고, 미관측은 소진으로 보지 않는다", async () => {
     const spent = { limitReached: true, limits: [] };
     const observed = (providers: Record<string, unknown[]>) => async () => ({ state: "observed", observedAt: 1, providers }) as never;
-    // 미관측: DeepSeek 유지, 사유에 남긴다.
+    // 미관측: Sonnet 유지, 사유에 남긴다.
     const blind = harness();
     const [blindRoute] = await blind.prepare("한도 미관측", [blind.task], {} as never);
     expect(blindRoute!.normalAllocation).toMatchObject({
-      state: "unavailable", profile: "NORMAL_DEEPSEEK", reason: expect.stringContaining("한도 미관측은 소진이 아닙니다"),
+      state: "unavailable", profile: "NORMAL_SONNET", reason: expect.stringContaining("한도 미관측은 소진이 아닙니다"),
     });
-    // 관측된 정상 한도: DeepSeek.
-    const fine = harness({ quota: observed({ hive: [{ limitReached: false, limits: [] }] }) });
-    expect((await fine.prepare("정상", [fine.task], {} as never))[0]!.normalAllocation).toMatchObject({ state: "observed", profile: "NORMAL_DEEPSEEK" });
-    // DeepSeek 소진: Opus가 멀쩡해도 자동 대체 없이 추천 없음. 구조 차단이 아니라 Main 재판단이라 returnToMain은 false다.
-    const dsSpent = harness({ quota: observed({ hive: [spent] }) });
-    const [dsSpentRoute] = await dsSpent.prepare("DeepSeek 소진", [dsSpent.task], {} as never);
-    expect(dsSpentRoute).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
-    // 다른 provider의 소진은 DeepSeek 추천을 바꾸지 않는다.
-    const others = harness({ quota: observed({ anthropic: [spent], "openai-codex": [spent] }) });
-    expect((await others.prepare("다른 provider 소진", [others.task], {} as never))[0]!.profile).toBe("NORMAL_DEEPSEEK");
-    // 어려운 UI는 Opus 소진 시 추천 없음. DeepSeek로 내려가지 않는다.
+    // 관측된 정상 한도: Sonnet.
+    const fine = harness({ quota: observed({ anthropic: [{ limitReached: false, limits: [] }] }) });
+    expect((await fine.prepare("정상", [fine.task], {} as never))[0]!.normalAllocation).toMatchObject({ state: "observed", profile: "NORMAL_SONNET" });
+    // Sonnet 소진: 다른 provider의 후보가 남아도 자동 대체 없이 추천 없음. 구조 차단이 아니라 Main 재판단이라 returnToMain은 false다.
+    const sonnetSpent = harness({ quota: observed({ anthropic: [spent] }) });
+    const [sonnetSpentRoute] = await sonnetSpent.prepare("Sonnet 소진", [sonnetSpent.task], {} as never);
+    expect(sonnetSpentRoute).toMatchObject({ profile: null, normalAllocation: { profile: null, returnToMain: false } });
+    // 다른 provider의 소진은 Sonnet 추천을 바꾸지 않는다.
+    const others = harness({ quota: observed({ hive: [spent], "openai-codex": [spent] }) });
+    expect((await others.prepare("다른 provider 소진", [others.task], {} as never))[0]!.profile).toBe("NORMAL_SONNET");
+    // 어려운 UI는 Opus 소진 시 추천 없음. 소진되지 않은 DeepSeek로 내려가지 않는다.
     const uiSpent = harness({ uiDifficulty: "DIFFICULT", quota: observed({ anthropic: [spent] }) });
     expect((await uiSpent.prepare("UI Opus 소진", [uiSpent.task], {} as never))[0]!.profile).toBeNull();
   });
-  test("추천 후보는 ROUTING_REASON 없이 발주되고, Sonnet·Opus·Sol은 의도한 예외로 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
+  test("DeepSeek는 어떤 분류에서도 자동 추천되지 않고, 명시 선택은 ROUTING_REASON이 있을 때만 받아들인다", async () => {
+    const deepseek = new Set(["NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK"]);
+    const options: NonNullable<Parameters<typeof harness>[0]>[] = [
+      {}, { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, { uiDifficulty: "ROUTINE" }, { uiDifficulty: "DIFFICULT" },
+      { boundedDesign: "BOUNDED" }, { reworkNature: "BOUNDED_FAILURE" }, { reworkNature: "NOT_FAILURE" }, { boundedDesign: "NONE", designOpen: 0.2 },
+    ];
+    for (const option of options) {
+      const h = harness(option);
+      const [route] = await h.prepare("DeepSeek 자동 선택 금지", [h.task], {} as never);
+      expect(deepseek.has(route!.profile ?? ""), JSON.stringify(option)).toBe(false);
+    }
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 완전히 명세된 반복 변환이라 Main이 DeepSeek를 명시 선택함");
+    const h = harness();
+    await h.prepare("명시 DeepSeek", [h.task], {} as never);
+    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${DEEPSEEK}:auto`, reasoned)).toBeUndefined();
+  });
+  test("추천 후보는 ROUTING_REASON 없이 발주되고, DeepSeek, Opus, Sol은 의도한 예외로 ROUTING_REASON이 있어야 auto로 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Main이 계약 근거로 의도한 예외를 선택함");
     const h = harness();
     const [route] = await h.prepare("명시 대안", [h.task], {} as never);
-    expect(route!.profile).toBe("NORMAL_DEEPSEEK");
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
-    for (const alternative of [SONNET, "anthropic/claude-opus-5-5", "openai-codex/gpt-6.1-sol"]) {
+    expect(route!.profile).toBe("NORMAL_SONNET");
+    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
+    for (const alternative of [DEEPSEEK, "anthropic/claude-opus-5-5", "openai-codex/gpt-6.1-sol"]) {
       // 추천 변경에는 근거가 필요하다. concrete suffix는 auto로 보정한다.
       expect(await h.dispatch(`${alternative}:auto`), alternative).toMatchObject({ block: true });
       expect(await h.dispatch(`${alternative}:auto`, reasoned), alternative).toBeUndefined();
@@ -1795,11 +1815,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 모름(UNKNOWN)은 막지 않는다: 근거 없이는 막히고, Main이 ROUTING_REASON으로 정하면 기존 경로로 발주된다. 비싼 모델로 자동 승격하지 않는다.
     const unknown = harness({ designOpen: null });
     expect((await unknown.prepare("모름", [unknown.task], {} as never))[0]!.normalAllocation).toMatchObject({ profile: null, returnToMain: false });
-    expect(await unknown.dispatch(`${DEEPSEEK}:auto`)).toMatchObject({ block: true });
-    expect(await unknown.dispatch(`${DEEPSEEK}:auto`, reasoned)).toBeUndefined();
+    expect(await unknown.dispatch(`${SONNET}:auto`)).toMatchObject({ block: true });
+    expect(await unknown.dispatch(`${SONNET}:auto`, reasoned)).toBeUndefined();
     const jevDown = harness({ fail: true });
     expect((await jevDown.prepare("Jev 불가", [jevDown.task], {} as never))[0]!.profile).toBeNull();
-    expect(await jevDown.dispatch(`${DEEPSEEK}:auto`, reasoned)).toBeUndefined();
+    expect(await jevDown.dispatch(`${SONNET}:auto`, reasoned)).toBeUndefined();
   });
   test("등급 답이 없는 부분 판정도 이미 드러난 열린 설계·반복 실패를 막고, 증거 없는 미분류는 막지 않는다", async () => {
     const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 부분 판정에도 Main이 정함");
@@ -1808,13 +1828,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       const [route] = await h.prepare("부분 판정", [h.task], {} as never);
       expect(route!.profile).toBeNull();
       expect(route!.normalAllocation).toMatchObject({ returnToMain: true });
-      expect(await h.dispatch(`${DEEPSEEK}:auto`, reasoned), JSON.stringify(options)).toMatchObject({ block: true, reason: expect.stringContaining("maker_route를 다시 실행") });
+      expect(await h.dispatch(`${SONNET}:auto`, reasoned), JSON.stringify(options)).toMatchObject({ block: true, reason: expect.stringContaining("maker_route를 다시 실행") });
     }
     const none = harness({ workClass: "UNCLASSIFIED", uiDifficulty: "NONE" });
     const [route] = await none.prepare("증거 없음", [none.task], {} as never);
     expect(route!.profile).toBeNull();
     expect(route!.normalAllocation).toBeNull();
-    expect(await none.dispatch(`${DEEPSEEK}:auto`, reasoned)).toBeUndefined();
+    expect(await none.dispatch(`${SONNET}:auto`, reasoned)).toBeUndefined();
   });
   test("반복 실패 결정은 FINDING_ID 없이도 모든 후보를 막고, Main이 사실을 바꿔 다시 준비한 판단만 발주된다", async () => {
     const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 같은 접근을 한 번 더 시도함");
@@ -1835,7 +1855,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     const h = harness();
     h.setOwners([{ name: "Existing", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"], active: true }]);
     await h.prepare("owner 보존", [h.task], {} as never);
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${SONNET}:auto`)).toMatchObject({ block: true });
   });
   test("새 UI/UX 경계에서 같은 owner가 이어가고 모델을 바꾸지 않으며 freeze·소유권 이전은 Main이 정한다는 안내를 싣는다", async () => {
     const h = harness({ uiUxBoundary: 1 });
@@ -1861,13 +1881,13 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
   test("prepared 추가 지시는 보존하고 context ROUTING_REASON은 필요한 참조에 옮긴다", async () => {
     const h = harness({ workClass: "NORMAL" });
     const routes = await h.prepare("원래 batch context", [h.task], {} as never) as Array<{ preparedId: string; profile: string }>;
-    expect(routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
+    expect(routes[0]!.profile).toBe("NORMAL_SONNET");
     const preparedId = routes[0]!.preparedId;
     const dispatch = async (task: string) => (await h.beforeTask({
       context: "PREPARED_CONTEXT",
-      tasks: [{ name: h.task.name, task, agent: "maker", model: `${SONNET}:auto` }],
+      tasks: [{ name: h.task.name, task, agent: "maker", model: `${DEEPSEEK}:auto` }],
     }, {} as never)) as { block?: boolean; reason?: string; input?: { context: string; tasks: Array<{ task: string }> } };
-    const reason = "ROUTING_REASON: Main이 계열 근거로 Sonnet을 선택함";
+    const reason = "ROUTING_REASON: Main이 계열 근거로 DeepSeek를 선택함";
 
     // 추천 변경 게이트는 그대로다: 참조만 보내면 근거가 없어 막힌다.
     expect(await dispatch(`PREPARED_TASK: ${preparedId}`)).toMatchObject({ block: true });
@@ -1934,11 +1954,11 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
   });
   test("준비 뒤 Main 모델 계열이 바뀌어도 준비는 무효가 되지 않고 같은 추천으로 발주된다", async () => {
     const h = harness({ workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], main: CODEX_MAIN });
-    expect((await h.prepare("family", [h.task], {} as never))[0]!.profile).toBe("HARD_CODE_DEEPSEEK");
+    expect((await h.prepare("family", [h.task], {} as never))[0]!.profile).toBe("HARD_CODE_SONNET");
     h.setMain(ANTHROPIC_MAIN);
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
     h.setMain(CODEX_MAIN);
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
     expect(h.requests).toHaveLength(1);
   });
   test("위임 판단은 같은 배치에서 묻되 결과에는 싣지 않고 발주 원장에만 남기며 등급·profile·placement를 바꾸지 않는다", async () => {
@@ -1958,12 +1978,12 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     // 10-30 감사: 위임 조언 68건 중 60건이 MAIN이었고 그중 52건은 그대로 발주됐다. 결과에서는 빼고 원장에만 남긴다.
     expect(main.route.recommendations).not.toHaveProperty("delegation");
     expect(main.route.recommendations).toHaveProperty("workClass");
-    expect(await main.h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await main.h.dispatch(`${SONNET}:auto`)).toBeUndefined();
     main.h.noteSpawned({ context: main.h.input.context, tasks: [{ ...main.h.input.tasks[0] }] });
     expect(main.ledger.records.at(-1)).toMatchObject({ type: "dispatch", delegationAdvice: { choice: "MAIN", confidence: null } });
     // 등급·profile·placement는 위임 답과 무관하게 같다.
-    expect(main.route.profile).toBe("NORMAL_DEEPSEEK");
-    expect(maker.route.profile).toBe("NORMAL_DEEPSEEK");
+    expect(main.route.profile).toBe("NORMAL_SONNET");
+    expect(maker.route.profile).toBe("NORMAL_SONNET");
     expect(main.route.normalAllocation).toEqual(maker.route.normalAllocation);
     expect(main.route.placement).toEqual(maker.route.placement);
   });
@@ -1973,9 +1993,9 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       const result = await h.tool.execute("small", { context: "Small known correction", tasks: [h.task] }, undefined, undefined, h.ctx);
       const batch = JSON.parse(result.content[0]!.text);
       expect(batch.routes[0]!.delegationAdvice.action).toBe(action);
-      expect(batch.routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
+      expect(batch.routes[0]!.profile).toBe("NORMAL_SONNET");
       expect(batch.routes[0]!.crossReviewAdvice.choice).toBe("REQUIRED");
-      expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+      expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
       expect(h.requests).toHaveLength(1);
     }
   });
@@ -1986,7 +2006,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(route!.delegationAdvice.action).toBe("instruct-existing");
     expect(route!.placement.owner?.name).toBe("Existing");
     expect(route!.profile).toBe("NORMAL_SOL");
-    expect((await h.dispatch(`${DEEPSEEK}:auto`))?.block).toBe(true);
+    expect((await h.dispatch(`${SONNET}:auto`))?.block).toBe(true);
   });
   test("unresolved failure still returns to Main before owner continuation", async () => {
     const h = harness({ delegation: "MAKER", additional: 1, ownerTarget: "owner0", reworkNature: "RETURN_TO_MAIN" });
@@ -1995,7 +2015,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(route!.delegationAdvice.action).toBe("main-decision");
     expect(route!.normalAllocation?.returnToMain).toBe(true);
     expect(route!.profile).toBeNull();
-    expect((await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON: retry anyway`))?.block).toBe(true);
+    expect((await h.dispatch(`${SONNET}:auto`, `${brief}\nROUTING_REASON: retry anyway`))?.block).toBe(true);
   });
 });
 
@@ -2044,7 +2064,7 @@ describe("발주 이력 기록과 history advisory", () => {
     expect(ledger.records).toHaveLength(before + 1);
     expect(ledger.records.at(-1)).toMatchObject({
       type: "dispatch", name: "ViewFix", workClass: "HARD", focus: "CODE_SYSTEM",
-      recommendedProfile: "HARD_CODE_DEEPSEEK", recommendedModel: DEEPSEEK, recommendedEffort: "auto",
+      recommendedProfile: "HARD_CODE_SONNET", recommendedModel: SONNET, recommendedEffort: "auto",
       chosenModel: "anthropic/claude-opus-5-5", chosenEffort: "auto", routingReason: true, purpose: null,
       // Jev 등급 확신도와 Main의 변경 근거 본문을 같은 attempt 행에 남겨 outcome·verdict와 attemptId로 잇는다.
       workClassConfidence: 0.62, workClassProbabilities: { HARD: 0.62, NORMAL: 0.38 },
@@ -2062,7 +2082,7 @@ describe("발주 이력 기록과 history advisory", () => {
     const ledger = memoryLedger([]);
     const h = harness({ ledger });
     await h.prepare("같은 계약", [h.task], {} as never);
-    expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await h.dispatch(`${SONNET}:auto`)).toBeUndefined();
     h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0] }] });
     expect(ledger.records.at(-1)).toMatchObject({
       type: "dispatch", workClass: "NORMAL", workClassConfidence: null, workClassProbabilities: null, routingReason: false, routingReasonText: null,
@@ -2099,16 +2119,16 @@ describe("발주 이력 기록과 history advisory", () => {
   test("UNKNOWN 결정도 빈 ROUTING_REASON으로는 발주되지 않는다(#76)", async () => {
     const h = harness({ designOpen: null });
     await h.prepare("모름", [h.task], {} as never);
-    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON:\n# Verification`)).toMatchObject({ block: true });
-    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\r\nROUTING_REASON:\t\r\n# Verification`)).toMatchObject({ block: true });
-    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON: 모름 판단을 Main이 정함`)).toBeUndefined();
+    expect(await h.dispatch(`${SONNET}:auto`, `${brief}\nROUTING_REASON:\n# Verification`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${SONNET}:auto`, `${brief}\r\nROUTING_REASON:\t\r\n# Verification`)).toMatchObject({ block: true });
+    expect(await h.dispatch(`${SONNET}:auto`, `${brief}\nROUTING_REASON: 모름 판단을 Main이 정함`)).toBeUndefined();
   });
   test("추천 모델은 근거가 없어도, 또는 빈 근거 줄이어도 그대로 발주된다(#76 대조)", async () => {
     const ledger = memoryLedger([]);
     const h = harness({ ledger });
     await h.prepare("같은 계약", [h.task], {} as never);
     // 추천 모델에는 변경 근거를 요구하지 않는다(기존 테스트 L2030-L2037의 정상 발주 계약).
-    expect(await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON:\n# Target`)).toBeUndefined();
+    expect(await h.dispatch(`${SONNET}:auto`, `${brief}\nROUTING_REASON:\n# Target`)).toBeUndefined();
     h.noteSpawned({ context: h.input.context, tasks: [{ ...h.input.tasks[0], task: `${brief}\nROUTING_REASON:\n# Target` }] });
     expect(ledger.records.at(-1)).toMatchObject({ type: "dispatch", routingReason: false, routingReasonText: null });
   });
@@ -2265,7 +2285,7 @@ describe("maker_route 준비 단계 진단", () => {
 });
 
 describe("발주 준비는 SpawnGuard와 같은 TASK_GUARD 블록 경계를 읽는다", () => {
-  const sonnet = `${DEEPSEEK}:auto`;
+  const sonnet = `${SONNET}:auto`;
   const titleBetween =
     "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: 표시 오류 수정\nTASK_TITLE: 표시 오류 수정\nOWNED_PATHS: src/view.ts\n\n본문";
   test("TASK_TITLE이 guard 필드 사이에 끼면 SpawnGuard처럼 OWNED_PATHS 누락으로 거절하고 Jev를 부르지 않는다", async () => {
@@ -2336,7 +2356,7 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
   async function expectDefaultContract(h: ReturnType<typeof harness>) {
     await h.prepare("후속", second(), {});
     const explicit = inherit.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second");
-    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicit, model: `${DEEPSEEK}:auto` }] }, {})).toBeUndefined();
+    expect(await h.beforeTask({ tasks: [{ name: "Second", task: explicit, model: `${SONNET}:auto` }] }, {})).toBeUndefined();
   }
   const settle = (state: TaskGuardState, callId: string, name: string) => settleTaskCall(state, callId, {
     executed: true, isError: false,
@@ -2351,7 +2371,7 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
     expect(reserveTaskCall(state, "call-1", { tasks: [{ agent: "maker", name: "ViewFix", task: brief }] }).ok).toBe(true);
     settle(state, "call-1", "ViewFix");
     await h.prepare("같은 계약", [h.task], {} as never);
-    const call = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${DEEPSEEK}:auto` }] };
+    const call = { context: "같은 계약", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${SONNET}:auto` }] };
     expect(await h.beforeTask(call, {} as never, "call-1")).toBeUndefined();
     h.noteSpawned(call, "call-1");
     return { h, state };
@@ -2440,8 +2460,8 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
       const routes = await h.prepare("후속", [child("Other", "maintenance", "다른 산출물", "src/other.ts")], {});
       expect(routes[0]!.briefGaps?.join("\n")).toContain("이 요청의 TaskGuard lock");
       const mixed = { context: "같은 계약", tasks: [
-        { name: "ViewFix", task: brief, agent: "maker", model: `${DEEPSEEK}:auto` },
-        { name: "Other", task: child("Other", "maintenance", "다른 산출물", "src/other.ts").task, agent: "maker", model: `${DEEPSEEK}:auto` },
+        { name: "ViewFix", task: brief, agent: "maker", model: `${SONNET}:auto` },
+        { name: "Other", task: child("Other", "maintenance", "다른 산출물", "src/other.ts").task, agent: "maker", model: `${SONNET}:auto` },
       ] };
       expect(await h.beforeTask(mixed, {} as never, "call-2")).toMatchObject({ notices: [expect.stringContaining("이 child=maintenance:다른 산출물")] });
     } finally {
@@ -2467,7 +2487,7 @@ describe("maker_route 준비는 같은 session의 TaskGuard 정본 lock만 상�
 
       const item = requested("WinVerify", "“PR 16573도 윈도우에서 검증해줘”");
       expect((await h.prepare("후속", [item], {} as never))[0]!.status).toBe("judged");
-      const call = { context: "후속", tasks: [{ name: "WinVerify", task: item.task, agent: "maker", model: `${DEEPSEEK}:auto` }] };
+      const call = { context: "후속", tasks: [{ name: "WinVerify", task: item.task, agent: "maker", model: `${SONNET}:auto` }] };
       expect(await h.beforeTask(call, {} as never, "call-3")).toBeUndefined();
       const reserved = reserveTaskCall(state, "call-3", { tasks: [{ agent: "maker", name: "WinVerify", task: item.task }] });
       expect(reserved.ok).toBe(true);
@@ -2504,7 +2524,7 @@ describe("교차검증 필요성 자문(crossReviewNeed)은 같은 Jev 묶음의
   });
 });
 
-describe("Jev 분류 기준과 DeepSeek 기본 추천", () => {
+describe("Jev 분류 기준과 Sonnet 기본 추천", () => {
   test("Jev 요청은 designOpen·uiDifficulty·reworkNature를 정책 정본 기준으로 한 번 묻고 mainWaits와 task 원문은 싣지 않는다", async () => {
     const h = harness();
     await h.prepare("질문", [h.task], {} as never);
@@ -2521,12 +2541,12 @@ describe("Jev 분류 기준과 DeepSeek 기본 추천", () => {
     expect(questions.designOpen).toMatchObject({ type: "noul" });
     expect(JSON.stringify(h.requests)).not.toContain("구현 원문");
   });
-  test("DeepSeek 후보가 없거나 소진이면 추천 없이 Main 재판단이고 발주는 막지 않으며 Main이 근거를 남기면 다른 후보를 직접 고를 수 있다", async () => {
+  test("Sonnet 후보가 없거나 소진이면 추천 없이 Main 재판단이고 발주는 막지 않으며 Main이 근거를 남기면 다른 후보를 직접 고를 수 있다", async () => {
     const spent = { disabled: false, limitReached: true, limits: [] };
-    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: DeepSeek 한도 소진을 확인하고 Main이 Sonnet을 직접 선택함");
+    const reasoned = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: Sonnet 한도 소진을 확인하고 Main이 DeepSeek를 직접 선택함");
     const cases: [string[], Record<string, unknown[]>][] = [
-      [["NORMAL_DEEPSEEK"], {}],
-      [[], { hive: [spent] }],
+      [["NORMAL_SONNET"], {}],
+      [[], { anthropic: [spent] }],
     ];
     for (const [missing, providers] of cases) {
       const h = harness({
@@ -2536,8 +2556,8 @@ describe("Jev 분류 기준과 DeepSeek 기본 추천", () => {
       const [route] = await h.prepare("폴백", [h.task], {} as never);
       expect(route!.profile).toBeNull();
       expect(route!.normalAllocation).toMatchObject({ profile: null, returnToMain: false });
-      expect(await h.dispatch(`${SONNET}:auto`, reasoned), JSON.stringify(missing)).toBeUndefined();
-      expect(await h.dispatch(`${SONNET}:auto`), JSON.stringify(missing)).toMatchObject({ block: true });
+      expect(await h.dispatch(`${DEEPSEEK}:auto`, reasoned), JSON.stringify(missing)).toBeUndefined();
+      expect(await h.dispatch(`${DEEPSEEK}:auto`), JSON.stringify(missing)).toMatchObject({ block: true });
     }
   });
 });
@@ -2596,14 +2616,14 @@ describe("산출물별 필수 스킬 advisory(rule://frontend 정본, 발주 비
     const ambiguous = harness({ skillAnswers: { requiredSkillDeliverable: { choice: "VISUAL" } } });
     const ambiguousGaps = (await ambiguous.prepareBatch("모호", [ambiguous.task], {})).routes[0]!.briefGaps ?? [];
     expect(ambiguousGaps.some((gap) => gap.startsWith("필수 스킬 세트 분류 미확인"))).toBe(true);
-    expect(await ambiguous.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await ambiguous.dispatch(`${SONNET}:auto`)).toBeUndefined();
 
     const broken = harness({ requiredSkills: () => parseRequiredSkillContract("<!-- required-skills:start -->\n```json\n{\"version\":1,\n```\n<!-- required-skills:end -->") });
     const brokenRoute = (await broken.prepareBatch("손상", [broken.task], {})).routes[0]!;
     expect(brokenRoute.briefGaps?.some((gap) => gap.startsWith("필수 스킬 세트 advisory 불가"))).toBe(true);
     // 정본을 읽지 못하면 분류 질문을 보내지 않는다.
     expect(Object.keys(broken.requests[0]!.questions).some((key) => key.startsWith("requiredSkill"))).toBe(false);
-    expect(await broken.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+    expect(await broken.dispatch(`${SONNET}:auto`)).toBeUndefined();
   });
 
   test("정본이 바뀌면 같은 facts라도 이전 분류 cache를 쓰지 않고 같은 판단 묶음 한 번으로 다시 묻는다", async () => {
@@ -2663,7 +2683,7 @@ describe("seance 과거 세션 조회 발주(2026-11-11)", () => {
     const historical = seanceItem({
       task: "TASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 과거 세션의 진단 요약\nOWNED_PATHS: old/path.ts\n\n이 블록은 과거 기록이다.",
     });
-    const inherited = { name: "InheritFix", task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts\n\n생략 필드를 lock에서 채운다.", agent: "maker", model: `${DEEPSEEK}:auto` };
+    const inherited = { name: "InheritFix", task: "TASK_GUARD:\nOWNED_PATHS: src/view.ts\n\n생략 필드를 lock에서 채운다.", agent: "maker", model: `${SONNET}:auto` };
     const h = harness();
     // 준비는 요청 lock이 빈 상태에서 maker 계약(feature:InheritFix)으로 만든다.
     await h.prepare("", [{ name: inherited.name, task: inherited.task, assessment: facts }], {});
@@ -2694,7 +2714,7 @@ describe("seance 과거 세션 조회 발주(2026-11-11)", () => {
     expect(await h.beforeTask({ context: "", tasks: [quoted] }, {})).toBeUndefined();
     const ordinary = await h.beforeTask({
       context: "",
-      tasks: [{ name: "Fix", task: `${brief}\n\n${quoted.task}`, agent: "maker", model: `${DEEPSEEK}:auto` }],
+      tasks: [{ name: "Fix", task: `${brief}\n\n${quoted.task}`, agent: "maker", model: `${SONNET}:auto` }],
     }, {}) as { block?: boolean; reason?: string };
     expect(ordinary?.block).toBe(true);
     expect(ordinary?.reason).toContain("SWE-2");
@@ -2702,7 +2722,7 @@ describe("seance 과거 세션 조회 발주(2026-11-11)", () => {
 
   test("혼합 배치는 maker 항목의 준비·계약을 그대로 요구한다", async () => {
     const h = harness();
-    const mixed = { context: "", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${DEEPSEEK}:auto` }, seanceItem()] };
+    const mixed = { context: "", tasks: [{ name: "ViewFix", task: brief, agent: "maker", model: `${SONNET}:auto` }, seanceItem()] };
     expect(await h.beforeTask(mixed, {})).toMatchObject({ block: true });
     await h.prepare("", [h.task], {});
     const routed = await h.beforeTask(mixed, {}) as { block?: boolean } | undefined;

@@ -115,9 +115,9 @@ function createHarness(options: HarnessOptions = {}) {
     ? undefined
     : {
         getModelRoles: () => (options.settings?.modelRoles as Record<string, string> | undefined) ?? {
-          implSonnet: "test/sonnet:auto",
+          implSonnet: "test/local:auto",
           implOpus: "test/broad:auto",
-          implDeepSeek: "test/local:auto",
+          implDeepSeek: "test/deepseek:auto",
           makerHardUiOpus: "test/interaction:auto",
           makerHardCodeOpus: "test/invariants:auto",
           makerHardCodeSonnet: "test/alternate:auto",
@@ -527,7 +527,7 @@ describe("jev-runtime pre-dispatch", () => {
     expect(records).toMatchObject([
       {
         type: "dispatch", name: "Ledger", workClass: "NORMAL", focus: null,
-        recommendedProfile: "NORMAL_DEEPSEEK", recommendedModel: "test/local", recommendedEffort: "auto",
+        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "auto",
         chosenModel: "test/local", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },

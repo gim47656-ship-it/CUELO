@@ -581,22 +581,22 @@ function placementOf(
 
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-/** Settled implementation stays DeepSeek. Bounded design/rework use Sol; difficult UI uses
- * Opus (user decision 2026-11-10: 「아니다 오퍼스 5.5 로 가자...」). Routine UI (pattern-bound
- * UI judgment, uiDifficulty ROUTINE) uses Sonnet (user decision 2026-11-11: 「메이커쪽은 소넷
- * 딥시크 오퍼스 솔 이렇게 4개의 모델을 두는걸로」, layout A). Anthropic daily-share
- * exhaustion moves only a fresh top-level session (lib/new-session-model.ts), never a Maker
- * candidate — user correction 2026-11-11: 메이커쪽은 동작해야 한다. Open redesign, repeated
- * failure and UNKNOWN retain their existing decisions. HARD_CODE_SONNET stays explicit-choice only. */
-const SETTLED_NORMAL_ORDER: readonly string[] = ["NORMAL_DEEPSEEK"];
-const SETTLED_HARD_ORDER: readonly string[] = ["HARD_CODE_DEEPSEEK"];
+/** Settled implementation defaults to Sonnet (user decision 2026-11-11: 「그배분으로하고」).
+ * Bounded design (including a root cause still open inside the existing owner and approved contracts)
+ * and bounded failed rework use Sol; difficult UI uses Opus 5.5 (user decision 2026-11-10);
+ * routine UI (pattern-bound UI judgment, uiDifficulty ROUTINE) stays Sonnet. DeepSeek is never in an
+ * order: Main may choose it explicitly with ROUTING_REASON for fully specified repetitive work.
+ * Anthropic daily-share exhaustion never moves a Maker candidate. Open redesign, repeated failure,
+ * UNKNOWN and an unavailable default (no silent alternate) retain their existing decisions. */
+const SETTLED_NORMAL_ORDER: readonly string[] = ["NORMAL_SONNET"];
+const SETTLED_HARD_ORDER: readonly string[] = ["HARD_CODE_SONNET"];
 const OPUS_NORMAL_ORDER: readonly string[] = ["NORMAL_OPUS"];
 const OPUS_HARD_UI_ORDER: readonly string[] = ["HARD_UI_OPUS"];
 const SOL_NORMAL_ORDER: readonly string[] = ["NORMAL_SOL"];
 const SOL_HARD_ORDER: readonly string[] = ["HARD_CODE_SOL61"];
 const SONNET_NORMAL_UI_ORDER: readonly string[] = ["NORMAL_SONNET"];
 const SONNET_HARD_UI_ORDER: readonly string[] = ["HARD_UI_SONNET"];
-const SETTLED_BASIS = "Main이 방향을 정한 구현이라 DeepSeek가 먼저 맡습니다.";
+const SETTLED_BASIS = "Main이 방향을 정한 구현이라 Sonnet이 먼저 맡습니다.";
 const DIFFICULT_UI_BASIS = "정말 어려운 UI/UX 판단이 남아 Opus가 맡습니다.";
 const ROUTINE_UI_BASIS = "기존 화면 패턴이나 명세 안에서 UI 판단이 남아 Sonnet이 맡습니다.";
 const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sol이 맡습니다.";
@@ -818,7 +818,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main이 생각하고 준비하고 검수합니다. 방향이 정해진 구현과 준비된 복잡 상태, 테스트와 반복 수정은 DeepSeek입니다. DeepSeek가 없거나 관측 소진이면 자동 대체 없이 추천 없음과 Main 재판단 사유를 돌려주며 막지 않습니다. 어려운 UI/UX(uiDifficulty=DIFFICULT)는 Opus, 기존 상태 소유자와 승인된 계약 안의 한정된 설계(boundedDesign=BOUNDED)와 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)은 Sol, 그 둘이 아니면서 기존 화면 패턴이나 명세 안에서 UI 판단이 남는 보통 UI(uiDifficulty=ROUTINE)는 Sonnet입니다. 어려운 UI의 Opus 추천과 보통 UI의 Sonnet 추천은 Anthropic 하루 몫 소진과 무관하게 유지되고, Maker 후보는 하루 몫으로 바뀌지 않습니다. 미관측과 모름은 소진이 아닙니다. 큰 교차 경계 재설계(designOpen)와 반복 실패(RETURN_TO_MAIN)는 UI 여부와 무관하게 Main으로 돌아오고 이 준비로는 ROUTING_REASON이나 다른 후보로 발주할 수 없습니다. Main이 원인과 근거를 검토해 접근, 범위, 계약 또는 수용 조건을 바꿔 다시 준비한 판단만 발주됩니다. FINDING_ID가 아니라 failureEvidence와 facts로 판단합니다. 의도한 RED, 일시적 인프라 실패와 일상적 검증 보정은 실패 재작업이 아닙니다. Jev 불가와 UNKNOWN은 추천 없이 Main이 ROUTING_REASON으로 정하며 막지 않고 더 비싼 모델의 근거도 아닙니다. 추천과 다른 선택과 기존 owner 대신 새 발주는 ROUTING_REASON이 필요합니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운과 리셋, warm/exact pin은 유지합니다. 후보 없는 결정은 다른 모델로 자동 대체하지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. 강도는 child auto가 고릅니다. Main은 profile, recommendations, placement, history, normalAllocation, hardAllocation, routes[].briefGaps와 ownershipOverlaps를 확인합니다.`;
+  const INSTRUCTION = `Main이 생각하고 준비하고 검수합니다. 방향이 정해진 구현과 준비된 복잡 상태, 테스트와 반복 수정은 Sonnet이 기본입니다. Sonnet이 없거나 관측 소진이면 자동 대체 없이 추천 없음과 Main 재판단 사유를 돌려주며 막지 않습니다. 어려운 UI/UX(uiDifficulty=DIFFICULT)는 Opus, 기존 상태 소유자와 승인된 계약 안의 한정된 설계(원인이 아직 열려 있는 심층 원인 분석 포함, boundedDesign=BOUNDED)와 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)은 Sol, 그 둘이 아니면서 기존 화면 패턴이나 명세 안에서 UI 판단이 남는 보통 UI(uiDifficulty=ROUTINE)는 Sonnet입니다. DeepSeek는 자동 추천하지 않으며 Main이 완전히 명세된 반복 작업에 ROUTING_REASON으로 명시할 때만 씁니다. 어려운 UI의 Opus 추천과 보통 UI의 Sonnet 추천은 Anthropic 하루 몫 소진과 무관하게 유지되고, Maker 후보는 하루 몫으로 바뀌지 않습니다. 미관측과 모름은 소진이 아닙니다. 큰 교차 경계 재설계(designOpen)와 반복 실패(RETURN_TO_MAIN)는 UI 여부와 무관하게 Main으로 돌아오고 이 준비로는 ROUTING_REASON이나 다른 후보로 발주할 수 없습니다. Main이 원인과 근거를 검토해 접근, 범위, 계약 또는 수용 조건을 바꿔 다시 준비한 판단만 발주됩니다. FINDING_ID가 아니라 failureEvidence와 facts로 판단합니다. 의도한 RED, 일시적 인프라 실패와 일상적 검증 보정은 실패 재작업이 아닙니다. Jev 불가와 UNKNOWN은 추천 없이 Main이 ROUTING_REASON으로 정하며 막지 않고 더 비싼 모델의 근거도 아닙니다. 추천과 다른 선택과 기존 owner 대신 새 발주는 ROUTING_REASON이 필요합니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운과 리셋, warm/exact pin은 유지합니다. 후보 없는 결정은 다른 모델로 자동 대체하지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. 강도는 child auto가 고릅니다. Main은 profile, recommendations, placement, history, normalAllocation, hardAllocation, routes[].briefGaps와 ownershipOverlaps를 확인합니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -1385,7 +1385,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 난이도, 열린 설계, 한정된 설계, UI 난이도, 재작업 성격, owner와 교차검증 필요성을 판단한다. 방향이 정해진 구현은 DeepSeek, 어려운 UI는 Opus, 한정된 설계와 실패 재작업은 Sol, 보통 UI는 Sonnet을 추천한다. Maker 후보는 Anthropic 하루 몫 소진으로 바뀌지 않는다. 큰 교차 경계 재설계와 반복 실패는 Main으로 반환하고 그 준비로는 발주할 수 없다. UNKNOWN은 막지 않으며 Main이 ROUTING_REASON으로 정한다. 추천 변경에는 ROUTING_REASON이 필요하다. 계정 pin, 실행 중 모델과 기존 owner는 바꾸지 않는다. 후보 selector:auto로 발주한다. history와 교차검증 조언은 advisory다. task 원문은 Jev에 보내지 않는다.`,
+      description: `Main 전용 발주 준비. Jev가 난이도, 열린 설계, 한정된 설계, UI 난이도, 재작업 성격, owner와 교차검증 필요성을 판단한다. 방향이 정해진 구현과 보통 UI는 Sonnet, 어려운 UI는 Opus, 한정된 설계와 실패 재작업은 Sol을 추천한다. DeepSeek는 추천하지 않고 Main의 명시 선택(ROUTING_REASON)만 받는다. Maker 후보는 Anthropic 하루 몫 소진으로 바뀌지 않는다. 큰 교차 경계 재설계와 반복 실패는 Main으로 반환하고 그 준비로는 발주할 수 없다. UNKNOWN은 막지 않으며 Main이 ROUTING_REASON으로 정한다. 추천 변경에는 ROUTING_REASON이 필요하다. 계정 pin, 실행 중 모델과 기존 owner는 바꾸지 않는다. 후보 selector:auto로 발주한다. history와 교차검증 조언은 advisory다. task 원문은 Jev에 보내지 않는다.`,
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.
