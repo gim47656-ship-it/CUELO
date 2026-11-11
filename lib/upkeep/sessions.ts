@@ -75,8 +75,12 @@ export const REWRITE_CAUSE_LABELS: Record<RewriteCause, string> = {
 /** git_finalize가 기억 export에 실패했을 때 결과에 쓰는 문구(커밋은 진행된다). */
 const EXPORT_FAILURE = "기억 export 실패";
 
-/** OAuth 로그인으로만 쓰는 provider. 다른 provider는 기록의 `credentialKind`로 가린다(10-29부터 기록됨). */
-const SUBSCRIPTION_PROVIDERS: Record<string, true> = { "openai-codex": true, "google-antigravity": true };
+/**
+ * 로그인 계정으로만 쓰고 토큰당 청구가 없는 provider. 다른 provider는 기록의 `credentialKind`로 가린다(10-29부터 기록됨).
+ * `aistudio`는 Google 계정 로그인 상태로 AI Studio Playground를 부르는 로컬 AIStudio2API 중계기(`UPSTREAM_CHANNELS=playground`)라
+ * Google API 키 청구가 생기지 않는다(2026-11-12 확인, doc/history/2026/11/12-upkeep-draft-billing).
+ */
+const SUBSCRIPTION_PROVIDERS: Record<string, true> = { "openai-codex": true, "google-antigravity": true, aistudio: true };
 
 /** 한 기간(7일)의 집계. */
 export type WindowCounts = {
