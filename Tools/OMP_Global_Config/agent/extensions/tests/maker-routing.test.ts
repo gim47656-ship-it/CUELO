@@ -1967,6 +1967,36 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
     expect(main.route.normalAllocation).toEqual(maker.route.normalAllocation);
     expect(main.route.placement).toEqual(maker.route.placement);
   });
+  test("registered routing exposes Main-direct advice without changing dispatch or review contracts", async () => {
+    for (const [choice, action] of [["MAIN", "main-direct"], ["MAKER", "dispatch-new"], ["UNKNOWN", "main-decision"], ["invalid", "main-decision"]]) {
+      const h = harness({ delegation: choice, crossReviewNeed: "REQUIRED" });
+      const result = await h.tool.execute("small", { context: "Small known correction", tasks: [h.task] }, undefined, undefined, h.ctx);
+      const batch = JSON.parse(result.content[0]!.text);
+      expect(batch.routes[0]!.delegationAdvice.action).toBe(action);
+      expect(batch.routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
+      expect(batch.routes[0]!.crossReviewAdvice.choice).toBe("REQUIRED");
+      expect(await h.dispatch(`${DEEPSEEK}:auto`)).toBeUndefined();
+      expect(h.requests).toHaveLength(1);
+    }
+  });
+  test("owner continuation precedes Main-direct advice and failed rework model suggestions", async () => {
+    const h = harness({ delegation: "MAIN", additional: 1, ownerTarget: "owner0", reworkNature: "BOUNDED_FAILURE" });
+    h.setOwners([{ name: "Existing", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"], active: true }]);
+    const [route] = await h.prepare("Continue correction", [h.task], {} as never);
+    expect(route!.delegationAdvice.action).toBe("instruct-existing");
+    expect(route!.placement.owner?.name).toBe("Existing");
+    expect(route!.profile).toBe("NORMAL_SOL");
+    expect((await h.dispatch(`${DEEPSEEK}:auto`))?.block).toBe(true);
+  });
+  test("unresolved failure still returns to Main before owner continuation", async () => {
+    const h = harness({ delegation: "MAKER", additional: 1, ownerTarget: "owner0", reworkNature: "RETURN_TO_MAIN" });
+    h.setOwners([{ name: "Existing", primaryDeliverable: "표시 오류 수정", ownedPaths: ["src/view.ts"] }]);
+    const [route] = await h.prepare("Reconsider approach", [h.task], {} as never);
+    expect(route!.delegationAdvice.action).toBe("main-decision");
+    expect(route!.normalAllocation?.returnToMain).toBe(true);
+    expect(route!.profile).toBeNull();
+    expect((await h.dispatch(`${DEEPSEEK}:auto`, `${brief}\nROUTING_REASON: retry anyway`))?.block).toBe(true);
+  });
 });
 
 describe("발주 이력 기록과 history advisory", () => {

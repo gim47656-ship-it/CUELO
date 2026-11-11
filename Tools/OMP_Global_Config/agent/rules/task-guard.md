@@ -40,6 +40,7 @@ DONE_WHEN: <이 조각이 끝났다고 볼 조건 한 줄 — 권장>
 - `USER_REQUEST`는 선택 사항으로 계속 지원한다. 사용자 입력의 직접 인용을 남길 수 있지만, 추가 완료물을 받기 위한 필수 조건은 아니다. 발주가 사용자 요구에 맞는지 판단하는 책임은 Main에게 있다.
 - runtime hard budget은 사용자 입력당 `primary Maker 16`, `rework Maker 8`, `총 child 24`이다. `task.maxConcurrency:8`의 동시 실행 슬롯과 다른 누적 cap이다. 한도가 남았다는 이유로 불필요한 child를 만들거나 역할 별칭·side quest로 우회하지 않는다. `seance` 과거 세션 조회는 primary·rework 어느 쪽에도 들어가지 않고 `총 child` 한 자리만 쓴다.
 - Maker 수는 Main이 판단해 정한다. 한도는 천장이지 목표가 아니고 남은 자리는 발주 근거가 아니다. 위치와 수정 범위가 명확한 작은 작업은 Main 단독, 조사부터 구현까지 한 흐름인 작업은 Maker 1명, 서로 기다릴 필요가 없는 충분히 큰 조각이 여러 개면 동시 실행 상한까지 Maker를 병렬로 돌린다. 2명으로 좁히지 않는다. `task.maxConcurrency` = 8은 Maker 합산 child 슬롯 수이고 Main 레인은 여기에 포함되지 않는다. 같은 요청에서 두 번째 이후 primary Maker를 발주할 때는 각 child의 소유 경로가 겹치지 않는지, 서로의 산출물을 기다리지 않는지, 따로 실행해야 하는 이유가 무엇인지를 Main이 확인해 브리프에 적는다. `프론트/백엔드`처럼 범주가 다르다는 것만으로는 분리 근거가 아니다.
+- Main이 위치와 접근을 알고 직접 끝낼 작은 작업은 `maker_route` 없이 수행한다. 이미 준비했다면 `delegationAdvice`와 기존 담당자 배치를 먼저 확인한다. 같은 담당자의 국소 수정은 추가 지시로 이어가고, 새 발주는 실제 독립 범위나 근거를 갖춘 인계가 있을 때만 선택한다. 이 수행 주체 안내는 아래의 기존 발주 검사, 모델 후보, 필수 교차검토와 승인 경계를 바꾸지 않는다.
 - 각 새 발주·재발주 **직전** `maker_route`로 `routing.typedJudgmentRouting`의 `pre-dispatch`
   질문을 한 번에 판정한다. 동일 브리프에 수동 `judge()`를 중복 호출하지 않는다. 확률형 bool은
   `>= 0.5`일 때 true로 적용한다. 준비와 발주는 session-local `name`과 `TASK_GUARD` 의미 필드

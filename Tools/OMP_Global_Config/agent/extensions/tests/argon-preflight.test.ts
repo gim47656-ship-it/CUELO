@@ -117,6 +117,8 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
       await fire("message_start", { message: { role: "user", content: [{ type: "text", text }] } });
     },
     dispatch: (brief = "Generate the requested export.") => fire("tool_call", { toolName: "task", input: { tasks: [{ name: "Export", task: brief }] } }) as Promise<Dispatched>,
+    call: (toolName: string, input: unknown) => fire("tool_call", { toolName, input }) as Promise<Dispatched>,
+    steer: (text: string) => fire("message_start", { message: { role: "user", content: text } }),
     switchSession: () => fire("session_switch", {}),
     preflight: (params: { plan: string; question?: string }, signal?: AbortSignal) => tools.get("lab_preflight")!.execute("call", params, signal, undefined, ctx),
     messages, resolved, get notes() { return notes; },
@@ -571,33 +573,149 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
     expect(served).toEqual([GEMINI_ID, "gpt-reviewer"]);
   });
 
-  test("the mid-work direction check asks Gemini first and falls back once on its failure", async () => {
+  test("new user input waits for the current plan instead of checking the previous one", async () => {
     await withGemini(async () => {
-      const s = await mainSession([], "openai-codex/gpt-main");
-      await s.say(LATEST);
-      await s.dispatch();
-      served.length = 0;
-      behavior.set(GEMINI_ID, "quota");
-      await s.say("Change of plan: also add an Excel export.");
-      await until(() => s.messages.length > 0);
-      expect(served).toEqual([GEMINI_ID, "claude-reviewer"]);
-      expect(s.messages[0]).toContain("anthropic/claude-reviewer");
-      expect(s.messages[0]).toContain("대체");
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export", what: "CSV", path: "out.csv", check: "Read CSV" }] };
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      await s.call("lab_goal", frame);
+      await s.say("Change the export to Excel only.");
+      expect((await s.call("lab_goal", { ...frame, goal: "Export Excel only" }))?.block).toBe(true);
+      expect(served).toEqual([GEMINI_ID, GEMINI_ID]);
+      expect(s.messages).toEqual([]);
+      expect(prompts[1]).toContain("Export Excel only");
+      await s.steer("Only include the active worksheet.");
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      expect(served).toHaveLength(3);
     });
   });
 
-  test("a mid-work direction check made stale while Gemini is failing asks no counterpart", async () => {
+  test("one correction survives elapsed time, is remembered, then a changed plan is checked", async () => {
     await withGemini(async () => {
-      const s = await mainSession([], "openai-codex/gpt-main");
-      await s.say(LATEST);
-      await s.dispatch();
-      served.length = 0;
-      behavior.set(GEMINI_ID, "quota");
-      onRequest.set(GEMINI_ID, () => void s.say("stop"));
-      await s.say("Change of plan: also add an Excel export.");
-      await until(() => s.notes.some((line) => line.includes("방향 전환 점검 버림") && line.includes("낡아 대체하지 않았다")));
-      expect(served).toEqual([GEMINI_ID]);
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", assumptions: ["CSV"], deliverables: [{ id: "export", path: "out.csv" }] };
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 21 * 60_000);
+      try {
+        const corrected = { ...frame, assumptions: ["CSV with header"] };
+        expect((await s.call("lab_goal", corrected))?.block).toBeUndefined();
+        expect((await s.call("lab_goal", corrected))?.block).toBeUndefined();
+        expect(served).toHaveLength(1);
+        expect((await s.call("lab_goal", { ...corrected, assumptions: ["CSV without header"] }))?.block).toBe(true);
+        expect(served).toHaveLength(2);
+      } finally { clock.mockRestore(); }
+    });
+  });
+
+  test("unrelated goals and tools cannot spend another plan's correction", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      await s.call("lab_goal", frame);
+      expect((await s.dispatch())?.block).toBe(true);
+      expect((await s.call("lab_goal", { ...frame, goal: "Delete export", deliverables: [{ id: "delete" }] }))?.block).toBe(true);
+      expect(served).toHaveLength(3);
+    });
+  });
+
+  test("an unchanged retry consumes the correction and a path change is checked", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export", path: "out.csv" }] };
+      await s.call("lab_goal", frame);
+      await s.call("lab_goal", frame);
+      expect((await s.call("lab_goal", { ...frame, deliverables: [{ id: "export", path: "other.csv" }] }))?.block).toBe(true);
+      expect(served).toHaveLength(2);
+      await s.call("lab_goal", { ...frame, size: "small" });
+      expect((await s.call("lab_goal", { ...frame, assumptions: ["Changed after small task"] }))?.block).toBe(true);
+      expect(served).toHaveLength(3);
+    });
+  });
+
+  test("a newer plan wins over a delayed earlier check", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      behavior.set(GEMINI_ID, { delayMs: 100 });
+      const first = s.call("lab_goal", { op: "frame", goal: "Export", assumptions: ["Old"], deliverables: [{ id: "export" }] });
+      await until(() => served.length === 1);
+      behavior.delete(GEMINI_ID);
+      const current = { op: "frame", goal: "Export", assumptions: ["Current"], deliverables: [{ id: "export" }] };
+      expect((await s.call("lab_goal", current))?.block).toBe(true);
+      expect((await first)?.block).toBe(true);
+      expect((await s.call("lab_goal", current))?.block).toBeUndefined();
+      expect(served).toHaveLength(2);
+    });
+  });
+
+  test("prepared dispatch reuses its corrected full brief but a new ownership contract is checked", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const body = "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: CSV export\nOWNED_PATHS: src/export.ts\n# Change\nWrite CSV.";
+      const input = { context: "Export only", tasks: [{ name: "Export", task: body }] };
+      expect((await s.call("maker_route", input))?.block).toBe(true);
+      const corrected = { ...input, tasks: [{ name: "Export", task: `${body}\nKeep headers.` }] };
+      expect((await s.call("maker_route", corrected))?.block).toBeUndefined();
+      expect((await s.call("task", corrected))?.block).toBeUndefined();
+      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: "PREPARED_TASK: b1.1" }] }))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
+      const changed = { ...input, tasks: [{ name: "Export", task: body.replace("src/export.ts", "src/other.ts") }] };
+      expect((await s.call("maker_route", changed))?.block).toBe(true);
+      expect(served).toHaveLength(2);
+    });
+  });
+
+  test("interleaved goals and dispatches each retain one correction", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      const task = { tasks: [{ name: "Export", task: "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: Export\nOWNED_PATHS: src/export.ts\n# Change\nWrite CSV." }] };
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      expect((await s.call("maker_route", task))?.block).toBe(true);
+      const corrected = { ...frame, assumptions: ["Keep headers"] };
+      expect((await s.call("lab_goal", corrected))?.block).toBeUndefined();
+      expect((await s.call("maker_route", task))?.block).toBeUndefined();
+      expect((await s.call("lab_goal", corrected))?.block).toBeUndefined();
+      expect(served).toHaveLength(2);
+    });
+  });
+
+  test("new user steering holds an in-flight successful check without granting a retry", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      behavior.set(GEMINI_ID, { delayMs: 100 });
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      const pending = s.call("lab_goal", frame);
+      await until(() => served.length === 1);
+      await s.steer("Only export Excel, not CSV.");
+      expect((await pending)?.block).toBe(true);
+      behavior.delete(GEMINI_ID);
+      expect((await s.call("lab_goal", frame))?.block).toBe(true);
+      expect(served).toHaveLength(2);
       expect(s.messages).toEqual([]);
+    });
+  });
+
+  test("simultaneous identical checks share one provider request", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      behavior.set(GEMINI_ID, { delayMs: 100 });
+      const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
+      const results = await Promise.all([s.call("lab_goal", frame), s.call("lab_goal", frame)]);
+      expect(results.map((result) => result?.block)).toEqual([true, true]);
+      expect(served).toHaveLength(1);
+      expect((await s.call("lab_goal", frame))?.block).toBeUndefined();
+    });
+  });
+
+  test("exact unkeyed dispatch content is reused across preparation and dispatch", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const input = { context: "Export", tasks: [{ name: "Export", task: "Write CSV." }] };
+      expect((await s.call("maker_route", input))?.block).toBe(true);
+      expect((await s.call("task", input))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
+      expect((await s.call("task", { ...input, context: "Write Excel instead" }))?.block).toBe(true);
+      expect(served).toHaveLength(2);
     });
   });
 });

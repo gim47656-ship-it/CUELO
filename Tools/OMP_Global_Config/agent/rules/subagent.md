@@ -58,6 +58,8 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   Main의 프론티어는 `modelRoles.default`의 GPT-6 Astra다(2026-11-11 사용자 결정으로 Main과 YUKI를 롤백). 사용자가 명시한 세션 모델·alias 선택과 실행 중인 Main·child는 사용자 지시 없이 바꾸지 않는다.
   Anthropic 계정의 하루 몫 소진은 Maker 추천과 발주를 바꾸지 않는다. 어려운 UI는 계정 상태와 무관하게 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천하고, Main이 명시한 Anthropic Maker 후보도 하루 몫 때문에 추가 근거를 요구하거나 대체되지 않는다(2026-11-11 사용자 정정: 메이커는 동작해야 한다). 모델을 명시하지 않은 새 최상위 CUELO 세션만 하루 몫 예외를 쓰며, 모든 활성 Anthropic 계정을 관측했고 각각 기존 규칙상 사용 불가이거나 기본 모델이 쓰는 주간 구간의 `daySlot.usedPct >= daySlot.quotaPct`이면 YUKI selector로 시작하고 짧은 안내를 남긴다(기본이 Fable이면 공유 구간이 아니라 `anthropic:7d:fable` 구간을 본다, 2026-11-10). 유한 수치가 없거나 unknown인 계정은 소진으로 보지 않는다. runtime credential 목록을 알면 모두 관측되어야 하고 모르면 서로 다른 계정을 최소 둘 관측해야 한다. 조회는 2초 이내로 제한하며 실패하면 일반 시작을 유지한다. 실행 중, 재개, fork, child와 명시 모델 선택은 바꾸지 않는다.
   Main은 설계·원인·상태 소유자·호출 계약·수용 조건을 구현 가능한 범위로 먼저 정리한다(모든 줄을 미리 풀지는 않는다). Maker는 국소 탐색·구현·검증을 맡는다.
+  수행 주체를 모델보다 먼저 정한다. 위치와 접근이 명확하고 위임의 실질적 이득이 없는 작은 작업은 Main이 직접 구현하고 검증한다. 이를 확인하려고 `maker_route`를 부르지 않는다. 기존 담당자의 국소 수정은 그 담당자와 모델을 유지하며, 아래 모델 추천은 근거를 갖춘 새 발주에만 적용한다.
+  한정된 실패 재작업을 다른 담당자에게 넘길 때는 Main이 실패 근거와 바뀐 접근을 정하고, 기존 담당자가 쓰기를 멈춘 뒤 미완 변경과 유효한 검증 결과를 인계한다. 동일 범위의 추가 지시나 통상적 검증 보정만으로 새 작업자를 만들지 않는다. 원인이 해소되지 않은 반복 실패는 기존 Main 반환 기준을 따른다.
   `maker_route`는 Jev 판단으로 다음을 추천한다. 우선순위는 반복 실패 → 큰 교차 경계 재설계 → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 보통 UI → 일반 구현이다.
   - 방향이 정해진 구현은 상태 복잡도, NORMAL·HARD 등급과 상관없이 DeepSeek(`NORMAL_DEEPSEEK`, HARD면 `HARD_CODE_DEEPSEEK`)를 추천한다(남은 UI 판단이 있는 보통 UI는 아래 Sonnet이다). 준비된 복잡한 상태 구현과 테스트·반복 수정도 포함한다. DeepSeek 후보가 없거나 관측 소진이면 Sonnet 등으로 자동 대체하지 않는다(2026-11-08 사용자 결정). 추천 없이(`profile: null`) "Main이 다시 판단" 사유만 돌려주며 발주는 막지 않는다. 구조 재설계가 아니라 가용성 사안이므로 Main이 한도를 확인한 뒤 다른 후보를 `ROUTING_REASON` 한 줄과 함께 직접 지정할 수 있다. 크기와 위험은 별개이고 HARD라는 이름만으로 Main에 돌려보내지 않는다. 요청 중 오류 폴백도 같다: 기본 Maker의 `retry.fallbackChains` exact 키는 빈 체인이라 Sonnet으로 자동 대체하지 않는다(Sonnet에서 DeepSeek로의 체인은 그대로).
   - 어려운 UI/UX(`uiDifficulty`가 `DIFFICULT`)는 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천한다(2026-11-10 사용자 결정: 「아니다 오퍼스 5.5 로 가자...」). Opus 후보가 없거나 관측 소진이면 Sonnet·Sol로 자동 대체하지 않고 추천 없이 Main이 다시 판단한다. `uiUxBoundary`는 남은 UI 판단의 존재일 뿐 어려움이 아니다.
@@ -107,12 +109,10 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   이 도구가 정본 criteria의 작업 분류·중심 난제·UI/UX 경계·중복 여부·`ownerTarget`과
   **위임 판단**(`routing.modelSelection.delegationCriteria`)을 한 번에 묻는다. 위임 판단은
   facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 적힌 사실만으로 답하고
-  등급·난이도·모델 강도와 독립이다: 작고 밀접한 조각에서 인계·설명·검수
-  부담이 절약보다 크거나 Main이 이미 문맥을 가진 경우가 MAIN, 실제 독립 완결·병렬 이득이나 구체적
-  전문성·문맥 격리 이득이 MAKER, 근거가 부족하면 UNKNOWN이다. 이 답은 `maker_route` 결과에 싣지 않고 발주 원장
-  dispatch 행의 `delegationAdvice`에만 남긴다(2026-10-30 사용자 결정: 68건 중 MAIN 60, 그중 52건이 그대로 발주돼 Main 판단을
-  바꾸지 못했다). 위임 여부는 Main이 AGENTS의 위임 기준으로 정하고 최종 selector를 결정한다. 같은 브리프에 별도 `judge()`를
-  호출하지 않는다. `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 생략 시 lock을 상속하며 첫 발주는 feature와 TASK_TITLE(없으면 task name)으로 채운다. 추천 변경·Jev 불가·
+  등급, 난이도, 모델 강도와 독립이다. 위치와 접근이 명확한 작은 작업에서 인계 부담보다 전문성, 병렬 처리나 문맥 분리의 이득이 없으면 MAIN이고, 독립 조각에서 그 이득이 있으면 MAKER다. 근거가 부족하면 UNKNOWN이다.
+  결과의 `routes[].delegationAdvice`는 판단과 이유, 다음 행동을 Main에게 보여 준다. Main은 먼저 기존 담당자의 이어가기와 Main 반환 조건을 확인하고, 그 밖의 MAIN은 직접 처리한다. UNKNOWN은 현재 근거로 판단하며 같은 질문을 다시 보내거나 더 비싼 모델을 고르는 근거로 쓰지 않는다.
+  원장의 `delegationAdvice`는 그대로 남고, 이 안내는 새 발주 차단이나 모델 자동 변경이 아니다. 현재 후보, 필수 교차검토, 소유권과 승인 경계는 유지한다. 같은 브리프에 별도 `judge()`를 호출하지 않는다.
+  `WORK_CLASS`와 `PRIMARY_DELIVERABLE`은 생략 시 lock을 상속하며 첫 발주는 feature와 TASK_TITLE(없으면 task name)으로 채운다. 추천 변경과 Jev 불가,
   중복 판정과 사실의 모순만 `TASK_GUARD`의 `ROUTING_REASON` 한 줄로 설명한다. task hook은 준비와
   발주를 session-local `name`과 `TASK_GUARD` 의미 필드(`WORK_CLASS`·`PRIMARY_DELIVERABLE`·
   `OWNED_PATHS`·`FINDING_ID`)로 연결하고 정본 기준·후보·owner revision을 확인한다 — 산문·`context`

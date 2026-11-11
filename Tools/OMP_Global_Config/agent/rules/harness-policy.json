@@ -510,7 +510,7 @@
     },
     "reworkRouting": {
       "findingIsNotAuthority": "evidence-to-adjudicate-not-a-new-permission-or-implementation-order",
-      "assignment": "main-adjudicates-evidence-before-rework-and-directly-finishes-small-settled-deltas-after-explicit-owner-handoff-otherwise-routes-one-batched-evidenced-delta-to-the-implementer",
+      "assignment": "main-adjudicates-evidence-before-rework-owner-placement-precedes-conditional-model-selection-local-correction-continues-with-the-existing-owner-and-running-model-main-directly-finishes-small-settled-deltas-only-after-explicit-owner-handoff-with-the-mainTakeover-exclusions-preserved-a-new-maker-attempt-requires-new-evidence-and-an-explicit-handoff-of-unfinished-delta-and-valid-checks-then-uses-the-unchanged-model-allocation-criteria",
       "evidenceRequired": "a-user-observed-failure-or-reproduction-or-raw-diff-contract-contradiction-with-an-exact-locator-is-required-hypotheses-and-style-preferences-alone-are-not-rework-orders-and-a-failure-found-by-a-main-common-check-routes-to-the-implementing-maker-with-the-exact-failed-command-and-its-raw-locator-while-an-environment-or-tooling-failure-is-never-counted-as-implementation-quality-rework",
       "mainTakeover": {
         "eligible": "a-small-settled-residual-delta-whose-cause-and-fix-main-confirmed-in-review-and-whose-contract-does-not-change-and-which-needs-no-further-investigation",
@@ -1007,9 +1007,9 @@
         "HARD": "observed-evidence-identifies-an-unresolved-conflict-between-competing-explanations-or-coupled-state-concurrency-cross-module-invariants-or-user-flow-constraints-and-a-locally-plausible-fix-can-break-another-required-contract-name-the-conflict-and-the-affected-contract-a-conflict-does-not-have-to-be-reproduced-or-fully-specified-before-dispatch-and-the-slice-is-HARD-when-a-new-algorithm-protocol-state-rule-or-coupled-invariant-design-or-non-local-reasoning-that-must-satisfy-several-contracts-at-once-is-left-to-the-implementer-even-though-the-goal-tests-and-main-direction-are-set-main-direction-selection-is-not-a-settled-implementation-solution-not-hypothetical-complexity-file-count-risk-tool-calls-or-failure-rate-a-slice-that-authors-a-new-specification-its-reference-implementation-and-a-large-hidden-test-set-together-is-HARD-regardless-of-file-count"
       },
       "delegationCriteria": {
-        "MAIN": "a-small-close-slice-where-handing-off-explanation-review-and-rework-costs-more-than-it-saves-or-where-main-already-holds-the-context",
-        "MAKER": "a-truly-self-contained-slice-where-parallel-execution-pays-or-a-concrete-specialist-judgment-or-context-isolation-benefit-exists-no-numeric-estimate-required",
-        "UNKNOWN": "insufficient-facts-to-decide-the-performing-owner"
+        "MAIN": "a-small-close-slice-with-known-location-and-approach-that-main-can-finish-with-existing-context-and-where-handoff-explanation-review-and-rework-outweigh-any-concrete-parallel-specialist-or-context-isolation-benefit-no-file-count-or-risk-threshold-and-no-extra-maker_route-call-to-confirm-an-obvious-main-direct-choice",
+        "MAKER": "a-truly-self-contained-slice-where-parallel-execution-pays-or-a-concrete-specialist-judgment-or-context-isolation-benefit-exists-owner-continuation-is-decided-before-a-new-dispatch-no-numeric-estimate-required",
+        "UNKNOWN": "insufficient-facts-to-decide-the-performing-owner-main-decides-from-current-evidence-not-an-extra-judge-round-or-an-automatic-more-expensive-model"
       },
       "crossReviewNeedCriteria": {
         "REQUIRED": "the-facts-say-the-slice-changes-executable-code-or-config-that-terminates-processes-deletes-files-or-records-runs-destructive-sql-deploys-releases-or-migrates-handles-credentials-or-auth-changes-encoding-talks-to-devices-defines-a-verdict-or-threshold-or-breaks-a-compatibility-contract",

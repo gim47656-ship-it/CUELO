@@ -3,8 +3,8 @@
  *
  * Before Main's first `task` dispatch or a non-small `lab_goal` frame, this hook holds the call once, asks a model
  * what the plan misses against the user's recent words, and returns the advice as the block reason. Main folds in
- * what holds and calls again; that next call passes. When the user steers mid-work, the same question runs in the
- * background and arrives as an aside; the next dispatch is checked again.
+ * what holds and calls again within the same work identity; that correction passes once. New user input only
+ * invalidates the remembered check. The next current plan is checked instead of asking about the previous plan.
  *
  * Who is asked (2026-11-08 user decision, restoring the Gemini-first meaning): the PC's own Gemini role
  * `modelRoles.implGemini` first, resolved locally so the AI Studio or Vertex assignment stays PC-specific. A Gemini
@@ -20,6 +20,7 @@ import type { Api, AssistantMessage, Model, isUsageLimitOutcome } from "@oh-my-p
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { authorFamily, reviewerLanes, SLOT as REVIEW_SLOT, type Lane } from "../../extensions/lib/cross-review";
 import { sameModelRoutes } from "../../extensions/lib/model-routes";
+import { extractGuardBlock, readGuardField } from "../../extensions/command-guard/task-guard";
 
 // The core bounds every tool_call handler (`extensionHandlers.toolCallTimeoutMs`, default 30 s) and blocks the tool
 // when it runs out, so the blocking question gives up first and lets the call through (2026-11-07 live test: a 39 s
@@ -29,12 +30,9 @@ const BLOCK_TIMEOUT_MS = 25_000;
 const ASYNC_TIMEOUT_MS = 120_000;
 /** The model asked first: the PC's own Gemini assignment (AI Studio or Vertex Argon), not a fixed provider. */
 const PRIMARY_ROLE = "implGemini";
-const ALLOW_WINDOW_MS = 20 * 60_000;
-const ACTIVE_WINDOW_MS = 6 * 60 * 60_000;
 const MAX_PLAN = 24_000;
 const MAX_USER = 6_000;
 const WIDGET = "lab:argon-preflight";
-const CUSTOM_TYPE = "argon-preflight";
 
 const SECRET = /(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{30,}|xox[abp]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:password|passwd|api[_-]?key|secret)\s*[:=]\s*\S{8,})/i;
 
@@ -122,9 +120,27 @@ function frameOf(input: unknown): string | undefined {
   if (Array.isArray(input.explicit) && input.explicit.length) lines.push(`사용자 조건: ${input.explicit.join(" / ")}`);
   if (Array.isArray(input.assumptions) && input.assumptions.length) lines.push(`Main의 가정: ${input.assumptions.join(" / ")}`);
   if (Array.isArray(input.deliverables)) {
-    for (const d of input.deliverables) if (record(d)) lines.push(`산출물 ${String(d.id ?? "")}: ${String(d.what ?? "")} (확인: ${String(d.check ?? "")})`);
+    for (const d of input.deliverables) if (record(d)) lines.push(`산출물 ${String(d.id ?? "")}: ${String(d.what ?? "")} (경로: ${String(d.path ?? "")}; 확인: ${String(d.check ?? "")})`);
   }
   return lines.length ? `# 작업 목표\n${lines.join("\n")}` : undefined;
+}
+
+/** One correction belongs to a tool and its work identity, not to every plan sent during a time window. */
+function correctionIdentity(name: string, input: unknown): string | undefined {
+  if (!record(input)) return undefined;
+  if (name === "lab_goal") {
+    if (typeof input.goal !== "string" || !input.goal.trim() || !Array.isArray(input.deliverables) || !input.deliverables.length) return undefined;
+    const targets = input.deliverables.map((d) => record(d) && typeof d.id === "string" && d.id.trim() ? [d.id, d.path ?? ""] : null);
+    return targets.every(Boolean) ? JSON.stringify([name, input.goal, targets]) : undefined;
+  }
+  if (!Array.isArray(input.tasks) || !input.tasks.length) return undefined;
+  const contracts = input.tasks.map((task) => {
+    if (!record(task) || typeof task.name !== "string" || !task.name.trim() || typeof task.task !== "string") return null;
+    const guard = extractGuardBlock(task.task);
+    if (!guard || !readGuardField(guard.block, "OWNED_PATHS")) return null;
+    return [task.name, ...["WORK_CLASS", "PRIMARY_DELIVERABLE", "OWNED_PATHS", "FINDING_ID"].map((field) => readGuardField(guard.block, field) ?? "")];
+  });
+  return contracts.every(Boolean) ? JSON.stringify(["dispatch", contracts]) : undefined;
 }
 
 function messageText(message: unknown): string {
@@ -139,17 +155,22 @@ export default function argonPreflight(pi: ExtensionAPI): void {
   const z = pi.zod;
   let main = true;
   let userTurns: string[] = [];
-  let allowUntil = 0;
-  let lastPlan = "";
-  let lastPlanAt = 0;
+  type Check = {
+    plan: string;
+    tool: string;
+    checked: boolean;
+    correctionTool?: string;
+    pending?: Promise<{ block: true; reason: string } | undefined>;
+  };
+  const checks = new Map<string, Check>();
+  let lastInputText = "";
   let history: string[] = [];
-  let checkedPlan = ""; // last brief the model already advised on; cleared by a new user message
   /** Bumped by every new user message and session change: a check started before it never grants a pass or speaks. */
   let gen = 0;
   /** Bumped only by a session change: a foreground check that started in the previous session leaves no trace. */
   let session = 0;
 
-  const reset = () => { userTurns = []; allowUntil = 0; lastPlan = ""; lastPlanAt = 0; history = []; checkedPlan = ""; gen += 1; session += 1; };
+  const reset = () => { userTurns = []; checks.clear(); lastInputText = ""; history = []; gen += 1; session += 1; };
 
   const note = (ctx: ExtensionContext, line: string) => {
     const stamp = new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -296,90 +317,95 @@ export default function argonPreflight(pi: ExtensionAPI): void {
 
   // CUELO delivers a message sent mid-run (steering) without an `input` event, so a user message whose text is not the
   // last `input` text is treated as steering here; the prompt's own message_start is skipped.
-  let lastInputText = "";
   const squash = (text: string) => text.replace(/\s+/g, "");
 
-  pi.on("message_start", (event, ctx) => {
+  pi.on("message_start", (event) => {
     const message = event.message as unknown as Record<string, unknown>;
     if (message?.role !== "user" || message.synthetic === true || message.attribution === "agent") return;
     const text = messageText(message).trim();
     if (lastInputText && squash(text) === lastInputText) { lastInputText = ""; return; }
-    redirect(text, ctx);
+    redirect(text);
   });
 
-  pi.on("input", (event, ctx) => {
+  pi.on("input", (event) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
     const text = String(event.text ?? "").trim();
     lastInputText = squash(text);
-    redirect(text, ctx);
+    redirect(text);
   });
 
-  function redirect(text: string, ctx: ExtensionContext) {
+  function redirect(text: string) {
     rememberUser(text);
-    if (!main) return;
-    // A new user message invalidates the pass granted after the last advice: the next dispatch is checked again.
-    allowUntil = 0; checkedPlan = "";
-    const myGen = ++gen;
-    if (!lastPlan || Date.now() - lastPlanAt > ACTIVE_WINDOW_MS || text.length < 6 || text.startsWith("/") || text.startsWith("[하네스 통지]") || SECRET.test(text)) return;
-    const plan = lastPlan;
-    void (async () => {
-      try {
-        if (myGen !== gen) return;
-        note(ctx, `방향 전환 감지: 비동기로 묻는 중 — ${clip(text, 60)}`);
-        const advice = await ask(ctx, plan, `# 방금 들어온 사용자의 새 지시\n${text}\n\n이 새 지시 때문에 위 계획에서 다시 세워야 할 발주·순서나 새로 빠진 것이 있는지만 답하라.`, ASYNC_TIMEOUT_MS, { live: () => myGen === gen && main });
-        // A newer user message or a session change since this question started makes the answer stale; a failed one says why it was dropped.
-        if (myGen !== gen || !main) { if (!advice.ok) note(ctx, `방향 전환 점검 버림: ${advice.why}`); return; }
-        if (!advice.ok) { note(ctx, `방향 전환 점검 건너뜀: ${advice.why}`); return; }
-        note(ctx, `방향 전환 조언(${(advice.ms / 1000).toFixed(1)}초, ${advice.model}):\n${advice.text}`);
-        pi.sendMessage({
-          customType: CUSTOM_TYPE,
-          content: `[사전 점검: 방향 전환] 사용자의 새 지시를 지금 계획에 대 본 ${advice.model}의 조언이다(${(advice.ms / 1000).toFixed(1)}초). 참고 의견이며 승인이나 사용자 지시가 아니다. 맞는 것은 진행 중인 Maker 지시나 다음 발주에 반영하고, 반영한 것과 버린 것을 사용자에게 한 줄로 알린다.${advice.fallback ? `\n${fallbackLine(advice)}` : ""}\n\n${advice.text}`,
-          display: false, attribution: "agent",
-        }, { deliverAs: "aside" });
-      } catch { /* background advice is best effort */ }
-    })();
+    checks.clear();
+    gen += 1;
   }
 
   pi.on("tool_call", async (event, ctx) => {
     if (!main) return;
     const name = event.toolName as string;
+    const input: unknown = event.input;
     let plan: string | undefined;
     let what = "";
-    if (name === "task" || name === "maker_route") { plan = briefOf(event.input); what = "발주"; }
-    else if (name === "lab_goal") { plan = frameOf(event.input); what = "작업 목표"; }
+    if (name === "task" || name === "maker_route") { plan = briefOf(input); what = "발주"; }
+    else if (name === "lab_goal") { plan = frameOf(input); what = "작업 목표"; }
     const mySession = session;
-    if (!plan) return;
-    // A full brief already checked passes when it is sent again unchanged, until a new user message clears it.
-    if (plan === checkedPlan) { note(ctx, `${what} 통과(이미 점검한 브리프)`); return; }
-    if (Date.now() < allowUntil) {
-      allowUntil = 0;
-      lastPlan = plan; lastPlanAt = Date.now();
-      note(ctx, `${what} 통과(조언 반영 뒤 재호출)`);
+    if (!plan) {
+      if (name === "lab_goal" && record(input) && input.op === "frame") {
+        for (const [key, check] of checks) if (check.tool === "lab_goal") checks.delete(key);
+      }
       return;
     }
-    note(ctx, `${what} 점검 중: 묻는 중`);
+    const identity = correctionIdentity(name, input);
+    const key = identity ?? JSON.stringify([name === "lab_goal" ? "lab_goal" : "dispatch", plan]);
+    const previous = checks.get(key);
+    if (previous?.checked && previous.plan === plan) {
+      previous.correctionTool = undefined;
+      note(ctx, `${what} 통과(이미 점검한 계획)`);
+      return;
+    }
+    if (identity && previous?.correctionTool === name) {
+      checks.set(key, { plan, tool: name, checked: true });
+      note(ctx, `${what} 통과(같은 작업의 조언 반영 뒤 재호출)`);
+      return;
+    }
+    if (previous?.plan === plan && previous.pending) return previous.pending;
+    const check: Check = { plan, tool: name, checked: false };
+    checks.set(key, check);
     const myGen = gen;
-    const advice = await ask(ctx, plan, "", BLOCK_TIMEOUT_MS, { live: () => mySession === session && myGen === gen });
-    if (mySession !== session) return;
-    // A user message that arrived while asking makes this advice older than the user's latest words: it may still
-    // be shown, but it grants no pass, so the next call is checked again.
-    const current = myGen === gen;
-    lastPlan = plan; lastPlanAt = Date.now();
-    if (current) checkedPlan = plan;
-    if (!advice.ok) { note(ctx, `${what} 점검 건너뜀(통과): ${advice.why}`); return; }
-    note(ctx, `${what} 조언(${(advice.ms / 1000).toFixed(1)}초, ${advice.model}):\n${advice.text}`);
-    if (/^\s*빠진 것 없음\s*\.?\s*$/.test(advice.text)) { note(ctx, `${what} 통과(빠진 것 없음)`); return; }
-    if (current) allowUntil = Date.now() + ALLOW_WINDOW_MS;
-    return {
-      block: true,
-      reason: [
-        `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.model}(${(advice.ms / 1000).toFixed(1)}초)이 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
-        ...(advice.fallback ? [fallbackLine(advice)] : []),
-        `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 다시 부르면 통과한다. 사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.`,
-        "",
-        advice.text,
-      ].join("\n"),
-    };
+    const current = () => mySession === session && myGen === gen && checks.get(key) === check;
+    note(ctx, `${what} 점검 중: 묻는 중`);
+    check.pending = (async (): Promise<{ block: true; reason: string } | undefined> => {
+      const advice = await ask(ctx, plan, "", BLOCK_TIMEOUT_MS, { live: current });
+      if (mySession !== session) return;
+      if (!current()) {
+        // Keep fail-open for a failed check, but never execute a successfully checked plan superseded by steering.
+        if (!advice.ok) return;
+        return { block: true, reason: "[사전 점검] 점검 중 사용자 지시나 같은 작업의 계획이 바뀌었다. 최신 지시에 맞는 현재 계획으로 다시 호출하라. 이전 답으로 재호출을 허용하지 않는다." };
+      }
+      check.checked = true;
+      if (!advice.ok) { note(ctx, `${what} 점검 건너뜀(통과): ${advice.why}`); return; }
+      note(ctx, `${what} 조언(${(advice.ms / 1000).toFixed(1)}초, ${advice.model}):\n${advice.text}`);
+      if (/^\s*빠진 것 없음\s*\.?\s*$/.test(advice.text)) { note(ctx, `${what} 통과(빠진 것 없음)`); return; }
+      if (identity) check.correctionTool = name;
+      return {
+        block: true,
+        reason: [
+          `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.model}(${(advice.ms / 1000).toFixed(1)}초)이 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
+          ...(advice.fallback ? [fallbackLine(advice)] : []),
+          identity
+            ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 같은 목표와 작업 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다.`
+            : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
+          "사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.",
+          "",
+          advice.text,
+        ].join("\n"),
+      };
+    })();
+    try {
+      return await check.pending;
+    } finally {
+      check.pending = undefined;
+    }
   });
 
   pi.registerTool({

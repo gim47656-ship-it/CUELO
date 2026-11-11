@@ -250,6 +250,35 @@ export function crossReviewAdviceOf(answers: Record<string, RoutingAnswer> | nul
   }
   return { choice, reason: criteria[choice]!, nextAction: CROSS_REVIEW_NEXT[choice]!, ...(choice === "UNKNOWN" ? { missingEvidence: CROSS_REVIEW_MISSING } : {}) };
 }
+
+/** Owner advice is read before the conditional model recommendation; it never changes admission. */
+function delegationAdviceOf(
+  answers: Record<string, RoutingAnswer> | null,
+  placement: RoutingPlacement,
+  returnReason: string | null,
+  criteria: Record<string, string>,
+) {
+  const value = answers?.delegation?.choice;
+  const choice = value === "MAIN" || value === "MAKER" ? value : "UNKNOWN";
+  if (returnReason) return {
+    choice, action: "main-decision", reason: returnReason,
+    nextAction: "Main이 실패 근거와 접근을 다시 정합니다. 기존 담당자에게 같은 실패를 반복시키거나 새 후보로 우회하지 않습니다.",
+  };
+  if (placement.owner && (placement.action === "instruct-existing" || placement.action === "retarget-existing")) return {
+    choice, action: placement.action, reason: "이 범위를 맡은 기존 담당자가 식별됐습니다.",
+    nextAction: `기존 담당자 ${placement.owner.name ?? ""}에게 이어서 지시합니다. 국소 수정은 현재 모델을 유지하고, 실제 이관은 변경과 검증 근거를 보존해 소유권을 넘긴 뒤 결정합니다.`,
+  };
+  if (choice === "UNKNOWN" || placement.action === "main-decision") return {
+    choice, action: "main-decision", reason: criteria.UNKNOWN,
+    nextAction: "Main이 현재 근거로 수행 주체를 정합니다. 모름만으로 다시 묻거나 새 작업자나 더 비싼 모델을 고르지 않습니다.",
+  };
+  return {
+    choice, action: choice === "MAIN" ? "main-direct" : "dispatch-new", reason: criteria[choice],
+    nextAction: choice === "MAIN"
+      ? "Main이 직접 구현하고 필요한 검증을 마칩니다. 작은 일을 확인하려고 다시 maker_route를 부르지 않습니다."
+      : "독립적으로 끝낼 범위를 새 Maker에게 맡길 때만 아래 모델 추천을 적용합니다.",
+  };
+}
 function placementQuestions(owners: Owner[]) {
   if (owners.length === 0) return {};
   return {
@@ -1054,8 +1083,9 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         candidates,
         unavailableCandidates,
         quota,
-        instruction: INSTRUCTION,
+        instruction: `먼저 routes[].delegationAdvice와 placement로 수행 주체를 정합니다. 명백한 작은 직접 작업은 maker_route 없이 Main이 끝내고, 이미 준비했다면 main-direct 조언을 따릅니다. 기존 담당자의 국소 수정은 새 발주 없이 그 담당자가 이어갑니다. 아래 모델 추천은 실제 새 발주를 선택한 경우에만 적용하며 이 조언은 새 차단 조건이 아닙니다. ${INSTRUCTION}`,
         routes: publications.map((publication, index) => ({
+          delegationAdvice: delegationAdviceOf(publication.prepared.answers, publication.route.placement, publication.prepared.returnToMain, current.modelSelection.delegationCriteria),
           ...publication.route,
           profile: publication.prepared.profile,
           normalAllocation: publication.route.normalAllocation,
