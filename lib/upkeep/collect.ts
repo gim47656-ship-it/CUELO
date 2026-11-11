@@ -148,7 +148,9 @@ function shortModel(selector: string): string {
  * Maker 원장 지표 둘. 조기 종료는 `partial`로 끝난 결과를 모델별로 센다(HANDOFF 「기본 Maker 관찰」).
  * `partial`은 원장에 남지 않아 부모 세션의 결과 알림(`async-result`)에서 읽는다. 짧게 끝난 정상 결과
  * (읽기 전용 일괄 작업 등)가 많아 경과 시간은 판정에 쓰지 않는다. 모델은 원장 발주 행의 chosenModel이며
- * assignmentId는 `<세션>#<호출>#<순번>` 꼴이다. 판정 비율은 시도(attemptId)마다 마지막 판정만 세어 rework·held의 몫을 본다.
+ * assignmentId는 `<세션>#<호출>#<순번>` 꼴이다. 판정 비율은 시도(attemptId)마다 마지막 판정만 세어 rework의 몫을 본다.
+ * held는 검증을 마치지 못한 판정이라 분자와 분모, 표본 수에서 모두 뺀다(2026-11-11 사용자 결정: 11-11 held 5건이
+ * 모두 재시작·실패한 업데이트·지시 변경·소유 중복이었다). 발주 추천 통계(routing-ledger의 `decided`)와 같은 분모다.
  * `period`는 최근 7일 안에서 셀 시각(고침 표시 전·후)과 메모에 적을 그 기간 이름이다.
  */
 export async function makerMetrics(
@@ -160,8 +162,8 @@ export async function makerMetrics(
 ): Promise<{ exits: UpkeepMetric; verdicts: UpkeepMetric; warning?: string; samples: { exits: number; verdicts: number } }> {
   const m = metric("maker-early-exits", "Maker partial 종료", "count", null, null, "unknown",
     `partial로 끝난 Maker 결과가 한 모델에서 ${EARLY_EXIT_REPORT_COUNT}회 이상이거나, 결과 대비 비율이 직전보다 50% 넘게 늘면 주의`);
-  const verdicts = metric("maker-verdicts", "Maker 판정 중 rework·held 비율", "ratio", null, null, "unknown",
-    "시도마다 마지막 판정 중 rework·held의 비율이 직전 7일보다 50% 넘게 늘면 주의, 2배 이상이면 문제 (두 기간 모두 판정 20건 이상일 때)");
+  const verdicts = metric("maker-verdicts", "Maker 판정 중 rework 비율", "ratio", null, null, "unknown",
+    "시도마다 마지막 판정 중 rework의 비율이 직전 7일보다 50% 넘게 늘면 주의, 2배 이상이면 문제 (held를 뺀 판정이 두 기간 모두 20건 이상일 때)");
   m.handoff = handoffs.find((x) => x.ref.title.includes("기본 Maker 관찰"))?.ref;
   let text: string;
   try {
@@ -213,15 +215,15 @@ export async function makerMetrics(
     if (window === null) continue;
     const kind = x.verdict === "accepted" || x.verdict === "rework" || x.verdict === "held" ? x.verdict : "other";
     tally[window][kind]++;
-    if (window === 0 && (kind === "rework" || kind === "held")) flaggedCurrent.push(x);
+    if (window === 0 && kind === "rework") flaggedCurrent.push(x);
   }
-  const total = (t: (typeof tally)[0]) => t.accepted + t.rework + t.held + t.other;
-  const share = (t: (typeof tally)[0]) => (total(t) ? (t.rework + t.held) / total(t) : null);
+  const judged = (t: (typeof tally)[0]) => t.accepted + t.rework + t.other;
+  const share = (t: (typeof tally)[0]) => (judged(t) ? t.rework / judged(t) : null);
   verdicts.current = share(tally[0]);
   verdicts.previous = share(tally[1]);
-  verdicts.status = compare(verdicts.current, verdicts.previous, total(tally[0]), total(tally[1]));
+  verdicts.status = compare(verdicts.current, verdicts.previous, judged(tally[0]), judged(tally[1]));
   const counts = (t: (typeof tally)[0]) => `${t.accepted}/${t.rework}/${t.held}${t.other ? ` (그 밖 ${t.other})` : ""}`;
-  verdicts.note = `accepted/rework/held ${period.label} ${counts(tally[0])}, 직전 7일 ${counts(tally[1])}건. held는 검증을 마치지 못한 판정입니다.`;
+  verdicts.note = `accepted/rework/held ${period.label} ${counts(tally[0])}, 직전 7일 ${counts(tally[1])}건. held는 검증을 마치지 못한 판정이라 비율에서 뺍니다.`;
   verdicts.evidence = flaggedCurrent.sort((x, y) => y.time - x.time).slice(0, 10).map((x) => x.evidence);
 
   type Finished = { model: string; window: 0 | 1; early: boolean; evidence: UpkeepEvidence };
@@ -259,7 +261,7 @@ export async function makerMetrics(
   m.note = `${period.label} 모델별 partial/결과: ${models.map(([model, x]) => `${model} ${x.early}/${x.total}`).join(", ") || "결과 없음"}. 직전 7일 결과 ${previous.length}건.`;
   m.evidence = earlyCurrent.slice(0, 10).map((x) => ({ ...x.evidence, label: `${x.evidence.label} · ${x.model}` }));
   // 고침 표시 판정이 표시 뒤 표본(Maker 결과·판정 수)을 본다.
-  return { exits: m, verdicts, samples: { exits: current.length, verdicts: total(tally[0]) } };
+  return { exits: m, verdicts, samples: { exits: current.length, verdicts: judged(tally[0]) } };
 }
 
 /**
