@@ -23,6 +23,8 @@ function fakePi() {
   const pi = {
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: { customType?: string; content?: unknown }) => { sent.push(message); },
+    // The real SDK always gives extensions a per-session event bus (turn-end-guard emits optional plugin notices on it).
+    events: { emit: () => {}, on: () => () => false },
   } as unknown as ExtensionAPI;
   return { pi, handlers, sent };
 }
