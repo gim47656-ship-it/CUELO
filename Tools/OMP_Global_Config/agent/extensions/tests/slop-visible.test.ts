@@ -27,9 +27,11 @@ const put = (cwd: string, path: string, text: string) => { mkdirSync(join(cwd, p
 
 function reviewer() {
   const calls: string[] = [];
-  const complete: Complete = async (family, _system, prompt) => {
+  const complete: Complete = async (family, system, prompt) => {
     calls.push(family);
     const ids = [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
+    // 추출은 늘 한국어 KO_PLAIN이다: 언어 판별 요청(답 모양에 "languages")에는 ko로 답한다.
+    if (system.includes('"languages"')) return { model: `fixture/${family}`, text: JSON.stringify({ files: ids.map((id) => ({ id, languages: ["ko"] })) }) };
     return { model: `fixture/${family}`, text: JSON.stringify({ files: ids.map((id) => ({ id, findings: [] })) }) };
   };
   return { calls, complete };

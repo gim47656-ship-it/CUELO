@@ -218,8 +218,12 @@ const KO = "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회
 const COMMA = { quote: "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회에 실패하면 오류로 처리합니다.", rule: "humanizer 패턴 3: 연결어미 뒤 쉼표", fix: "쉼표를 뺀다" };
 const AUTHOR = "anthropic/fixture-author";
 const ids = (prompt: string) => [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
+/** 언어 판별 요청(답 모양에 "languages")은 여기서 ko로 답하고(이 묶음의 글은 한국어뿐), 심사 요청만 각 테스트의 가짜로 넘긴다. */
 function slopDeps(cwd: string, complete: Complete): SlopDeps {
-  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, head: async () => undefined };
+  const identifying: Complete = async (family, system, prompt, signal, slot) => system.includes('"languages"')
+    ? { model: `fixture/${family}`, text: JSON.stringify({ files: ids(prompt).map((id) => ({ id, languages: ["ko"] })) }) }
+    : complete(family, system, prompt, signal, slot);
+  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: identifying, mainModel: AUTHOR, head: async () => undefined };
 }
 
 describe("humanizer 패턴 3(연결어미 뒤 쉼표)만 든 지적은 finding이 아니다", () => {

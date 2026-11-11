@@ -66,7 +66,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R29 | 압축·재개 뒤 기존 결정·검증 결과 이어받기 | 문서 | — | |
 | R30 | 문서 조회는 `ctx7` 절차 | 문서 | — | |
 | R31 | 여러 파일 조사는 `skim` 먼저, 대체 1회 | 구조(부분) | `extensions/skim.ts`(대체 모델 1회, 비밀 제외) | 먼저 쓰라는 부분은 문서 |
-| R32 | 새 글은 `draft`, 보이는 산출물은 `slop_check` | 차단 | `extensions/draft-coverage.ts`(초안 밖 새 문단 쓰기를 한 번 멈춤), `tools/git-finalizer/index.ts` `runSlopGate` | 2026-10-27 지적 두 건(초안 범위, 고객용 덱 누락) 뒤 승격됨 |
+| R32 | 새 글은 `draft`, 보이는 산출물은 `slop_check` | 차단 | `extensions/draft-coverage.ts`, `tools/git-finalizer/index.ts` `runSlopGate`, `extensions/slop-gate/review.ts` `reviewFiles`, `extensions/tests/slop-language.test.ts` | 2026-10-27 초안 범위와 고객용 덱 누락 지적 뒤 승격. 2026-11-11 승인한 언어 범위 수정은 같은 필수 검토자에게 언어를 확인하고 미지원 문체의 통과를 막는다. 언어 판별 자체는 모델 판단이므로 정확도 보장은 아니다 |
 | R33 | 문서 편집 기본은 LibreOffice | 문서 | — | |
 | R34 | 제작 요청이면 `rule://creation-tools` | 문서 | — | |
 | R35 | 브라우저는 ego TaskSpace, relay는 지목 탭만 | 차단(부분) | `extensions/command-guard/task-guard.ts` `matchRelayBrowserOpen`(BrowserSpaceGuard; 네이티브 Linux 감지는 `createLinuxEgoProbe`), `matchUserEgoAppCdp`(UserEgoAppGuard), `extensions/command-guard/task-guard.test.ts` | Edge·Chrome `--print-to-pdf`는 막지 않음(2026-10-26 지적). 2026-11-03 사용자 결정으로 보류: ego가 없는 PC의 `draft` PDF 출력이 이 경로를 쓴다. 2026-11-08 사용자 승인: bash·eval이 사용자 ego 앱(`ego-lite-gui`)의 DevToolsActivePort를 읽거나 그 포트로 접속하면 막는다(`ego_browser` 도구 자체는 대상 아님). 2026-11-08 지적(「이런거 다 ego 사이트 써서해야하지않냐」, 「또 놓쳤네」): Linux 집 PC에서 시안 스크린샷을 headless로 열었다. PATH의 `ego-browser`가 WSL shim이라 설치 확인이 늘 실패해 이 PC에서는 차단이 걸리지 않았고, Linux 안내문과 화면 검증 규칙도 verify 프로필이 없으면 headless로 보냈다. 감지를 Linux 호스트와 떠 있는 ego로 바꾸고 문서를 맞췄다. ego가 꺼져 있을 때의 headless는 계속 허용한다 |

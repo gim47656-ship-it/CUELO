@@ -29,10 +29,13 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   원문 인용, 오류, 경로, 코드, 데이터, 단위와 변경하지 않은 내용은 보존한다. 이 기준만으로 기존
   글을 일괄 수정하지 않으며, 대화 답변이나 제외된 Markdown을 새 검사 대상으로 만들지 않는다.
   채팅에는 작성 규칙만 적용되고 자동 검사나 출력 필터는 없다.
-  점검은 `slop_check`로 한다. 짧거나 두 언어가 섞인 대상의 언어를 알면 `lang`(`ko`·`en`·`both`)을 직접 넘긴다. 자동
-  판별은 한글 20자·영어 단어 60개 이상일 때만 글 기준(`humanizer`·`stop-slop`)을 고르므로, 그보다 짧은 글 파일은
-  "no rubric applies"로 멈추고 HTML·UI 문구·슬라이드는 `kill-ai-slop`만으로 심사된다. 원래 점검 대상인 산출물에만
-  해당하며 대화 답변·내부 파일을 새로 점검하라는 뜻은 아니다. 검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
+  점검은 `slop_check`로 한다. 짧거나 한국어와 영어가 섞인 대상의 언어를 알면 `lang`(`ko`, `en`, `both`)을 넘긴다.
+  새로 심사할 본문은 같은 필수 검토자 경로로 언어를 먼저 확인한다. `lang`은 미지원 언어를 지원 언어로 바꾸는 우회가 아니다.
+  한국어와 영어에 해당하는 문체 기준만 적용하며, 미지원 언어나 판별 불가 본문은 통과로 기록하지 않는다.
+  적용 가능한 HTML, UI 문구, 슬라이드 디자인 검사는 계속하지만 문체 미지원 파일의 지적은 진단으로 남기고 전체 통과나 반박 통과를 만들지 않는다.
+  짧은 지원 언어 글은 기존 문체 기준 분량 조건을 따르며, 명시한 `lang`으로 그 언어의 기준을 선택할 수 있다.
+  대상 분류, 기존 동일 해시 통과 재사용과 반박 절차는 유지한다. 대화 답변이나 내부 파일을 새 검사 대상으로 만들지 않는다.
+  검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
   (2026-10-29 사용자 결정: slop에는 Opus·Astra를 쓰지 않고 Gemini Flash와 모든 자문도 없앴다). Anthropic·Gemini·그 밖 저자는 Luna가 필수다.
   OpenAI 저자는 Luna를 못 쓰므로(같은 계열) 그 자리가 `crossReviewAnthropic`으로 간다. slot이 비었거나 풀리지 않으면 그
   자리는 `cross_review`와 같은 옛 slot(`crossReviewOpenAI`·`crossReviewAnthropic`)으로 돌아가고, 풀린

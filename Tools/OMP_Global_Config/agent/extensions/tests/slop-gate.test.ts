@@ -51,9 +51,19 @@ const AUTHOR = "anthropic/fixture-author";
 const clean = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [] })) });
 const dirty = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [{ quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", fix: "무엇을 하는지 구체적으로 쓴다" }] })) });
 
+/**
+ * 언어 판별 요청(답 모양에 "languages"가 있는 system)에만 답하는 가짜: 한글은 ko, 라틴 낱말은 en, 한자·가나는 zh로 본다. 심사 요청은 그대로 넘기므로
+ * 이 파일의 가짜 reviewer·호출 수는 예전처럼 심사 호출만 센다. 판별 실패·미지원 언어는 slop-language.test.ts가 본다.
+ */
+const withLanguages = (complete: Complete): Complete => async (family, system, prompt, signal, slot) => {
+  if (!system.includes('"languages"')) return complete(family, system, prompt, signal, slot);
+  const files = [...prompt.matchAll(/<artifact id="([^"]+)"[^>]*>\n([\s\S]*?)\n<\/artifact>/g)].map(([, id, body]) => ({ id, languages: [/[가-힣]/.test(body!) && "ko", /[A-Za-z]{2,}/.test(body!) && "en", /[\u3040-\u30ff\u4e00-\u9fff]/.test(body!) && "zh"].filter(Boolean) }));
+  return { model: `fixture/${family}`, text: JSON.stringify({ files }) };
+};
+
 /** slop_check를 부른 것과 같은 fixture. 대상 판정(classify)은 실제 코드가 한다: scratch의 .md는 공개 선언 없이도 보이는 산출물이다. */
 function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): SlopDeps {
-  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete, mainModel: AUTHOR, head: async () => undefined, ...extra };
+  return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: withLanguages(complete), mainModel: AUTHOR, head: async () => undefined, ...extra };
 }
 
 describe("classify: 보이는 산출물과 내부·코드", () => {
@@ -567,7 +577,8 @@ describe("심사 정확성: 같은 바이트·중복 id·html 크기와 속성",
     expect(literalStrings("import a from './a';\nexport default { help: '/help', start: '/start', api: '/api/users', file: 'a/b.json', mod: '@/x' };")).toEqual(["/help", "/start"]);
     const reviewer = fakeReviewer(clean);
     const out = await reviewFiles(["locales/index.ts"], "en", deps(cwd, reviewer.complete, { extract: undefined }), signal);
-    expect(out.files[0]).toMatchObject({ status: "pass" });
+    // 中文 문구 '开'는 기준이 없는 언어다(2026-11-11 language_scoped): 문구는 모두 디자인 심사로 가지만 그 파일에는 통과가 없다.
+    expect(out.files[0]).toMatchObject({ status: "error", error: expect.stringContaining("unsupported language(s): zh") });
     expect(reviewer.calls).toHaveLength(1);
     for (const phrase of ["On/Off", "Save/Cancel", "开"]) expect(reviewer.calls[0]).toContain(phrase);
   });
