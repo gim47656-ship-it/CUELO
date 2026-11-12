@@ -81,7 +81,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const reg = new AgentRegistry();
-const fakeSession = () => ({ isStreaming: false }) as never;
+const fakeSession = () => ({ isStreaming: false, hasIrcInterrupts: () => false }) as never;
 
 // 세션 A: Main + 서브 둘
 reg.register({ id: MAIN_AGENT_ID, displayName: "main", kind: "main", session: fakeSession() });
@@ -841,6 +841,7 @@ class RoundTripSession {
 	readonly received: Incoming[] = [];
 	readonly uiRelays: string[] = [];
 	isStreaming = true;
+	hasIrcInterrupts(): boolean { return false; }
 	constructor(readonly id: string) {}
 	async deliverIrcMessage(m: Incoming): Promise<"injected"> {
 		this.received.push(m);

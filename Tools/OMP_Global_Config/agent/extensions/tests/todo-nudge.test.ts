@@ -84,7 +84,7 @@ describe("todo nudge", () => {
 describe("todo nudge on job-completion notices", () => {
   test("활성 todo 가 있을 때 작업 종료·DM 알림에서 한 번 aside 안내하고 todo 호출 뒤 다시 안내한다", () => {
     const h = harness();
-    h.todoState("blocked", "completed");
+    h.todoState("pending", "completed");
     h.notice("async-result");
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]).toMatchObject({ customType: "todo-nudge", display: false, attribution: "agent" });

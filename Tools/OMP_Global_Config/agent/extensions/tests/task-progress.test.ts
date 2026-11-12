@@ -237,7 +237,7 @@ describe("terminal validation과 todo 정본 연결", () => {
     expect(result.reworkLinked).toBe(true);
   });
 
-  test("init·삭제 후 재추가·terminal 뒤 reopen은 새 identity이고 block/unblock은 유지한다", () => {
+  test("init·삭제 후 재추가·terminal 뒤 reopen은 새 identity이다", () => {
     let state = advanceTodoProgressState(
       createTodoProgressState(),
       [{ content: "같은 문구", status: "pending" }],
@@ -279,18 +279,6 @@ describe("terminal validation과 todo 정본 연결", () => {
       { op: "reopen", task: "같은 문구" },
     );
     expect(reopened.currentTodos[0]!.bindingId).not.toBe(abandoned.currentTodos[0]!.bindingId);
-
-    const blocked = advanceTodoProgressState(
-      createTodoProgressState(),
-      [{ content: "막힌 문구", status: "blocked" }],
-      { op: "init" },
-    );
-    const unblocked = advanceTodoProgressState(
-      blocked,
-      [{ content: "막힌 문구", status: "in_progress" }],
-      { op: "unblock", task: "막힌 문구" },
-    );
-    expect(unblocked.currentTodos[0]!.bindingId).toBe(blocked.currentTodos[0]!.bindingId);
   });
 
   test("persisted replay에서 같은 문구 init은 옛 done receipt를 승계하지 않는다", () => {
@@ -337,8 +325,8 @@ describe("terminal validation과 todo 정본 연결", () => {
     expect(state.acceptedTodoBindingIds.size).toBe(0);
   });
 
-  test("blocked와 abandoned는 근거가 있어도 완료 후보가 아니다", () => {
-    for (const status of ["blocked", "abandoned"] as const) {
+  test("abandoned는 근거가 있어도 완료 후보가 아니다", () => {
+    for (const status of ["abandoned"] as const) {
       const state = advanceTodoProgressState(
         createTodoProgressState(),
         [{ content: "카드 제목과 현재 단계를 분리한다", status }],

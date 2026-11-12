@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 4205590ebaeb0951 -->
+<!-- source-fingerprint: f4780cb2446df096 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -41,7 +41,7 @@ Main reviews confirmed deltas and their evidence cumulatively and decides final 
 
 ## TODO and kickoff
 
-**TODO is a live work board.** Update an item where you observe the transition: start, verified completion, external wait, resume, failure or rework. Mark `done` when you accept completion evidence, not merely because a child ended. Put who is doing what in `block` while waiting and `unblock` once actionable. A todo note about an external job is a value from when it was written; re-read the state before relaying it. Keep todo items as short Korean task names, without skill text or long commands.
+**TODO is a live work board.** Update an item where you observe the transition: start, verified completion, external wait, resume, failure or rework. Mark `done` when you accept completion evidence, not merely because a child ended. State who is waiting for what in the visible reply; use `depend` when an item waits on another todo prerequisite. A todo note about an external job is a value from when it was written; re-read the state before relaying it. Keep todo items as short Korean task names, without skill text or long commands.
 
 For every request, infer the outcome the user wants from the request and context, and set acceptance, behavior to preserve, approvals and the observation path. Keep the user's explicit requirements separate from your interpretation. Actually use the source material, specialist tools and independent checks the outcome needs, in proportion; a typo stays local. When a method or assumption you added blocks the requested outcome, change it rather than freezing it as a user requirement. Never silently drop an explicit user constraint or pick between conflicting user outcomes. Before waiting or ending, compare remaining work and evidence with the original request, not with an exhausted task list; naming the goal or a successful tool result is not proof. Never set `token_budget` on `goal` unless the user asked.
 

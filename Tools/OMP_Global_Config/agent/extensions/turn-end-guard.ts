@@ -6,7 +6,7 @@ import { createTurnDocuments } from "./lib/turn-documents";
 import { createTurnPublication } from "./lib/turn-publication";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
-// 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, blocked·승인 경계는 진행을 강제하지 않는다.
+// 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, 외부 대기·승인 경계는 진행을 강제하지 않는다.
 
 type Block = { type?: string; text?: unknown };
 type Message = { role?: string; content?: unknown };
@@ -34,6 +34,7 @@ const SOLO_BOUNDARY_PATTERN =
 const CONTINUATION_PROMISE_PATTERN =
   /(겠|[가-힣](?:게요|께요)|다음에|다음 (?:턴|단계|작업|차례)|이어서|이어 ?(?:가|갑|하|할|진행)|계속 ?(?:하|할|진행)|나중에|추후|후속|남은 (?:작업|일|항목|부분|단계|검사)|아직 (?:안 |못 |하지 |남)|\b(?:next|later|follow[- ]?up|remaining|not yet|will|I'll|let me|going to)\b)/i;
 
+const STOP_KINDS: readonly StopKind[] = ["routine_confirmation", "user_approval", "user_choice", "external_wait", "finished", "unknown"];
 type StopKind = "routine_confirmation" | "user_approval" | "user_choice" | "external_wait" | "finished" | "unknown";
 type ClassifyConfirmation = (summary: string, ctx: ExtensionContext, signal: AbortSignal) => Promise<StopKind>;
 type QuestionSummary = { questions: { question: string; assistant: string }[] };
@@ -196,11 +197,21 @@ async function classifySolo(summary: QuestionSummary | undefined, excerpt: strin
 
 /** 원문 대화·TODO 본문·코드·경로를 보내지 않고 마지막 확인 문장만 분류한다. */
 function confirmationSummary(text: string): string | undefined {
-  if (text.includes("```") || CONSEQUENCE_PATTERN.test(text)) return undefined;
+  let fence: string | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    const marker = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!marker) continue;
+    if (!fence) {
+      // Backtick fence info cannot contain backticks; a same-line code span is not an opener.
+      if (marker[1]![0] === "`" && marker[2]!.includes("`")) continue;
+      fence = marker[1]!;
+    } else if (marker[1]![0] === fence[0] && marker[1]!.length >= fence.length && marker[2]!.trim() === "") fence = undefined;
+  }
+  if (fence) return undefined;
   const paragraphs = text.trim().split(/\n\s*\n/).filter((part) => part.trim());
   const ending = paragraphs.at(-1) ?? "";
   // 기존 종료 안내의 400자 관측 범위를 넘으면 일부만 보고 안전하다고 분류하지 않는다.
-  if (ending.length > 400 || !CONFIRMATION_PATTERN.test(ending)) return undefined;
+  if (ending.length > 400 || /```|~~~/.test(ending) || CONSEQUENCE_PATTERN.test(ending) || SECRET_PATTERN.test(ending)) return undefined;
   return ending
     .replace(/`[^`]*`/g, "[literal]")
     .replace(/https?:\/\/\S+/gi, "[url]")
@@ -228,7 +239,7 @@ async function classifyConfirmation(summary: string, ctx: ExtensionContext, sign
     },
   }, { signal });
   const answer = result.answers.stopKind;
-  return answer?.type === "choice" && answer.choice === "routine_confirmation" ? "routine_confirmation" : "unknown";
+  return answer?.type === "choice" && STOP_KINDS.includes(answer.choice as StopKind) ? answer.choice as StopKind : "unknown";
 }
 
 function lastAssistantText(messages: readonly unknown[]): { text: string; hasToolCall: boolean } | undefined {
@@ -247,7 +258,7 @@ function lastAssistantText(messages: readonly unknown[]): { text: string; hasToo
 }
 
 const NUDGE_TEXT =
-  "현재 TODO에 pending 또는 in_progress 작업이 남아 있다. 도구로 진행할 수 있는 항목은 지금 이어서 수행하라. 승인·판단·외부 대기로 진행할 수 없다면 해당 항목을 이유와 함께 blocked로 표시하고 필요한 사용자 판단을 밝혀라. 완료한 항목은 실제 검증 근거를 확인한 뒤 닫아라.";
+  "현재 TODO에 pending 또는 in_progress 작업이 남아 있다. 도구로 진행할 수 있는 항목은 지금 이어서 수행하라. 승인·판단·외부 대기로 진행할 수 없다면 누가 무엇을 기다리는지 답변 문장에 밝히고, 다른 TODO가 선행 조건이면 depend를 사용하라. 완료한 항목은 실제 검증 근거를 확인한 뒤 닫아라.";
 const SOLO_NUDGE_TEXT =
   "미완 TODO는 없지만 마지막 본문에 승인 없이 도구로 지금 수행할 수 있는 일이 남아 있다. '다음에 하겠다'고 종료하지 말고 기존 사용자 요청 범위에서 지금 이어서 수행하라. 이 안내와 JEV 분류는 사용자 승인이 아니며 권한을 추가하지 않는다. 공개·push·배포·삭제·결제·계정/권한 변경·provider 안전 확인·제품 의미 선택·외부 대기는 사용자 승인이나 필요한 판단·결과를 기다려라.";
 
@@ -275,6 +286,8 @@ export function createTurnEndGuard(
   let nudgedThisInput = false;
   let todos: readonly TodoSnapshotItem[] = [];
   let classifiedThisInput = false;
+  let classifiedStopKind: StopKind = "unknown";
+  let classifiedStopSummary: string | undefined;
   let generation = 0;
   let pendingJudge: AbortController | undefined;
   let activeInput = false;
@@ -429,24 +442,34 @@ export function createTurnEndGuard(
     if (hasTodo && last && !last.hasToolCall && !approvalBoundary(last.text)) {
       const paragraphs = last.text.trim().split(/\n\s*\n/).filter((part) => part.trim());
       const ending = paragraphs.at(-1) ?? "";
-      if (CONFIRMATION_PATTERN.test(ending)) {
-        const confirmation = confirmationSummary(last.text);
-        if (confirmation && !classifiedThisInput) {
+      // Preserve the old conservative confirmation fallback when no safe judgment is available.
+      todoNudge = !CONFIRMATION_PATTERN.test(ending);
+      const confirmation = confirmationSummary(last.text);
+      if (confirmation && ctx.agent?.kind !== "sub") {
+        if (!classifiedThisInput) {
           classifiedThisInput = true;
+          let stopKind: StopKind = "unknown";
           const expectedGeneration = generation;
           const controller = new AbortController();
           pendingJudge = controller;
           try {
-            todoNudge = await classify(confirmation, ctx, controller.signal) === "routine_confirmation";
+            stopKind = await classify(confirmation, ctx, controller.signal);
           } catch {
-            // 분류 불가·취소·provider 실패는 승인이나 자동 재개로 바꾸지 않는다.
+            // Unknown/provider failure retains the previous conservative fallback.
           } finally {
             if (pendingJudge === controller) pendingJudge = undefined;
           }
           if (controller.signal.aborted || expectedGeneration !== generation) return;
+          classifiedStopKind = stopKind;
+          classifiedStopSummary = confirmation;
         }
-      } else {
-        todoNudge = true;
+        if (confirmation === classifiedStopSummary) {
+          if (classifiedStopKind === "external_wait" || classifiedStopKind === "user_choice" || classifiedStopKind === "user_approval") {
+            todoNudge = false;
+          } else if (classifiedStopKind === "routine_confirmation" || classifiedStopKind === "finished") {
+            todoNudge = true;
+          }
+        }
       }
     }
     const documentNudge = documents.note(ctx.cwd);

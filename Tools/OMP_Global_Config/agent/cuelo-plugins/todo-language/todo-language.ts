@@ -74,6 +74,6 @@ export function introducedTodoFields(input: Record<string, unknown>, phaseNames:
   } else if (op === "append") {
     if (typeof input.phase === "string" && !phaseNames.has(input.phase)) add("phase", input.phase);
     items("items", input.items);
-  } else if (op === "block") add("reason", input.reason);
+  }
   return fields;
 }

@@ -560,16 +560,16 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   `implementationOwnership.writerValidation.heavyArtifactOwner`다.
 - 웹 화면 확인 경로는 `RULES.md` 브라우저 항목이 정한다. ego lite PC(`ego_browser` 도구가 도는 PC)에서는 브라우저를
   여는 작업(로그인 작업·화면 검증·headless 확인 포함)을 모두 별도 ego TaskSpace에서 하고, relay(`browser.open`)는
-  사용자가 지목한 이미 열린 탭을 `app.target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
+  사용자가 지목한 이미 열린 탭을 최상위 `target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
   command-guard가 막는다). `web_search`와 URL을 그냥 `read`하는 일은 브라우저를 열지 않으므로 그대로 쓰고, 찾은
   페이지를 열거나 렌더해야 하면(JS 렌더 페이지·로그인·스크린샷·조작) 그때 ego TaskSpace로 옮긴다. 검증은 ego
-  TaskSpace의 검증 프로필(`profile: "verify"`), ego lite가 없는 PC에서는 **headless Chromium**(`app.relay: false`)이며,
+  TaskSpace의 검증 프로필(`profile: "verify"`), ego lite가 없는 PC에서는 **headless Chromium**(`app: "chromium"`)이며,
   localhost·격리 검증 서버·빌드 산출물처럼 로그인 세션이 필요 없는 대상과 Maker의 검증은 거의 전부
-  여기다. **ego lite가 없는 PC에서 `browser.open`에 `app.relay: false`를 빼면 relay가 기본이라 사용자 브라우저에 탭이
+  여기다. **ego lite가 없는 PC에서 `browser.open`에 `app: "chromium"`을 빼면 relay가 기본이라 사용자 브라우저에 탭이
   열린다** — 빌드가 깨진 중간 상태를 사용자 화면에 띄우는 사고가 실제로 있었다. 사용자 세션이 실제로
   필요하거나 Main이 사용자 판단을 받으라고 지시한 **완성된** 표면만 사용자 프로필(ego lite PC는 ego
-  `profile: "user"`, 그 밖은 relay 새 작업 탭)에서 연다. relay에서는 코어 패치가 `app.target` 없는 open을 새 탭 생성으로 만들므로
-  기존 탭·쿠키·로그인 세션은 건드리지 않고, 기존 탭을 대상으로 해야 하면 `app.target`을
+  `profile: "user"`, 그 밖은 relay 새 작업 탭)에서 연다. relay에서는 코어 패치가 최상위 `target` 없는 open을 새 탭 생성으로 만들므로
+  기존 탭·쿠키·로그인 세션은 건드리지 않고, 기존 탭을 대상으로 해야 하면 최상위 `target`을
   명시하고 그 사실을 보고한다. owner가 스스로 사용자 브라우저를 열어 판단을 요구하지 않는다.
 - 격리 검증 서버는 프로젝트의 `package.json` script를 그대로 쓰고 포트만 바꾼다. 명령을 손으로
   재조립해 번들러·런타임 플래그를 빠뜨리면 의존성이 통째로 깨진다. 다만 **dev 모드가 아예 못

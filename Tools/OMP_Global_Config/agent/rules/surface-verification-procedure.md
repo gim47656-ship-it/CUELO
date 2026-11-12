@@ -4,14 +4,14 @@ description: 브라우저·화면 검증, 이미지 확인, 문서·로그 분�
 
 - **브라우저 경로는 실행 환경 지침이 정한다.** ego lite PC(`ego_browser` 도구가 도는 PC)에서는 브라우저를 여는
   작업(로그인 작업·화면 검증·headless 확인 포함)을 모두 별도 ego TaskSpace에서 하고, relay(`browser.open`)는 사용자가
-  지목한 이미 열린 탭을 `app.target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
+  지목한 이미 열린 탭을 최상위 `target`으로 넘길 때만 쓴다(2026-10-31 사용자 결정, 다른 eval `browser.open`은
   command-guard가 막는다). `web_search`와 URL을 그냥 `read`하는 일은 브라우저를 열지 않으므로 그대로 쓰고, 찾은
   페이지를 열거나 렌더해야 하면(JS 렌더 페이지·로그인·스크린샷·조작) 그때 ego TaskSpace로 옮긴다. CUELO 화면 검증은
   검증 프로필(`profile: "verify"`)에서 하고, 검증 프로필이 없는 ego PC(Linux ego)에서는 기본 프로필 TaskSpace에서 하며
   로그아웃 상태가 필요한 확인만 미확인으로 남긴다(2026-11-08 사용자 지적). headless(`browser.open`에
-  `app: { relay: false }`)는 ego lite가 없는 PC나 ego 브라우저가 꺼진 때만 쓴다. `app.relay: false`를 빼면 relay가 기본이라 **사용자의 실제
+  `app: "chromium"`)는 ego lite가 없는 PC나 ego 브라우저가 꺼진 때만 쓴다. `app: "chromium"`을 빼면 relay가 기본이라 **사용자의 실제
   브라우저**에 탭이 열린다. relay 탭을 닫을 때는 `browser.close({ name })`로 자기 탭만
-  닫고 `all`·`kill`·`app.path`는 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.
+  닫고 `all`·`kill`이나 실행 파일 경로 `app`은 쓰지 않는다 — 사용자 창까지 닫히거나 기존 프로세스에 붙는다.
   빌드가 깨진 화면을 사용자에게 띄우지 않는다. HTML·웹 페이지를 PDF로 인쇄하는 것도 브라우저 작업이라 같은 경로를
   따른다: Windows ego lite PC에서는 TaskSpace에서 `page.cdp("Page.printToPDF")`로 받고, Edge·Chrome `--print-to-pdf`를 따로
   띄우지 않는다(2026-10-26 사용자 지적). Linux ego 앱(Electron)에는 `Page.printToPDF`가 없으니 실행 환경 지침을 따른다

@@ -24386,6 +24386,240 @@ function planSpawns(
 }
 
 
+// 18.19.0: preserve deployed candidates; select new shapes using untouched context.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.19.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const candidates = entry => [entry, ...(entry.alternates ?? [])];
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of candidates(entry)) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.19.0 anchor: ${from instanceof RegExp ? String(from) : JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const TODO = "function withoutBlocked(phases: TodoPhase[]): TodoPhase[] {";
+	for (const entry of TODO_DEPENDENCY_EDITS) {
+		if (entry.file.includes("pi-tui")) {
+			const discriminator = 'export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";';
+			const strip = text => text.includes("TodoOperation")
+				? swap(text, ' | "block" | "unblock"', "")
+				: swap(text, /^[ \t]*blocker\?: string;\n/m, "");
+			alternate(entry, { marker: entry.marker, anchor: strip(entry.anchor), patched: strip(entry.patched) }, discriminator);
+		}
+	}
+	const todo = (marker, anchor, patched) =>
+		alternate(byMarker(marker), { marker, anchor, patched }, TODO);
+	const op = byMarker(`| "append" | "view" | "depend"');`);
+	todo(op.marker, swap(op.anchor, ' | "block" | "unblock"', ""), swap(op.patched, ' | "block" | "unblock"', ""));
+	todo('"after?": type("string").array()',
+		'\t"items?": type("string").array().describe("tasks for flat init or append"),\n});\n',
+		'\t"items?": type("string").array().describe("tasks for flat init or append"),\n\t"after?": type("string").array().describe("prerequisite task contents for depend; [] clears"),\n});\n');
+	const clone = byMarker("// CUELO: todo dependencies - prerequisites ride every clone");
+	todo(clone.marker, 'function cloneTask(task: TodoItem): TodoItem {\n\treturn { content: task.content, status: task.status };\n}\n',
+		swap(clone.patched, /\tconst clone: TodoItem =\n[\s\S]*?\{ content: task.content, status: task.status \};/,
+			'\tconst clone: TodoItem = { content: task.content, status: task.status };'));
+	const fingerprint = byMarker("// CUELO: dependency-only changes invalidate a dismissed HUD snapshot");
+	todo(fingerprint.marker, '\t\t\ttasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),\n', fingerprint.patched);
+	const markdown = byMarker("const afterNote = ");
+	todo(markdown.marker, '\t\t\tout.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}`);\n',
+		swap(swap(markdown.patched, "the same way, after the blocker note", "in a trailing comment"), "${blockerNote}", ""));
+	const parse = byMarker("// CUELO: todo dependency metadata comments are order-independent");
+	todo(parse.marker, '\t\t\tcurrentPhase.tasks.push({ content: taskMatch[2].trim(), status });\n',
+		String.raw`			let rawContent = taskMatch[2].trim();
+			// CUELO: todo dependency metadata comments are order-independent in user-edited markdown.
+			let dependsOn: string[] | undefined;
+			let invalidMetadata = false;
+			let metadata: RegExpExecArray | null;
+			while ((metadata = /^(.*)\s*<!--\s*after:\s*(.*?)\s*-->$/.exec(rawContent))) {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(metadata[2]);
+				} catch {
+					parsed = undefined;
+				}
+				if (!Array.isArray(parsed) || !parsed.every(item => typeof item === "string")) {
+					errors.push(` + '`Line ${lineNum + 1}: unreadable after list (use a JSON array of task texts)`' + String.raw`);
+					invalidMetadata = true;
+					break;
+				}
+				if (parsed.length > 0) dependsOn = parsed;
+				rawContent = metadata[1].trim();
+			}
+			if (invalidMetadata) continue;
+			const parsedTask: TodoItem = { content: rawContent, status };
+			if (dependsOn) parsedTask.dependsOn = dependsOn;
+			currentPhase.tasks.push(parsedTask);
+`);
+	const tracker = byMarker("// CUELO: todo dependencies ride the tracker clone");
+	const trackerExcludes = new Map([tracker, ...(tracker.alternates ?? [])].map(candidate => [candidate, candidate.excludes]));
+	alternate(tracker, {
+		marker: tracker.marker,
+		anchor: '\t\t\ttasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),\n',
+		patched: swap(tracker.patched, /\t\t\t\tconst clone: TodoPhase\["tasks"\]\[number\] =\n[\s\S]*?\{ content: task.content, status: task.status \};/,
+			'\t\t\t\tconst clone: TodoPhase["tasks"][number] = { content: task.content, status: task.status };'),
+	}, "// CUELO: todo dependencies ride the tracker clone\n");
+	// The tracker differs only inside this clone; discriminate on the full new body,
+	// not on the unchanged incomplete-task filter.
+	const newTracker = tracker.alternates.at(-1);
+	delete newTracker.requires;
+	newTracker.excludes = "task.blocker";
+	for (const old of [tracker, ...tracker.alternates.slice(0, -1)]) {
+		old.excludes = [...[trackerExcludes.get(old) ?? []].flat(), newTracker.anchor, newTracker.patched];
+	}
+	const description = byMarker("Dependencies: `depend`");
+	alternate(description, {
+		marker: description.marker,
+		anchor: "Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.\n",
+		patched: "Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.\n" +
+			description.patched.slice(description.patched.indexOf("Dependencies:")),
+	}, "only earliest stays. Done out of order");
+	EDITS.push({
+		file: "src/tools/todo.ts",
+		requires: TODO,
+		marker: 'return status === "blocked" ? { ...cloneTask(task), status: "pending" } : task;',
+		anchor: 'return status === "blocked" ? { content: task.content, status: "pending" } : task;',
+		patched: 'return status === "blocked" ? { ...cloneTask(task), status: "pending" } : task;',
+		alternates: [{
+			file: "src/tools/todo.ts",
+			excludes: TODO,
+			marker: "function cloneTask(task: TodoItem): TodoItem {",
+			anchor: "function cloneTask(task: TodoItem): TodoItem {",
+			patched: "function cloneTask(task: TodoItem): TodoItem {",
+		}],
+	});
+}
+
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.19.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.19.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const validation = byMarker("Validation ownership:");
+	alternate(validation, {
+		marker: validation.marker,
+		anchor: "Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.",
+		patched: validation.patched.trimStart(),
+	}, "# Inputs\n");
+	const system = byMarker("Scoped proof of your own change is yours:");
+	alternate(system, {
+		marker: system.marker,
+		anchor: "{{#if subagent}}\n# 2. Hand-off\n- NEVER run builds, tests, linters, formatters or smoke runs unless your assignment says to; the main agent verifies once all subagents land.\n- Done → yield, naming the checks to run.\n{{else}}\n# 2. Verify",
+		patched: "{{#if subagent}}\n# 2. Verify\nScoped proof of your own change is yours: run the narrowest meaningful check for your settled change and report the command, exit status and observed result. Defer only shared integration checks owned by Main; name the exact command and blocker.\nNon-trivial work: NEVER yield without a smoke run: run the thing, exercise the changed path, observe the result. Tests alone are not proof.\n{{#if browserEnabled}}\nUse an ego TaskSpace via `ego_browser` where ego lite is installed; use relay `browser.open` only for an existing tab the user named. Elsewhere use an isolated managed browser and close your own tab.\n{{/if}}\n{{else}}\n# 2. Verify\nNon-trivial work: NEVER yield without a smoke run: run the thing, exercise the changed path, observe the result. Tests alone are not proof.",
+	}, "# 1. Before Editing");
+	const capture = one(e => e.file === "src/prompts/tools/task.md" && e.marker.startsWith("changes retained, not applied."));
+	alternate(capture, {
+		marker: '`isolated: "capture"`: worktree;',
+		anchor: "- `isolated`: worktree; changes retained, not applied.\n",
+		patched: '- `isolated`: worktree; changes retained, not applied.\n- `isolated: "capture"`: worktree; keeps the candidate patch without applying it; the caller applies the chosen one.\n',
+	}, "{{#if steps}}");
+	const optional = byMarker("// CUELO: task schema agent is optional on the wire.");
+	const previous = optional.alternates.at(-1);
+	alternate(optional, {
+		marker: optional.marker,
+		anchor: swap(previous.anchor, "\tfile: boolean;", "\tsteps: boolean;"),
+		patched: swap(previous.patched, "\tfile: boolean;", "\tsteps: boolean;"),
+	}, 'const taskFields = options.steps ? { steps: "string[]" } : { task: "string" };');
+	const normalize = one(e => e.file === "src/task/index.ts" && e.marker === "function validateModel(");
+	const priorNormalize = normalize.alternates.at(-1);
+	alternate(normalize, {
+		marker: priorNormalize.marker,
+		anchor: swap(priorNormalize.anchor, "\tfileEnabled: boolean,", "\tstepsEnabled: boolean,"),
+		patched: swap(priorNormalize.patched, "\tfileEnabled: boolean,", "\tstepsEnabled: boolean,"),
+	}, "\tstepsEnabled: boolean,");
+	const exact = one(e => e.file === "../pi-ai/src/auth/rotation.ts" && e.marker === "\t\t}\n\t\tif (exactAccountLabel) return false;\n");
+	alternate(exact, {
+		marker: "if (exactAccountLabel) return { switched: false };",
+		anchor: "\t\tconst sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {\n\t\t\tcredentialId: options?.credentialId,\n\t\t\tapiKey: options?.apiKey,\n\t\t\tallowStaleOAuthBearer: accountPolicy,\n",
+		patched: "\t\tif (exactAccountLabel) return { switched: false };\n\t\tconst sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {\n\t\t\tcredentialId: options?.credentialId,\n\t\t\tapiKey: options?.apiKey,\n\t\t\tallowStaleOAuthBearer: accountPolicy,\n",
+	}, "const accountPolicy = modelPolicy || AIError.isAccountPolicyError(error);");
+	const cascadeImport = byMarker("cueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey, markAfterSiblingWait,");
+	const importLine = 'import { type ApiKeyResolver, createOAuthProvenance, type ResolvedApiKey, resolveAfterRotation } from "../auth-retry";\n';
+	alternate(cascadeImport, {
+		marker: "cueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey, type ResolvedApiKey, resolveAfterRotation",
+		anchor: importLine,
+		patched: importLine.replace("type ResolvedApiKey,", "cueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey, type ResolvedApiKey,"),
+	}, "resolveAfterRotation");
+	for (const [marker, anchor, fallback] of [
+		["return this.cueloWeeklyApiKeyFallback(provider, sessionId, { baseUrl, modelId, signal });",
+			"\t\t\t\treturn resolveAfterRotation(rotation, error, () => resolve({ signal }));",
+			"this.cueloWeeklyApiKeyFallback(provider, sessionId, { baseUrl, modelId, signal })"],
+		["registry.authStorage.keys?.cueloWeeklyApiKeyFallback?.(",
+			"\t\t\treturn resolveAfterRotation(rotation, error, () => resolveKey(undefined));",
+			"registry.authStorage.keys?.cueloWeeklyApiKeyFallback?.(provider, sessionId, { baseUrl, modelId, signal })"],
+	]) {
+		const entry = byMarker(marker);
+		const indent = anchor.match(/^\t+/)[0];
+		alternate(entry, {
+			marker: `${indent}// CUELO: weekly fallback after upstream rotation resolution.`,
+			anchor,
+			patched: `${indent}// CUELO: weekly fallback after upstream rotation resolution.\n${indent}const resolved = await ${anchor.trim().slice("return ".length, -1)};\n${indent}const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;\n${indent}if (resolved === undefined && !rotation.switched && (AIError.isUsageLimit(error) || AIError.isUsageLimitOutcome(AIError.status(error), message))) {\n${indent}\treturn ${fallback};\n${indent}}\n${indent}return resolved;`,
+		}, "resolveAfterRotation");
+	}
+	const ask = byMarker("`autoSelectRecommended: true`");
+	alternate(ask, {
+		marker: ask.marker,
+		anchor: "- Preselect your recommendation with checked/selected/value: those values are submitted if the user does not answer in time.",
+		patched: ask.alternates[0].patched,
+	}, '- Radio and checkbox groups automatically get an "Other" free-text answer. NEVER');
+	const judge = byMarker("effort?=None");
+	const judgeAnchor = '{{#if py}}\ncompletion(prompt, *, model?="default"|"smol"|"slow", system?=None, schema?=None) → handle\n{{else}}\nawait completion(prompt, { model?: "default"|"smol"|"slow", system?, schema? }) → handle\n{{/if}}';
+	alternate(judge, {
+		marker: "effort?=None",
+		anchor: judgeAnchor,
+		patched: judgeAnchor.replace("schema?=None)", "schema?=None, effort?=None)").replace("system?, schema? }", "system?, schema?, effort? }"),
+	}, "{{#if py}}\ncompletion(");
+	const advisor = one(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&x$e(c))continue';
+	alternate(advisor, { marker: skip, anchor: skip, patched: skip }, skip);
+	const reconcile = byMarker("Main accepts TODO completion only through an explicit todo operation");
+	const priorReconcile = reconcile.alternates.at(-1);
+	const oldComment = "\t * without requiring the agent to issue a follow-up `todo`. A todo `block`ed\n\t * while waiting on a detached subagent is included: that subagent completing\n\t * is exactly the unblock signal, and blocked todos are excluded from the stop\n\t * reminder, so leaving it blocked would strand it silently. Failed and aborted\n";
+	alternate(reconcile, {
+		marker: reconcile.marker,
+		anchor: swap(swap(priorReconcile.anchor, "(pending/in_progress/blocked)", "(pending/in_progress)"),
+			oldComment, "\t * without requiring the agent to issue a follow-up `todo`. Failed and aborted\n")
+			.replace(' && task.status !== "blocked"', "")
+			.replace('if (task.status !== "pending" && task.status !== "in_progress") {\n\t\t\t\t\treturn task;\n\t\t\t\t}', 'if (task.status !== "pending" && task.status !== "in_progress") return task;')
+			.replace("\t\t\t\t// Drop any blocker note along with the blocked status — the wait the\n\t\t\t\t// note described is over.\n", ""),
+		patched: reconcile.patched,
+	}, "Auto-complete any open todo (pending/in_progress) whose content");
+	reconcile.alternates.at(-1).patched += "\n\t// Auto-complete any open todo (pending/in_progress) whose content: disabled by CUELO policy.";
+	const refs = byMarker("Actions return `{ action, status, suggestedNext");
+	const priorRefs = refs.alternates.at(-1);
+	const refAnchor = "- An element keeps its `[ref=eN]` across `.ax()`/`find()` reads until its role or label changes;\n  a ref whose element is missing from the window's last two `.ax()` snapshots throws `StaleRef`. Re-snapshot; NEVER guess.\n";
+	alternate(refs, {
+		marker: priorRefs.marker,
+		anchor: refAnchor,
+		patched: priorRefs.patched,
+	}, "  - Plain data, functions, and `RegExp` values are supported in `args`.");
+	const goal = byMarker("- Target and goal: before input");
+	const goalAnchor = "  - Plain data, functions, and `RegExp` values are supported in `args`.\n";
+	alternate(goal, {
+		marker: goal.marker,
+		anchor: goalAnchor,
+		patched: goalAnchor + goal.patched.slice(goal.patched.indexOf("\n- Target") + 1),
+	}, "  - Plain data, functions, and `RegExp` values are supported in `args`.");
+	const relayDescription = byMarker("opens a new tab");
+	const relayUpstream = "- No `target`: a new name opens omp's own background tab, leaving the user's tab alone (an outdated relay extension selects it instead).";
+	alternate(relayDescription, { marker: relayUpstream, anchor: relayUpstream, patched: relayUpstream }, 'Relay (`app: "relay"`:');
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

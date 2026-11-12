@@ -597,3 +597,4 @@ try {
 assert.deepEqual(regressionErrors, []);
 console.log(`latest-message/ceiling regressions ${regressionCount} pass`);
 console.log(`결과 ${24 + regressionCount} pass`);
+process.exit(0);

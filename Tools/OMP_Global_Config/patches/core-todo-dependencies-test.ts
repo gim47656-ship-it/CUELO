@@ -91,10 +91,10 @@ try {
   assert.deepEqual(task("B").dependsOn, ["A"], "read clones must not mutate canonical dependencies");
   console.log("A unfinished: B waits for A; independent C ready; event and defensive clone preserve dependencies");
 
-  await op({ op: "block", task: "A", reason: "waiting for acceptance" });
+  await op({ op: "depend", task: "A", after: ["C"] });
   assert.equal(nextActionableTask(tracker.phases)?.content, "C", "auto-start skips waiting B");
   assert.deepEqual(waits("B"), ["A"]);
-  await op({ op: "unblock", task: "A" });
+  await op({ op: "depend", task: "A", after: [] });
   await op({ op: "done", task: "A" });
   assert.deepEqual(waits("B"), []);
   await op({ op: "start", task: "B" });
@@ -112,19 +112,15 @@ try {
   assert.deepEqual(unmetTodoDependencies(reloadTracker.phases[0].tasks[1], reloadTracker.phases), ["A"]);
   console.log("JSONL persisted tool result -> canonical reader -> tracker rehydration preserves waiting state");
 
-  await op({ op: "block", task: "B", reason: "manual note" });
   const markdown = phasesToMarkdown(tracker.phases);
   const roundTrip = markdownToPhases(markdown);
   assert.deepEqual(roundTrip.errors, []);
-  assert.deepEqual(roundTrip.phases, tracker.phases, "markdown user edits must preserve blocker and prerequisites");
-  const reordered = markdownToPhases(markdown.replace('<!-- blocker: manual note --> <!-- after: ["A"] -->', '<!-- after: ["A"] --> <!-- blocker: manual note -->'));
-  assert.deepEqual(reordered.errors, []);
-  assert.deepEqual(reordered.phases, tracker.phases, "user-reordered metadata comments must not rename B or lose its dependencies");
+  assert.deepEqual(roundTrip.phases, tracker.phases, "markdown user edits must preserve prerequisites");
   const malformed = markdownToPhases('# Plan\n- [ ] B <!-- after: not-json -->\n');
   assert.deepEqual(malformed.errors, ["Line 2: unreadable after list (use a JSON array of task texts)"]);
   assert.deepEqual(malformed.phases[0].tasks, []);
   console.log("R1-ANT-2: malformed after list returns line-specific error without throwing");
-  const unblockedEdit = markdownToPhases('# Plan\n- [/] A\n- [ ] B <!-- after: ["A"] --> <!-- blocker: x -->\n');
+  const unblockedEdit = markdownToPhases('# Plan\n- [/] A\n- [ ] B <!-- after: ["A"] -->\n');
   assert.equal(unblockedEdit.phases[0].tasks[1].content, "B", "R1-ANT-1: changing status in markdown must not rename B");
   assert.deepEqual(unmetTodoDependencies(unblockedEdit.phases[0].tasks[1], unblockedEdit.phases), ["A"]);
   console.log("R1-ANT-1: markdown status edit preserves prerequisites with reordered comments");
@@ -147,16 +143,17 @@ try {
   assert.deepEqual(waits("B"), ["A"], "removal must not implicitly accept a prerequisite");
   await op({ op: "depend", task: "B", after: [] });
   assert.deepEqual(waits("B"), []);
-  assert.equal(task("B").status, "blocked", "clearing dependencies must not clear the manual blocker");
   await op({ op: "done", task: "C" });
-  await op({ op: "unblock", task: "B" });
   assert.equal(task("B").status, "in_progress");
-  console.log("self/missing/cyclic dependencies rejected atomically; abandon/remove do not release; explicit clear preserves manual blocker");
+  console.log("self/missing/cyclic dependencies rejected atomically; abandon/remove do not release; explicit clear releases dependencies");
 
   await op({ op: "init", items: ["old one", "old two"] });
   await op({ op: "done", task: "old one" });
   assert.equal(task("old two").status, "in_progress");
   assert.deepEqual(markdownToPhases(phasesToMarkdown(tracker.phases)).phases, tracker.phases);
+  const migrated = getLatestTodoPhasesFromEntries([{ type: "custom", customType: "user_todo_edit", data: { phases: [{ name: "Plan", tasks: [{ content: "B", status: "blocked", blocker: "old note", dependsOn: ["A"] }] }] } }]);
+  assert.deepEqual(migrated[0].tasks[0].dependsOn, ["A"], "restoring an old blocked snapshot must not lose dependencies");
+  if (migrated[0].tasks[0].status === "pending") assert.equal("blocker" in migrated[0].tasks[0], false);
   console.log("legacy init/done auto-start and markdown behavior unchanged; all focused checks complete");
 } finally {
   process.env.HOME = originalHome;

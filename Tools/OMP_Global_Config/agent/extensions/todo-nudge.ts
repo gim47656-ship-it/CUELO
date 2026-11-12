@@ -17,7 +17,7 @@ const REMINDER =
 // 2026-10-28 표본: 편집 전 체크포인트(`위치:`/`LOCATION:`)와 child 활동 advisory DM은 승인·관측 요청이라 todo 상태 전환이 아니다.
 const NON_TRANSITION_DM = /(?:^|\n)\s*(?:위치|LOCATION)\s*:|\[Child activity advisory/;
 const NOTICE_REMINDER =
-  "작업 종료·Maker 보고·DM 알림이 도착했다. 이 알림으로 todo 항목의 상태가 바뀌었으면(착수·완료·막힘·재개·실패) 사용자에게 보고하거나 다음 도구를 부르기 전에 `todo` 로 바로 갱신하라. todo 메모에 적힌 외부 job 상태는 적은 시각의 값이므로 사실처럼 옮기지 말고 현재 상태를 다시 읽는다.";
+  "작업 종료·Maker 보고·DM 알림이 도착했다. 이 알림으로 todo 항목의 상태가 바뀌었으면(착수·완료·재개·실패) 사용자에게 보고하거나 다음 도구를 부르기 전에 `todo` 로 바로 갱신하라. 외부 대기는 답변 문장에 적는다. todo 메모에 적힌 외부 job 상태는 적은 시각의 값이므로 사실처럼 옮기지 말고 현재 상태를 다시 읽는다.";
 // 2026-10-30 사용자 결정(B5): 코어의 mid-run todo 알림이 2분 안에 이미 왔으면 같은 일깨움이라 도착 알림을 내지 않는다
 // (1.6일 표본에서 11건 중복, doc/history/2026/10/30-harness-friction).
 const CORE_NUDGE_TYPE = "mid-run-todo-nudge";
@@ -74,7 +74,7 @@ export function createTodoNudge(now: () => number = Date.now) {
     if (message.role !== "custom" || (message.customType !== "async-result" && message.customType !== "irc:incoming")) return;
     if (message.customType === "irc:incoming" && NON_TRANSITION_DM.test(textOf(message.content))) return;
     if (ctx.agent?.kind !== "main" || noticeNudged) return;
-    if (!todos.some((item) => item.status === "pending" || item.status === "in_progress" || item.status === "blocked")) return;
+    if (!todos.some((item) => item.status === "pending" || item.status === "in_progress")) return;
     if (now() - coreNudgedAt < CORE_NUDGE_WINDOW_MS) return;
     noticeNudged = true;
     pi.sendMessage(

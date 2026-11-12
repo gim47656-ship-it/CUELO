@@ -20,7 +20,7 @@ function harness(
   const sent: unknown[] = [];
   const deliveries: unknown[] = [];
   const ctx = { cwd, isIdle: () => true, sessionManager: { getBranch: () => branch, getSessionId: () => "main-session" } };
-  createTurnEndGuard(classify, classifyAnswers, classifySolo ?? (async (summary, _excerpt, context, signal) => ({
+  createTurnEndGuard(classify ?? (async () => "unknown"), classifyAnswers, classifySolo ?? (async (summary, _excerpt, context, signal) => ({
     answered: summary && classifyAnswers ? await classifyAnswers(summary, context, signal) : [],
     solo: "unknown",
   })))({
@@ -42,36 +42,36 @@ function harness(
 }
 
 describe("turn-end guard", () => {
-  test("남은 작업이 있으면 약속 문구 없이 끝나도 한 번 이어 간다", () => {
+  test("남은 작업이 있으면 약속 문구 없이 끝나도 한 번 이어 간다", async () => {
     const h = harness();
     h.todo(["in_progress", "pending"]);
-    h.end("원인은 확인했습니다.");
-    h.end("다음에 처리하겠습니다.");
+    await h.end("원인은 확인했습니다.");
+    await h.end("다음에 처리하겠습니다.");
     expect(h.sent).toHaveLength(1);
     h.emit("input", { source: "extension" });
-    h.end("원인은 확인했습니다.");
+    await h.end("원인은 확인했습니다.");
     expect(h.sent).toHaveLength(1);
     h.emit("input", { source: "rpc", text: "이어서 진행해" });
-    h.end("원인은 확인했습니다.");
+    await h.end("원인은 확인했습니다.");
     expect(h.sent).toHaveLength(2);
   });
 
-  test("미관측·완료·blocked 작업에는 인용 문구로 개입하지 않는다", () => {
+  test("미관측·완료 작업에는 인용 문구로 개입하지 않는다", async () => {
     const h = harness();
     h.end('문구 예시: "계속"이라고 하시면 이어서 할게요.');
-    h.todo(["completed", "abandoned", "blocked"]);
+    h.todo(["completed", "abandoned"]);
     h.end("다음 턴에 이어서 할게요.");
     expect(h.sent).toHaveLength(0);
-    h.todo(["blocked", "pending"]);
-    h.end("독립 작업이 남았습니다.");
+    h.todo(["pending"]);
+    await h.end("독립 작업이 남았습니다.");
     expect(h.sent).toHaveLength(1);
   });
 
-  test("실패한 todo는 상태를 덮지 않고 성공한 완료는 개입을 멈춘다", () => {
+  test("실패한 todo는 상태를 덮지 않고 성공한 완료는 개입을 멈춘다", async () => {
     const h = harness();
     h.todo(["pending"]);
     h.todo(["completed"], true);
-    h.end("정리했습니다.");
+    await h.end("정리했습니다.");
     expect(h.sent).toHaveLength(1);
     h.emit("input", { source: "interactive", text: "작업 상태 알려줘" });
     h.todo(["completed"]);
@@ -88,25 +88,25 @@ describe("turn-end guard", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  test("정지·업데이트 interrupt 로 abort 된 턴은 남은 TODO 가 있어도 다시 깨우지 않는다", () => {
+  test("정지·업데이트 interrupt 로 abort 된 턴은 남은 TODO 가 있어도 다시 깨우지 않는다", async () => {
     const h = harness();
     h.todo(["in_progress"]);
     h.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: "aborted" }] });
     expect(h.sent).toHaveLength(0);
-    h.end("원인은 확인했습니다.");
+    await h.end("원인은 확인했습니다.");
     expect(h.sent).toHaveLength(1);
   });
 
-  test("세션 복원은 durable todo를 사용하고 다른 세션 상태를 가져오지 않는다", () => {
+  test("세션 복원은 durable todo를 사용하고 다른 세션 상태를 가져오지 않는다", async () => {
     const branch: unknown[] = [{ type: "custom", customType: "user_todo_edit", data: {
       phases: [{ tasks: [{ content: "복원 작업", status: "in_progress" }] }],
     } }];
     const h = harness(branch);
-    h.end("여기까지 확인했습니다.");
+    await h.end("여기까지 확인했습니다.");
     expect(h.sent).toHaveLength(1);
     branch.length = 0;
     h.emit("session_start", {});
-    h.end("다음 턴에 이어서 할게요.");
+    await h.end("다음 턴에 이어서 할게요.");
     expect(h.sent).toHaveLength(1);
   });
 
@@ -150,6 +150,148 @@ describe("turn-end guard", () => {
     await h.end("계속할까요?");
     expect(calls).toBe(2);
     expect(h.sent).toHaveLength(0);
+  });
+  test.each([
+    ["사용자 답변을 기다립니다.", "user_choice"],
+    ["실행 중인 Maker 결과를 기다립니다.", "external_wait"],
+    ["Waiting for the running child to return.", "external_wait"],
+    ["실행 중인 Maker 결과를 기다릴게요.", "external_wait"],
+    ["I'll wait for the running child to return.", "external_wait"],
+    ["Once the child returns, I can accept the result.", "external_wait"],
+    ["Waiting on the child task to return.", "external_wait"],
+    ["I'll wait until the maker finishes.", "external_wait"],
+    ["I'll await the child's result.", "external_wait"],
+    ["Once the child task returns, I can finish.", "external_wait"],
+    ["child 결과 대기 상태입니다.", "external_wait"],
+    ["결과 대기.", "external_wait"],
+  ] as const)("open todo wait is classified once per input: %s", async (text, kind) => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return calls === 1 ? kind : "routine_confirmation"; });
+    await h.todo(["pending"]);
+    await h.end(text);
+    await h.end(text);
+    expect(calls).toBe(1);
+    expect(h.sent).toHaveLength(0);
+    await h.emit("input", { source: "rpc", text: "결과가 왔으니 계속해" });
+    await h.end("남은 로컬 검사를 진행합니다.");
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("a wait ending with no open todo adds no confirmation classification", async () => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "external_wait"; });
+    await h.todo(["completed", "abandoned"]);
+    await h.end("실행 중인 Maker 결과를 기다립니다.");
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("an actionable local wait still receives the existing continuation nudge", async () => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "routine_confirmation"; });
+    await h.todo(["pending"]);
+    await h.end("실행할 수 있는 로컬 검사를 다음 턴까지 기다립니다.");
+    expect(calls).toBe(1);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test.each([
+    "대기열 테스트를 이어서 돌리겠습니다.",
+    "대기 시간 측정은 로컬에서 이어서 실행합니다.",
+    "The await keyword needs a local parser check next.",
+    "```ts\nawait run()\n```\n\n대기열 테스트를 이어서 돌리겠습니다.",
+    "거기다 로그도 추가했습니다. 남은 항목을 이어서 진행합니다.",
+    "Made the tests wait for the port; continuing with the remaining items.",
+  ])("incidental wait words preserve the actionable todo nudge: %s", async (text) => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "unknown"; });
+    await h.todo(["pending"]);
+    await h.end(text);
+    expect(calls).toBe(1);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test.each([
+    ["routine_confirmation", 1], ["finished", 1], ["external_wait", 0],
+    ["user_choice", 0], ["user_approval", 0], ["unknown", 1],
+  ] as const)("structural open-todo stop branch %s sends %s nudges", async (kind, count) => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return kind; });
+    await h.todo(["pending"]);
+    await h.end("마지막 결과를 확인했습니다.");
+    await h.end("마지막 결과를 확인했습니다.");
+    expect(calls).toBe(1);
+    expect(h.sent).toHaveLength(count);
+  });
+
+  test.each(["unknown", "provider failure"] as const)("unavailable verdict preserves conservative confirmation fallback: %s", async (kind) => {
+    for (const [text, count] of [["기존 로컬 검사를 진행할까요?", 0], ["로컬 검사가 남았습니다.", 1]] as const) {
+      const h = harness([], async () => { if (kind === "provider failure") throw new Error("unavailable"); return "unknown"; });
+      await h.todo(["pending"]);
+      await h.end(text);
+      expect(h.sent).toHaveLength(count);
+    }
+  });
+
+  test("child terminal checkpoint does not add a stop classifier call", async () => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "external_wait"; });
+    Object.assign(h.ctx, { agent: { kind: "sub" } });
+    await h.todo(["pending"]);
+    await h.end("Main 승인해 주세요.");
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("a cached external-wait verdict does not suppress a changed ending after a child result", async () => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "external_wait"; });
+    await h.todo(["pending"]);
+    await h.end("Waiting for the child session.");
+    expect(h.sent).toHaveLength(0);
+    await h.end("Step 2 implemented.");
+    expect(calls).toBe(1);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("an earlier code fence does not hide a safe final external-wait paragraph", async () => {
+    const summaries: string[] = [];
+    const h = harness([], async (summary) => { summaries.push(summary); return "external_wait"; });
+    await h.todo(["pending"]);
+    await h.end("```ts\nconst a = 1;\n```\n\n자식 세션 결과를 기다리는 중입니다.");
+    expect(summaries).toEqual(["자식 세션 결과를 기다리는 중입니다."]);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("a final paragraph beyond the approved 400-character boundary keeps the old fallback without a call", async () => {
+    let calls = 0;
+    const h = harness([], async () => { calls++; return "external_wait"; });
+    await h.todo(["pending"]);
+    await h.end("x".repeat(401));
+    expect(calls).toBe(0);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test.each(["```", "~~~"])("unfinished %s fences never send raw code to the stop classifier", async (marker) => {
+    const summaries: string[] = [];
+    const h = harness([], async (summary) => { summaries.push(summary); return "routine_confirmation"; });
+    await h.todo(["pending"]);
+    await h.end(`Fix:\n\n${marker}ts\nconst a = 1;\n\nconst b = load(cfg);`);
+    expect(summaries).toEqual([]);
+  });
+
+  test("CRLF and inline code spans preserve fenced-code exclusion and safe wait summaries", async () => {
+    for (const [text, expected] of [
+      ["Fix:\r\n\r\n```ts\r\nconst a = 1;\r\n\r\nconst b = load(cfg);", []],
+      ["```npm test``` passed.\n\nWaiting for the child agent result.", ["Waiting for the child agent result."]],
+      ["```npm test``` passed.\n\n```ts\nconst a = 1;\n\nconst b = load(cfg);", []],
+    ] as const) {
+      const summaries: string[] = [];
+      const h = harness([], async (summary) => { summaries.push(summary); return "external_wait"; });
+      await h.todo(["pending"]);
+      await h.end(text);
+      expect(summaries).toEqual(expected);
+    }
   });
 
   test.each(["input", "session_shutdown"])("%s 뒤 이전 분류 결과는 취소하고 버린다", async (eventName) => {

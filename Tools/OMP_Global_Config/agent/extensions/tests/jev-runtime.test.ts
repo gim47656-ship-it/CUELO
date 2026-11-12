@@ -1742,19 +1742,10 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     toolName: "write",
     input: { path: `agent://${to}`, content: message },
   });
-  // 18.3.0 수신 경로 두 가지: `irc:incoming` 주입(details.message)과 `wait`가 소비한 메시지(details.waited.body).
+  // 18.19.0은 모델에 user turn으로 전달하되 extension에는 irc:incoming 관측(details.message)을 유지한다.
   const incomingDm = (id: string, from: string, message: string) => ({
     type: "message_start",
     message: { role: "custom", customType: "irc:incoming", attribution: "agent", details: { id, from, message } },
-  });
-  const waitedDm = (id: string, from: string, body: string) => ({
-    type: "tool_result",
-    toolCallId: `wait-${id}`,
-    toolName: "wait",
-    input: {},
-    content: [{ type: "text", text: `[${id}] ${from}: ${body}` }],
-    isError: false,
-    details: { op: "wait", from: "Main", waited: { id, from, to: "Main", body, ts: 0 } },
   });
   const waitCall = (id: string) => ({ type: "tool_call", toolCallId: id, toolName: "wait", input: {} });
   const CHECKPOINT = "위치: src/a.ts:1-40\n불변식:\n- 계약 유지\n동작 변화: 추가";
@@ -1889,7 +1880,7 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     await registerLiveMaker(harness, "Sheet");
     // 수신 전에 보낸 DM과 agent://all 브로드캐스트는 답이 아니다.
     await harness.emit("tool_call", ownerMessage("approved", "Parser"));
-    await harness.emit("tool_result", waitedDm("158c0220f80b33f6", "Parser", CHECKPOINT));
+    await harness.emit("message_start", incomingDm("158c0220f80b33f6", "Parser", CHECKPOINT));
     await harness.emit("message_start", incomingDm("158c02646acb33f7", "Sheet", CHECKPOINT));
     await harness.emit("message_start", incomingDm("158c0269a84b33f8", "Stranger", CHECKPOINT));
     await harness.emit("message_start", {

@@ -1,4 +1,7 @@
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
 
 export interface TaskProgressMetadata {
   taskTitle?: string;
@@ -141,7 +144,6 @@ const TODO_STATUSES: Record<TodoStatus, true> = {
   in_progress: true,
   completed: true,
   abandoned: true,
-  blocked: true,
 };
 
 function isTodoStatus(value: unknown): value is TodoStatus {
@@ -157,7 +159,7 @@ export function readTodoSnapshot(details: unknown): TodoSnapshotItem[] | undefin
     !("phases" in details) ||
     !Array.isArray(details.phases)
   ) return undefined;
-  const items: TodoSnapshotItem[] = [];
+  const candidates: { content: string; status: string }[] = [];
   for (const phase of details.phases) {
     if (!phase || typeof phase !== "object" || Array.isArray(phase) || !("tasks" in phase) || !Array.isArray(phase.tasks)) continue;
     for (const task of phase.tasks) {
@@ -168,9 +170,19 @@ export function readTodoSnapshot(details: unknown): TodoSnapshotItem[] | undefin
         !("content" in task) ||
         !("status" in task) ||
         typeof task.content !== "string" ||
-        !isTodoStatus(task.status)
+        typeof task.status !== "string"
       ) continue;
-      items.push({ content: task.content, status: task.status });
+      candidates.push({ content: task.content, status: task.status });
+    }
+  }
+  // The core owns persisted-status migration; use its exported reader, not a local compatibility shim.
+  const phases = getLatestTodoPhasesFromEntries([{
+    type: "custom", customType: "user_todo_edit", data: { phases: [{ name: "Tasks", tasks: candidates }] },
+  } as SessionEntry]);
+  const items: TodoSnapshotItem[] = [];
+  for (const phase of phases) {
+    for (const task of phase.tasks) {
+      if (isTodoStatus(task.status)) items.push({ content: task.content, status: task.status });
     }
   }
   return items;
@@ -282,7 +294,7 @@ function readTodoOperations(value: unknown): string[] {
 }
 
 function isOpenTodoStatus(status: TodoStatus): boolean {
-  return status === "pending" || status === "in_progress" || status === "blocked";
+  return status === "pending" || status === "in_progress";
 }
 
 export function createTodoProgressState(): TodoProgressState {

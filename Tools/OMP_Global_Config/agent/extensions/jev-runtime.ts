@@ -693,8 +693,8 @@ function renderAdvisory(
 }
 
 // ---------------------------------------------------------------------------
-// 미회신 조향 체크포인트 — known maker의 편집 전 체크포인트(`wait` 결과 details.waited 또는
-// `irc:incoming` 주입)를 받은 뒤 Main이 그 Maker에게 `write agent://<id>`로 답하지 않은 채 다시
+// 미회신 조향 체크포인트 — known maker의 편집 전 체크포인트(`irc:incoming` 관측)를 받은 뒤
+// Main이 그 Maker에게 `write agent://<id>`로 답하지 않은 채 다시
 // wait하면 알린다. Maker는 답이 올 때까지 트리거 편집만 보류하고 독립 작업을 계속한다.
 // 18.3.0 `write agent://`는 replyTo를 싣지 못하므로 수신 뒤 같은 Maker로 가는 첫 DM을 답으로 본다.
 // 2026-09-24 실측: 대규모 위임에서 미회신 체크포인트 2통이 Maker를 합계 510초 멈췄다.
@@ -706,14 +706,14 @@ const AGENT_URL = /^agent:\/\/([^/?#]+)$/;
 const PROC_KILL_URL = /^proc:\/\/([^/?#]+)\/kill$/;
 
 /**
- * IRC 메시지 레코드(`wait` details.waited는 body, `irc:incoming` details는 message)가 체크포인트
- * 형식이면 {id, from}을 돌려준다. wake relay는 Maker의 DM이 아니라 제외한다.
+ * IRC의 `irc:incoming` 관측(details.message)이 체크포인트 형식이면 {id, from}을 돌려준다.
+ * 코어 18.19.0은 wait 결과가 아니라 별도 user turn으로 전달한다. wake relay는 Maker의 DM이 아니라 제외한다.
  */
 function readIncomingCheckpoint(record: unknown): { id: string; from: string } | undefined {
   if (!record || typeof record !== "object") return undefined;
-  const { id, from, body, message, wakeRelay } = record as Record<string, unknown>;
+  const { id, from, message, wakeRelay } = record as Record<string, unknown>;
   if (wakeRelay === true || typeof id !== "string" || typeof from !== "string") return undefined;
-  const text = typeof body === "string" ? body : typeof message === "string" ? message : "";
+  const text = typeof message === "string" ? message : "";
   return CHECKPOINT_LOCATION.test(text) && CHECKPOINT_INVARIANTS.test(text) ? { id, from } : undefined;
 }
 
@@ -882,7 +882,7 @@ function renderTodoProgressAdvice(assessment: TodoProgressAssessment, workClass?
       lines.push(`- ${task}: Main의 explicit todo done 수용과 completed 정본을 모두 관측했다.`);
     } else if (item.currentStatus === "completed") {
       lines.push(`- ${task}: completed 정본은 있으나 이 Main 세션의 explicit todo done receipt가 없다. child lifecycle이나 자연어 완료로 수용하지 않는다.`);
-    } else if (item.currentStatus === "blocked" || item.currentStatus === "abandoned") {
+    } else if (item.currentStatus === "abandoned") {
       lines.push(`- ${task}: ${item.currentStatus} 상태는 완료 후보가 아니다. 현재 TodoTracker 상태를 유지한다.`);
     } else if (item.readyForMainAcceptance) {
       lines.push(`- ${task}: terminal 검증 근거 충족. Main 검수 수용 뒤 기존 todo 도구로 exact done을 적용한다.`);
@@ -2692,7 +2692,6 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       let via: "wait" | "read proc://";
       let jobDetails: unknown;
       if (event.toolName === "wait") {
-        noteCheckpoint(fieldOf(event.details, "waited"));
         via = "wait";
         jobDetails = event.details;
       } else if (event.toolName === "read" && /^proc:\/\//.test(String(fieldOf(event.input, "path") ?? ""))) {

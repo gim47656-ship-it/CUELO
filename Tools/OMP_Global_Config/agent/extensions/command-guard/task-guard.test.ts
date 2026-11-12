@@ -98,6 +98,20 @@ function lockedState(): TaskGuardState {
   return state;
 }
 
+describe("ordered task steps", () => {
+  test("steps cannot bypass the task-string contract or consume budget", () => {
+    for (const item of [{ steps: [brief(), "verify"] }, { task: brief(), steps: ["verify"] }]) {
+      for (const input of [item, { tasks: [item] }, { ...item, tasks: [{ task: brief() }] }]) {
+        const state = createTaskGuardState();
+        const decision = reserveTaskCall(state, "steps", input);
+        expect(decision.ok).toBe(false);
+        if (!decision.ok) expect(decision.reason).toMatch(/task\.steps: false.*TASK_GUARD/);
+        expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+      }
+    }
+  });
+});
+
 describe("TaskBudget", () => {
   test("static 누적 한도는 8-slot 두 primary wave와 한 rework·cancel wave를 허용한다", () => {
     expect(TASK_BUDGET_LIMITS).toEqual({
@@ -357,67 +371,60 @@ describe("BrowserSpaceGuard", () => {
   const relayCells = {
     js: [
       'const tab = await browser.open({ name: "check", url: "http://localhost:3000" })',
-      'await browser.open({ name: "h", url, app: { relay: false } })',
+      'await browser.open({ name: "h", url, app: "chromium" })',
+      'await browser.open({ app: "webkit" })',
+      'await browser.open({ app: "http://127.0.0.1:32899" })',
+      'await browser.open({ app: "/opt/chromium", argv: ["--no-sandbox"] })',
       'await browser["open"]({ name: "x" })',
       'const b = browser; await b.open({ name: "x" })',
-      'await browser.open({ name: "a", app: { target: "Gmail" } }); await browser.open({ name: "b" })',
-      // 이슈 #60: 최상위 target은 app.target이 아니다.
-      'await browser.open({ name: "fixture", target: "Gmail" })',
-      'await browser.open({ name: "fixture", app: { relay: true }, target: "Gmail" })',
-      'const opts = { name: "fixture", target: "Gmail" }; await browser.open(opts)',
-      'const app = { relay: true }; await browser.open({ name: "fixture", app, target: "Gmail" })',
-      // 교차검토 R1-OAI-1·2: app 밑 중첩 target, 다른 옵션 밑 app, spread가 있어도 직접 준 app이 target 없이 덮는 경우.
-      'await browser.open({ name: "m", app: { metadata: { target: "Gmail" } } })',
-      'await browser.open({ name: "m", metadata: { app: { target: "Gmail" } } })',
-      'const base = { app: { target: "Gmail" } }; await browser.open({ ...base, app: { relay: true }, target: "Gmail" })',
-      'const template = { app: { target: "Gmail" } }; const opts = { name: "f", app: { relay: true } }; await browser.open({ ...opts, target: "Gmail" })',
-      'const target = "Gmail"; const template = { app: { target: "Gmail" } }; const opts = { name: "f" }; await browser.open({ ...opts, target })',
-      'await browser.open({ app: ({ target: "Gmail" }, { relay: false }) })',
-      'await browser.open({ target: "Gmail", app: { target: "Gmail" } })',
-      'const seed = { app: { target: "Gmail" } }; await browser.open(({ target: "Gmail" }))',
-      'const seed = { app: { target: "Gmail" } }; await browser.open(({ ...seed, app: { relay: false } }))',
+      'await browser.open({ name: "a", target: "Gmail" }); await browser.open({ name: "b" })',
+      'await browser.open({ name: "m", metadata: { target: "Gmail" } })',
+      'const opts = { metadata: { target: "Gmail" } }; await browser.open(opts)',
+      'const event = { target: "#button" }; const opts = { name: "x" }; await browser.open(opts)',
+      'const fn = ({ target }) => target; const opts = { name: "x" }; await browser.open(opts)',
+      'await browser.open({ app: { target: "Gmail" } })',
+      'const app = { target: "Gmail" }; await browser.open({ app, url: "https://example.test" })',
     ],
     py: [
       'tab = await browser.open(name="check", url="http://localhost:3000")',
-      'tab = await browser.open(name="h", app={"relay": False})',
-      'tab = await browser.open(name="fixture", target="Gmail")',
-      'tab = await browser.open(name="fixture", app=({"relay": False}, {"target": "Gmail"}))',
-      'tab = await browser.open(name="fixture", app=({"target": "Gmail"},))',
+      'tab = await browser.open(name="h", app="chromium")',
+      'tab = await browser.open(app="webkit")',
+      'tab = await browser.open(app="http://127.0.0.1:32899")',
+      'tab = await browser.open(app="/opt/chromium", argv=["--no-sandbox"])',
+      'tab = await browser.open(name="fixture", metadata={"target": "Gmail"})',
+      'opts = {"metadata": {"target": "Gmail"}}\nawait browser.open(opts)',
+      'await browser.open(**opts, metadata={"target": "Gmail"})',
     ],
   } as const;
 
-  test("ego lite PC에서 app.target 없는 browser.open은 relay·headless 모두 TaskSpace 안내로 막는다", async () => {
+  test("ego lite PC에서 최상위 target 없는 browser.open은 모든 app에서 TaskSpace 안내로 막는다", async () => {
     for (const language of ["js", "py"] as const) {
       for (const code of relayCells[language]) {
         const reason = await matchRelayBrowserOpen({ language, code }, ego);
         expect(reason).toMatch(/BrowserSpaceGuard/);
-        expect(reason).toMatch(/`ego_browser`.*TaskSpace.*`app\.target`/);
+        expect(reason).toMatch(/`ego_browser`.*TaskSpace.*`target`/);
         expect(reason).not.toContain("\n");
       }
     }
   });
 
-  test("사용자가 지목한 탭(app.target)과 browser.open이 없는 셀은 ego lite PC에서도 통과한다", async () => {
+  test("사용자가 지목한 최상위 target과 browser.open이 없는 셀은 통과한다", async () => {
     const allowed = [
-      { language: "js", code: 'await browser.open({ name: "mail", app: { relay: true, target: "Gmail" } })' },
-      { language: "py", code: 'await browser.open(name="mail", app={"relay": True, "target": "Gmail"})' },
-      { language: "py", code: 'await browser.open(name="mail", app=dict(target="Gmail"))' },
-      { language: "js", code: 'const opts = { name: "m", app: { target: "Gmail" } }; await browser.open(opts)' },
-      { language: "js", code: 'const opts = { app: { target: "Gmail" } }; await browser.open(opts,)' },
-      { language: "js", code: 'await browser.open({ name: "m", app: ({ target: "Gmail" }) })' },
-      { language: "js", code: 'const tabApp = { target: "Gmail" }; await browser.open({ name: "m", app: (tabApp) })' },
-      { language: "js", code: 'await browser.open({ name: "m", app: { /* reuse the open tab */ target: "Gmail" } })' },
-      { language: "js", code: 'await browser.open({ name: "m", app: { /* reuse, existing tab */ target: "Gmail" } })' },
-      { language: "js", code: 'const target = "Gmail"; await browser.open({ name: "m", app: { target } })' },
-      { language: "py", code: 'await browser.open(name=str(4 // 2), app=dict(target="Gmail"))' },
-      { language: "js", code: 'await browser.open({ app: { target /* existing tab */: "Gmail" } })' },
-      { language: "js", code: 'const target = "Gmail"; await browser.open({ app: { target /* existing tab */ } })' },
-      { language: "py", code: 'opts = {"app": {"target": "Gmail"}}\nawait browser.open((opts))' },
-      { language: "js", code: 'const appOpts = { target: "Gmail" }; await browser.open({ name: "m", app: appOpts })' },
-      { language: "js", code: 'const base = { app: { target: "Gmail" } }; await browser.open({ ...base, name: "m" })' },
+      { language: "js", code: 'await browser.open({ name: "mail", app: "relay", target: "Gmail" })' },
+      { language: "py", code: 'await browser.open(name="mail", app="relay", target="Gmail")' },
+      { language: "js", code: 'await browser.open({ app: "http://127.0.0.1:32899", target: "Gmail" })' },
+      { language: "js", code: 'const opts = { name: "m", target: "Gmail" }; await browser.open(opts)' },
+      { language: "js", code: 'const opts = { target: "Gmail" }; await browser.open(opts,)' },
+      { language: "js", code: 'await browser.open(({ name: "m", target: "Gmail" }))' },
+      { language: "js", code: 'await browser.open({ name: "m", /* reuse, existing tab */ target: "Gmail" })' },
+      { language: "js", code: 'const target = "Gmail"; await browser.open({ name: "m", target })' },
+      { language: "py", code: 'await browser.open(name=str(4 // 2), target="Gmail")' },
+      { language: "py", code: 'opts = dict(target="Gmail")\nawait browser.open((opts))' },
+      { language: "py", code: 'opts = {"target": "Gmail"}\nawait browser.open((opts))' },
+      { language: "js", code: 'const base = { target: "Gmail" }; await browser.open({ ...base, name: "m" })' },
       { language: "js", code: 'await browser.close({ name: "check" })' },
       { language: "js", code: 'const tab = browser.tab("check"); await tab.goto("http://localhost:3000")' },
-      { language: "js", code: "const pages = await browser.targets({ app: { relay: true } })" },
+      { language: "js", code: 'const pages = await browser.targets({ app: "relay" })' },
       { language: "py", code: 'import webbrowser\nwebbrowser.open("http://localhost:3000")' },
     ] as const;
     for (const input of allowed) {

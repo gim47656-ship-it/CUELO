@@ -53,7 +53,6 @@ test("checks introduced fields and leaves the whole batch unchanged", async () =
     [{ list: [{ phase: "작업", items: [japanese[2]] }] }, "list[0].items[0]"],
     [{ op: "append", phase: "작업", items: [japanese[0]] }, "items[0]"],
     [{ op: "append", phase: "確認する", items: ["정상 작업"] }, "phase"],
-    [{ op: "block", task: "기존 작업", reason: "利用者に確認する" }, "reason"],
   ] as const) {
     const h = await harness();
     const before = h.state();
@@ -88,8 +87,8 @@ test("legacy selectors stay usable for append and status or removal operations",
   expect((await h.call({ op: "append", phase: "確認する", items: ["現在のパッチを確認"] })).isError).toBeUndefined();
   await h.runner.emitInput("할 일을 한국어로 작성해줘", undefined, "rpc");
   expect((await h.call({ op: "append", phase: "確認する", items: ["한국어 두 번째 추가"] })).isError).toBeUndefined();
-  for (const op of ["start", "block", "unblock", "done", "drop", "rm"]) {
-    expect((await h.call({ op, task: japanese[0], reason: "확인 대기" })).isError).toBeUndefined();
+  for (const op of ["start", "done", "drop", "rm"]) {
+    expect((await h.call({ op, task: japanese[0] })).isError).toBeUndefined();
   }
   expect(h.state()[0]!.tasks.some(task => task.content === japanese[0])).toBe(false);
   expect((await h.call({ op: "done", phase: "確認する" })).isError).toBeUndefined();

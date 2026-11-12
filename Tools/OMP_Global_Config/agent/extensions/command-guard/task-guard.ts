@@ -379,6 +379,10 @@ function isolationRequested(value: unknown): boolean {
 }
 
 function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
+  const items = Array.isArray(input.tasks) ? [input, ...input.tasks] : [input];
+  if (items.some((item) => item && typeof item === "object" && "steps" in item)) {
+    return "[SpawnGuard] 이 프로필은 task.steps: false입니다. TASK_GUARD와 발주 본문은 steps가 아니라 task 문자열에 넣으세요.";
+  }
   if (Array.isArray(input.tasks)) {
     if (input.tasks.length === 0) return "[SpawnGuard] tasks[]가 비어 있습니다.";
     const items: SpawnItem[] = [];
@@ -967,19 +971,14 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
 // 2026-10-31 사용자 결정 「스페이스공간 따로 만들어서 그쪽에다 하는 건 기본으로 두자 하네스정책상」: ego lite PC에서는
 // 브라우저 작업을 별도 ego TaskSpace(`ego_browser`)에서 한다. 규칙(wsl-windows-reference.md)이 10-21부터 그렇게 말했지만
 // 7일 집계에서 eval `browser.open`이 relay 21회·headless 6회 나왔다(코어 relay 안내가 모든 세션에 relay를 기본으로 알린다).
-// relay는 사용자가 지목한 이미 열린 탭(`app.target`)에만 쓴다. ego lite가 없는 PC는 막지 않는다.
-// 패턴은 위 eval 가드처럼 원문에 맞춘다(문자열 안의 `browser.open(`도 호출로 본다). 이슈 #60: target은 호출 옵션의 최상위
-// `app` 항목 값(`{…}`·`dict(…)`)의 직속 키일 때만 인정한다(최상위 `target`은 코어가 relay 새 탭으로 연다). 직접 준 `app`이
-// spread보다 우선한다. 옵션 전체가 변수·spread라 정적으로 못 보는 호출은 셀 어딘가의 `app` 값에 직속 target이 있으면,
-// `app` 값만 변수인 호출은 이 호출 인자 밖에 target 키가 있으면 통과시킨다.
+// relay는 사용자가 지목한 이미 열린 탭(최상위 `target`)에만 쓴다. ego lite가 없는 PC는 막지 않는다.
+// 패턴은 위 eval 가드처럼 원문에 맞춘다(문자열 안의 `browser.open(`도 호출로 본다).
+// 옵션 전체가 변수·spread라 정적으로 못 보면 셀의 옵션 객체 직속 target을 확인한다.
 const BROWSER_OPEN_CALLS = [
   /(?<![\w$.])browser\s*\.\s*open\s*\(/g,
   /(?<![\w$.])browser\s*\[\s*["'`]open["'`]\s*\]\s*\(/g,
   /\(\s*browser\s*\)\s*\.\s*open\s*\(/g,
 ] as const;
-const TARGET_KEY = /(?:(?<![\w$])target|["'`]target["'`])\s*(?::|=(?!=))/;
-// `app:`·`app=`·`"app":` 뒤 `{`·`(`·`dict(`로 시작하는 값. 끝은 값 시작 바로 앞이다.
-const APP_VALUE = /(?<![\w$])["'`]?app["'`]?\s*(?::|=(?!=))\s*(?=(?:dict\s*)?[({])/g;
 // 옵션 항목 `key: value`·`key=value`·`"key": value`
 const OPTION_ENTRY = /^["'`]?([A-Za-z_$][\w$]*)["'`]?\s*(?::|=(?!=))\s*([\s\S]*)$/;
 const EGO_PROBE_TIMEOUT_MS = 10_000;
@@ -1046,14 +1045,14 @@ function callArguments(code: string, open: number): string {
   return code.slice(open + 1);
 }
 
-function browserOpenArguments(code: string): string[] {
+function browserOpenArguments(code: string): { args: string; before: number }[] {
   const calls = BROWSER_OPEN_CALLS.flatMap((pattern) => [...code.matchAll(pattern)]);
   // b = browser 처럼 browser 객체를 alias한 경우 그 alias의 open 호출도 같은 호출로 본다.
   for (const match of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*\(*\s*browser\s*\)*\s*(?:[;,\n]|$)/g)) {
     const alias = match[1]!.replace(/\$/g, "\\$");
     calls.push(...code.matchAll(new RegExp(`(?<![\\w$.])${alias}\\s*\\.\\s*open\\s*\\(`, "g")));
   }
-  return calls.map((match) => callArguments(code, match.index! + match[0].length - 1));
+  return calls.map((match) => ({ args: callArguments(code, match.index! + match[0].length - 1), before: match.index! }));
 }
 
 /** 문자열은 그대로 두고 주석(js 줄·블록 주석, py `#`)만 공백 하나로 바꾼 원문. py의 `//`는 정수 나눗셈이다. */
@@ -1114,33 +1113,34 @@ function unwrapParens(text: string, py: boolean): string | undefined {
   return value;
 }
 
-/** `app` 값이 `{…}`·`dict(…)`(괄호로 감싼 것 포함)이면 직속 키에 target이 있는지, 변수 등 정적으로 못 보면 undefined. */
-function appValueHasTarget(value: string, py: boolean): boolean | undefined {
+/** 옵션 객체가 `{…}`·`dict(…)`이면 직속 target이 있는지 읽는다. 중첩 metadata는 target이 아니다. */
+function optionsValueHasTarget(value: string, py: boolean): boolean {
   const text = unwrapParens(value, py);
   if (text === undefined) return false;
   const open = /^(?:dict\s*\(|\{)/.exec(text);
-  if (!open) return undefined;
+  if (!open) return false;
   return splitTopLevel(callArguments(text, open[0].length - 1)).some(
     (entry) => entry === "target" || OPTION_ENTRY.exec(entry)?.[1] === "target",
   );
 }
 
-type OpenOptions = { app?: string; target: boolean; opaque: boolean };
+type OpenOptions = { target: boolean; references: string[] };
 
-/** 호출 인자의 최상위 옵션: 마지막 `app` 항목 값(shorthand는 그 이름), 최상위 target 유무, spread·변수처럼 못 보는 부분 유무. */
+/** Direct target keys and option variables that need their own definition checked. */
 function openOptions(args: string, py: boolean): OpenOptions {
-  const options: OpenOptions = { target: false, opaque: false };
+  const options: OpenOptions = { target: false, references: [] };
   for (const raw of splitTopLevel(args)) {
     const part = unwrapParens(raw, py) ?? "";
-    const inObject = part.startsWith("{");
-    for (const entry of inObject ? splitTopLevel(callArguments(part, 0)) : [part]) {
+    const object = /^(?:dict\s*\(|\{)/.exec(part);
+    for (const entry of object ? splitTopLevel(callArguments(part, object[0].length - 1)) : [part]) {
       const match = OPTION_ENTRY.exec(entry);
       if (match) {
-        if (match[1] === "app") options.app = match[2]!.trim();
-        else if (match[1] === "target") options.target = true;
-      } else if (inObject && entry === "app") options.app = entry;
-      else if (inObject && entry === "target") options.target = true;
-      else if (!inObject || /^(?:\.\.\.|\*\*)/.test(entry)) options.opaque = true;
+        if (match[1] === "target") options.target = true;
+      } else if (object && entry === "target") options.target = true;
+      else {
+        const reference = (object ? /^(?:\.\.\.|\*\*)([A-Za-z_$][\w$]*)$/ : /^([A-Za-z_$][\w$]*)$/).exec(entry);
+        if (reference) options.references.push(reference[1]!);
+      }
     }
   }
   return options;
@@ -1150,25 +1150,23 @@ export async function matchRelayBrowserOpen(input: EvalCallInput, egoLiteAvailab
   if (typeof input.code !== "string") return undefined;
   const code = input.code;
   const py = input.language === "py";
-  const clean = stripComments(code, py);
-  const cellHasAppTarget = [...clean.matchAll(APP_VALUE)].some(
-    (match) => appValueHasTarget(clean.slice(match.index! + match[0].length), py) === true,
-  );
-  const untargeted = browserOpenArguments(code).some((args) => {
+  const untargeted = browserOpenArguments(code).some(({ args, before }) => {
     const options = openOptions(stripComments(args, py), py);
-    // 최상위 target을 직접 쓴 호출은 app.target이 함께 있어도 잘못 쓴 호출이다.
-    if (options.target) return true;
-    if (options.app !== undefined) {
-      // app 값이 변수면 그 정의(이 호출 인자 밖)에 target 키가 있어야 한다.
-      return !(appValueHasTarget(options.app, py) ?? TARGET_KEY.test(code.replace(args, "")));
-    }
-    return !(options.opaque && cellHasAppTarget);
+    if (options.target) return false;
+    const beforeCall = stripComments(code.slice(0, before), py);
+    const referencedTarget = options.references.some((name) => {
+      const escaped = name.replace(/\$/g, "\\$");
+      const definitions = [...beforeCall.matchAll(new RegExp(`(?:^|[;\\n])\\s*(?:(?:const|let|var)\\s+)?${escaped}\\s*=(?!=)\\s*`, "g"))];
+      const definition = definitions.at(-1);
+      return definition !== undefined && optionsValueHasTarget(beforeCall.slice(definition.index! + definition[0].length), py);
+    });
+    return !referencedTarget;
   });
   if (!untargeted || !(await egoLiteAvailable())) return undefined;
   return (
     "[BrowserSpaceGuard] 이 PC에는 ego lite가 있어 브라우저 작업은 `ego_browser` 도구의 별도 TaskSpace에서 합니다" +
     '(기본 profile "user", CUELO 화면 검증은 profile: "verify"이고 그 프로필이 없는 PC는 "user"; relay·headless 모두 해당). ' +
-    "사용자가 지목한 이미 열린 탭에서 할 때만 `browser.open`에 그 탭의 URL·제목을 `app.target`으로 넘기세요."
+    "사용자가 지목한 이미 열린 탭에서 할 때만 `browser.open`에 그 탭의 URL·제목을 최상위 `target`으로 넘기세요."
   );
 }
 

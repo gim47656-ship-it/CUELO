@@ -18,12 +18,16 @@ function checkEnabled(agentDir: string): boolean {
 
 const BLOCK_TIMEOUT_MS = 25_000;
 
+type Verdict = { block: true; reason: string; stale?: true };
+
 type Check = {
   plan: string;
   tool: string;
   checked: boolean;
   correctionTool?: string;
-  pending?: Promise<{ block: true; reason: string } | undefined>;
+  pending?: Promise<Verdict | undefined>;
+  /** Steering generation the check started in; a goal frame never reuses a check from an older one. */
+  gen?: number;
 };
 
 function briefOf(input: unknown): string {
@@ -117,8 +121,14 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       note(ctx, `${what} 통과(같은 작업의 조언 반영 뒤 재호출)`);
       return;
     }
-    if (previous?.plan === plan && previous.pending) return previous.pending;
-    const check: Check = { plan, tool: name, checked: false };
+    // 2026-11-12 user decision: a goal frame is never held. Its check runs behind the call and the advice arrives as an
+    // aside; dispatches stay held because a wrong dispatch costs a whole Maker run.
+    const background = name === "lab_goal";
+    // A goal frame resent after steering starts a fresh check instead of sharing one the steering already made stale.
+    if (previous?.plan === plan && previous.pending && (!background || previous.gen === state.gen)) return background ? undefined : previous.pending;
+    const check: Check = { plan, tool: name, checked: false, gen: myGen };
+    // Only one goal is current: a new frame retires every other frame's check, so its late advice is dropped.
+    if (background) for (const [other, entry] of checks) if (entry.tool === "lab_goal" && other !== key) checks.delete(other);
     checks.set(key, check);
     const current = () => mySession === state.session && myGen === state.gen && checks.get(key) === check;
     note(ctx, `${what} 점검 중: 묻는 중`);
@@ -126,13 +136,13 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
     // already in flight still holds without licensing a retry.
     const abort = new AbortController();
     inflight.add(abort);
-    check.pending = (async (): Promise<{ block: true; reason: string } | undefined> => {
+    check.pending = (async (): Promise<Verdict | undefined> => {
       const advice = await ask(ctx, plan, "", BLOCK_TIMEOUT_MS, { signal: abort.signal, live: current });
       if (mySession !== state.session) return;
       if (!current()) {
         // Keep fail-open for a failed check, but never execute a successfully checked plan superseded by steering.
         if (!advice.ok) return;
-        return { block: true, reason: "[사전 점검] 점검 중 사용자 지시나 같은 작업의 계획이 바뀌었다. 최신 지시에 맞는 현재 계획으로 다시 호출하라. 이전 답으로 재호출을 허용하지 않는다." };
+        return { block: true, stale: true, reason: "[사전 점검] 점검 중 사용자 지시나 같은 작업의 계획이 바뀌었다. 최신 지시에 맞는 현재 계획으로 다시 호출하라. 이전 답으로 재호출을 허용하지 않는다." };
       }
       check.checked = true;
       if (!advice.ok) { note(ctx, `${what} 점검 건너뜀(통과): ${advice.why}`); return; }
@@ -145,22 +155,42 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       return {
         block: true,
         reason: [
-          `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
+          background
+            ? `[사전 점검] 오류가 아니다. 작업 목표는 이미 등록됐고 도구는 막지 않았다. ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 그 목표를 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
+            : `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
           ...(failedLanes ? [failedLanes] : []),
-          identity
-            ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. ${name === "lab_goal" ? "산출물 id와 경로가 같으면 목표 문장을 고친 재호출도 한 번 통과하며, 산출물이 바뀌면 다시 점검한다." : "같은 작업 이름과 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다."}`
-            : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
+          background
+            ? identity
+              ? "맞는 것이 있으면 같은 산출물 id와 경로로 lab_goal frame을 다시 불러 반영하라. 그 재호출은 한 번 점검 없이 통과하고, 산출물이 바뀌면 다시 점검한다. 반영할 것이 없으면 그대로 진행한다."
+              : "맞는 것이 있으면 lab_goal frame을 다시 불러 반영하라. 내용을 바꾸면 새 목표로 다시 점검한다. 반영할 것이 없으면 그대로 진행한다."
+            : identity
+              ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 같은 작업 이름과 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다.`
+              : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
           "사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.",
           "",
           opinionText(advice.opinions),
         ].join("\n"),
       };
     })();
-    try {
-      return await check.pending;
-    } finally {
+    const settle = () => {
       check.pending = undefined;
       inflight.delete(abort);
+    };
+    if (background) {
+      // A stale or superseded answer is dropped (the frame already ran, and the next frame is checked on its own). The
+      // check is advisory, so a delivery failure is noted in the panel instead of escaping as an unhandled rejection.
+      void check.pending.then((verdict) => {
+        if (!verdict) return;
+        if (verdict.stale || !current()) { note(ctx, `${what} 조언 버림(점검 중 지시나 목표가 바뀜)`); return; }
+        pi.sendMessage({ customType: "preflight-advice", content: verdict.reason, display: false, attribution: "agent" }, { deliverAs: "aside" });
+      }).catch((error: unknown) => note(ctx, `${what} 조언 전달 실패: ${error instanceof Error ? error.message : String(error)}`)).finally(settle);
+      return;
+    }
+    try {
+      const verdict = await check.pending;
+      return verdict && { block: verdict.block, reason: verdict.reason };
+    } finally {
+      settle();
     }
   });
 }
