@@ -1170,7 +1170,13 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       expect(prepared[0]!.status).toBe(fail ? "unavailable" : "judged");
       // 추천(NORMAL_SONNET)과 다른 후보(NORMAL_OPUS)는 추천 변경이라 근거를 요구한다. Jev 불가도 같다.
       const item = { ...h.input.tasks[0], model: "anthropic/claude-opus-5-5:auto" };
-      expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toMatchObject({ block: true });
+      const blocked = await h.beforeTask({ ...h.input, tasks: [item] }, {} as never) as { block?: boolean; reason?: string };
+      expect(blocked).toMatchObject({ block: true });
+      // 거절 사유만 보고 고칠 수 있어야 한다: 어느 항목인지, 왜 근거가 필요한지(미판정 또는 추천과 선택), 어디에 쓰는지.
+      expect(blocked.reason).toContain(`'${item.name}'`);
+      expect(blocked.reason).toContain("PREPARED_TASK: <preparedId>");
+      if (fail) expect(blocked.reason).toContain("unavailable");
+      else for (const part of ["NORMAL_SONNET", "anthropic/claude-sonnet-5-5", "NORMAL_OPUS", "anthropic/claude-opus-5-5"]) expect(blocked.reason).toContain(part);
       item.task = brief.replace("OWNED_PATHS: src/view.ts", "OWNED_PATHS: src/view.ts\nROUTING_REASON: 두 경합 불변식이 새로 확인되어 Main이 결정함");
       expect(await h.beforeTask({ ...h.input, tasks: [item] }, {} as never)).toBeUndefined();
       expect(h.requests.length).toBe(1);

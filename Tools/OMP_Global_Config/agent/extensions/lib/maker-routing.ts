@@ -1246,7 +1246,18 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // (예전 승인 판정의 `\s*`는 줄바꿈까지 먹어 빈 줄 다음 제목을 근거로 인정했다.)
       const reasonText = /^[^\S\r\n\u2028\u2029]*ROUTING_REASON:[^\S\r\n\u2028\u2029]*(\S.*)$/m.exec(task)?.[1]?.trim() ?? null;
       const routingReason = reasonText !== null;
-      if (changed && !routingReason) return { block: true, reason: existingOwner ? `기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ROUTING_REASON에 근거를 적습니다.` : "Jev 불가·불명확한 지배 판단·추천 변경은 Main이 같은 기준으로 결정하고 ROUTING_REASON 한 줄에 근거를 남깁니다." };
+      if (changed && !routingReason) {
+        // 11-12 거절 연쇄(doc/history/2026/11/12-dispatch-rejects-reason): 어느 항목인지·왜인지·어디에 쓰는지를 말하지 않으면
+        // Main이 다른 항목이나 context 형식을 고치다 다시 막힌다.
+        const label = `'${clipped(name, 40)}'`;
+        const where = "이 항목 task 본문에 `ROUTING_REASON: <근거 한 줄>` 줄을 넣으세요(준비 참조면 `PREPARED_TASK: <preparedId>` 다음 줄). 다른 항목에 적은 근거는 이 항목에 적용되지 않습니다.";
+        if (existingOwner) return { block: true, reason: `${label}: 기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ${where}` };
+        const recommendedModel = candidates.find((candidate) => candidate.profile === profile)?.model;
+        const why = prepared.status !== "judged"
+          ? `Jev가 이 준비를 판정하지 못했습니다(${prepared.status})`
+          : `추천 ${profile ?? "없음"}${recommendedModel ? `(${recommendedModel})` : ""} 대신 ${selected.profile}(${selected.model})을 골랐습니다`;
+        return { block: true, reason: `${label}: ${why}. Main이 같은 기준으로 정한 근거를 남기려면 ${where}` };
+      }
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
       const recommendedCandidate = candidates[recommended];
       const workClass = answers?.workClass?.choice ?? null;
