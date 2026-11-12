@@ -40,3 +40,47 @@ test("pending reminder retains IDs, status exposes full checks, and verified evi
  expect(checked).toEqual([undefined]);
  expect((await call({ op: "status" })).content[0].text).toContain("[확인됨] report");
 });
+
+test("frames never change the system prompt; the frame is re-shown as a message only when the conversation lost it", async () => {
+ type StartResult = { systemPrompt: string[]; message?: { customType: string; content: string; details: { at: string } } } | undefined;
+ const handlers = new Map<string, Handler[]>();
+ let tool: GoalTool;
+ const entries: Record<string, unknown>[] = [];
+ const ctx = { cwd: process.cwd(), agent: { kind: "main" }, sessionManager: { getBranch: () => entries }, ui: { setWidget() {} } };
+ goalLane({
+  zod: z,
+  on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+  registerTool(value: GoalTool) { tool = value; },
+  sendMessage() {},
+  appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
+ } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
+ const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
+ const start = async () => (await emit("before_agent_start", { reason: "prompt", prompt: "next", systemPrompt: ["base"] }))[0] as StartResult;
+ const frame = (goal: string) => tool.execute("goal-test", { op: "frame", goal, size: "normal", deliverables: [{ id: "d", what: "w", check: "c" }] }, undefined, undefined, ctx);
+ await emit("session_start", {});
+ const before = await start();
+ await frame("First goal");
+ const afterFirst = await start();
+ await frame("Second goal");
+ const afterSecond = await start();
+ expect(afterFirst?.systemPrompt).toEqual(before?.systemPrompt);
+ expect(afterSecond?.systemPrompt).toEqual(before?.systemPrompt);
+ // The `frame` tool result already shows it.
+ expect(afterFirst?.message).toBeUndefined();
+ expect(afterSecond?.message).toBeUndefined();
+
+ await emit("session_compact", {});
+ const afterCompact = await start();
+ expect(afterCompact?.systemPrompt).toEqual(before?.systemPrompt);
+ expect(afterCompact?.message?.content).toContain("Second goal");
+ expect((await start())?.message).toBeUndefined();
+
+ // A restart restores from the branch: a compaction after the frame means the conversation no longer shows it.
+ const at = afterCompact!.message!.details.at;
+ entries.push({ type: "compaction" });
+ await emit("session_start", {});
+ expect((await start())?.message?.content).toContain("Second goal");
+ entries.push({ type: "custom_message", customType: afterCompact!.message!.customType, details: { at } });
+ await emit("session_start", {});
+ expect((await start())?.message).toBeUndefined();
+});

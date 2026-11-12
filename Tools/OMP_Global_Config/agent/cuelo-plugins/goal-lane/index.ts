@@ -66,6 +66,13 @@ On a request whose result the user will judge (an image, a document, a site, a f
 - Before reporting done or waiting, record \`op: "evidence"\` per deliverable. A file path only proves the file exists; the check itself needs a bash command you ran or one exact line of an eval cell you ran without error (\`command\`), a URL that answers (\`url\`) or a vision read of the file (\`observation\`, after \`read <file>?q=…\`). Your own look at an image is not a check. Delegating does not move a deliverable off your lane; while a child works, do your own deliverables.
 - When the user changes the request or adds work while you are on it, call \`op: "frame"\` again with the new goal and every deliverable still owed; a deliverable kept with the same id and check keeps its evidence.`;
 
+// The system prompt carries only the fixed SYSTEM_BLOCK. The frame used to be appended there too, so every new frame
+// (and the restored one after a restart) changed the last system block on the next prompt and the provider re-wrote the
+// whole conversation behind it (2026-11-12 prompt-prefix-ledger: 49k cached, 90k-285k re-written per change). The
+// `frame` tool result already shows the frame in the conversation; when compaction drops it, one hidden message after
+// the history restores it, which leaves the cached prefix intact.
+const FRAME_MESSAGE_TYPE = "goal-lane-frame";
+
 // Without a frame the plugin cannot know the goal; after this many substantive tool results in one input it asks once
 // whether a frame is due (typo-sized requests finish in 2-3 calls; the 11-05 bug-fix control used 13-16 with docs).
 const FRAME_REMINDER_AFTER = 8;
@@ -341,6 +348,8 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   const resolveJudge = options.resolveJudge ?? defaultResolveJudge;
   const z = pi.zod;
   let frame: Frame | undefined;
+  /** `at` of the frame the conversation currently shows (its `frame` result or a FRAME_MESSAGE_TYPE message). */
+  let shownAt: string | undefined;
   let userText = "";
   /** The user's own words as typed (spaces kept), for the JEV explicit check; the tail is what gets sent. */
   let userWords = "";
@@ -366,6 +375,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
 
   const reset = () => {
     frame = undefined;
+    shownAt = undefined;
     userText = "";
     userWords = "";
     nudgedThisInput = false;
@@ -398,9 +408,17 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     try {
       for (const entry of ctx.sessionManager.getBranch() as unknown[]) {
         if (!entry || typeof entry !== "object" || !("type" in entry)) continue;
-        if (entry.type === "custom" && "customType" in entry && entry.customType === CUSTOM_TYPE && "data" in entry && entry.data && typeof entry.data === "object") {
-          // Our own appended entry; the shape is what `persist` wrote.
-          frame = entry.data as Frame;
+        if (entry.type === "compaction") {
+          shownAt = undefined;
+        } else if (entry.type === "custom" && "customType" in entry && entry.customType === CUSTOM_TYPE && "data" in entry && entry.data && typeof entry.data === "object") {
+          // Our own appended entry; the shape is what `persist` wrote. A new `at` comes from a `frame` call, whose result
+          // shows the frame; evidence updates keep the same `at`.
+          const data = entry.data as Frame;
+          if (data.at !== frame?.at) shownAt = data.at;
+          frame = data;
+        } else if (entry.type === "custom_message" && "customType" in entry && entry.customType === FRAME_MESSAGE_TYPE && "details" in entry) {
+          const at = (entry.details as { at?: unknown } | undefined)?.at;
+          if (typeof at === "string") shownAt = at;
         } else if (entry.type === "message" && "message" in entry && entry.message && typeof entry.message === "object") {
           const message: Message = entry.message;
           if (message.role === "user" && message.synthetic !== true && message.attribution !== "agent") {
@@ -435,6 +453,9 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   pi.on("session_start", (_event, ctx) => restore(ctx));
   pi.on("session_switch", (_event, ctx) => restore(ctx));
   pi.on("session_shutdown", () => reset());
+  pi.on("session_compact", () => {
+    shownAt = undefined;
+  });
 
   /** One background JEV judgment per user message: frame needed (no frame or a small one) or goal changed (a frame). */
   const judgeUserMessage = (text: string, ctx: ExtensionContext) => {
@@ -489,8 +510,13 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   pi.on("before_agent_start", (event, ctx) => {
     try {
       if (!main || event.reason !== "prompt" || !inScope(ctx.cwd)) return;
-      const block = frame && frame.size !== "small" ? `${SYSTEM_BLOCK}\n\n${frameForPrompt(frame)}` : SYSTEM_BLOCK;
-      return { systemPrompt: [...event.systemPrompt, block] };
+      const systemPrompt = [...event.systemPrompt, SYSTEM_BLOCK];
+      if (!frame || frame.size === "small" || frame.at === shownAt) return { systemPrompt };
+      shownAt = frame.at;
+      return {
+        systemPrompt,
+        message: { customType: FRAME_MESSAGE_TYPE, content: frameForPrompt(frame), details: { at: frame.at }, display: false, attribution: "agent" },
+      };
     } catch {
       return;
     }
@@ -644,6 +670,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         reframeReminded = false;
         frameJudgedNeeded = false;
         const saved = persist(ctx);
+        shownAt = frame.at;
         const lines = [`frame 등록 (size ${size}).`, ...frameLines(frame), ...(saved ? [] : [PERSIST_WARNING])];
         if (carried.length) lines.push(`이전 frame에서 같은 id·check의 근거 ${carried.length}건을 이어받았다.`);
         if (ungrounded.length) {
