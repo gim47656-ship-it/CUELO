@@ -2804,6 +2804,148 @@ describe("숨김 단서(C1)", () => {
     expect(leads.map((lead) => `${lead.kind}:${lead.line}`).sort()).toEqual(["empty-catch-added:5", "skip-added:1"]);
   });
 
+  test.each([
+    ["// istanbul ignore next", "// istanbul ignored next"],
+    ["/* c8 ignore start */", "/* c8 ignored start */"],
+    ["/* v8 ignore next */", "/* v8 ignored next */"],
+    ["// Stryker disable all", "// Stryker disabled all"],
+    ["run(); // nosemgrep", "run(); // nosemgreps"],
+    ["key = value; // gitleaks:allow", "key = value; // gitleaks:allowed"],
+    ["// biome-ignore lint/suspicious/noExplicitAny", "// biome-ignored lint/suspicious/noExplicitAny"],
+    ["# pylint: disable=unused-import", "# pylint: disabled=unused-import"],
+    ['@SuppressWarnings("unchecked")', '@SuppressWarningsExtra("unchecked")'],
+    ["#[allow(dead_code)]", "#[allowed(dead_code)]"],
+    ["#![allow(clippy::all)]", "#![allowed(clippy::all)]"],
+  ])("recognizes suppression %s without matching its near miss", (suppression, nearMiss) => {
+    const leads = detectHidingLeads([{ path: "src/a.rs", status: "modified", changedLines: [
+      row(suppression, false, 1), row(nearMiss, false, 2), row(suppression, true, 3),
+    ] }]);
+    expect(leads).toEqual([{ kind: "suppression-added", path: "src/a.rs", line: 1, text: suppression }]);
+  });
+
+  const diffLeads = (path: string, diff: string) => detectHidingLeads([{ path, status: "modified", changedLines: parseChangedLines(diff), diff }]);
+  test.each([
+    ["fail_under", 90, 80], ["minCoverage", 90, 80], ["minimum", 90, 80],
+    ["maxWarnings", 0, 5], ["maxSize", 100, 200], ["sizeBudget", 100, 200], ["timeBudget", 100, 200],
+  ])("reports weakening %s, but not tightening or an unchanged value", (key, before, after) => {
+    const diff = (a: number, b: number) => `@@ -1 +1 @@\n-${key}: ${a}\n+${key}: ${b}`;
+    expect(diffLeads("quality.yml", diff(before, after))).toMatchObject([{ kind: "threshold-lowered", line: 1, text: expect.stringContaining(`${before} -> ${after}`) }]);
+    expect(diffLeads("quality.yml", diff(after, before))).toEqual([]);
+    expect(diffLeads("quality.yml", diff(before, before))).toEqual([]);
+  });
+
+  test("coverage metrics require a coverage/threshold context and ambiguous keys stay silent", () => {
+    const coverage = "@@ -1,6 +1,6 @@\n coverage: {\n   thresholds: {\n-    lines: 90,\n+    lines: 80,\n-    branches: 90,\n+    branches: 80,\n-    functions: 90,\n+    functions: 80,\n-    statements: 90,\n+    statements: 80,\n   }\n }";
+    expect(diffLeads("vitest.config.ts", coverage).map((lead) => lead.text.split(":")[0])).toEqual(["lines", "branches", "functions", "statements"]);
+    expect(diffLeads("quality.yml", "@@ -1,5 +1,5 @@\n-lines: 90\n+lines: 80\n-threshold: 90\n+threshold: 80\n-limit: 90\n+limit: 80\n-budget: 100\n+budget: 200\n-minutes: 90\n+minutes: 80")).toEqual([]);
+    expect(diffLeads("README.md", coverage)).toEqual([]);
+    expect(diffLeads("package-lock.json", coverage)).toEqual([]);
+  });
+
+  test("threshold pairs must share a hunk, key and unique structural scope", () => {
+    expect(diffLeads("quality.yml", "@@ -1 +1 @@\n-minCoverage: 90\n+other: 80\n@@ -20 +20 @@\n-other: 90\n+minCoverage: 80")).toEqual([]);
+    expect(diffLeads("quality.yml", "@@ -1,4 +1,4 @@\n first:\n-  minCoverage: 90\n second:\n+  minCoverage: 80")).toEqual([]);
+    expect(diffLeads("quality.yml", "@@ -1,2 +1 @@\n-minCoverage: 90\n-minCoverage: 95\n+minCoverage: 80")).toEqual([]);
+    expect(diffLeads("quality.yml", "@@ -1 +1 @@\n-minCoverage: 90\n+minCoverage: dynamicValue")).toEqual([]);
+    expect(diffLeads("quality.yml", "@@ -1 +1 @@\n-minCoverage: 90\n+minCoverage: 80 + adjustment")).toEqual([]);
+  });
+
+  test.each([['"error"', '"warn"'], ['"warn"', '"off"'], ["2", "1"], ["1", "0"], ['["error", "always"]', '["warn", "always"]']])("lint severity downgrade %s -> %s requires a lint rules context", (before, after) => {
+    const diff = (a: string, b: string) => `@@ -1,3 +1,3 @@\n rules: {\n-  "eqeqeq": ${a},\n+  "eqeqeq": ${b},\n }`;
+    expect(diffLeads("eslint.config.js", diff(before, after))).toMatchObject([{ kind: "threshold-lowered", line: 2 }]);
+    expect(diffLeads("eslint.config.js", diff(after, before))).toEqual([]);
+    expect(diffLeads("src/config.ts", diff(before, after))).toEqual([]);
+    expect(diffLeads("eslint.config.js", diff(before, after).replace("rules:", "settings:"))).toEqual([]);
+  });
+
+  test("nested lint rule options retain their max-style direction", () => {
+    const diff = (max: number) => `@@ -1,5 +1,5 @@\n rules: {\n   "max-depth": ["error", {\n-    max: 2,\n+    max: ${max},\n   }],\n }`;
+    expect(diffLeads("eslint.config.js", diff(1))).toEqual([]);
+    expect(diffLeads("eslint.config.js", diff(10))).toMatchObject([{ kind: "threshold-lowered", text: expect.stringContaining("2 -> 10 (max)") }]);
+  });
+
+  test("suppression and threshold lead text uses the existing secret redactor", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "quality.ts"), "export const minCoverage = 90;\n");
+    sh(env.work, "add", "quality.ts");
+    sh(env.work, "commit", "-q", "-m", "redaction fixture");
+    const secret = "FAKE_AUTH_TOKEN_SENTINEL_1234567890";
+    writeFileSync(join(env.work, "quality.ts"), `export const minCoverage = 80; // token="${secret}"\nconst token = "${secret}"; // gitleaks:allow\n`);
+    const calls: { family: Lane; prompt: string }[] = [];
+    const result = await runReview(input({ files: ["quality.ts"] }), deps(env, {}, calls), signal);
+    expect(kinds(result.hidingLeads ?? [])).toEqual(["suppression-added", "threshold-lowered"]);
+    for (const lead of result.hidingLeads ?? []) {
+      expect(lead.text).not.toContain(secret);
+      expect(lead.text).toContain("[REDACTED]");
+    }
+    for (const call of calls) expect(call.prompt).not.toContain(secret);
+  });
+
+  test.each([
+    ['throw new Error("not implemented");', 'throw new Error("not available");'],
+    ["raise NotImplementedError()", "raise NotImplementedErrorWrapper()"],
+    ["todo!()", "todo()"],
+    ["unimplemented!();", "unimplemented();"],
+    ['_ => todo!(),', 'const text = "_ => todo!(),";'],
+    ['fn f() -> u8 { unimplemented!() }', 'const text = "unimplemented!()";'],
+    ['if (x) throw new Error("not implemented");', 'const text = \'throw new Error("not implemented");\';'],
+    ['todo!("later")', 'run(); // todo!("later")'],
+    ["if flag: raise NotImplementedError()", "run() # raise NotImplementedError()"],
+  ])("source stub %s excludes tests, comments, removals and near misses", (stub, nearMiss) => {
+    const path = stub.includes("raise ") ? "src/a.py" : "src/a.rs";
+    const leads = detectHidingLeads([{ path, status: "modified", changedLines: [
+      row(stub, false, 1), row(nearMiss, false, 2), row(stub, true, 3), row(`// ${stub}`, false, 4),
+      { ...row(stub, false, 5), comment: true as const },
+    ] }]);
+    expect(leads).toEqual([{ kind: "stub-added", path, line: 1, text: stub }]);
+    expect(detectHidingLeads([{ path: "src/a.test.ts", status: "modified", changedLines: [row(stub)] }])).toEqual([]);
+    expect(detectHidingLeads([{ path: "tests/a.py", status: "modified", changedLines: [row(stub)] }])).toEqual([]);
+    expect(detectHidingLeads([{ path: "notes.md", status: "modified", changedLines: [row(stub)] }])).toEqual([]);
+  });
+
+  test.each([
+    ["src/a.ts", 'throw new Error("Not implemented");'],
+    ["src/a.ts", 'throw new Error("NOT IMPLEMENTED");'],
+    ["src/a.ts", 'if (!this.#ready) throw new Error("not implemented");'],
+    ["src/a.ts", '#load() { throw new Error("not implemented"); }'],
+    ["src/a.rs", "#[inline] fn f() -> u8 { todo!() }"],
+    ["src/a.rs", "let x: &'a str = todo!(); let y: &'b str;"],
+  ])("stub syntax respects case and language tokens in %s", (path, text) => {
+    expect(detectHidingLeads([{ path, status: "modified", changedLines: [row(text)] }])).toEqual([{ kind: "stub-added", path, line: 1, text }]);
+  });
+
+  test.each(["src/a.pyx", "src/a.pyw", "src/a.rake", "Rakefile", "scripts/check"])("unknown hash-comment language %s does not turn comments into stubs", (path) => {
+    expect(detectHidingLeads([{ path, status: "modified", changedLines: [row("run() # raise NotImplementedError()")] }])).toEqual([]);
+  });
+
+  test.each(["vue", "svelte", "astro", "html", "htm", "xhtml"])("embedded JS in .%s keeps private members executable", (extension) => {
+    const path = `src/A.${extension}`;
+    const inline = 'if (!this.#ready) throw new Error("not implemented");';
+    const member = '#load() { throw new Error("not implemented"); }';
+    expect(detectHidingLeads([{ path, status: "modified", changedLines: [row(inline, false, 1), row(member, false, 2)] }])).toEqual([
+      { kind: "stub-added", path, line: 1, text: inline }, { kind: "stub-added", path, line: 2, text: member },
+    ]);
+  });
+
+  test("new advisory leads reach actual initial and delta reviewer prompts", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "eslint.config.js"), 'export default {\n  rules: {\n    eqeqeq: "error",\n  },\n};\n');
+    sh(env.work, "add", "eslint.config.js");
+    sh(env.work, "commit", "-q", "-m", "lint fixture");
+    writeFileSync(join(env.work, "eslint.config.js"), 'export default {\n  rules: {\n    eqeqeq: "warn",\n  },\n};\n');
+    const calls: { family: Lane; prompt: string }[] = [];
+    const d = deps(env, {}, calls);
+    const first = await runReview(input({ files: ["eslint.config.js"] }), d, signal);
+    expect(first.hidingLeads).toMatchObject([{ kind: "threshold-lowered", path: "eslint.config.js", line: 3 }]);
+    expect(calls[0].prompt).toContain("[threshold-lowered] eslint.config.js:3:");
+    writeFileSync(join(env.work, "eslint.config.js"), 'export default {\n  rules: {\n    eqeqeq: "off",\n  },\n};\n// istanbul ignore next\nthrow new Error("not implemented");\n');
+    calls.length = 0;
+    const second = await runReview(input({ files: ["eslint.config.js"], previousReviewId: first.reviewId }), d, signal);
+    expect(kinds(second.hidingLeads ?? [])).toEqual(["stub-added", "suppression-added", "threshold-lowered"]);
+    expect(calls[0].prompt).toContain("[stub-added] eslint.config.js:7:");
+    expect(calls[0].prompt).toContain("Not verdicts and not triggers");
+  });
+
   test("프롬프트는 단서가 있을 때만 판정이 아닌 단서 블록을 싣는다", () => {
     const base = { acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff" as const, text: "@@" }] };
     const none = buildReviewPrompt(base);

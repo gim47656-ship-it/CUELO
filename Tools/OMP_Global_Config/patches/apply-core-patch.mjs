@@ -18287,6 +18287,55 @@ export async function deleteManagedSkillScript(input: { name: string; script: st
 		patched: "for a throwaway managed browser.{{/if}}\n\nWhere ego lite is installed (the `ego_browser` tool runs), browser work, headless checks included, runs in its own ego TaskSpace through `ego_browser`; use `browser.open` through the relay only for a tab the user named, passing it as `app.target`.\n",
 	},
 	{
+		// Successful bash/eval delivery is smaller, but only when its full output stays recoverable.
+		file: "src/session/async-job-delivery.ts",
+		marker: "// CUELO: success-only async head/tail preview.",
+		anchor: "export const ASYNC_PREVIEW_MAX_CHARS = 4_000;",
+		patched: String.raw`export const ASYNC_PREVIEW_MAX_CHARS = 4_000;
+
+// CUELO: success-only async head/tail preview.
+export async function formatAsyncSuccessPreview(
+	result: string,
+	job: AsyncJob | undefined,
+	save: (text: string) => Promise<string | undefined>,
+): Promise<string | undefined> {
+	if (result.length <= 2_000 || job?.status !== "completed" || (job.type !== "bash" && job.type !== "eval")) return undefined;
+	const details = job.latestDetails;
+	if (details?.timedOut || details?.cancelled || (job.type === "bash" && details?.exitCode !== undefined && details.exitCode !== 0)) return undefined;
+	const meta = details?.meta;
+	// Never hide a capture failure behind a link that cannot recover the omitted text.
+	if (meta?.artifactError) return result;
+	try {
+		const artifactId = meta?.truncation?.artifactId ?? meta?.limits?.columnTruncated?.artifactId ?? await save(result);
+		if (!artifactId) return result;
+		const head = result.slice(0, 1_000).replace(/[\uD800-\uDBFF]$/u, "");
+		const tail = result.slice(-1_000).replace(/^[\uDC00-\uDFFF]/u, "");
+		return head + "\n[...]\n" + tail
+			+ "\nResult length: " + result.length + " chars; full output at artifact://" + artifactId;
+	} catch {
+		return result;
+	}
+}`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\tformatAsyncSuccessPreview,\n",
+		anchor: "\tbuildAsyncResultBatchMessage,\n",
+		patched: "\tbuildAsyncResultBatchMessage,\n\tformatAsyncSuccessPreview,\n",
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "\t\tconst successPreview = await formatAsyncSuccessPreview(text, job, async result => {",
+		anchor: "\t\tconst formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);",
+		patched: String.raw`		const successPreview = await formatAsyncSuccessPreview(text, job, async result => {
+			const { path, id } = await this.sessionManager.allocateArtifactPath("async");
+			if (!path || !id) return undefined;
+			await writeArtifact(path, result);
+			return id;
+		});
+		const formatted = successPreview ?? await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);`,
+	},
+	{
 		// Summary-first delivery reads the retained original, never the already-cut task preview.
 		file: "src/task/result-summary.ts",
 		marker: 'import { closeSync, fstatSync, openSync, readSync } from "node:fs";',

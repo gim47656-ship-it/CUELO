@@ -740,17 +740,98 @@ async function markComments(exec: Exec, git: string, root: string, path: string,
 // 실패를 고치지 않고 가리는 모양(테스트 삭제·약화, skip, lint/타입 억제, 삼킨 오류)을 바뀐 줄에서 정규식으로 찾는다. 판정도 trigger도 아니다:
 // 이미 시작된 심사의 reviewer 프롬프트에 단서로만 붙고, 게이트 판정과 표본에는 영향이 없다. 모델 호출·프로세스가 없다.
 
-export type HidingLeadKind = "test-file-deleted" | "tests-removed" | "assertions-removed" | "skip-added" | "suppression-added" | "empty-catch-added";
+export type HidingLeadKind = "test-file-deleted" | "tests-removed" | "assertions-removed" | "skip-added" | "suppression-added" | "empty-catch-added" | "threshold-lowered" | "stub-added";
 export interface HidingLead { kind: HidingLeadKind; path: string; line?: number; text: string }
 
 const TEST_CASE_CALL = /\b(?:test|it|describe)(?:\.\w+)*\s*\(/g;
 const PY_TEST_DEF = /^\s*(?:async\s+)?def\s+test_\w*/;
 const EXPECT_CALL = /\bexpect\s*\(/g;
 const SKIP_ADDED = /\b(?:test|it|describe)(?:\.\w+)*\.(?:skip|todo|skipIf)\b|\.skipIf\s*\(|@(?:pytest\.mark|unittest)\.skip|\bx(?:it|describe)\s*\(/;
-const SUPPRESSION_ADDED = /@ts-ignore|@ts-expect-error|eslint-disable|#\s*noqa|#\s*type:\s*ignore|\/\/\s*nolint/;
+const SUPPRESSION_ADDED = /@ts-ignore|@ts-expect-error|eslint-disable|#\s*noqa|#\s*type:\s*ignore|\/\/\s*nolint|\b(?:istanbul|c8|v8)\s+ignore\b|\bStryker\s+disable\b|\bnosemgrep\b|\bgitleaks:allow\b|\bbiome-ignore\b|\bpylint:\s*disable\b|@SuppressWarnings\b|#\s*!?\s*\[\s*allow\s*\(/;
 const EMPTY_CATCH = /\bcatch\s*(?:\(\s*[\w$]*\s*(?::\s*\w+)?\s*\))?\s*\{\s*\}/;
 // 여는 괄호 줄과 닫는 괄호 줄이 따로 더해진 빈 catch.
 const OPEN_CATCH = /\bcatch\s*(?:\(\s*[\w$]*\s*(?::\s*\w+)?\s*\))?\s*\{\s*$/;
+// Consume quoted strings and comments before looking for executable inline stubs.
+const STUB_TOKEN = /\/\/.*|\/\*.*?(?:\*\/|$)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|(\bthrow\s+new\s+Error\s*\(\s*(["'`])not implemented\2\s*\)|\braise\s+NotImplementedError\b|\b(?:todo|unimplemented)!\s*\()/gi;
+const HASH_STUB_TOKEN = new RegExp(`${STUB_TOKEN.source}|#.*`, "gi");
+const RUST_STUB_TOKEN = new RegExp(`'[A-Za-z_]\\w*\\b(?!')|${STUB_TOKEN.source}`, "gi");
+const JS_STUB_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?|xhtml)$/i;
+
+function hasStub(text: string, path: string): boolean {
+  const tokens = /\.rs$/i.test(path) ? RUST_STUB_TOKEN : JS_STUB_FILE.test(path) ? STUB_TOKEN : HASH_STUB_TOKEN;
+  for (const match of text.matchAll(tokens)) if (match[1]) return true;
+  return false;
+}
+
+type LeadSource = Pick<ChangedFile, "path" | "status" | "changedLines"> & { diff?: string };
+
+/**
+ * Compare only unique property replacements within one diff hunk and structural scope.
+ * Missing enclosing context is a reason to skip coverage metrics or lint severities.
+ */
+function thresholdLeads(path: string, diff: string, changedLines: readonly ChangedLine[]): HidingLead[] {
+  const leads: HidingLead[] = [];
+  const lintConfig = /(?:^|\/)(?:\.eslintrc(?:\.[^/]+)?|eslint\.config\.[^/]+)$/i.test(path);
+  const comments = { before: new Set<number>(), after: new Set<number>() };
+  for (const item of changedLines) if (item.comment) comments[item.removed ? "before" : "after"].add(item.line);
+  const scopes = { before: [] as { indent: number; key: string }[], after: [] as { indent: number; key: string }[] };
+  type Value = { key: string; value: number; direction: "min" | "max" | "severity"; line: number; text: string };
+  const pairs = new Map<string, { before: Value[]; after: Value[] }>();
+  const flush = () => {
+    for (const { before, after } of pairs.values()) {
+      if (before.length !== 1 || after.length !== 1) continue;
+      const old = before[0]!, added = after[0]!;
+      if (old.direction !== added.direction) continue;
+      if (added.direction === "max" ? added.value > old.value : added.value < old.value) {
+        leads.push({ kind: "threshold-lowered", path, line: added.line, text: `${added.key}: ${old.value} -> ${added.value} (${added.direction}); ${added.text.trim()}` });
+      }
+    }
+    pairs.clear();
+    scopes.before.length = scopes.after.length = 0;
+  };
+  let oldLine = 0, newLine = 0, inHunk = false;
+  for (const raw of diff.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (header) { flush(); oldLine = Number(header[1]); newLine = Number(header[2]); inHunk = true; continue; }
+    if (!inHunk || !/^[ +\-]/.test(raw)) continue;
+    const removed = raw.startsWith("-"), added = raw.startsWith("+");
+    const text = raw.slice(1).replace(/\r$/, "");
+    const line = removed ? oldLine : newLine;
+    for (const side of removed ? ["before"] as const : added ? ["after"] as const : ["before", "after"] as const) {
+      const scope = scopes[side];
+      if (!text.trim() || COMMENT_LINE.test(text)) continue;
+      const indent = text.length - text.trimStart().length;
+      while (scope.length && scope.at(-1)!.indent >= indent) scope.pop();
+      const context = scope.map((item) => item.key);
+      const open = /^\s*["']?([\w@./-]+)["']?\s*:\s*(?:[{\[]|\[[^\]\n]*\{)?\s*$/.exec(text);
+      if (open) { scope.push({ indent, key: open[1]! }); continue; }
+      if (!removed && !added) continue;
+      if (comments[side].has(line)) continue;
+      const property = /^\s*(?:(?:export\s+)?(?:const|let|var)\s+)?["']?([\w@./-]+)["']?\s*[:=]\s*(\[?\s*)(?:(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)|["'](error|warn|off)["'])(.*)$/i.exec(text);
+      if (!property) continue;
+      const [, key, array, numeric, severity, tail] = property;
+      const rule = lintConfig && context.at(-1) === "rules";
+      if (array!.trim() && !rule) continue;
+      if (!(array!.trim() ? /^\s*(?:,.*)?\]\s*[,;]?\s*$/ : /^\s*[,;]?\s*(?:(?:\/\/|#).*)?$/).test(tail!)) continue;
+      let direction: Value["direction"] | undefined;
+      const value = numeric === undefined ? ({ error: 2, warn: 1, off: 0 } as const)[severity!.toLowerCase() as "error" | "warn" | "off"] : Number(numeric);
+      if (rule && value >= 0 && value <= 2 && Number.isInteger(value)) direction = "severity";
+      else if (!severity && !array!.trim()) {
+        if (key === "fail_under" || /^min(?:imum)?(?:$|[_-]|[A-Z])/.test(key!) || (/^(?:lines|branches|functions|statements)$/.test(key!) && context.some((part) => /^(?:coverage|coverageThreshold|thresholds)$/i.test(part)))) direction = "min";
+        else if (/^max(?:imum)?(?:$|[_-]|[A-Z])/.test(key!) || /^(?:size|time|bundle|duration|latency)Budget$/i.test(key!) || (key === "budget" && context.some((part) => /^(?:size|time|bundle|duration|latency)$/i.test(part)))) direction = "max";
+      }
+      if (!direction || !Number.isFinite(value) || value < 0) continue;
+      const id = JSON.stringify([...context, key]);
+      const pair = pairs.get(id) ?? { before: [], after: [] };
+      pair[side].push({ key: key!, value, direction, line, text });
+      pairs.set(id, pair);
+    }
+    if (!added) oldLine += 1;
+    if (!removed) newLine += 1;
+  }
+  flush();
+  return leads;
+}
 
 function isTestFile(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
@@ -768,10 +849,11 @@ function countMatches(text: string, pattern: RegExp): number {
 }
 
 /**
- * 바뀐 줄에서 숨김 단서를 모은다: 지운 테스트 파일(같은 이름의 원본과 함께 지운 것은 제외), 순감소한 test/it/describe·expect 호출,
- * 더한 skip·todo, 더한 `@ts-ignore`·`eslint-disable`·`# noqa`류 억제, 더한 빈 catch. 문서·생성물은 보지 않는다.
+ * Collect advisory leads for deleted/weakened tests, skips, suppressions, empty catches and source stubs.
+ * Threshold leads require a unique same-key replacement in the same diff hunk and scope with a known weakening direction.
+ * Documentation and generated files are excluded; leads do not change triggers, sampling or gates.
  */
-export function detectHidingLeads(changes: readonly Pick<ChangedFile, "path" | "status" | "changedLines">[]): HidingLead[] {
+export function detectHidingLeads(changes: readonly LeadSource[]): HidingLead[] {
   const leads: HidingLead[] = [];
   const deletedStems = new Set(changes.filter((change) => change.status === "deleted" && !isTestFile(change.path)).map((change) => stemOf(change.path)));
   for (const change of changes) {
@@ -784,9 +866,11 @@ export function detectHidingLeads(changes: readonly Pick<ChangedFile, "path" | "
       if (test && !deletedStems.has(sourceStem)) leads.push({ kind: "test-file-deleted", path, text: "test file deleted and its same-name source file is not deleted in this change" });
       continue;
     }
+    if (change.diff) leads.push(...thresholdLeads(path, change.diff, change.changedLines));
     let casesBefore = 0, casesAfter = 0, expectsBefore = 0, expectsAfter = 0;
-    for (const [index, { line, text, removed }] of change.changedLines.entries()) {
-      const comment = COMMENT_LINE.test(text);
+    for (const [index, { line, text, removed, comment: blockComment }] of change.changedLines.entries()) {
+      const hashCode = (/\.rs$/i.test(path) && /^\s*#\s*!?\s*\[/.test(text)) || (JS_STUB_FILE.test(path) && /^\s*#[$A-Z_a-z]/.test(text));
+      const comment = blockComment || (COMMENT_LINE.test(text) && !hashCode);
       if (test && !comment) {
         const cases = countMatches(text, TEST_CASE_CALL) + (PY_TEST_DEF.test(text) ? 1 : 0);
         const expects = countMatches(text, EXPECT_CALL);
@@ -796,6 +880,7 @@ export function detectHidingLeads(changes: readonly Pick<ChangedFile, "path" | "
       const shown = text.trim();
       if (SUPPRESSION_ADDED.test(text)) leads.push({ kind: "suppression-added", path, line, text: shown });
       if (comment) continue;
+      if (!test && hasStub(text, path)) leads.push({ kind: "stub-added", path, line, text: shown });
       if (SKIP_ADDED.test(text)) leads.push({ kind: "skip-added", path, line, text: shown });
       const next = change.changedLines[index + 1];
       if (EMPTY_CATCH.test(text) || (OPEN_CATCH.test(text) && next && !next.removed && next.line === line + 1 && next.text.trim() === "}")) leads.push({ kind: "empty-catch-added", path, line, text: shown });
@@ -2419,7 +2504,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const snapshot: { path: string; blob: string; content: Buffer | null }[] = [];
   const triggers = new Set<string>();
   const redacted: { path: string; matches: number }[] = [];
-  const leadSources: Pick<ChangedFile, "path" | "status" | "changedLines">[] = [];
+  const leadSources: LeadSource[] = [];
   /** 본문에서 비밀로 보이는 값을 가린 뒤 싣는다. 개인키 블록이 든 파일은 빠지고 어떤 통과도 덮지 않는다. */
   const addPart = (path: string, kind: ReviewPart["kind"], text: string, lines: readonly ChangedLine[], status: ChangedFile["status"]): boolean => {
     const safe = redactSecrets(text);
@@ -2427,7 +2512,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     if (safe.count > 0) redacted.push({ path, matches: safe.count });
     parts.push({ path, kind, text: safe.text });
     for (const hit of detectMarkers(path, lines)) triggers.add(hit.trigger);
-    leadSources.push({ path, status, changedLines: [...lines] });
+    leadSources.push({ path, status, changedLines: [...lines], ...(kind === "diff" || kind === "delta" ? { diff: text } : {}) });
     return true;
   };
   /** 이름만 걸린 파일은 diff에 머리가 안 보여도 파일 전체에 개인키 블록이 있으면 싣지 않는다(diff만 검사하면 블록 한가운데 수정이 새어 나간다). */
