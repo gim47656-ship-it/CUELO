@@ -18304,7 +18304,7 @@ export async function deleteManagedSkillScript(input: { name: string; script: st
 const DELIVERY_ORIGINAL_MAX_BYTES = 2 * 1024 * 1024;
 const DELIVERY_SUMMARY_CHARS = 600;
 const DELIVERY_PROTECTED_KEY = /status|state|verdict|outcome|decision|resolution|success|^ok$|^result$|passed|complet(?:e|ion)|verifi(?:ed|cation)|finding|issue|problem|concern|obstacle|block|unresolved|remaining|pending|incomplete|limit|error|fail|risk|review|evidence|proof|locator|path|file|artifact|attach|modified|changed|director(?:y|ies)|revision|command/i;
-const DELIVERY_CAUTION_TEXT = /[?]|\breview[_ -]?ids?\b|\bR\d+[-_](?:ADV[-_])?\d+\b|\b(?:findings?|blockers?|blocked|partial|failed|failure|unverified|pending|unresolved|remaining|limitations?|errors?|approval|permission|cannot|credentials?|question|needs?|required|waiting|aborted|timeout|crashed|rejected|missing|unavailable|skipped|not (?:run|executed|verified))\b|지적|차단|막힘|미검증|실패|보류|승인|권한|오류|문제|대기|필요/iu;
+const DELIVERY_CAUTION_TEXT = /[?]|\breview[_ -]?ids?\b|\bR\d+[-_](?:ADV[-_])?\d+\b|\b(?:findings?|blockers?|blocked|partial|failed|failure|unverified|pending|unresolved|remaining|limitations?|errors?|approval|permission|cannot|credentials?|question|needs?|required|waiting|aborted|timeout|crashed|rejected|missing|unavailable|skipped|not (?:run|executed|verified))\b|\uC9C0\uC801|\uCC28\uB2E8|\uB9C9\uD798|\uBBF8\uAC80\uC99D|\uC2E4\uD328|\uBCF4\uB958|\uC2B9\uC778|\uAD8C\uD55C|\uC624\uB958|\uBB38\uC81C|\uB300\uAE30|\uD544\uC694/iu;
 const DELIVERY_LOCATOR_TEXT = /[\/\\]|(?<![\p{L}\p{N}_.-])[\p{L}\p{N}_.-]+\.[\p{L}\p{N}]{1,16}(?![\p{L}\p{N}_])/iu;
 const DELIVERY_PROTECTED_TEXT = new RegExp(DELIVERY_CAUTION_TEXT.source + "|" + DELIVERY_LOCATOR_TEXT.source, "iu");
 
