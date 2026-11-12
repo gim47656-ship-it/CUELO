@@ -41,9 +41,12 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
   const root = await realpath(resolve(cwd));
   if (slash(root).toLowerCase().includes("/.omp/agent")) throw new Error("인증 저장소 ~/.omp/agent 아래에서는 draft를 사용할 수 없습니다.");
   const value = output.trim();
-  if (isAbsolute(value) || /^[A-Za-z]:/.test(value)) throw new Error(`output은 cwd 기준 상대 경로만 허용됩니다: ${value}`);
+  if (/^[A-Za-z]:/.test(value)) throw new Error(`output은 cwd 기준 상대 경로나 cwd 안의 절대 경로만 허용됩니다: ${value}`);
   if (slash(value).split("/").includes("..")) throw new Error(`output에 '..'를 쓸 수 없습니다: ${value}`);
-  const absolute = resolve(root, value);
+  // cwd 안의 절대 경로는 cwd 기준 상대 경로로 바꿔 아래 검사를 똑같이 거친다. 세션 cwd가 링크 경로여도 그 경로로 적은 값을 받는다.
+  const given = isAbsolute(value) ? [relative(resolve(cwd), value), relative(root, value)].find(inside) : value;
+  if (given === undefined) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
+  const absolute = resolve(root, given);
   const rel = relative(root, absolute);
   if (!inside(rel)) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
   const segments = slash(rel).split("/");
@@ -201,7 +204,7 @@ export default function draft(pi: ExtensionAPI): void {
     description: "Has the draft role model (default Vertex Gemini 4 Argon) write a document draft (md, txt, csv, xlsx, docx, pdf) and saves it at output inside the cwd. On failure it falls back once to the model modelRoles.draftFallback names (source-profile default: GPT-6.1 Terra via Codex). Installs without draftFallback fall back to DeepSeek 1017 on Hive; a draftFallback that is set but fails resolution, credentials or input fails under that model's name without falling through to DeepSeek. A fallback equal to the draft model is not called again. The output extension sets the format (xlsx/docx built by the tool; pdf printed through an ego lite TaskSpace on WSL, through Windows Edge only on PCs without ego lite; csv as UTF-8 BOM). Reference text in paths passes the same filter as skim and goes to that model's provider (default Google; the fallback goes to the configured model's provider). An existing file is overwritten only with overwrite: true. Returns the actual model, saved path, size and outline; if both models fail or conversion/saving fails, no file is created and an error result returns. The caller must review the result file. Use edit/write for code, configuration, rules and exact-line edits. New or paragraph-level rewritten prose is a draft target even in HANDOFF and doc/history records.",
     parameters: z.object({
       instruction: z.string().describe("What to write: purpose, audience, structure, length, language"),
-      output: z.string().describe("Save path relative to cwd. The extension sets the format: .md .txt .csv .xlsx .docx .pdf"),
+      output: z.string().describe("Save path inside cwd: relative to cwd, or an absolute path inside cwd. The extension sets the format: .md .txt .csv .xlsx .docx .pdf"),
       paths: z.array(z.string()).optional().describe("Reference text files, directories or globs inside the cwd"),
       overwrite: z.boolean().optional().describe("Overwrite an existing file (default false)"),
     }) as never,

@@ -102,8 +102,8 @@ describe("draft", () => {
     const complete: DraftCompletion = async () => { calls++; return reply("# 새 보고서\n\n본문"); };
     const refused: Array<[string, string]> = [
       ["../escape.md", "'..'"],
-      [join(outside, "abs.md"), "상대 경로만"],
-      ["C:/Users/x/abs.md", "상대 경로만"],
+      [join(outside, "abs.md"), "cwd 밖"],
+      ["C:/Users/x/abs.md", "상대 경로나"],
       [".env.md", "비밀·관리 경로"],
       ["notes/api-key.md", "비밀·관리 경로"],
       [".git/notes.md", "비밀·관리 경로"],
@@ -132,6 +132,37 @@ describe("draft", () => {
     expect(dated).toContain("저장: doc/29-token-saving/maker-Note.md");
     const folder = await draftText({ instruction: "보고서", output: "secrets/plan.md" }, context(cwd), signal, complete);
     expect(folder).toContain("저장: secrets/plan.md");
+  });
+
+  test("cwd 안의 절대 경로 output은 상대 경로처럼 저장하고, cwd 밖·cwd 자체·관리 경로는 계속 거부한다", async () => {
+    // 11-09 집 PC: cwd 안 절대 경로 output이 「상대 경로만」으로 거절돼 같은 draft를 상대 경로로 다시 불렀다.
+    const cwd = fixture();
+    const outside = fixture();
+    const alias = join(outside, "alias");
+    symlinkSync(cwd, alias);
+    let calls = 0;
+    const complete: DraftCompletion = async () => { calls++; return reply("# 기록\n\n본문"); };
+    const absolute = await draftText({ instruction: "기록", output: join(cwd, "doc/history/main.md") }, context(cwd), signal, complete);
+    expect(absolute).toContain("저장: doc/history/main.md");
+    expect(readFileSync(join(cwd, "doc/history/main.md"), "utf8")).toBe("# 기록\n\n본문\n");
+    // 세션 cwd가 링크 경로여도 그 경로로 적은 절대 경로는 cwd 안이다.
+    const linked = await draftText({ instruction: "기록", output: join(alias, "doc/linked.md") }, context(alias), signal, complete);
+    expect(linked).toContain("저장: doc/linked.md");
+    expect(existsSync(join(cwd, "doc/linked.md"))).toBe(true);
+    expect(calls).toBe(2);
+    const refused: Array<[string, string]> = [
+      [join(outside, "abs.md"), "cwd 밖"],
+      [cwd, "cwd 밖"],
+      [join(cwd, ".git/notes.md"), "비밀·관리 경로"],
+      [`${cwd}/a/../b.md`, "'..'"],
+    ];
+    for (const [output, reason] of refused) {
+      const result = await draftText({ instruction: "기록", output }, context(cwd), signal, complete);
+      expect(result.startsWith("model: none")).toBe(true);
+      expect(result).toContain(reason);
+    }
+    expect(calls).toBe(2);
+    expect(existsSync(join(outside, "abs.md"))).toBe(false);
   });
 
   test("Gemini 실패나 형식이 깨진 응답은 같은 prompt로 DeepSeek에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
