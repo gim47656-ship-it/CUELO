@@ -135,6 +135,8 @@ export interface GoalModeControllerOptions {
   onStatusChange?: (status: GoalStatusInfo | null) => void;
   /** Overridable so tests do not have to wait out the operator's grace period. */
   continuationDelayMs?: number;
+  /** Startup already restored the provider-recorded tool selection. */
+  restoredToolSelection?: boolean;
 }
 
 /**
@@ -213,9 +215,10 @@ export class GoalModeController {
     this.#session.setGoalModeState?.({ enabled: mode.mode === "goal", mode: "active", goal });
     const restored = await this.#session.goalRuntime.onThreadResumed();
     if (!restored?.goal) return;
-    // The SDK builds the initial tool set without `goal`, so re-add it or the
-    // agent cannot resume, complete, or drop the goal it just inherited.
-    await this.#addGoalTool();
+    // RPC startup restores recorded tool selections before this controller.
+    // Other startup paths still need the legacy goal-tool registration.
+    if (this.#options.restoredToolSelection) this.#previousTools = this.#session.getEnabledToolNames().filter((name) => name !== "goal");
+    else await this.#addGoalTool();
     this.#notifyStatus();
   }
 

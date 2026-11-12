@@ -1,6 +1,6 @@
-// Anthropic 계정 선택 회귀(OMP 18.4.x namespaced auth). 2026-10-02 사용자 정책 두 가지를 실제 경로에서 본다.
-// [순서] 새/cold 선택: 오늘 몫 안쪽 계정 중 required drain(남은 주간 비율 ÷ 리셋까지 남은 시간)이 큰 계정 먼저,
-//        몫을 넘은 계정은 그 뒤(둘 다 넘으면 덜 넘은 쪽), 동률은 저장 순서. 실제 AuthStorage.keys.get 경로.
+// Anthropic account selection regression (2026-11-12): fresh sessions prefer the lowest measured weekly usage,
+// skip 5h-hot accounts when a cooler account exists, and keep the serving account until real unavailability.
+// Login, pool reordering, restart and idle time must not change a working session's credential identity.
 // [상속] summon marker 없는 일반 maker child는 부모 세션의 Anthropic pin(warm·exact)을 물려받지 않는다.
 //        summon child는 지정 위치 exact pin, 다른 provider 상속과 maker 아닌 child 상속은 그대로다.
 //        실제 runSubprocess → createAgentSession 경로(task 도구는 structured-subagent 가 credentialSourceSessionId 를 넣는다).
@@ -114,6 +114,7 @@ const { setAgentDir } = await import(toUrl(join(dirname(core), "pi-utils/src/dir
 setAgentDir(join(process.env.HOME!, ".omp", "agent"));
 const { AuthStorage } = await import(toUrl(join(aiRoot, "auth-storage.ts")));
 const { claudeRankingStrategy } = await import(toUrl(join(aiRoot, "usage/claude.ts")));
+const { registerOAuthProvider, unregisterOAuthProvider } = await import(toUrl(join(aiRoot, "registry/oauth/index.ts")));
 const { runSubprocess } = await import(toUrl(join(core, "src/task/executor.ts")));
 const { Settings } = await import(toUrl(join(core, "src/config/settings.ts")));
 const { ModelRegistry } = await import(toUrl(join(core, "src/config/model-registry.ts")));
@@ -147,6 +148,8 @@ type Fractions = {
 	weeklyReset?: number | null;
 	/** Hours until the 5h window resets; null = no reset clock (parser shape for an idle 0% window). */
 	fiveReset?: number | null;
+	tierKind?: string;
+	tierReset?: number;
 };
 const makeReport = (provider: string, values: Fractions) => ({
 	provider,
@@ -154,17 +157,20 @@ const makeReport = (provider: string, values: Fractions) => ({
 	limits: [
 		window(provider, "5h", values.five, values.fiveReset === undefined ? 4 : values.fiveReset),
 		window(provider, "7d", values.weekly, values.weeklyReset === undefined ? 150 : values.weeklyReset),
-		...(values.tier === undefined ? [] : [window(provider, "7d", values.tier, 130, "fable")]),
+		...(values.tier === undefined ? [] : [window(provider, "7d", values.tier, values.tierReset ?? 130, values.tierKind ?? "fable")]),
 	],
 });
 async function selected(tag: string, opts: {
 	rin?: Fractions;
 	mio?: Fractions;
+	third?: Fractions;
+	pinAccount?: number;
 	provider?: string;
 	modelId?: string;
 	pin?: "warm" | "cold" | "exact";
 	block?: boolean;
 	rinReservePct?: number;
+	pinBlock?: boolean;
 }) {
 	const provider = opts.provider ?? "anthropic";
 	// 2026-09-26 Main 관측 모양: RIN 7d 81%·약 2일 뒤 reset, MIO 7d 3%·약 7일 뒤 reset.
@@ -173,6 +179,7 @@ async function selected(tag: string, opts: {
 	const reports = {
 		[`rin-${tag}`]: makeReport(provider, rin),
 		[`mio-${tag}`]: makeReport(provider, mio),
+		...(opts.third ? { [`third-${tag}`]: makeReport(provider, opts.third) } : {}),
 	};
 	if (rin.fiveReset === null) {
 		const fiveHour = reports[`rin-${tag}`].limits[0]!;
@@ -189,17 +196,19 @@ async function selected(tag: string, opts: {
 			id: current,
 			fetchUsage: async ({ credential }: { credential: { accessToken?: string } }) => {
 				const token = credential.accessToken ?? "";
-				const values = token.startsWith("rin-") ? rin : mio;
+				const values = token.startsWith("rin-") ? rin : token.startsWith("third-") ? opts.third! : mio;
 				return values.report === false ? null : reports[token] ?? null;
 			},
 		} : undefined,
-		rankingStrategyResolver: (current: string) => current === provider ? claudeRankingStrategy : undefined,
+		rankingStrategyResolver: (current: string) => current === provider
+			? (provider === "anthropic" ? claudeRankingStrategy : { ...claudeRankingStrategy, stickyWarmMs: 60 * 60_000 })
+			: undefined,
 		...(opts.rinReservePct === undefined
 			? {}
-			: { accountPolicies: [{ provider, account: { accountId: `rin-${tag}` }, reservePct: opts.rinReservePct }] }),
+			: { defaultReservePct: opts.pin ? 25 : 0, accountPolicies: [{ provider, account: { accountId: `rin-${tag}` }, reservePct: opts.rinReservePct }] }),
 	});
 	try {
-		for (const identity of ["rin", "mio"]) await auth.credentials.upsert(provider, {
+		for (const identity of ["rin", "mio", ...(opts.third ? ["third"] : [])]) await auth.credentials.upsert(provider, {
 			type: "oauth",
 			access: `${identity}-${tag}`,
 			refresh: `refresh-${identity}-${tag}`,
@@ -208,9 +217,13 @@ async function selected(tag: string, opts: {
 		});
 		const accounts = auth.oauth.accounts(provider);
 		const sessionId = `session-${tag}`;
-		if (opts.pin) auth.sessions.pin(provider, sessionId, accounts[1]!.credentialId, {
+		if (opts.pin) auth.sessions.pin(provider, sessionId, accounts[opts.pinAccount ?? 1]!.credentialId, {
 			...(opts.pin === "cold" ? { restoredAtMs: Date.now() - 2 * 3_600_000 } : {}),
 			...(opts.pin === "exact" ? { exactLabel: "MIO" } : {}),
+		});
+		if (opts.pinBlock) await auth.limits.markReached(provider, sessionId, {
+			credentialId: accounts[opts.pinAccount ?? 1]!.credentialId,
+			retryAfterMs: 3_600_000,
 		});
 		if (opts.block) await auth.limits.markReached(provider, sessionId, {
 			credentialId: accounts[0]!.credentialId,
@@ -222,41 +235,129 @@ async function selected(tag: string, opts: {
 	}
 }
 
-console.log("[순서] 7d 168h 창의 오늘 몫 = (지난 날 수 + 1) / 7. drain = (1 - 사용률) / 남은 시간(h)");
-// reset 150h 뒤 → 18h 경과 → 1/7(14.3%), 145h → 23h → 1/7, 143h → 25h → 2/7(28.6%),
-// 100h → 68h → 3/7, 46h → 122h → 6/7(85.7%), 20h → 148h → 7/7.
+console.log("[Selection] Measured weekly usage ascending; 5h-hot accounts after cool accounts.");
 const cases = [
-	["둘 다 몫 안: 리셋 임박·잔량 많은 위치 1(MIO 50%·20h, drain .025)이 RIN(10%·150h, .006)보다 앞", "mio", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
-	["관측 모양(RIN 81%·46h .0041, MIO 3%·160h .0061): 둘 다 몫 안이면 drain 큰 MIO", "mio", {}],
-	["둘 다 몫 안: drain 큰 RIN(10%·20h, .045)이 앞", "rin", { rin: { weekly: 0.1, weeklyReset: 20 } }],
-	["같은 drain(20%·100h)이면 5h가 더 차 있어도 저장 순서 RIN", "rin", { rin: { five: 0.3, weekly: 0.2, weeklyReset: 100 }, mio: { five: 0.1, weekly: 0.2, weeklyReset: 100 } }],
-	["RIN 20%가 첫날 몫 14.3%를 넘으면 drain이 커도(.0055 > .0043) 몫 안 MIO", "mio", { rin: { weekly: 0.2, weeklyReset: 145 }, mio: { weekly: 0.8, weeklyReset: 46 } }],
-	["날이 바뀌어 몫이 28.6%가 되면 같은 20%의 RIN이 다시 앞(drain .0056)", "rin", { rin: { weekly: 0.2, weeklyReset: 143 }, mio: { weekly: 0.8, weeklyReset: 46 } }],
-	["MIO가 몫을 넘으면 drain이 커도 몫 안 RIN", "rin", { rin: { weekly: 0.85, weeklyReset: 46 }, mio: { weekly: 0.2, weeklyReset: 150 } }],
-	["둘 다 넘으면 덜 넘은 MIO", "mio", { rin: { weekly: 0.5, weeklyReset: 150 }, mio: { weekly: 0.3, weeklyReset: 160 } }],
-	["둘 다 넘으면 덜 넘은 RIN", "rin", { rin: { weekly: 0.2, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 160 } }],
-	["RIN 5h 0%·리셋시각 없음도 측정된 후보: 몫 초과 RIN은 몫 안 MIO 뒤", "mio", { rin: { fiveReset: null, weekly: 0.2, weeklyReset: 150 }, mio: { weekly: 0.85, weeklyReset: 46 } }],
-	["RIN 7d 소진이면 제외하고 MIO", "mio", { rin: { weekly: 1 } }],
-	["RIN 5h 소진(hard limit)이면 MIO", "mio", { rin: { five: 1 } }],
-	["RIN 5h 90%(upstream hot guard)면 drain이 커도 기존 랭킹 MIO", "mio", { rin: { five: 0.9, weekly: 0.1, weeklyReset: 20 } }],
-	["RIN 차단이면 drain이 커도 MIO", "mio", { block: true, rin: { weekly: 0.1, weeklyReset: 20 } }],
-	["RIN이 reserve 정책 안이면 drain이 커도 MIO", "mio", { rinReservePct: 25, rin: { weekly: 0.8, weeklyReset: 20 } }],
-	["RIN 7d 미측정이면 재배열 없이 upstream 순서(RIN) 그대로", "rin", { rin: { weekly: undefined } }],
-	["RIN 7d reset 시각 없음이면 추정 없이 기존 랭킹 MIO", "mio", { rin: { weeklyReset: null } }],
-	["RIN 5h 미측정이면 기존 랭킹 MIO", "mio", { rin: { five: undefined } }],
-	["RIN 사용량 조회 실패면 기존 랭킹 MIO", "mio", { rin: { report: false } }],
-	["MIO 사용량 조회 실패면 기존 랭킹 그대로 RIN", "rin", { mio: { report: false } }],
-	["Fable tier 7d 미측정이면 기존 랭킹 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: Number.NaN }, mio: { tier: 0.4 } }],
-	["Fable tier 7d 소진이면 제외하고 MIO", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
-	["cold MIO pin은 drain 큰 RIN으로 재선택", "rin", { pin: "cold", rin: { weekly: 0.1, weeklyReset: 20 } }],
-	["warm MIO pin은 drain이 낮아도 그대로 유지", "mio", { pin: "warm", rin: { weekly: 0.1, weeklyReset: 20 } }],
-	["exact MIO summon은 drain이 낮아도 그대로 유지", "mio", { pin: "exact", rin: { weekly: 0.1, weeklyReset: 20 } }],
-	["타 provider는 몫 규칙 없이 기존 랭킹(drain 큰 RIN)", "rin", { provider: "openai-codex", modelId: undefined, rin: { weekly: 0.2, weeklyReset: 150 }, mio: { weekly: 0.85, weeklyReset: 46 } }],
+	["lowest weekly beats highest drain", "rin", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
+	["lowest weekly can be second in storage", "mio", {}],
+	["weekly tie uses storage order, not 5h usage or reset time", "rin", { rin: { five: 0.3, weekly: 0.2, weeklyReset: 150 }, mio: { five: 0.1, weekly: 0.2, weeklyReset: 20 } }],
+	["daily slice no longer overrides lowest weekly", "rin", { rin: { weekly: 0.2, weeklyReset: 145 }, mio: { weekly: 0.8, weeklyReset: 46 } }],
+	["clockless measured 0% 5h remains eligible", "rin", { rin: { fiveReset: null, weekly: 0.2 }, mio: { weekly: 0.85 } }],
+	["clockless measured weekly remains eligible", "rin", { rin: { weekly: 0.02, weeklyReset: null } }],
+	["exhausted weekly excluded", "mio", { rin: { weekly: 1 } }],
+	["exhausted 5h excluded", "mio", { rin: { five: 1 } }],
+	["exactly 85% 5h skips lowest weekly", "mio", { rin: { five: 0.85, weekly: 0.01 } }],
+	["both 5h-hot still choose lowest weekly", "rin", { rin: { five: 0.95, weekly: 0.01 }, mio: { five: 0.86, weekly: 0.6 } }],
+	["blocked account excluded", "mio", { block: true, rin: { weekly: 0.01 } }],
+	["reserve policy still applies at start", "mio", { rinReservePct: 25, rin: { weekly: 0.8 }, mio: { weekly: 0.9 } }],
+	["unknown weekly never ranks as zero", "mio", { rin: { weekly: undefined } }],
+	["unknown 5h after measured", "mio", { rin: { five: undefined, weekly: 0.01 } }],
+	["failed measurement after measured", "mio", { rin: { report: false } }],
+	["measured 5h-hot still before unmeasured", "rin", { rin: { five: 0.9 }, mio: { report: false } }],
+	["Fable unmeasured applicable tier after measured", "mio", { modelId: "claude-fable-5", rin: { tier: Number.NaN }, mio: { tier: 0.4 } }],
+	["Fable exhausted tier excluded", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
+	["Fable ignores irrelevant Sonnet tier", "rin", { modelId: "claude-fable-5", rin: { weekly: 0.01, tier: 0.99, tierKind: "sonnet" }, mio: { weekly: 0.4 } }],
+	...["opus", "sonnet", "fable"].map(kind => [
+		`${kind} uses max applicable weekly, not pressure-selected secondary`, "mio",
+		{ modelId: `claude-${kind}-5`, rin: { weekly: 0.7, weeklyReset: 20, tier: 0.1, tierKind: kind, tierReset: 167 }, mio: { weekly: 0.5, weeklyReset: 20, tier: 0.5, tierKind: kind, tierReset: 167 } },
+	] as const),
+	["idle >1h keeps original account", "mio", { pin: "cold", rin: { weekly: 0.01 }, mio: { weekly: 0.9 } }],
+	["idle >1h near 5h limit keeps original account", "mio", { pin: "cold", rin: { weekly: 0.01 }, mio: { five: 0.99, weekly: 0.9 } }],
+	["reserve does not evict idle serving account", "mio", { pin: "cold", rinReservePct: 0, rin: { weekly: 0.01 }, mio: { weekly: 0.99 } }],
+	["idle >1h real 5h exhaustion switches", "rin", { pin: "cold", mio: { five: 1 } }],
+	["idle >1h real weekly exhaustion switches", "rin", { pin: "cold", mio: { weekly: 1 } }],
+	["idle >1h real block switches", "rin", { pin: "cold", pinBlock: true, mio: { report: false } }],
+	["R1-ANT-1: three accounts, exhausted pin skips hot higher-weekly sibling", "mio", { pin: "cold", pinAccount: 2, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 1, weekly: 0.2 } }],
+	["R1-ANT-1: three accounts, blocked pin reranks siblings", "mio", { pin: "cold", pinAccount: 2, pinBlock: true, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { report: false } }],
+	["warm pin remains", "mio", { pin: "warm", rin: { weekly: 0.01 } }],
+	["exact summon remains", "mio", { pin: "exact", rin: { weekly: 0.01 } }],
+	["other provider still reranks idle pin", "rin", { provider: "openai-codex", pin: "cold", rin: { weekly: 0.2, weeklyReset: 20 }, mio: { weekly: 0.85, weeklyReset: 150 } }],
 ] as const;
 for (let index = 0; index < cases.length; index++) {
 	const [label, expected, options] = cases[index]!;
 	const actual = await selected(`case-${index}`, options);
 	check(label, actual === `${expected}-case-${index}`, `expected=${expected}-case-${index} actual=${actual}`);
+}
+
+console.log("[Lifecycle] Login, durable resume, removal, disable and auth failure.");
+async function lifecycle(tag: string, mutation: "append" | "before" | "remove" | "disable" | "auth-failure" | "resume" | "relogin", provider = "anthropic") {
+	const db = join(temp, `lifecycle-${tag}.db`);
+	const credential = (name: string) => ({
+		type: "oauth" as const, accountId: name, access: name, refresh: `refresh-${name}`,
+		expires: Date.now() + 86_400_000,
+	});
+	const loginProvider = `fixture-login-${tag}`;
+	registerOAuthProvider({
+		id: loginProvider, name: "Isolated login", storeCredentialsAs: provider,
+		login: async () => credential(mutation === "before" ? "earlier" : "new"),
+	});
+	const options = {
+		usageProviderResolver: (current: string) => current === provider ? {
+			id: current,
+			fetchUsage: async ({ credential }: { credential: { accessToken?: string } }) =>
+				makeReport(provider, { five: 0.1, weekly: credential.accessToken?.startsWith("original") ? 0.8 : 0.01 }),
+		} : undefined,
+		rankingStrategyResolver: () => claudeRankingStrategy,
+		refreshOAuthCredential: async (_provider: unknown, _id: unknown, value: { access: string; refresh: string; expires: number }) => {
+			if (mutation === "auth-failure" && value.access === "original") throw new Error("invalid_grant");
+			return value;
+		},
+	};
+	let auth = await AuthStorage.create(db, options);
+	try {
+		if (mutation === "before") {
+			await auth.credentials.upsert(provider, credential("earlier"));
+			await auth.credentials.disable(auth.oauth.accounts(provider)[0]!.credentialId, "invalid_grant");
+		}
+		await auth.credentials.upsert(provider, credential("original"));
+		const originalId = auth.oauth.accounts(provider).find(a => a.accountId === "original")!.credentialId;
+		const sessionId = `lifecycle-${tag}`;
+		// An actual resolve records automatic (not explicit user) affinity.
+		await auth.keys.get(provider, sessionId, { modelId: "claude-opus-5-5" });
+		const before = auth.credentials.list(provider).map(row => row.id);
+		if (mutation === "resume") {
+			auth.close();
+			auth = await AuthStorage.create(db, options);
+		}
+		await auth.oauth.login(loginProvider, { onAuth: () => {}, onPrompt: async () => "" });
+		if (mutation === "relogin") await auth.credentials.upsert(provider, { ...credential("original-2"), accountId: "original" });
+		if (mutation === "before") {
+			const after = auth.credentials.list(provider).map(row => row.id);
+			check("R1-ANT-5: serving row really shifts from pool index 0 to 1",
+				before.indexOf(originalId) === 0 && after.indexOf(originalId) === 1,
+				JSON.stringify({ before, after, originalId }));
+			console.log(`  R1-ANT-5 pool order: ${auth.credentials.list(provider).map(row => row.credential.accountId).join(", ")}`);
+		}
+		if (mutation === "remove") await auth.credentials.removeById(provider, originalId);
+		if (mutation === "disable") await auth.credentials.disable(originalId, "invalid_grant");
+		// Exercise the failing pin's refresh even against the old login-clears-pins implementation.
+		if (mutation === "auth-failure") auth.sessions.pin(provider, sessionId, originalId, { restoredAtMs: Date.now() });
+		const actual = await auth.keys.get(provider, sessionId, {
+			modelId: "claude-opus-5-5",
+			...(mutation === "auth-failure" ? { forceRefresh: true } : {}),
+		});
+		const keep = provider === "anthropic" && ["append", "before", "resume", "relogin"].includes(mutation);
+		check(`${tag}: ${keep ? "keeps original row" : "selects healthy sibling"}`,
+			actual === (keep ? mutation === "relogin" ? "original-2" : "original" : mutation === "before" ? "earlier" : "new"), `actual=${actual}`);
+		if (keep) check(`${tag}: durable id stays stable across position changes`,
+			auth.oauth.accounts(provider, sessionId).find(a => a.active)?.credentialId === originalId,
+			JSON.stringify(auth.oauth.accounts(provider, sessionId).map(a => ({ id: a.credentialId, active: a.active }))));
+		if (mutation === "auth-failure") check("definitive auth failure disables original row",
+			!auth.credentials.list(provider).some(row => row.id === originalId),
+			JSON.stringify(auth.credentials.list(provider).map(row => row.id)));
+	} finally {
+		auth.close();
+		unregisterOAuthProvider(loginProvider);
+	}
+}
+for (const mutation of ["append", "before", "remove", "disable", "auth-failure", "resume", "relogin"] as const)
+	await lifecycle(mutation, mutation);
+await lifecycle("codex-reset-unchanged", "append", "openai-codex");
+
+console.log("[Weekly chooser] Existing strategy pressure choice stays unchanged.");
+for (const kind of ["opus", "sonnet", "fable"]) {
+	const report = makeReport("anthropic", { five: 0.1, weekly: 0.7, weeklyReset: 20, tier: 0.1, tierKind: kind, tierReset: 167 });
+	const secondary = claudeRankingStrategy.findWindowLimits(report, { modelId: `claude-${kind}-5` }).secondary;
+	console.log(`  ${kind}: shared=0.7 tier=0.1 secondary=${secondary?.id} used=${secondary?.amount.usedFraction}`);
 }
 
 console.log("[상속] 부모 pin → child session(runSubprocess). 위치는 저장 순서(0=RIN, 1=MIO)");
@@ -292,8 +393,15 @@ export default function (pi) {
 	const rows = (): Snapshot[] => existsSync(out)
 		? readFileSync(out, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
 		: [];
-	// usage resolver 없음: ranking 이 provider usage API 를 부르지 않는다.
-	const auth = await AuthStorage.create(join(dir, "auth.db"), { usageProviderResolver: () => undefined });
+	// Measured usage ensures maker children select fresh rather than inherit the parent.
+	const auth = await AuthStorage.create(join(dir, "auth.db"), {
+		usageProviderResolver: provider => provider === "anthropic" ? {
+			id: provider,
+			fetchUsage: async ({ credential }) => makeReport(provider, {
+				five: 0.1, weekly: credential.accessToken?.includes("-first-") ? 0.01 : 0.8,
+			}),
+		} : undefined,
+	});
 	try {
 		for (const provider of ["anthropic", "openai-codex"]) {
 			for (const identity of ["first", "second"]) await auth.credentials.upsert(provider, {
@@ -347,6 +455,7 @@ const show = (value: unknown) => JSON.stringify(value);
 	check("부모 warm MIO pin: 일반 maker child는 Anthropic pin 없이 시작", start !== undefined && start.anthropic === null, show(start));
 	check("부모 warm openai-codex pin(위치 1)은 일반 maker child에 그대로 상속", start?.codex === 1, show(start));
 	check("일반 maker child의 첫 요청은 exact 아님(새 선택)", request !== undefined && request.exact === null, show(request));
+	check("maker picks lowest weekly, not parent's account", request?.anthropic === 0, show(request));
 }
 {
 	const { start, request } = await childAccounts("exact-maker", { parent: "exact" });

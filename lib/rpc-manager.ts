@@ -1,8 +1,10 @@
 import { cfgEnabledModels } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { isProviderRefusalMessage, normalizeTools } from "@oh-my-pi/pi-agent-core";
 import {
   applyResolvedSystemPromptInputs,
   createAgentSession,
+  type AgentSession,
   type CreateAgentSessionOptions,
   getAgentDir,
   initTheme,
@@ -586,6 +588,79 @@ class PlainTextTheme extends Theme {
 const PLAIN_TEXT_THEME = new PlainTextTheme();
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 
+/**
+ * The provider replays declaration order, but a new Agent forgets withdrawn
+ * definitions and the SDK starts with its default active set. Restore only the
+ * recorded selection; leave ordering and tool-change controls to the provider.
+ */
+export async function restoreRpcSessionTools(
+  session: AgentSession,
+  toolNames?: string[],
+): Promise<((() => void) & { allOff: boolean }) | undefined> {
+  if (toolNames !== undefined || session.model?.api !== "anthropic-messages") return;
+  const messages = session.sessionManager.buildSessionContext().messages;
+  const recorded = messages.findLast((message) =>
+    message.role === "assistant" && !isProviderRefusalMessage(message) && message.requestControls?.tools,
+  );
+  const tools = recorded?.role === "assistant" ? recorded.requestControls?.tools : undefined;
+  if (!tools) return;
+
+  const declared = new Set(tools.declared);
+  const enabled = session.getEnabledToolNames();
+  const mounted = new Set(session.getMountedXdevToolNames());
+  const branch = session.sessionManager.getBranch();
+  const replyIndex = branch.findLastIndex((entry) =>
+    entry.type === "message" && entry.message.role === "assistant" &&
+    recorded?.role === "assistant" && entry.message.requestControls === recorded.requestControls,
+  );
+  const mode = replyIndex < 0 ? undefined : branch.slice(replyIndex + 1).findLast((entry) => entry.type === "mode_change");
+  let active = tools.active;
+  if (mode?.type === "mode_change") {
+    if (mode.mode === "goal") active = [...new Set([...active, "goal"])];
+    else if (mode.mode === "none" || mode.mode === "goal_paused") active = active.filter((name) => name !== "goal");
+  }
+  await session.setActiveToolsByName([
+    ...active.filter((name) => session.getToolByName(name) !== undefined),
+    ...enabled.filter((name) =>
+      tools.active.length > 0 && !declared.has(name) && (mounted.has(name) || !session.hasBuiltInTool(name)),
+    ),
+  ]);
+
+  const agent = session.agent;
+  const stream = agent.streamFn;
+  let replay = true;
+  agent.streamFn = (model, context, options) => {
+    if (!replay || model.api !== "anthropic-messages" || !context.tools?.length) {
+      return stream(model, context, options);
+    }
+    const latest = context.messages.findLast((message) =>
+      message.role === "assistant" && !isProviderRefusalMessage(message) && message.requestControls?.tools,
+    );
+    const currentDeclared = latest?.role === "assistant" ? latest.requestControls?.tools?.declared : undefined;
+    if (!currentDeclared) return stream(model, context, options);
+    const available = new Set([
+      ...context.tools.map((tool) => tool.name),
+      ...(context.inactiveTools ?? []).map((tool) => tool.name),
+    ]);
+    const missing = currentDeclared.flatMap((name) => {
+      if (!declared.has(name) || available.has(name)) return [];
+      const tool = session.getToolByName(name);
+      return tool ? [tool] : [];
+    });
+    if (missing.length === 0) return stream(model, context, options);
+    const definitions = normalizeTools(missing, {
+      injectIntent: agent.intentTracing,
+      intentDescription: agent.intentDescription,
+      pruneDescriptions: agent.prunesToolDescriptions(model),
+    }) ?? [];
+    return stream(model, {
+      ...context,
+      inactiveTools: [...(context.inactiveTools ?? []), ...definitions],
+    }, options);
+  };
+  return Object.assign(() => { replay = false; }, { allOff: tools.active.length === 0 && active.length === 0 });
+}
+
 function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
   if (toolNames.length === 0) return [];
 
@@ -796,6 +871,7 @@ export class AgentSessionWrapper {
   constructor(
     public readonly inner: AgentSessionLike,
     eventBus: ConstructorParameters<typeof RpcSubagentRegistry>[0],
+    private readonly stopResumeToolReplay?: () => void,
   ) {
     this.subagents = new RpcSubagentRegistry(eventBus, (frame) => {
       const event = frame as unknown as AgentEvent;
@@ -1137,6 +1213,7 @@ export class AgentSessionWrapper {
   private get goalMode(): GoalModeController {
     if (!this.goalModeController) {
       this.goalModeController = new GoalModeController(this.inner, {
+        restoredToolSelection: this.stopResumeToolReplay !== undefined,
         isBusy: () => this.promptRunning
           || this.handoffRunning
           || this.inner.isStreaming
@@ -1981,6 +2058,7 @@ export class AgentSessionWrapper {
 
       case "set_tools": {
         const toolNames = command.toolNames as string[];
+        this.stopResumeToolReplay?.();
         this.setForceEmptySystemPrompt(toolNames.length === 0);
         await this.inner.setActiveToolsByName(
           this.goalMode.reconcileToolNames(withExtensionTools(this.inner, toolNames)),
@@ -2951,6 +3029,7 @@ export async function startRpcSession(
 
       const session = inner as unknown as AgentSessionLike;
       restoreThinkingCeiling(session);
+      const stopResumeToolReplay = await restoreRpcSessionTools(inner, toolNames);
 
       // If specific tool names were requested (non-empty), set the active tools to the
       // requested builtin coding tools PLUS all extension/package tools, so installed
@@ -2959,7 +3038,7 @@ export async function startRpcSession(
         await session.setActiveToolsByName(withExtensionTools(session, toolNames));
       }
 
-      const wrapper = new AgentSessionWrapper(session, eventBus);
+      const wrapper = new AgentSessionWrapper(session, eventBus, stopResumeToolReplay);
       wrapper.projectCodeLoaded = untrusted === undefined;
       // The runtime's shared Settings instance must never carry a per-session takeover override.
       wrapper.sharesRuntimeSettings = sessionSettings === runtime.settings;
@@ -3039,7 +3118,10 @@ export async function startRpcSession(
         getListenerHandovers().delete(realSessionId);
         handover.from.handOverListenersTo(wrapper, handover.keepAlive);
       }
-      wrapper.beginExtensionBinding({ forceEmptySystemPrompt: toolNames?.length === 0 });
+      wrapper.beginExtensionBinding({
+        forceEmptySystemPrompt: toolNames?.length === 0 ||
+          stopResumeToolReplay?.allOff === true,
+      });
 
       return { session: wrapper, realSessionId };
     } finally {

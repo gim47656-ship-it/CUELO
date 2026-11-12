@@ -1487,8 +1487,75 @@ const TODO_DEPENDENCY_EDITS = [
 	},
 ];
 
+// Shared by the two deployed ordering upgrades below.
+const ANTHROPIC_LOWEST_WEEKLY_SELECTION = `		// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.
+		// Applicable shared/model weekly rows use their maximum fraction, not drain pressure.
+		// Unknown reports follow every measured candidate; 5h-hot follows measured cool.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const weekly = candidates.map(candidate => {
+				const credential = candidate.selection.credential;
+				if (
+					candidate.inReserve === true ||
+					(credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) ||
+					this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes) ||
+					(planGate && planGate(candidate.usage) === false)
+				) return undefined;
+				const usage = candidate.usage;
+				const limits = usage ? reserveUsageLimits(strategy, usage, rankingContext) : [];
+				if (isUsageLimitReached(limits)) return undefined;
+				const { primary } = usage ? strategy.findWindowLimits(usage, rankingContext) : {};
+				const weeks = limits.filter(limit => limit.scope.windowId === "7d" || limit.window?.id === "7d");
+				const measured = candidate.usageChecked && primary !== undefined && weeks.length > 0 &&
+					limits.every(limit => {
+						const used = resolveUsedFraction(limit);
+						return limit.status !== "unknown" && typeof used === "number" &&
+							Number.isFinite(used) && used >= 0 && used < 1;
+					});
+				return {
+					group: measured ? Number(normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) : 2,
+					used: measured ? Math.max(...weeks.map(limit => resolveUsedFraction(limit)!)) : 0,
+					index: candidate.selection.index,
+				};
+			});
+			// Preserve upstream slots for blocked, exhausted, reserve or ineligible accounts.
+			const slots = candidates.flatMap((_candidate, pos) => weekly[pos] ? [pos] : []);
+			const preferred = [...slots].sort((left, right) => {
+				const a = weekly[left]!;
+				const b = weekly[right]!;
+				return a.group - b.group || a.used - b.used || a.index - b.index;
+			}).map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => { candidates[pos] = preferred[order]!; });
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`;
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
+	{
+		file: "src/session/agent-session.ts",
+		marker: "async replayRevivedSystemPrompt(): Promise<void>",
+		anchor: `	get baseSystemPrompt(): string[] {
+		return this.#tools.baseSystemPrompt;
+	}`,
+		patched: `	get baseSystemPrompt(): string[] {
+		return this.#tools.baseSystemPrompt;
+	}
+
+	/** Restore hook-produced prompt blocks for wake turns without replaying their messages. */
+	async replayRevivedSystemPrompt(): Promise<void> {
+		const base = this.baseSystemPrompt;
+		const result = await this.extensionRunner?.emitBeforeAgentStart("", undefined, base, "revive");
+		if (result?.systemPrompt) this.#tools.setTurnSystemPromptOverride(result.systemPrompt, base);
+	}`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "await session.replayRevivedSystemPrompt();",
+		anchor: `	await session.extensionRunner?.emitBeforeAgentStart("", undefined, session.baseSystemPrompt, "revive");`,
+		patched: `	// Wake turns skip prompt preparation: retain the hook's system override,
+	// but not its messages, which the transcript already contains.
+	await session.replayRevivedSystemPrompt();`,
+	},
 	{
 		// 2026-10-09 windows_build: a record argument named `properties` made
 		// its empty properties map become true. Map containers and instance data
@@ -6234,79 +6301,15 @@ import { resolveUsedFraction } from "../usage";`,
 		patched: "import {\n\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n\tplanPriority,\n",
 	},
 	{
-		// 2026-10-02 사용자 정책: "리셋이 얼마 안 남았는데 한도가 많이 남은 계정을 적극 쓴다". Anthropic 새/cold
-		// 선택에서 오늘 몫(사용량 패널 paceOf 와 같은 기준: (지난 날 수 + 1) / 창 일수) 안쪽 계정끼리는 저장
-		// 순서 대신 7d required drain(남은 비율 ÷ 리셋까지 남은 시간, upstream windowRequiredDrain 그대로)이 큰
-		// 계정을 먼저 쓴다. 몫을 넘은 계정은 몫 안쪽 계정 뒤(페이스 보호), 둘 다 넘었으면 덜 넘은 쪽, 동률은 저장
-		// 순서(위치 0 먼저). 2026-09-29 "몫 안쪽은 RIN(저장 순서 0) 먼저" 적용본을 대체한다(legacyPatched).
-		// 사용량 그림이 완전하고 건강한 후보만, upstream ranking 에서 이미 차지한 자리들 안에서만 재배열한다.
-		// unknown·partial·blocked·reserve·plan 부적격·5h hot 후보는 upstream 자리 그대로다. exact summon 은 이
-		// 앞에서 return 하고 warm/explicit pin·plan pin 재승격은 이 뒤에 온다(warm pin 은 shouldRank=false).
-		// 재배열 대상은 한도 미도달·측정 완료(used<1) 후보뿐이라 18.4.5 spent allowance 후보는 upstream 자리 그대로다.
-		// 앵커는 18.4.4~18.4.6 모두 한 번 있는 preflightFailures 선언 한 줄이다. 검증: core-account-order-test.ts.
+		// 2026-11-12 사용자 정책: 새 세션은 측정된 주간 사용률이 가장 낮은 계정부터 고른다.
+		// 해당 모델에 적용되는 shared/tier 7d 중 큰 사용률, 동률은 저장 순서. 5h 85% 이상은
+		// 측정된 비-hot 뒤, 미측정은 모든 측정 후보 뒤다. exact summon 앞 return, warm/explicit
+		// pin 뒤 재승격은 보존한다. 2026-10-02 drain/day-share 및 09-29 저장 순서 패치는 legacy로 이관.
 		file: "../pi-ai/src/auth/select.ts",
-		marker: "// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.",
+		marker: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
 		anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-		legacyPatched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
-		// Only candidates with a complete, healthy usage picture move, and only among the slots they
-		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
-		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
-		// Inside the slice: storage order. Over it: smaller overshoot first, then storage order.
-		if (provider === "anthropic" && shouldRank && strategy) {
-			const nowMs = Date.now();
-			const dayMs = 86_400_000;
-			const weekly = candidates.map(candidate => {
-				const usage = candidate.usage;
-				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
-				const credential = candidate.selection.credential;
-				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
-					return undefined;
-				}
-				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
-					return undefined;
-				}
-				if (planGate && planGate(usage) !== true) return undefined;
-				const limits = reserveUsageLimits(strategy, usage, rankingContext);
-				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
-				const measured = limits.every(limit => {
-					const fraction = resolveUsedFraction(limit);
-					return (
-						limit.status !== "unknown" &&
-						typeof fraction === "number" &&
-						Number.isFinite(fraction) &&
-						fraction >= 0 &&
-						fraction < 1
-					);
-				});
-				if (!measured) return undefined;
-				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
-				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
-					return undefined;
-				}
-				const resetAt = secondary.window?.resetsAt;
-				const durationMs = secondary.window?.durationMs;
-				const used = resolveUsedFraction(secondary);
-				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
-				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
-				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
-				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
-				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
-				return { overshoot: Math.max(0, used - allowance), index: candidate.selection.index };
-			});
-			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
-			const preferred = [...slots]
-				.sort((left, right) => {
-					const a = weekly[left]!;
-					const b = weekly[right]!;
-					return Number(a.overshoot > 0) - Number(b.overshoot > 0) || a.overshoot - b.overshoot || a.index - b.index;
-				})
-				.map(pos => candidates[pos]!);
-			slots.forEach((pos, order) => {
-				candidates[pos] = preferred[order]!;
-			});
-		}
-		const preflightFailures = new Set<OAuthCandidate>();`,
-		patched: `		// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.
+		excludes: "// Prefer RIN (first Anthropic account)",
+		legacyPatched: `		// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
 		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
@@ -6375,6 +6378,123 @@ import { resolveUsedFraction } from "../usage";`,
 			});
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`,
+		patched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
+		alternates: [{
+			file: "../pi-ai/src/auth/select.ts",
+			marker: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
+			requires: "// Prefer RIN (first Anthropic account)",
+			anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
+			patched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
+			legacyPatched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
+		// Only candidates with a complete, healthy usage picture move, and only among the slots they
+		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
+		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
+		// Inside the slice: storage order. Over it: smaller overshoot first, then storage order.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const dayMs = 86_400_000;
+			const weekly = candidates.map(candidate => {
+				const usage = candidate.usage;
+				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
+				const credential = candidate.selection.credential;
+				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
+					return undefined;
+				}
+				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
+					return undefined;
+				}
+				if (planGate && planGate(usage) !== true) return undefined;
+				const limits = reserveUsageLimits(strategy, usage, rankingContext);
+				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
+				const measured = limits.every(limit => {
+					const fraction = resolveUsedFraction(limit);
+					return (
+						limit.status !== "unknown" &&
+						typeof fraction === "number" &&
+						Number.isFinite(fraction) &&
+						fraction >= 0 &&
+						fraction < 1
+					);
+				});
+				if (!measured) return undefined;
+				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
+				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
+					return undefined;
+				}
+				const resetAt = secondary.window?.resetsAt;
+				const durationMs = secondary.window?.durationMs;
+				const used = resolveUsedFraction(secondary);
+				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
+				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
+				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
+				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
+				return { overshoot: Math.max(0, used - allowance), index: candidate.selection.index };
+			});
+			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
+			const preferred = [...slots]
+				.sort((left, right) => {
+					const a = weekly[left]!;
+					const b = weekly[right]!;
+					return Number(a.overshoot > 0) - Number(b.overshoot > 0) || a.overshoot - b.overshoot || a.index - b.index;
+				})
+				.map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => {
+				candidates[pos] = preferred[order]!;
+			});
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`,
+		}],
+	},
+	{
+		// 2026-11-12: login/upsert resets pool order, not a working Anthropic session.
+		// Affinity re-resolves durable ids and drops removed/disabled rows on lookup.
+		file: "../pi-ai/src/auth-storage.ts",
+		marker: 'if (provider !== "anthropic") affinity.clearProvider(provider);',
+		anchor: "				affinity.clearProvider(provider);",
+		patched: '				if (provider !== "anthropic") affinity.clearProvider(provider);',
+	},
+	{
+		// 2026-11-12: Anthropic retains its account even after >1h idle.
+		// select.ts alone consumes stickyWarmMs; omission means indefinite warmth,
+		// never a bypass of hard usage/block/auth checks in tryOAuth.
+		file: "../pi-ai/src/usage/claude.ts",
+		marker: "// CUELO: no idle expiry for the serving Anthropic account.",
+		anchor: `	/**
+	 * Anthropic-only idle window after which a session's pinned credential no
+	 * longer suppresses usage-based re-ranking. Anthropic caps OAuth prompt-cache
+	 * retention at \`ttl: "1h"\` (ephemeral ~5min otherwise), so after this long
+	 * without an Anthropic resolve the conversation-prefix cache is no longer
+	 * guaranteed warm. Other providers retain indefinite stickiness until their
+	 * own cache lifetimes are verified.
+	 */
+	stickyWarmMs: 60 * 60_000,`,
+		patched: "	// CUELO: no idle expiry for the serving Anthropic account.",
+	},
+	{
+		// 2026-11-12: reserve/reclaim are start-time policies for Anthropic.
+		// Only an unavailable pin can rotate; hard exhaustion is still checked by tryOAuth.
+		file: "../pi-ai/src/auth/select.ts",
+		marker: 'if (provider === "anthropic" || sessionPinIsExplicit || preferredCandidate === undefined) return false;',
+		anchor: "			if (sessionPinIsExplicit || preferredCandidate === undefined) return false;",
+		patched: '			if (provider === "anthropic" || sessionPinIsExplicit || preferredCandidate === undefined) return false;',
+	},
+	{
+		// Preserving a live pin exposes preflight's stale sibling indices when a
+		// definitive auth failure removes that row. Re-enter cold selection on the
+		// current pool instead of passing shifted indices to tryOAuth.
+		file: "../pi-ai/src/auth/select.ts",
+		marker: "// CUELO: a pin removed during preflight needs fresh id-based selection.",
+		anchor: "		const pinEvictedAfterPreflight = automaticPinWouldBeEvicted(true);",
+		patched: `		// CUELO: a pin removed during preflight needs fresh id-based selection.
+		if (
+			provider === "anthropic" &&
+			sessionCredential?.credentialId !== undefined &&
+			!this.#deps.pool.entries(provider).some(entry => entry.id === sessionCredential.credentialId)
+		) {
+			return this.resolveOAuth(provider, sessionId, options);
+		}
+		const pinEvictedAfterPreflight = automaticPinWouldBeEvicted(true);`,
 	},
 	// 2026-10-02 사용자 정책: summon marker 없이 띄운 일반 maker child 는 부모 세션의 Anthropic 계정 고정(warm 자동
 	// pin·교체 exact pin 모두)을 물려받지 않고 위 순서 규칙으로 새로 고른다. 실제 경로: task 도구(task/index.ts) →
