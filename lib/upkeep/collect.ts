@@ -184,7 +184,7 @@ export async function makerMetrics(
   period: { includes: (time: number) => boolean; label: string } = { includes: () => true, label: "최근 7일" },
 ): Promise<{ exits: UpkeepMetric; verdicts: UpkeepMetric; warning?: string; samples: { exits: number; verdicts: number } }> {
   const m = metric("maker-early-exits", "Maker partial 종료", "count", null, null, "unknown",
-    `partial로 끝난 Maker 결과가 한 모델에서 ${EARLY_EXIT_REPORT_COUNT}회 이상이거나, 결과 대비 비율이 직전보다 50% 넘게 늘면 주의`);
+    `partial로 끝난 Maker 결과가 한 모델에서 ${EARLY_EXIT_REPORT_COUNT}회 이상이거나, 결과 대비 비율이 직전보다 50% 넘게 늘면 주의. 비율은 두 기간 중 큰 쪽 partial이 ${INCIDENT_FLOOR}건 이상일 때만 판정합니다`);
   const verdicts = metric("maker-verdicts", "Maker 판정 중 rework 비율", "ratio", null, null, "unknown",
     "시도마다 마지막 판정 중 rework의 비율이 직전 7일보다 50% 넘게 늘면 주의, 2배 이상이면 문제 (held를 뺀 판정이 두 기간 모두 20건 이상일 때)");
   m.handoff = handoffs.find((x) => x.ref.title.includes("기본 Maker 관찰"))?.ref;
@@ -273,7 +273,9 @@ export async function makerMetrics(
     if (x.early) row.early++;
   }
   const rate = (early: number, total: number) => (total ? early / total : null);
-  const rateStatus = compare(rate(earlyCurrent.length, current.length), rate(earlyPrevious.length, previous.length), current.length, previous.length);
+  // 직전 0건이면 배수가 무한대라 한 건으로 「문제」가 된다. 다른 비율 행처럼 원 건수 하한을 둔다(2026-11-13 사용자 결정).
+  const rateStatus = compare(rate(earlyCurrent.length, current.length), rate(earlyPrevious.length, previous.length), current.length, previous.length, "higher",
+    [earlyCurrent.length, earlyPrevious.length]);
   // 원장에 발주가 없는 결과는 한 모델로 묶이지 않으므로 모델별 기준에서 뺀다.
   const modelStatus = Object.entries(byModel).some(([model, x]) => model !== UNKNOWN_MODEL && x.early >= EARLY_EXIT_REPORT_COUNT) ? "watch" : "ok";
 

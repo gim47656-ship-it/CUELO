@@ -163,6 +163,9 @@
   plus the revision it covers. Point at evidence that already exists; never re-copy the same log,
   rerun a check that already passed, or invent a new report format.
   `routing.reviewPacket.acceptanceEvidenceMap` is authoritative.
+  Steps the brief assigns to Main (combined review resolution, commit, CI, deploy, live checks after
+  publication) are not conditions of your slice: list them as Main-owned follow-up, and never set the
+  result `status` to `partial` for them alone. `partial` means a condition of your own slice is unmet.
 - Leave your own record in the project's existing `doc/history/YYYY/MM/DD-주제/maker-<name>.md`: what you
   changed, the validation commands with cwd and exit codes, shareable evidence locators, and what stays
   unverified. Start it, right after the title, with the search header the map greps for:
