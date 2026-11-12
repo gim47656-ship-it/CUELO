@@ -17275,6 +17275,32 @@ export function estimateContextToolSchemaTokens(
 		anchor: "\t\t\tthis.#tokenizer,\n\t\t\tsession.model,\n\t\t\tsession.settings?.revision,\n\t\t);\n",
 		patched: "\t\t\tthis.#tokenizer,\n\t\t\tsession.model,\n\t\t\tsession.settings?.revision,\n\t\t\tsession.agent?.pruneToolDescriptions === true,\n\t\t);\n",
 	},
+	// 2026-11-12 압축 shake 우선(doc/history/2026/11/12-bottleneck-four-items): 자동 shake 는 기록을 고쳐 쓴(캐시 무효) 뒤에야
+	// 80% 회복선(COMPACTION_RECOVERY_BAND)을 넘었는지 보고, 못 넘으면 다음 방법(remote 요약)으로 넘어간다. 그러면 요약 요청이
+	// 깨진 캐시 위에서 다시 쓰여 손해만 커진다. 하한 minSavings 를 "이번 트리거에서 회복선까지 내려가는 데 필요한 양"으로 올려,
+	// 한 번에 거기까지 못 걷어내면 기록을 건드리지 않고(no-op) 바로 다음 방법으로 넘어가게 한다. idle 은 원래대로 둔다.
+	{
+		file: "src/session/session-maintenance.ts",
+		marker: "// HANSE: auto shake commits only when one pass reaches the recovery band",
+		anchor: "\t\t\tconst result = await this.#host.shake(\"elide\", { config: DEFAULT_SHAKE_CONFIG, signal });\n",
+		patched: [
+			"\t\t\t// HANSE: auto shake commits only when one pass reaches the recovery band",
+			"\t\t\tconst hanseShakeWindow = this.#model?.contextWindow ?? 0;",
+			"\t\t\tlet hanseShakeNeed = 0;",
+			"\t\t\tif (reason !== \"idle\" && hanseShakeWindow > 0) {",
+			"\t\t\t\tconst hanseShakeThreshold = resolveThresholdTokens(hanseShakeWindow, this.#compactionSettings);",
+			"\t\t\t\thanseShakeNeed =",
+			"\t\t\t\t\ttypeof triggerContextTokens === \"number\" && Number.isFinite(triggerContextTokens)",
+			"\t\t\t\t\t\t? triggerContextTokens - Math.floor(hanseShakeThreshold * COMPACTION_RECOVERY_BAND)",
+			"\t\t\t\t\t\t: (this.#host.getContextUsage({ contextWindow: hanseShakeWindow })?.tokens ?? 0) - hanseShakeThreshold;",
+			"\t\t\t}",
+			"\t\t\tconst result = await this.#host.shake(\"elide\", {",
+			"\t\t\t\tconfig: { ...DEFAULT_SHAKE_CONFIG, minSavings: Math.max(DEFAULT_SHAKE_CONFIG.minSavings, hanseShakeNeed) },",
+			"\t\t\t\tsignal,",
+			"\t\t\t});",
+			"",
+		].join("\n"),
+	},
 	// 2026-10-29 기억 은행 스캔 누락(doc/history/2026/10/29-recall-bottlenecks): (1) legacy 은행 스캔은 readdir 순서로 64개까지 여는데 이 PC 는
 	// 은행 398개 중 372개가 빈 DB 라 working_memory 가 있는 은행 21개 중 3개만 닿았다. 빈 은행은 상한에 세지 않고, 빈 것으로 확인한 은행은
 	// 프로세스 안에서 stat 서명(DB·WAL 크기와 mtime)이 그대로면 다시 열지 않는다. 크기만으로는 못 가른다(빈 DB 372,736~901,120 바이트,
@@ -18259,6 +18285,183 @@ export async function deleteManagedSkillScript(input: { name: string; script: st
 		marker: "Where ego lite is installed (the `ego_browser` tool runs)",
 		anchor: "for a throwaway managed browser.{{/if}}\n",
 		patched: "for a throwaway managed browser.{{/if}}\n\nWhere ego lite is installed (the `ego_browser` tool runs), browser work, headless checks included, runs in its own ego TaskSpace through `ego_browser`; use `browser.open` through the relay only for a tab the user named, passing it as `app.target`.\n",
+	},
+	{
+		// Summary-first delivery reads the retained original, never the already-cut task preview.
+		file: "src/task/result-summary.ts",
+		marker: 'import { closeSync, fstatSync, openSync, readSync } from "node:fs";',
+		anchor: 'import { prompt } from "@oh-my-pi/pi-utils";',
+		patched: 'import { closeSync, fstatSync, openSync, readSync } from "node:fs";\nimport { prompt } from "@oh-my-pi/pi-utils";',
+	},
+	{
+		file: "src/task/result-summary.ts",
+		marker: "// CUELO: summary-first task delivery with protected evidence and findings.",
+		anchor: "\treturn whole.length > ASYNC_INLINE_RESULT_MAX_CHARS && outputCharCount > PREVIEW_CHARS ? render(true) : whole;\n}",
+		patched: String.raw`	return whole.length > ASYNC_INLINE_RESULT_MAX_CHARS && outputCharCount > PREVIEW_CHARS ? render(true) : whole;
+}
+
+// CUELO: summary-first task delivery with protected evidence and findings.
+const DELIVERY_ORIGINAL_MAX_BYTES = 2 * 1024 * 1024;
+const DELIVERY_SUMMARY_CHARS = 600;
+const DELIVERY_PROTECTED_KEY = /status|state|verdict|outcome|decision|resolution|success|^ok$|^result$|passed|complet(?:e|ion)|verifi(?:ed|cation)|finding|issue|problem|concern|obstacle|block|unresolved|remaining|pending|incomplete|limit|error|fail|risk|review|evidence|proof|locator|path|file|artifact|attach|modified|changed|director(?:y|ies)|revision|command/i;
+const DELIVERY_CAUTION_TEXT = /[?]|\breview[_ -]?ids?\b|\bR\d+[-_](?:ADV[-_])?\d+\b|\b(?:findings?|blockers?|blocked|partial|failed|failure|unverified|pending|unresolved|remaining|limitations?|errors?|approval|permission|cannot|credentials?|question|needs?|required|waiting|aborted|timeout|crashed|rejected|missing|unavailable|skipped|not (?:run|executed|verified))\b|지적|차단|막힘|미검증|실패|보류|승인|권한|오류|문제|대기|필요/iu;
+const DELIVERY_LOCATOR_TEXT = /[\/\\]|(?<![\p{L}\p{N}_.-])[\p{L}\p{N}_.-]+\.[\p{L}\p{N}]{1,16}(?![\p{L}\p{N}_])/iu;
+const DELIVERY_PROTECTED_TEXT = new RegExp(DELIVERY_CAUTION_TEXT.source + "|" + DELIVERY_LOCATOR_TEXT.source, "iu");
+
+/** Summarize prose only; protected structured values and prose blocks are never clipped. */
+export function summarizeTaskDeliveryOutput(output: string, structured?: unknown): string {
+	// Small reports already fit the summary budget; do not filter their questions or caveats.
+	if (output.length <= 2_000) return output;
+	let payload = structured;
+	if (payload === undefined) {
+		try { payload = JSON.parse(output); } catch { /* Ordinary prose is handled below. */ }
+	}
+	if (payload !== null && typeof payload === "object") {
+		const selected: Record<string, unknown> = {};
+		let summary = "";
+		const visit = (value: unknown, prefix: string): void => {
+			if (typeof value === "string") {
+				if (DELIVERY_PROTECTED_TEXT.test(value)) selected[prefix] = value;
+				return;
+			}
+			if (Array.isArray(value)) {
+				// Scalar arrays stay arrays: flattening their indices can multiply a raw data payload.
+				if (value.every(item => item === null || typeof item !== "object")) {
+					if (/(?:^|\.)(?:narrative|prose|body|log|steps)$/i.test(prefix)) {
+						const lines: unknown[] = [];
+						let budget = DELIVERY_SUMMARY_CHARS;
+						let omitted = false;
+						for (const item of value) {
+							if (typeof item !== "string" || DELIVERY_PROTECTED_TEXT.test(item)) { lines.push(item); continue; }
+							const part = item.slice(0, budget);
+							budget -= part.length;
+							if (part.length < item.length) omitted = true;
+							if (part) lines.push(part);
+						}
+						if (omitted) lines.push("[prose omitted; full original linked below]");
+						selected[prefix] = lines;
+					} else selected[prefix] = value;
+					return;
+				}
+				value.forEach((item, index) => visit(item, prefix + "[" + index + "]"));
+				return;
+			}
+			if (!value || typeof value !== "object") { selected[prefix] = value; return; }
+			for (const [key, item] of Object.entries(value)) {
+				const name = prefix ? prefix + "." + key : key;
+				if (typeof item === "string" && /summary|behavior|behaviour/i.test(key) && !summary) summary = item.slice(0, DELIVERY_SUMMARY_CHARS);
+				// Evidence and proof values stay whole for every status. Do not infer success from
+				// arbitrary report field names in order to shorten potentially negative evidence.
+				if (DELIVERY_PROTECTED_KEY.test(key) || typeof item === "string" && /validation|tests?|checks?/i.test(key)) selected[name] = item;
+				else visit(item, name);
+			}
+		};
+		visit(payload, "");
+		return (summary || "Structured report; inspect the retained original for other prose.") +
+			(Object.keys(selected).length ? "\n" + JSON.stringify(selected) : "");
+	}
+	const rendered: string[] = [];
+	let protectedDepth: number | undefined;
+	for (const block of output.split(/\n\s*\n/)) {
+		const markdown = /^(#{1,6})\s/.exec(block);
+		const level = markdown?.[1]?.length;
+		if (level !== undefined && (protectedDepth === undefined || level <= protectedDepth)) {
+			protectedDepth = DELIVERY_PROTECTED_TEXT.test(block) ? level : undefined;
+		} else if (protectedDepth === undefined && /^(?:[A-Z][A-Za-z /_-]+:|\*\*[^*]+\*\*:?)/.test(block) && DELIVERY_PROTECTED_TEXT.test(block)) {
+			// A label/bold heading opens protection but never closes a containing markdown section.
+			protectedDepth = 7;
+		}
+		rendered.push(protectedDepth !== undefined || block.length <= DELIVERY_SUMMARY_CHARS || DELIVERY_PROTECTED_TEXT.test(block)
+			? block : block.slice(0, DELIVERY_SUMMARY_CHARS));
+	}
+	return rendered.join("\n\n");
+}
+
+/** Async-only: keep sync results unchanged and fall back if the full report is not retained. */
+export function formatTaskDeliverySummary(
+	result: SingleResult,
+	options: { totalDurationMs: number; mergeSummary?: string },
+): string {
+	const fallback = (): string => formatTaskResultSummary(result, options);
+	if (!result.outputPath) return fallback();
+	let original: string;
+	let fd: number | undefined;
+	try {
+		fd = openSync(result.outputPath, "r");
+		const size = fstatSync(fd).size;
+		if (size > DELIVERY_ORIGINAL_MAX_BYTES) return fallback();
+		const buffer = Buffer.alloc(size + 1);
+		let count = 0;
+		while (count < buffer.length) {
+			const read = readSync(fd, buffer, count, buffer.length - count, count);
+			if (!read) break;
+			count += read;
+		}
+		// A growing/replaced artifact is not the settled original that was measured.
+		if (count !== size) return fallback();
+		original = buffer.subarray(0, count).toString("utf8");
+		if (!original.trim() || result.outputMeta && original.length !== result.outputMeta.charCount) return fallback();
+	} catch {
+		return fallback();
+	} finally {
+		if (fd !== undefined) {
+			try { closeSync(fd); } catch { return fallback(); }
+		}
+	}
+	const data = result.structuredOutput?.data;
+	const summary = summarizeTaskDeliveryOutput(original, data);
+	const linked = summary + "\n\nFull original: agent://" + result.id + "\nOutput path: " + result.outputPath;
+	// All protected values have already been selected from the original. Do not apply the head preview again.
+	return formatTaskResultSummary({ ...result, output: linked, outputPath: undefined }, options);
+}`,
+	},
+	{
+		file: "src/task/index.ts",
+		marker: 'import { formatTaskDeliverySummary, formatTaskResultSummary } from "./result-summary";',
+		anchor: 'import { formatTaskResultSummary } from "./result-summary";',
+		patched: 'import { formatTaskDeliverySummary, formatTaskResultSummary } from "./result-summary";',
+	},
+	{
+		file: "src/task/index.ts",
+		marker: "\t\t\t\texecution.mergeSummary,\n\t\t\t\tdetached,\n",
+		anchor: "\t\t\t\texecution.mergeSummary,\n\t\t\t);",
+		patched: "\t\t\t\texecution.mergeSummary,\n\t\t\t\tdetached,\n\t\t\t);",
+	},
+	{
+		file: "src/task/index.ts",
+		marker: "\t\tsummaryFirst = false,\n",
+		anchor: "\t\tmergeSummary: string,\n\t): AgentToolResult<TaskToolDetails> {\n\t\tconst summary = formatTaskResultSummary(result, { totalDurationMs, mergeSummary });",
+		patched: "\t\tmergeSummary: string,\n\t\tsummaryFirst = false,\n\t): AgentToolResult<TaskToolDetails> {\n\t\tconst summary = (summaryFirst ? formatTaskDeliverySummary : formatTaskResultSummary)(result, { totalDurationMs, mergeSummary });",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: 'import { formatTaskDeliverySummary, formatTaskResultSummary } from "./result-summary";',
+		anchor: 'import { formatTaskResultSummary } from "./result-summary";',
+		patched: 'import { formatTaskDeliverySummary, formatTaskResultSummary } from "./result-summary";',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\t\t\t\tconst text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\ttry {',
+		anchor: '\t\t\t\t\tconst text = formatTaskResultSummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\ttry {',
+		patched: '\t\t\t\t\tconst text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\ttry {',
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: '\t\t\t\t\tconst text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\tconst structured = result.structuredOutput;',
+		anchor: '\t\t\t\t\tconst text = formatTaskResultSummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\tconst structured = result.structuredOutput;',
+		patched: '\t\t\t\t\tconst text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });\n\t\t\t\t\tconst structured = result.structuredOutput;',
+	},
+	{
+		file: "src/task/restore.ts",
+		marker: 'import { formatTaskDeliverySummary } from "./result-summary";',
+		anchor: 'import { formatTaskResultSummary } from "./result-summary";',
+		patched: 'import { formatTaskDeliverySummary } from "./result-summary";',
+	},
+	{
+		file: "src/task/restore.ts",
+		marker: "const text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });",
+		anchor: "const text = formatTaskResultSummary(result, { totalDurationMs: result.durationMs });",
+		patched: "const text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });",
 	},
 ];
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과

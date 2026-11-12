@@ -590,25 +590,16 @@ function skillUsageLine(row: SkillUsageRow): string {
   return `- ${row.name} (${SCOPE_LABELS[row.scope]}, 판정 ${row.status}): 최근 7일 열람 ${w.opens}번·세션 ${w.sessions}곳(직전 7일 ${row.previous.opens}번), 연 뒤 도구 오류 ${w.afterFailures}/${w.afterCalls}건, 같은 세션의 나머지 ${w.restFailures}/${w.restCalls}건, 연 턴 ${w.openTurns}번 중 다음 요청에 지적 표현 ${w.complaintTurns}번`;
 }
 
-/** 연 뒤 오류와 함께 나타난(주의·문제) 관리 스킬. 야간 세션이 고칠 수 있는 스킬만 실행 계기가 된다. */
-function flaggedManagedSkills(usage: SkillUsageReport): string[] {
-  return usage.rows.filter((r) => r.scope === "managed" && (r.status === "watch" || r.status === "problem")).map((r) => r.name);
-}
-
 function skillHealthBlock(source: string, usage: SkillUsageReport): string {
-  const flagged = usage.rows.filter((r) => r.status === "watch" || r.status === "problem");
   const stale = usage.unused.filter((s) => !s.young);
   const young = usage.unused.length - stale.length;
   return [
     "## 스킬 사용 점검",
     "",
-    `\`${source}\`에서 스킬(\`read skill://…\`)을 연 기록입니다. 「연 뒤 도구 오류」는 스킬을 연 턴에서 그 뒤에 난 오류이고 「나머지」는 같은 세션의 다른 호출입니다. 함께 나타난 수치이며 스킬이 오류를 일으켰다는 증거가 아닙니다. 판정은 보수 점검과 같은 기준(연 뒤 오류율이 나머지보다 50% 넘게 높으면 watch, 2배면 problem, 양쪽 호출 20건 미만이면 unknown)입니다.`,
-    "- 관리 스킬이 watch·problem이면 그 스킬 본문과 위 「실패 발췌」를 대조해, 스킬의 지시가 실패를 부른 근거가 있을 때만 고치고 위 보낸편지함 규칙대로 돌려보냅니다. 근거가 없으면 고치지 말고 조사한 내용만 아침 요약에 적습니다.",
+    `\`${source}\`에서 스킬(\`read skill://…\`)을 연 기록입니다. 「연 뒤 도구 오류」는 스킬을 연 턴에서 그 뒤에 난 오류이고 「나머지」는 같은 세션의 다른 호출입니다. 상관관계와 횟수는 참고용이며 주의나 문제로 판정하거나 자율 수정의 계기로 쓰지 않습니다.`,
+    "- 상관관계 수치만으로 스킬을 수정하지 않습니다. 기존 실패 증거가 야간 작업 범위 내 변경을 뒷받침할 때만 관리 스킬을 수정합니다.",
     "- 사용자 스킬과 설치 위치를 모르는 스킬은 고치지 않고 아침 요약에 보고만 합니다.",
     "- 오래 열리지 않은 스킬은 아침 요약의 「정리 제안」에 이름만 적습니다. 이 세션은 스킬을 지우거나 옮기지 않습니다(삭제는 사용자 승인).",
-    "",
-    "연 뒤 오류와 함께 나타난 스킬:",
-    ...(flagged.length ? flagged.map(skillUsageLine) : ["- 없음"]),
     "",
     "최근 7일 열람이 많은 스킬:",
     ...(usage.rows.length ? usage.rows.slice(0, 10).map(skillUsageLine) : ["- 열람 기록 없음"]),
@@ -741,17 +732,15 @@ export function planInboxRun(
     const previous = state?.sources?.[bundle.source];
     const since = skillScanSince(previous, now);
     const candidates = bundle.skillCandidates.filter((c) => Date.parse(c.timestamp) > since);
-    const skillHealth = flaggedManagedSkills(bundle.skillUsage);
     const jobs: NightlyJobs = {
       problems: bundle.problems.map((p) => p.id),
       skillCandidates: candidates.length,
       weeklyReview: weeklyReviewDue(previous, date),
-      ...(skillHealth.length ? { skillHealth } : {}),
       pluginReview: true,
     };
     const plan = { source: bundle.source, jobs, skillsScannedAt: bundle.generatedAt };
     scanned.push(plan);
-    if (jobs.problems.length || jobs.skillCandidates || jobs.weeklyReview || skillHealth.length || jobs.pluginReview) {
+    if (jobs.problems.length || jobs.skillCandidates || jobs.weeklyReview || jobs.pluginReview) {
       active.push({ bundle, candidates, plan });
     }
   }
@@ -775,7 +764,6 @@ export function planInboxRun(
   }
   if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));
   sections.push(IMPROVEMENT_REVIEW_BLOCK, NIGHTLY_PLUGIN_REVIEW, INBOX_SUMMARY_RULES);
-  const skillHealthTotal = active.flatMap(({ bundle, plan }) => (plan.jobs.skillHealth ?? []).map((name) => `${bundle.source}:${name}`));
   return {
     action: "run",
     date,
@@ -786,7 +774,6 @@ export function planInboxRun(
       skillCandidates: active.reduce((sum, { candidates }) => sum + candidates.length, 0),
       weeklyReview: active.some(({ plan }) => plan.jobs.weeklyReview),
       handoff: handoffItems.map(handoffLabel),
-      ...(skillHealthTotal.length ? { skillHealth: skillHealthTotal } : {}),
       issueLookup: issues.status === "unavailable" ? "unavailable" : issues.partial ? "partial" : "ok",
       issues: issues.status === "ok" ? issues.issues.map((issue) => issue.number) : [],
       improvementReview: true,

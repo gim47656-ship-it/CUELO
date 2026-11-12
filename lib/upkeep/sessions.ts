@@ -8,7 +8,7 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
-import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
+import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
@@ -98,6 +98,8 @@ export type WindowCounts = {
   nearGate: number;
   recallCalls: number;
   exportFailures: number;
+  /** Completed git_finalize results are the opportunities for memory export. */
+  finalizeResults: number;
   complaints: number;
   cost: number;
   missingCost: boolean;
@@ -123,6 +125,8 @@ export type MakerResult = { sessionId: string; name: string; timestamp: string; 
 
 export type ScanResult = {
   windows: [WindowCounts, WindowCounts];
+  /** Same event stream, last 48h; optional for older report fixtures. */
+  recent?: WindowCounts;
   scannedFiles: number;
   warnings: string[];
   /** 최근 7일 지표 id별 근거 사례(최대 10개) */
@@ -165,6 +169,7 @@ function emptyWindow(): WindowCounts {
   return {
     turns: 0, calls: 0, errors: 0, rejects: 0, compactions: 0, requests: 0, nudges: 0, recalls: 0, emptyRecalls: 0,
     gated: 0, nearGate: 0, recallCalls: 0, exportFailures: 0, complaints: 0, cost: 0, missingCost: false,
+    finalizeResults: 0,
     apiKeyCalls: 0, apiKeyCost: 0, cacheWriteCost: 0, missingRewriteCost: false,
     rewrites: Object.fromEntries(REWRITE_CAUSES.map((cause) => [cause, { count: 0, cost: 0 }])) as WindowCounts["rewrites"],
     gaps: [], purposes: {}, models: {}, errorsBySignature: {},
@@ -365,6 +370,7 @@ const HARNESS_NOTICE = new RegExp([
   /^image-question-router: 이미지는 먼저 vision 모델에게 묻는다\. 직접 읽기를 막았다\./,
   /^\[draft-coverage\] /,
   /^\[EvalGateGuard\] eval 안에서 /,
+  /^\[검사 종료 코드\] [^\r\n]*(?:\r?\n)?$/,
   /^This edit anchors to lines /,
   /^이 edit는 .+?번 줄을 기준으로 했지만, /,
 ].map((r) => r.source).join("|"));
@@ -468,6 +474,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const windows: [WindowCounts, WindowCounts] = [emptyWindow(), emptyWindow()];
   const splits = new Map<number, SplitCounts>();
   for (const at of splitAt) if (!splits.has(at)) splits.set(at, { before: emptyWindow(), after: emptyWindow() });
+  const recentAt = now - RECENT_WINDOW_MS;
+  if (!splits.has(recentAt)) splits.set(recentAt, { before: emptyWindow(), after: emptyWindow() });
   const evidence: Record<string, UpkeepEvidence[]> = {};
   const costs = new SessionCostTable();
   const slowGaps: { gap: number; row: UpkeepEvidence }[] = [];
@@ -507,7 +515,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   try {
     files = await sessionFiles(dir, now - 14 * DAY_MS);
   } catch {
-    return { windows, scannedFiles: 0, warnings: ["세션 디렉터리를 읽지 못했습니다."], evidence, topSessions: {}, makerResults, splits, cwdActivity, ...finish() };
+    return { windows, recent: splits.get(recentAt)!.after, scannedFiles: 0, warnings: ["세션 디렉터리를 읽지 못했습니다."], evidence, topSessions: {}, makerResults, splits, cwdActivity, ...finish() };
   }
 
   for (const path of files) {
@@ -735,6 +743,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           if (m.toolName === "git_finalize") {
             const text = textOf(m.content);
             const at = text.indexOf(EXPORT_FAILURE);
+            if (!m.isError || at >= 0) each((w) => w.finalizeResults++);
             if (at >= 0) {
               each((w) => w.exportFailures++);
               note("memory-export-failures", text.slice(at).split("\n")[0].slice(0, 160));
@@ -744,8 +753,10 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           if (!call || !m.toolCallId) continue;
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);
-          const text = m.isError ? textOf(m.content) : "";
+          // Appended check hints are not the failure signature; retain the actual command failure.
+          const text = m.isError ? textOf(m.content).replace(/\r?\n\[검사 종료 코드\] 검사와 출력 가공 명령을 함께 실행했다\.[^\n]*(?:\r?\n)?$/u, "") : "";
           let harnessNotice = HARNESS_NOTICE.test(text);
+          if (call.name === "git_finalize" && /^(?:Error: )?git_finalize failed at cross-review: cross-family review required before this commit\b/.test(text)) harnessNotice = true;
           if (!harnessNotice && call.name === "eval" && /^Traceback \(most recent call last\):\r?\n/m.test(text)
             && /(?:^|\r?\n)Command exited with code 1\s*$/.test(text)) {
             const cause = errorLine(call.name, text.split(/\r?\n/));
@@ -820,7 +831,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     .sort((a, b) => Number(a.first) - Number(b.first) || b.cost - a.cost)
     .slice(0, EVIDENCE_LIMIT)
     .map((x) => x.row);
-  return { windows, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish() };
+  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish() };
 }
 
 type SkillSession = { sessionId: string; opens: number; afterCalls: number; afterFailures: number; lastAt: number };

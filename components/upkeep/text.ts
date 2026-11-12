@@ -50,6 +50,13 @@ export const UPKEEP_TEXT = {
   checkClear: "점검 취소",
   checkedAt: (time: string) => `점검 완료 ${time}`,
   checkNote: "점검 사유",
+  verdictReal: "실제 문제",
+  verdictFalsePositive: "오탐",
+  precisionLabel: "규칙 정밀도 (최근 7일 점검)",
+  precisionNote: "실제 문제 / (실제 문제 + 오탐) 비율이며 판정 안 함은 제외합니다.",
+  precisionEmpty: "판정 없음",
+  precisionValue: (value: { precision: number | null; real: number; falsePositive: number }) =>
+    `${value.precision === null ? "—" : `${Math.round(value.precision * 100)}%`} (실제 문제 ${value.real}건, 오탐 ${value.falsePositive}건)`,
   afterFix: "고침 뒤",
   beforeFix: "고침 전",
   /** 고침 전·뒤 칸 이름에 그 기간 길이를 붙인다, 예: 「고침 뒤 (5분)」 */

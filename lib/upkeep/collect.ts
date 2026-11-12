@@ -13,9 +13,11 @@ import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
   CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_COUNT_FLOOR, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, COUNT_FLOOR, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
   FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
+  INCIDENT_FLOOR, MODEL_COST_FLOOR_USD, NUDGE_WATCH_PER_100, NUDGE_PROBLEM_PER_100,
+  REWRITE_WATCH_SHARE, REWRITE_PROBLEM_SHARE, REWRITE_WATCH_USD, REWRITE_PROBLEM_USD, criterionIdForMetric,
 } from "./criteria";
 import { inspectDeploy, type DeployState } from "./deploy";
-import { activeCheckMarks, type CheckMark } from "./checks";
+import { activeCheckMarks, precisionByRule, type CheckMark } from "./checks";
 import { activeFixMarks, isFixableMetricId } from "./fixes";
 import { readHandoffs } from "./handoff";
 import {
@@ -74,7 +76,7 @@ function metric(
   status: UpkeepStatus,
   criterion = GENERIC_CRITERION,
 ): UpkeepMetric {
-  return { id, label, unit, current, previous, status, criterion, evidence: [] };
+  return { id, criterionId: criterionIdForMetric(id), label, unit, current, previous, status, criterion, evidence: [] };
 }
 
 function section(id: UpkeepSection["id"], title: string, metrics: UpkeepMetric[], warnings: string[] = [], items?: UpkeepDueItem[]): UpkeepSection {
@@ -109,6 +111,26 @@ function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: Sc
   m.note = `원 건수 ${pick(a)} / ${pick(b)}, 사용자 요청 ${a.turns} / ${b.turns}건`;
   if (belowFloor) m.note += `. 두 기간 모두 원 건수가 ${floor}건 미만이라 판정하지 않습니다`;
   m.evidence = scan.evidence[id] ?? [];
+  if (id !== "todo-nudges") resetQuietEvent(m, scan, pick, (w) => w.turns);
+  return m;
+}
+
+/** Quiet recent activity clears event alarms, not weekly budget alarms. */
+function resetQuietEvent(m: UpkeepMetric, scan: ScanResult, incidents: (w: WindowCounts) => number, opportunities: (w: WindowCounts) => number) {
+  const recent = scan.recent;
+  if ((m.status !== "watch" && m.status !== "problem") || !recent || scan.warnings?.length
+    || opportunities(recent) < MIN_SAMPLE || incidents(recent) !== 0) return;
+  m.status = "ok";
+  m.note = `${m.note ?? ""} 최근 48시간 ${opportunities(recent)}건 중 사건 0건으로 경보를 해제했습니다. 주간 수치는 그대로 유지합니다.`;
+}
+
+function nudgeMetric(scan: ScanResult): UpkeepMetric {
+  const m = perTurnMetric("todo-nudges", "할 일 갱신 알림", scan, (w) => w.nudges);
+  const a = scan.windows[0];
+  const budget = a.turns < MIN_SAMPLE || m.current === null ? "unknown"
+    : m.current >= NUDGE_PROBLEM_PER_100 ? "problem" : m.current >= NUDGE_WATCH_PER_100 ? "watch" : "ok";
+  adoptWorse(m, budget, "주간 예산");
+  m.criterion += `. 최근 7일 사용자 요청 ${MIN_SAMPLE}건 이상일 때 요청 100건당 알림 ${NUDGE_WATCH_PER_100}회 이상이면 주의, ${NUDGE_PROBLEM_PER_100}회 이상이면 문제`;
   return m;
 }
 
@@ -120,9 +142,10 @@ function perTurnMetric(id: string, label: string, scan: ScanResult, pick: (w: Sc
 function compactionMetric(scan: ScanResult): UpkeepMetric {
   const [a, b] = scan.windows;
   const per = (w: WindowCounts) => (w.requests ? (w.compactions / w.requests) * 1000 : null);
-  const m = metric("compactions", "컨텍스트 압축 (모델 요청 1000건당)", "count", per(a), per(b), compare(per(a), per(b), a.requests, b.requests));
+  const m = metric("compactions", "컨텍스트 압축 (모델 요청 1000건당)", "count", per(a), per(b), compare(per(a), per(b), a.requests, b.requests, "higher", [a.compactions, b.compactions]));
   m.note = `원 건수 ${a.compactions} / ${b.compactions}, 모델 요청 ${a.requests} / ${b.requests}건(Maker 포함), 사용자 요청 ${a.turns} / ${b.turns}건`;
   m.evidence = scan.evidence.compactions ?? [];
+  resetQuietEvent(m, scan, (w) => w.compactions, (w) => w.requests);
   return m;
 }
 
@@ -277,9 +300,11 @@ function adoptWorse(m: UpkeepMetric, other: UpkeepStatus, part: string) {
 export function bottleneckSection(scan: ScanResult, maker: { exits: UpkeepMetric; verdicts: UpkeepMetric }, warnings: string[]): UpkeepSection {
   const [a, b] = scan.windows;
   const errorRate = metric("tool-error-rate", "도구 오류율", "ratio", a.calls ? a.errors / a.calls : null, b.calls ? b.errors / b.calls : null,
-    compare(a.calls ? a.errors / a.calls : null, b.calls ? b.errors / b.calls : null, a.calls, b.calls));
+    compare(a.calls ? a.errors / a.calls : null, b.calls ? b.errors / b.calls : null, a.calls, b.calls, "higher", [a.errors, b.errors]));
   errorRate.note = `오류 ${a.errors} / ${b.errors}건, 호출 ${a.calls} / ${b.calls}건. 사용자 중단·취소·검색 무일치는 뺐습니다.`;
   errorRate.evidence = Object.entries(a.errorsBySignature).sort((x, y) => y[1] - x[1]).slice(0, 10).map(([label, count]) => ({ label, count }));
+  errorRate.criterion += `. 두 기간 중 큰 쪽 오류가 ${INCIDENT_FLOOR}건 이상일 때만 판정합니다`;
+  resetQuietEvent(errorRate, scan, (w) => w.errors, (w) => w.calls);
 
   // 느린 대기 행은 도구 결과 뒤 다음 요청까지 걸린 시간의 p90도 같은 기준으로 보고 더 나쁜 쪽을 따른다.
   const slowGaps = perTurnMetric("slow-gaps", `${SLOW_GAP_MS / 1000}초 넘는 대기`, scan, (w) => w.gaps.filter((g) => g > SLOW_GAP_MS).length);
@@ -294,7 +319,7 @@ export function bottleneckSection(scan: ScanResult, maker: { exits: UpkeepMetric
     perTurnMetric("dispatch-rejects", "작업 발주 거절", scan, (w) => w.rejects),
     slowGaps,
     compactionMetric(scan),
-    perTurnMetric("todo-nudges", "할 일 갱신 알림", scan, (w) => w.nudges),
+    nudgeMetric(scan),
     maker.exits,
     maker.verdicts,
   ], warnings);
@@ -322,7 +347,7 @@ export function memorySection(scan: ScanResult, handoffs: UpkeepDueItem[]): Upke
     a.exportFailures > 0 ? "watch" : "ok", "git_finalize 결과에 기억 export 실패가 한 번이라도 있으면 주의");
   exportFailures.note = "실패해도 커밋은 진행되지만 기억 동기화 파일은 갱신되지 않습니다.";
   exportFailures.evidence = scan.evidence["memory-export-failures"] ?? [];
-
+  resetQuietEvent(exportFailures, scan, (w) => w.exportFailures, (w) => w.finalizeResults ?? 0);
   return section("memory", "기억 회상", [recallRate, gated, recallCalls, exportFailures]);
 }
 
@@ -336,15 +361,17 @@ const usd = (value: number) => `$${value.toFixed(2)}`;
 function costMetric(id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined, turns: [number, number]): UpkeepMetric {
   const per = (u: UsageTotal | undefined, t: number) => (u?.missingCost || !t ? null : perTurns(billedOf(u), t));
   const m = metric(id, `${label} (청구분, 요청 100건당)`, "usd", per(current, turns[0]), per(previous, turns[1]), "unknown", COST_CRITERION);
+  if (id.startsWith("model:")) m.criterion = m.criterion.replace(`큰 쪽 청구분이 $${COST_FLOOR_USD} 이상`, `최근 7일 청구분이 $${MODEL_COST_FLOOR_USD} 이상`);
   const notes = [`원 금액 ${usd(current?.cost ?? 0)} / ${usd(previous?.cost ?? 0)}, 호출 ${current?.calls ?? 0} / ${previous?.calls ?? 0}건`];
   if (current?.subscription) notes.push(`최근 7일 중 OAuth(구독) 사용분 ${usd(current.subscription)}는 실제 청구액이 아니라 판정에서 뺍니다.`);
   if (current?.unknownAuth) notes.push(`인증 종류가 기록되지 않은 Anthropic 사용분 ${usd(current.unknownAuth)}는 구독인지 알 수 없어 청구분에 둡니다.`);
-  const billed = Math.max(billedOf(current), billedOf(previous));
+  const floor = id.startsWith("model:") ? MODEL_COST_FLOOR_USD : COST_FLOOR_USD;
+  const billed = id.startsWith("model:") ? billedOf(current) : Math.max(billedOf(current), billedOf(previous));
   if (m.current === null || m.previous === null) {
     notes.push(!turns[0] || !turns[1] ? "사용자 요청 기록이 없는 기간이 있습니다." : "일부 사용량 기록에 비용이 없습니다.");
-  } else if (billed < COST_FLOOR_USD) {
+  } else if (billed < floor) {
     m.status = "ok";
-    notes.push(`두 기간 모두 청구분이 $${COST_FLOOR_USD} 미만이라 판정하지 않습니다.`);
+    notes.push(`청구분이 $${floor} 미만이라 판정하지 않습니다.`);
   } else {
     m.status = compare(m.current, m.previous, current?.calls ?? 0, previous?.calls ?? 0);
     if (!previous) notes.push("직전 7일 기록 없음");
@@ -391,6 +418,12 @@ function cacheRewriteMetric(scan: ScanResult): UpkeepMetric {
     m.status = Math.max(now.cost, before.cost) < COST_FLOOR_USD ? "ok" : compare(m.current, m.previous, a.turns, b.turns);
   }
   const share = (cost: number, w: WindowCounts) => (w.cacheWriteCost ? cost / w.cacheWriteCost : null);
+  if (!a.missingRewriteCost && a.turns >= MIN_SAMPLE && a.cacheWriteCost > 0) {
+    const fraction = share(now.cost, a)!;
+    adoptWorse(m, now.cost >= REWRITE_PROBLEM_USD && fraction >= REWRITE_PROBLEM_SHARE ? "problem"
+      : now.cost >= REWRITE_WATCH_USD && fraction >= REWRITE_WATCH_SHARE ? "watch" : "ok", "주간 예산");
+  }
+  m.criterion += `. 주간 예산: 캐시 쓰기 비용의 ${REWRITE_WATCH_SHARE * 100}% 이상이며 $${REWRITE_WATCH_USD} 이상이면 주의, ${REWRITE_PROBLEM_SHARE * 100}% 이상이며 $${REWRITE_PROBLEM_USD} 이상이면 문제 (최근 요청 ${MIN_SAMPLE}건 이상)`;
   const causes = REWRITE_CAUSES.filter((c) => a.rewrites[c].count).map((c) => `${REWRITE_CAUSE_LABELS[c]} ${a.rewrites[c].count}건 ${usd(a.rewrites[c].cost)}`);
   m.note = [
     `원 금액 ${usd(now.cost)} / ${usd(before.cost)} (${now.count} / ${before.count}건), 본 요청 캐시 쓰기 비용 중 ${percent(share(now.cost, a))} / ${percent(share(before.cost, b))}.`,
@@ -408,6 +441,8 @@ function billedApiKeyMetric(scan: ScanResult): UpkeepMetric {
   const m = metric("billed-api-key", "API 키 청구 금액", "usd", a.apiKeyCost, b.apiKeyCost, a.apiKeyCalls > 0 ? "watch" : "ok",
     "API 키로 청구된 호출이 한 건이라도 있으면 주의");
   m.note = `호출 ${a.apiKeyCalls} / ${b.apiKeyCalls}건. 인증 종류는 Anthropic 호출만 기록돼 다른 제공자의 API 키 사용은 여기 잡히지 않습니다.`;
+  m.criterion += ". 최근 48시간 모델 요청 20건 이상에서 API 키 청구가 없으면 경보를 해제합니다";
+  resetQuietEvent(m, scan, (w) => w.apiKeyCalls, (w) => w.requests);
   m.evidence = sessionRows(scan.topSessions["api-key"]);
   return m;
 }
@@ -433,7 +468,8 @@ function costCandidates(scan: ScanResult, handoffs: UpkeepDueItem[], keyWindows:
   const rows: CostRow[] = [];
   const add = (id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined, evidence: SessionCost[] | undefined) => {
     const m = costMetric(id, label, current, previous, [a.turns, b.turns]);
-    m.criterion = `${COST_CRITERION}. 청구분이 $${COST_FLOOR_USD} 이상이면 캐시 쓰기 비율(${CACHE_WRITE_FLOOR * 100}% 이상이면서 직전보다 50% 넘게 늘면 주의, 2배 이상이면 문제)도 보고 더 나쁜 쪽을 따릅니다`;
+    const costFloor = id.startsWith("model:") ? MODEL_COST_FLOOR_USD : COST_FLOOR_USD;
+    m.criterion += `. 청구분이 $${costFloor} 이상이면 캐시 쓰기 비율(${CACHE_WRITE_FLOOR * 100}% 이상이면서 직전보다 50% 넘게 늘면 주의, 2배 이상이면 문제)도 보고 더 나쁜 쪽을 따릅니다`;
     m.evidence = sessionRows(evidence);
     const cache = cacheWriteShare(current, previous);
     const extra: string[] = [];
@@ -446,7 +482,7 @@ function costCandidates(scan: ScanResult, handoffs: UpkeepDueItem[], keyWindows:
       extra.push(`캐시 쓰기 비율 참고 수준: 수정 전 ${TRANSLATION_CACHE_BEFORE * 100}%, 평소 ${TRANSLATION_CACHE_BASELINE * 100}%.`);
     }
     m.note = [m.note, ...extra].join(" ");
-    if (Math.max(billedOf(current), billedOf(previous)) >= COST_FLOOR_USD) adoptWorse(m, cache.status, "캐시 쓰기 비율");
+    if ((id.startsWith("model:") ? billedOf(current) : Math.max(billedOf(current), billedOf(previous))) >= costFloor) adoptWorse(m, cache.status, "캐시 쓰기 비율");
     rows.push({ metric: m, label, cost: current?.cost ?? 0, folded: !previous?.calls && (current?.calls ?? 0) < MIN_SAMPLE });
   };
   for (const key of new Set(keyWindows.flatMap((w) => Object.keys(w.purposes)))) {
@@ -492,7 +528,7 @@ export function complaintSection(scan: ScanResult): UpkeepSection {
 }
 
 const SKILL_SCOPE_LABELS: Record<SkillUsageRow["scope"], string> = { managed: "관리 스킬", user: "사용자 스킬", other: "설치 폴더에 없는 스킬" };
-const SKILL_CRITERION = `스킬을 연 턴에서 그 뒤 도구 오류율이 같은 세션의 나머지 호출보다 50% 넘게 높으면 주의, 2배 이상이면 문제 (양쪽 모두 호출 ${MIN_SAMPLE}건 이상일 때). 함께 나타난 정도만 볼 뿐, 스킬 때문에 오류가 났는지는 알 수 없습니다`;
+const SKILL_CRITERION = "참고용(판정 안 함). 스킬을 연 뒤 오류와 함께 나타난 정도이며, 스킬 때문에 오류가 났는지는 알 수 없습니다";
 
 function skillMetric(row: SkillUsageRow): UpkeepMetric {
   const a = row.current, b = row.previous;
@@ -668,7 +704,8 @@ export async function applyFixMarks(sections: UpkeepSection[], scan: ScanResult,
     let view = views.get(key);
     if (!view) {
       const counts = scan.splits.get(at);
-      view = counts ? sessionMetricsById({ ...scan, windows: [counts[part], scan.windows[1]] }, ctx.handoffs, scan.windows) : new Map();
+      const recent = part === "after" ? (at >= ctx.now - 48 * 3_600_000 ? counts?.after : scan.recent) : undefined;
+      view = counts ? sessionMetricsById({ ...scan, recent, windows: [counts[part], scan.windows[1]] }, ctx.handoffs, scan.windows) : new Map();
       views.set(key, view);
     }
     return view.get(id);
@@ -723,13 +760,17 @@ export async function applyFixMarks(sections: UpkeepSection[], scan: ScanResult,
  * 반영한 뒤에 붙인다. `marks`는 7일 안의 것만 온다.
  */
 export function applyCheckMarks(sections: UpkeepSection[], marks: Record<string, CheckMark>) {
+  const precision = precisionByRule(marks);
   for (const s of sections) {
     for (const m of s.metrics) {
       const mark = marks[m.id] ?? marks[maskSecrets(m.id)];
-      if (mark) m.check = { checkedAt: new Date(mark.at).toISOString(), note: mark.note };
+      if (mark) m.check = { checkedAt: new Date(mark.at).toISOString(), note: mark.note, ...(mark.verdict ? { verdict: mark.verdict, criterionId: mark.criterionId } : {}) };
+      const rule = m.criterionId ?? criterionIdForMetric(m.id);
+      if (precision[rule]) m.precision = precision[rule];
     }
     s.status = worst(s.metrics.filter((m) => !m.check).map((m) => m.status));
   }
+  return precision;
 }
 
 function summarize(s: UpkeepSection): string {
@@ -794,7 +835,7 @@ async function buildReport(): Promise<UpkeepReport> {
     opsSection(handoffs.items, handoffs.warnings, deploy, workspace, start),
   ];
   await applyFixMarks(sections, scan, marks, { agentDir, now: start, handoffs: handoffs.items });
-  applyCheckMarks(sections, checks);
+  const precision = applyCheckMarks(sections, checks);
   for (const s of sections) s.summary = summarize(s);
   const report: UpkeepReport = {
     generatedAt: new Date(start).toISOString(),
@@ -807,6 +848,7 @@ async function buildReport(): Promise<UpkeepReport> {
     scanMs: Date.now() - start,
     repoCwd: repo,
     sections,
+    precision,
   };
   maskReport(report);
   return report;

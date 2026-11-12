@@ -43,8 +43,6 @@ export interface NightlyJobs {
   weeklyReview: boolean;
   /** 받은편지함 모드의 합계에서만: 맡긴 HANDOFF 클라우드 점검 항목(`경로 「제목」`) */
   handoff?: string[];
-  /** 받은편지함 모드에서만: 연 뒤 오류와 함께 나타나 살펴볼 관리 스킬(합계는 `출처:이름`) */
-  skillHealth?: string[];
   /** 받은편지함 모드에서만: 공개 저장소 열린 이슈 조회 결과와 맡긴 이슈 번호 */
   issueLookup?: "ok" | "partial" | "unavailable";
   issues?: number[];

@@ -52,12 +52,21 @@ export interface UpkeepFix {
   observing: boolean;
 }
 
+export type UpkeepVerdict = "real" | "false-positive";
+export interface UpkeepPrecision {
+  real: number;
+  falsePositive: number;
+  precision: number | null;
+}
+
 /** 「점검함 표시」: 원인을 확인했지만 고친 것이 아닌 행. 판정은 그대로 두고 시각·사유만 붙인다. */
 export interface UpkeepCheck {
   /** 점검한 시각(ISO) */
   checkedAt: string;
   /** 확인한 원인 한 줄. 없으면 null */
   note: string | null;
+  verdict?: UpkeepVerdict;
+  criterionId?: string;
 }
 
 export interface UpkeepMetric {
@@ -72,6 +81,8 @@ export interface UpkeepMetric {
   status: UpkeepStatus;
   /** 사람이 읽는 판정 기준 한 줄, 예: "직전 7일보다 50% 넘게 늘면 주의, 2배면 문제" */
   criterion: string;
+  criterionId?: string;
+  precision?: UpkeepPrecision;
   /** 기준을 HANDOFF에서 가져왔으면 그 항목 */
   handoff?: UpkeepHandoffRef;
   /** 값의 한계·해석 주의 한 줄(표본 부족 등) */
@@ -127,4 +138,6 @@ export interface UpkeepReport {
   /** 작업 프롬프트로 새 세션을 열 CUELO 저장소 경로. 찾지 못하면 null(화면이 사용자에게 고르게 한다) */
   repoCwd: string | null;
   sections: UpkeepSection[];
+  /** Active seven-day check marks with an explicit manual verdict, grouped by rule. */
+  precision?: Record<string, UpkeepPrecision>;
 }

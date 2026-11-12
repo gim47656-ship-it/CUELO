@@ -18,6 +18,21 @@ export const PER_TURNS = 100;
  * 「문제」가 됐다). 비용 행의 COST_FLOOR_USD와 같은 역할이다.
  */
 export const COUNT_FLOOR = 5;
+/** Five incidents avoids single-error ratio alarms; reuse the existing count noise floor. */
+export const INCIDENT_FLOOR = COUNT_FLOOR;
+/** A 48h quiet window resets event alarms only after MIN_SAMPLE fresh opportunities. */
+export const RECENT_WINDOW_MS = 48 * 3_600_000;
+/** Model allocation is not a defect by itself: require ten times the $1 cost noise floor per week. */
+export const MODEL_COST_FLOOR_USD = 10;
+/** Budget: investigate a quarter of cache-writing spend; a majority is a problem. */
+export const REWRITE_WATCH_SHARE = 0.25;
+export const REWRITE_PROBLEM_SHARE = 0.5;
+/** Weekly $10/$25 floors prevent negligible spend from exhausting the share budget. */
+export const REWRITE_WATCH_USD = 10;
+export const REWRITE_PROBLEM_USD = 25;
+/** Budget: one reminder per four requests is watch; one per two is problem. */
+export const NUDGE_WATCH_PER_100 = 25;
+export const NUDGE_PROBLEM_PER_100 = 50;
 /** 「다시 지적하는 표현」은 평소 주당 1건 안팎이라 5건 바닥이면 실제로 늘어난 것도 놓쳐 3건으로 둔다(2026-11-06 사용자 결정). */
 export const COMPLAINT_COUNT_FLOOR = 3;
 
@@ -116,8 +131,10 @@ export function compare(
   currentSample: number,
   previousSample: number,
   direction: "higher" | "lower" = "higher",
+  incidents?: readonly [number, number],
 ): UpkeepStatus {
   if (current === null || previous === null || currentSample < MIN_SAMPLE || previousSample < MIN_SAMPLE) return "unknown";
+  if (incidents && Math.max(...incidents) < INCIDENT_FLOOR) return "ok";
   const worse = direction === "higher" ? current > previous : current < previous;
   if (!worse) return "ok";
   const factor = direction === "higher"
@@ -136,4 +153,12 @@ export function worst(statuses: UpkeepStatus[]): UpkeepStatus {
 
 export function perTurns(count: number, turns: number): number | null {
   return turns ? (count / turns) * PER_TURNS : null;
+}
+
+/** Versioned rule identities keep unrelated criteria out of the same precision group. */
+export function criterionIdForMetric(id: string): string {
+  if (id.startsWith("skill:")) return "skill-correlation-info-v2";
+  if (id.startsWith("model:")) return "model-cost-v2";
+  if (id.startsWith("purpose:")) return "purpose-cost-v1";
+  return `${id}-v2`;
 }

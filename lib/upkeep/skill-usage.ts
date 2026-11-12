@@ -5,7 +5,7 @@
  */
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { compare } from "./criteria";
+import { MIN_SAMPLE } from "./criteria";
 import type { UpkeepStatus } from "./types";
 
 /** 만든(SKILL.md를 마지막으로 고친) 지 이보다 덜 된 스킬은 안 쓰인다고 판정하지 않는다(삭제 제안에서 뺀다). */
@@ -82,13 +82,9 @@ export function skillNamesFromPath(path: unknown): string[] {
   return [...names];
 }
 
-/**
- * 연 뒤 오류율이 같은 세션의 나머지보다 나쁜지. 기간 비교와 같은 기준(50% 넘게 높으면 주의, 2배면 문제)과 같은 표본 규칙
- * (양쪽 호출 MIN_SAMPLE 이상)을 쓴다. 표본이 모자라면 `unknown`이다.
- */
+/** Correlation cannot establish that a skill caused a failure; keep it informational. */
 export function skillAssociationStatus(w: SkillWindowUsage): UpkeepStatus {
-  const rate = (failures: number, calls: number) => (calls ? failures / calls : null);
-  return compare(rate(w.afterFailures, w.afterCalls), rate(w.restFailures, w.restCalls), w.afterCalls, w.restCalls);
+  return w.afterCalls < MIN_SAMPLE || w.restCalls < MIN_SAMPLE ? "unknown" : "ok";
 }
 
 export interface InstalledSkill {

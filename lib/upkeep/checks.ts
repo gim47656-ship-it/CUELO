@@ -7,6 +7,8 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateFileAtomicSync } from "../atomic-file";
+import { criterionIdForMetric } from "./criteria";
+import type { UpkeepPrecision, UpkeepVerdict } from "./types";
 
 export const CHECK_MARKS_FILE = "cuelo-upkeep-checks.json";
 const MAX_ID_LENGTH = 200;
@@ -18,6 +20,8 @@ const CHECK_TTL_MS = 7 * 86_400_000;
 export interface CheckMark {
   at: string;
   note: string | null;
+  verdict?: UpkeepVerdict;
+  criterionId?: string;
 }
 
 /**
@@ -39,6 +43,25 @@ export function checkNoteFrom(body: unknown): string | null | undefined {
   return trimmed || null;
 }
 
+export function checkVerdictFrom(body: unknown): UpkeepVerdict | null | undefined {
+  const verdict = typeof body === "object" && body !== null && "verdict" in body ? body.verdict : undefined;
+  if (verdict === undefined || verdict === null) return null;
+  return verdict === "real" || verdict === "false-positive" ? verdict : undefined;
+}
+
+/** Legacy marks are not classified; only explicit verdicts enter the denominator. */
+export function precisionByRule(marks: Record<string, CheckMark>): Record<string, UpkeepPrecision> {
+  const result: Record<string, UpkeepPrecision> = Object.create(null);
+  for (const mark of Object.values(marks)) {
+    if (!mark.criterionId || !mark.verdict) continue;
+    const row = result[mark.criterionId] ??= { real: 0, falsePositive: 0, precision: null };
+    if (mark.verdict === "real") row.real++;
+    else row.falsePositive++;
+    row.precision = row.real / (row.real + row.falsePositive);
+  }
+  return result;
+}
+
 /**
  * 저장된 표시. 파일이 없으면 빈 표시다. 파일이 있는데 읽거나 해석할 수 없으면 던져서, 남기기·지우기가 다른 표시를
  * 덮어쓰거나 지우지 않은 채 성공한 것처럼 보이지 않게 한다. 모양이 맞지 않는 항목은 버린다.
@@ -56,9 +79,10 @@ export function readCheckMarks(agentDir: string): Record<string, CheckMark> {
   const marks: Record<string, CheckMark> = {};
   for (const [id, value] of Object.entries(parsed)) {
     if (!value || typeof value !== "object") continue;
-    const { at, note } = value as { at?: unknown; note?: unknown };
+    const { at, note, verdict, criterionId } = value as Partial<CheckMark>;
     if (typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
-    marks[id] = { at, note: typeof note === "string" && note ? note : null };
+    const classified = (verdict === "real" || verdict === "false-positive") && typeof criterionId === "string" && criterionId.length > 0;
+    marks[id] = { at, note: typeof note === "string" && note ? note : null, ...(classified ? { verdict, criterionId } : {}) };
   }
   return marks;
 }
@@ -68,8 +92,26 @@ function writeCheckMarks(agentDir: string, marks: Record<string, CheckMark>) {
   writePrivateFileAtomicSync(join(agentDir, CHECK_MARKS_FILE), `${JSON.stringify(marks, null, 2)}\n`);
 }
 
-export function setCheckMark(agentDir: string, metricId: string, at: Date, note: string | null) {
-  writeCheckMarks(agentDir, { ...readCheckMarks(agentDir), [metricId]: { at: at.toISOString(), note } });
+export function setCheckMark(agentDir: string, metricId: string, at: Date, note: string | null, verdict?: UpkeepVerdict | null) {
+  const classification = verdict ? { verdict, criterionId: criterionIdForMetric(metricId) } : {};
+  writeCheckMarks(agentDir, { ...readCheckMarks(agentDir), [metricId]: { at: at.toISOString(), note, ...classification } });
+}
+
+/** Editing a live check's classification does not restart its review window. */
+export function updateCheckMark(agentDir: string, metricId: string, now: Date, note: string | null | undefined, verdict: UpkeepVerdict | null | undefined) {
+  const marks = readCheckMarks(agentDir);
+  const previous = Object.hasOwn(marks, metricId) ? marks[metricId] : undefined;
+  const active = previous && Date.parse(previous.at) >= now.getTime() - CHECK_TTL_MS && Date.parse(previous.at) <= now.getTime() ? previous : undefined;
+  const mark: CheckMark = { ...(active ?? { at: now.toISOString(), note: null }), ...(note === undefined ? {} : { note }) };
+  if (verdict !== undefined) {
+    delete mark.verdict;
+    delete mark.criterionId;
+    if (verdict) {
+      mark.verdict = verdict;
+      mark.criterionId = criterionIdForMetric(metricId);
+    }
+  }
+  writeCheckMarks(agentDir, { ...marks, [metricId]: mark });
 }
 
 export function clearCheckMark(agentDir: string, metricId: string) {

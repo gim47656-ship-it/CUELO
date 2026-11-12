@@ -332,12 +332,8 @@ function frameForPrompt(frame: Frame): string {
 function pendingText(frame: Frame, lead: string): string | undefined {
   const open = unverified(frame);
   if (!open.length) return undefined;
-  const lines = open.map((item) =>
-    `- ${item.id} [${STATE_LABEL[stateOf(frame, item.id)]}]: ${item.what} → 확인 방법: ${item.check}${item.path ? ` (경로 ${item.path})` : ""}`);
-  const assumptionNote = frame.assumptions.length
-    ? ` 사용자가 말하지 않은 가정(${frame.assumptions.join(" / ")})이 결과를 제한하면 가정을 버리거나 사용자에게 물어라.`
-    : "";
-  return `${lead} 확인 방법대로 검증된 근거가 아직 없는 산출물:\n${lines.join("\n")}\n파일 존재와 네 자신의 인상은 확인이 아니다. 확인 방법을 실제로 수행하고(명령 실행, URL 응답, 이미지는 \`read <파일>?q=…\` vision 관측) \`lab_goal\` \`op: "evidence"\`에 command·url·observation으로 남겨라. 승인·외부 대기로 막혔으면 그 항목과 재개 조건을 밝혀라.${assumptionNote} 이 안내는 승인이 아니며 권한을 더하지 않는다.`;
+  const ids = open.map((item) => `${item.id}[${STATE_LABEL[stateOf(frame, item.id)]}]`).join(", ");
+  return `${lead} 확인 방법대로 검증된 근거가 아직 없는 산출물: ${ids}. 확인 방법은 \`lab_goal\` \`op: "status"\`로 읽고 실제 검사 뒤 \`op: "evidence"\`에 남겨라. 파일 존재나 자기 인상은 검증이 아니다. 승인 또는 외부 대기라면 항목과 재개 조건을 밝혀라. 사용자가 말하지 않은 가정이 결과를 제한하면 버리거나 사용자에게 물어라. 이 안내는 승인이 아니며 권한을 더하지 않는다.`;
 }
 
 /** `resolveJudge` replaces the native JEV judge (probes); the extension loader passes only `pi`. */

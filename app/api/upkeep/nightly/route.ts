@@ -55,7 +55,6 @@ function describeJobs(jobs: NightlyJobs): string {
     jobs.skillCandidates ? `${jobs.skillCandidates} procedure candidate(s)` : null,
     jobs.weeklyReview ? "weekly performance review" : null,
     jobs.handoff?.length ? `handoff ${jobs.handoff.join(", ")}` : null,
-    jobs.skillHealth?.length ? `skill health ${jobs.skillHealth.join(", ")}` : null,
     jobs.issueLookup ? `issues ${jobs.issueLookup}${jobs.issues?.length ? ` #${jobs.issues.join(", #")}` : ""}` : null,
     jobs.improvementReview ? "existing-feature review" : null,
     jobs.coreUpgrade ? `OMP core ${jobs.coreUpgrade.from} -> ${jobs.coreUpgrade.to}` : null,

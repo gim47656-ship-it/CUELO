@@ -19,7 +19,7 @@ import {
   sortDueItems,
   windowRanges,
 } from "@/lib/upkeep/prompt";
-import type { UpkeepDueItem, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "@/lib/upkeep/types";
+import type { UpkeepDueItem, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus, UpkeepVerdict } from "@/lib/upkeep/types";
 import { UPKEEP_TEXT as T } from "./text";
 
 // 섹션 안에서는 섹션 판정을 정하는 점검 안 한 문제·주의·미확인 행을 먼저 보여 준다. 점검 완료 표시한 행은 섹션 판정에서
@@ -119,7 +119,7 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
   sectionCriterion: string | null;
   onStart: (prompt: string) => void;
   /** 고침·점검 표시를 남기거나(`mark` true) 지운다. 섹션 id는 행이 사라졌을 때 초점을 둘 곳이다. */
-  onMark: (kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => void;
+  onMark: (kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"], verdict?: UpkeepVerdict) => void;
   busy: boolean;
 }) {
   const { fix, check } = metric;
@@ -138,16 +138,16 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
   ) : null;
   // 점검 표시는 판정을 바꾸지 않으므로 고칠 수 없는 행을 포함한 주의·문제 행 어디에나 남길 수 있다.
   const checkAction = check || metric.status === "watch" || metric.status === "problem" ? (
-    <button
-      type="button"
-      className="upkeep-button"
-      data-check-metric={metric.id}
-      aria-label={T.fixActionFor(check ? T.checkClear : T.checkMark, metric.label)}
-      disabled={busy}
-      onClick={() => onMark("check", metric.id, !check, section.id)}
-    >
-      {check ? T.checkClear : T.checkMark}
-    </button>
+      <button
+        type="button"
+        className="upkeep-button"
+        data-check-metric={metric.id}
+        aria-label={T.fixActionFor(check ? T.checkClear : T.checkMark, metric.label)}
+        disabled={busy}
+        onClick={() => onMark("check", metric.id, !check, section.id)}
+      >
+        {check ? T.checkClear : T.checkMark}
+      </button>
   ) : null;
   const markActions = fixAction || checkAction ? <>{fixAction}{checkAction}</> : null;
   const change = formatUpkeepChange(metric);
@@ -185,6 +185,12 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
         <p className="upkeep-line">
           <span className="upkeep-line-label">{T.checkNote}</span>
           {check.note}
+        </p>
+      ) : null}
+      {metric.criterionId ? (
+        <p className="upkeep-line" title={T.precisionNote}>
+          <span className="upkeep-line-label">{T.precisionLabel}</span>
+          {metric.precision ? T.precisionValue(metric.precision) : T.precisionEmpty}
         </p>
       ) : null}
       {metric.criterion !== sectionCriterion ? (
@@ -233,6 +239,24 @@ function MetricRow({ report, section, metric, sectionCriterion, onStart, onMark,
           {markActions}
         </PromptActions>
       ) : markActions ? <div className="upkeep-actions">{markActions}</div> : null}
+      {checkAction ? (
+        <div className="upkeep-actions">
+          {(["real", "false-positive"] as const).map((verdict) => (
+            <button
+              key={verdict}
+              type="button"
+              className="upkeep-button"
+              data-variant={check?.verdict === verdict ? "primary" : undefined}
+              aria-label={T.fixActionFor(verdict === "real" ? T.verdictReal : T.verdictFalsePositive, metric.label)}
+              aria-pressed={check?.verdict === verdict}
+              disabled={busy}
+              onClick={() => onMark("check", metric.id, true, section.id, verdict)}
+            >
+              {verdict === "real" ? T.verdictReal : T.verdictFalsePositive}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -289,12 +313,12 @@ export function UpkeepView({ open, onClose, onStartSession }: Props) {
     [requestReport],
   );
 
-  const changeMark = useCallback((kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"]) => {
+  const changeMark = useCallback((kind: MarkKind, metricId: string, mark: boolean, sectionId: UpkeepSection["id"], verdict?: UpkeepVerdict) => {
     markFocusRef.current = { kind, metricId, sectionId };
     void requestReport(kind === "fix" ? "/api/upkeep" : "/api/upkeep/check", kind === "fix" ? T.fixFailed : T.checkFailed, {
       method: mark ? "POST" : "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ metricId }),
+      body: JSON.stringify({ metricId, verdict }),
     });
   }, [requestReport]);
 
