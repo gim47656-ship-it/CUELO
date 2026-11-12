@@ -3,7 +3,7 @@
  * 직전 7일(index 1) 두 묶음으로 센다. 라이브 서버의 요청 처리를 막지 않도록 약 8ms마다 이벤트 루프에
  * 양보한다. 읽은 값이 없으면 0이 아니라 호출자가 미측정으로 다룰 수 있게 원 건수를 그대로 넘긴다.
  */
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
@@ -376,6 +376,29 @@ const HARNESS_NOTICE = new RegExp([
 ].map((r) => r.source).join("|"));
 
 /**
+ * core shake는 오래된 도구 결과 본문을 세션 파일 안에서 이 자리표시로 바꾸고, 원문은 세션 artifact 폴더(세션 파일 경로에서
+ * `.jsonl`을 뺀 폴더)의 `<id>.shake.log`에 `### region <n> (…)` 머리 뒤에 남긴다. 실패 분류(사전 점검 안내·의도된 중단 제외,
+ * 원인 줄)는 원문을 봐야 하므로 오류 결과의 자리표시는 원문으로 되돌린다. 원문을 못 찾으면 자리표시 그대로 센다
+ * (11-13 사무실 점검: shake된 사전 점검 안내 4건이 발주 거절로 세어져 dispatch-rejects가 문제로 올라감).
+ */
+const SHAKEN_RESULT = /^\[shaken ~(\d+) tokens — recover: artifact:\/\/(\d+) \(region (\d+)\)\]$/;
+
+/**
+ * shake 원문 파일에서 region 하나. core는 머리 `### region <n> (<도구>, ~<토큰> tok)`, 빈 줄, 원문, 빈 줄을 `\n`으로 이어 쓴다.
+ * 시작 머리는 자리표시의 토큰 수까지 맞추고, 끝은 다음 번호의 같은 형식 머리와 그 뒤 빈 줄일 때만 인정해 원문 안의 비슷한 줄에서 자르지 않는다.
+ */
+function shakeRegionText(log: string, region: number, tokens: string): string | null {
+  const head = new RegExp(`^### region ${region} \\([^\\n]*, ~${tokens} tok\\)\\n\\n`, "m").exec(log);
+  if (!head) return null;
+  const start = head.index + head[0].length;
+  const next = new RegExp(`\\n\\n### region ${region + 1} \\([^\\n]*, ~\\d+ tok\\)\\n\\n`, "g");
+  next.lastIndex = start;
+  const end = next.exec(log)?.index;
+  const body = end === undefined ? log.slice(start) : log.slice(start, end);
+  return end === undefined && body.endsWith("\n") ? body.slice(0, -1) : body;
+}
+
+/**
  * 도구 결과 뒤 이것이 끼면 다음 요청은 도구 결과가 아니라 새 입력(사용자·다른 agent의 메시지, 백그라운드 결과)이나 세션 재개를
  * 기다린 것이라 느린 대기로 세지 않는다. 10-31 사무실 점검에서 20초 넘는 대기 222건 중 217건이 이런 대기였다(yield 뒤 재호출 130건 등).
  */
@@ -531,6 +554,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let previousTurnSkills: [string, 0 | 1][] = [];
     let awaiting: { tool: string; signature: string; excerpt: FailureExcerpt | null }[] = [];
     let turn = 0;
+    // 이 세션 파일의 shake 원문 파일(경로 → 내용, 못 읽으면 null). 오류 결과가 자리표시일 때만 연다.
+    const shakeLogs = new Map<string, string | null>();
     // 캐시 다시 쓰기 판단용 상태. 창 밖·fork 사본 entry도 직전 요청으로는 쓰므로 세기 전에 갱신한다.
     let previousRequest: MainRequest | null = null;
     let compacted = false, promptChanged = false;
@@ -751,10 +776,18 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;
           if (!call || !m.toolCallId) continue;
+          let resultText = m.isError ? textOf(m.content) : "";
+          const shaken = SHAKEN_RESULT.exec(resultText.trim());
+          if (shaken) {
+            const file = join(path.slice(0, -".jsonl".length), `${shaken[2]}.shake.log`);
+            let log = shakeLogs.get(file);
+            if (log === undefined) shakeLogs.set(file, (log = await readFile(file, "utf8").catch(() => null)));
+            resultText = (log === null ? null : shakeRegionText(log, Number(shaken[3]), shaken[1])) ?? resultText;
+          }
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);
           // Appended check hints are not the failure signature; retain the actual command failure.
-          const text = m.isError ? textOf(m.content).replace(/\r?\n\[검사 종료 코드\] 검사와 출력 가공 명령을 함께 실행했다\.[^\n]*(?:\r?\n)?$/u, "") : "";
+          const text = resultText.replace(/\r?\n\[검사 종료 코드\] 검사와 출력 가공 명령을 함께 실행했다\.[^\n]*(?:\r?\n)?$/u, "");
           let harnessNotice = HARNESS_NOTICE.test(text);
           if (call.name === "git_finalize" && /^(?:Error: )?git_finalize failed at cross-review: cross-family review required before this commit\b/.test(text)) harnessNotice = true;
           if (!harnessNotice && call.name === "eval" && /^Traceback \(most recent call last\):\r?\n/m.test(text)
