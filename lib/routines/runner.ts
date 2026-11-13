@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { type AgentSessionWrapper, startNewRpcSession } from "@/lib/rpc-manager";
 import { invalidateSessionListCache } from "@/lib/session-reader";
@@ -62,6 +63,7 @@ function preamble(routine: Routine, postsDir: string, inRoutineFolder: boolean, 
   return [
     `[CUELO 루틴: ${routine.name}] 이 세션은 ${how}. 사용자는 지금 보고 있지 않으니 질문하지 말고 끝까지 진행한다.`,
     "마지막 답은 그대로 루틴 게시판의 글 본문으로 올라간다.",
+    `루틴 공통 안내 ${resolve(postsDir, "../../../GUIDE.md")}가 있으면 글을 쓰기 전에 읽고 그 안내(말투, 형식)를 따른다. 이 루틴의 지시와 부딪히면 이 루틴의 지시를 따른다.`,
     `알릴 것이 없으면 마지막 답을 \`${QUIET_MARKER}\` 한 줄로 시작한다.`,
     `이 루틴의 지난 글은 ${postsDir}에 있으니 필요하면 읽고 같은 내용을 반복하지 않는다.`,
     ...(inRoutineFolder ? ["이 폴더 밖 파일은 바꾸지 않는다."] : []),
