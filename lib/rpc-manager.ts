@@ -2166,7 +2166,14 @@ export class AgentSessionWrapper {
         this.onDestroyCallback?.();
       } finally {
         notifyRunningChange();
-        void notifySessionWorktreeClosed(this.cwd);
+        // Best-effort worktree sweep; reading cwd must not break teardown.
+        let closedCwd: string | undefined;
+        try {
+          closedCwd = this.cwd;
+        } catch {
+          closedCwd = undefined;
+        }
+        if (closedCwd) void notifySessionWorktreeClosed(closedCwd);
       }
     }
   }
