@@ -186,7 +186,7 @@ export async function makerMetrics(
   const m = metric("maker-early-exits", "Maker partial 종료", "count", null, null, "unknown",
     `partial로 끝난 Maker 결과가 한 모델에서 ${EARLY_EXIT_REPORT_COUNT}회 이상이거나, 결과 대비 비율이 직전보다 50% 넘게 늘면 주의. 비율은 두 기간 중 큰 쪽 partial이 ${INCIDENT_FLOOR}건 이상일 때만 판정합니다`);
   const verdicts = metric("maker-verdicts", "Maker 판정 중 rework 비율", "ratio", null, null, "unknown",
-    "시도마다 마지막 판정 중 rework의 비율이 직전 7일보다 50% 넘게 늘면 주의, 2배 이상이면 문제 (held를 뺀 판정이 두 기간 모두 20건 이상일 때)");
+    `시도마다 마지막 판정 중 rework의 비율이 직전 7일보다 50% 넘게 늘면 주의, 2배 이상이면 문제 (held를 뺀 판정이 두 기간 모두 20건 이상일 때). 두 기간 중 큰 쪽 rework가 ${INCIDENT_FLOOR}건 이상일 때만 판정합니다`);
   m.handoff = handoffs.find((x) => x.ref.title.includes("기본 Maker 관찰"))?.ref;
   let text: string;
   try {
@@ -244,7 +244,8 @@ export async function makerMetrics(
   const share = (t: (typeof tally)[0]) => (judged(t) ? t.rework / judged(t) : null);
   verdicts.current = share(tally[0]);
   verdicts.previous = share(tally[1]);
-  verdicts.status = compare(verdicts.current, verdicts.previous, judged(tally[0]), judged(tally[1]));
+  // 직전 0건이면 배수가 무한대라 몇 건으로 「문제」가 된다. 다른 비율 행처럼 원 건수 하한을 둔다(2026-11-14 사용자 결정).
+  verdicts.status = compare(verdicts.current, verdicts.previous, judged(tally[0]), judged(tally[1]), "higher", [tally[0].rework, tally[1].rework]);
   const counts = (t: (typeof tally)[0]) => `${t.accepted}/${t.rework}/${t.held}${t.other ? ` (그 밖 ${t.other})` : ""}`;
   verdicts.note = `accepted/rework/held ${period.label} ${counts(tally[0])}, 직전 7일 ${counts(tally[1])}건. held는 검증을 마치지 못한 판정이라 비율에서 뺍니다.`;
   verdicts.evidence = flaggedCurrent.sort((x, y) => y.time - x.time).slice(0, 10).map((x) => x.evidence);
