@@ -144,7 +144,7 @@ interface Result {
 }
 // 18.17.0+ takes the call deadline apart from the caller's cancel signal; older cores time out through the signal.
 const HAS_DEADLINE = readFileSync(`${CORE}/tools/jfind/cascade.ts`, "utf8").includes("\tdeadline?: AbortSignal;\n");
-async function search(root: string, judge: unknown, signal?: AbortSignal, query = "frobnicate widget pipeline", deadline?: AbortSignal): Promise<Result> {
+async function search(root: string, judge: unknown, signal?: AbortSignal, query = "frobnicate widget pipeline", deadline?: AbortSignal, verification: { verifyJudge?: unknown; threshold?: number } = {}): Promise<Result> {
 	const filesystem = new InternalUrlFilesystem({ context: { cwd: root }, tier: "read" });
 	const searchRoot = await resolveSearchRoot(filesystem, root, root);
 	return runCascade({
@@ -156,6 +156,7 @@ async function search(root: string, judge: unknown, signal?: AbortSignal, query 
 		includeHidden: false,
 		signal,
 		deadline,
+		...verification,
 	});
 }
 /** A search whose whole-call timeout fires after `ms`. */
@@ -248,6 +249,21 @@ try {
 		assert.equal(result.hits.length, 3);
 		assert.equal(ofKind(seen, "folder").length >= 1, true);
 		ok("baseline hit 이 0개여도 폴더 단계가 실행돼 상한 밖 파일을 찾는다");
+	}
+	if (readFileSync(`${CORE}/tools/jfind/cascade.ts`, "utf8").includes("verifyJudge?: Judge;")) {
+		const root = tree();
+		const ranking: Seen[] = [];
+		const verification: Seen[] = [];
+		const at = await search(root, stubJudge(ranking), undefined, undefined, undefined, { verifyJudge: stubJudge(verification), threshold: 0.9 });
+		assert.equal(at.hits.some(hit => hit.rel === "core/target.ts"), true);
+		assert.equal(at.hits.some(hit => hit.rel.startsWith("billing/")), true);
+		assert.equal(ranking.some(entry => entry.kind === "verify"), false);
+		assert.equal(verification.every(entry => entry.kind === "verify"), true);
+		assert.equal(verification.some(entry => entry.json.includes("billing/")), true);
+		assert.equal(verification.some(entry => entry.json.includes("core/target.ts")), true);
+		const above = await search(root, stubJudge([]), undefined, undefined, undefined, { threshold: 0.91 });
+		assert.deepEqual(above.hits, []);
+		ok("verification selector and hit threshold apply to baseline and hierarchical passages");
 	}
 
 	// 5. 후보 상한(128), read 상한(10), 이름 판정 중복 없음.

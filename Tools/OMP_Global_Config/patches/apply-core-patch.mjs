@@ -24669,6 +24669,120 @@ function planSpawns(
 	alternate(relayDescription, { marker: relayUpstream, anchor: relayUpstream, patched: relayUpstream }, 'Relay (`app: "relay"`:');
 }
 
+// 18.20.0: retain older candidate bodies; port only changed upstream boundaries.
+{
+	const one = marker => {
+		const entries = EDITS.filter(entry => entry.marker === marker);
+		if (entries.length !== 1) throw new Error(`18.20.0 candidate: ${entries.length}/1 entries for ${marker}`);
+		return entries[0];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const noop = (entry, text, discriminator = text) =>
+		alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+	const latest = entry => entry.alternates?.at(-1) ?? entry;
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.20.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	// Upstream still owns this import and the scoped run facade.
+	noop(one("\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,"), "\tFrame,\n\tFrameWaitForFunctionOptions,\n\tHTTPRequest,\n\tHTTPResponse,");
+	// #18975 removes description-driven todo completion; keep old-install rollback.
+	const todoOwner = "\t/**\n\t * Session that owns the plan currently in {@link todoPhases}. HUD\n\t * visibility (dismissal and reveal entries) persists to this session, not\n\t * blindly to `viewSession`, which flips to the destination before\n\t * `reloadTodos` refreshes during focus attach.\n\t */";
+	noop(one("explicit todo edits persist to this session"), todoOwner);
+	const todoOnlyHighlight = "// Observer changes never touch the todo phases or their persisted";
+	noop(one("Subagent lifecycle is review evidence only; it never accepts TODO completion."), todoOnlyHighlight);
+	noop(one("Main accepts TODO completion only through an explicit todo operation"), todoOnlyHighlight);
+	noop(one("\t#cancelObserverUiSyncTimer(): void {\n\t\tif (this.#observerUiSyncTimer) {\n\t\t\tclearTimeout(this.#observerUiSyncTimer);\n\t\t\tthis.#observerUiSyncTimer = undefined;\n\t\t}\n\t}"), todoOnlyHighlight);
+	const names = one('if (!outcome.ok) this.#fail("extra filenames", outcome.error);');
+	const namesOld = latest(names);
+	alternate(names, {
+		marker: names.marker,
+		anchor: swap(namesOld.anchor, "this.#dispatch(nameJobs,", "this.#dispatch(this.#options.judge, nameJobs,"),
+		patched: swap(namesOld.patched, "this.#dispatch(nameJobs,", "this.#dispatch(this.#options.judge, nameJobs,"),
+	}, "verifyJudge?: Judge;");
+	for (const marker of [
+		"// HANSE: find hierarchical directory pass methods",
+		"// HANSE: lexRanked keeps the capped-out tail for the hierarchical directory pass",
+	]) {
+		const entry = one(marker);
+		const prior = latest(entry);
+		let patched = prior.patched.replaceAll("this.#dispatch(", "this.#dispatch(this.#options.judge, ");
+		if (marker.includes("lexRanked")) patched += "\t\tconst threshold = this.#options.threshold ?? THRESHOLD;\n";
+		alternate(entry, { marker, anchor: prior.anchor, patched }, "verifyJudge?: Judge;");
+	}
+	const worker = "const inputOptionsKeys: Record<keyof InputOptions, true>";
+	const windows = one("windows: async (filter?: WindowFilter): Promise<DesktopWindow[]> => {\n\t\t\t\tassertWindowFilter(filter);");
+	alternate(windows, {
+		marker: 'strictOptions(filter, windowListFilterKeys, "windows");\n\t\t\t\tassertWindowFilter(filter);',
+		anchor: '\t\t\twindows: async (filter?: Omit<WindowFilter, "wait">): Promise<DesktopWindow[]> => {\n\t\t\t\tstrictOptions(filter, windowListFilterKeys, "windows");',
+		patched: '\t\t\twindows: async (filter?: Omit<WindowFilter, "wait">): Promise<DesktopWindow[]> => {\n\t\t\t\tstrictOptions(filter, windowListFilterKeys, "windows");\n\t\t\t\tassertWindowFilter(filter);',
+	}, worker);
+	// The core now validates options before native access. Carry those checks through
+	// our action/readback wrappers and use its typed-result adapter for typing.
+	const guards = {
+		selectText: 'strictOptions(options, axSelectTextOptionsKeys, "selectText");',
+		perform: 'strictOptions(options, menuOptionsKeys, "perform");',
+		press: 'strictOptions(options, chord === undefined || isMenuOptions(chord) ? {} : inputOptionsKeys, "press");\n\t\tif (isMenuOptions(chord)) strictOptions(chord, menuOptionsKeys, "press");',
+		type: 'strictOptions(options, inputOptionsKeys, "type");',
+		click: 'strictOptions(options, clickOptionsKeys, "click");',
+		doubleClick: 'strictOptions(options, doubleClickKeys, "doubleClick");',
+		move: 'strictOptions(options, inputOptionsKeys, "move");',
+		drag: 'strictOptions(options, dragOptionsKeys, "drag");',
+		scroll: 'strictOptions(options, scrollOptionsKeys, "scroll");',
+		holdKeys: 'strictOptions(options, holdOptionsKeys, "holdKeys");',
+		holdMouse: 'strictOptions(options, holdMouseOptionsKeys, "holdMouse");',
+		observe: 'strictOptions(options, observeKeys, "observe");',
+		ax: 'strictOptions(options, axOptionsKeys, "ax");',
+		find: 'strictOptions(query, axQueryKeys, "find");',
+	};
+	const guarded = (text, window = false) => text.replace(
+		/^\t(?:async )?(\w+)\([^\n]*\)[^\n]* \{\n/gm,
+		(line, method) => {
+			// RefBook.move is an internal bookkeeping method, not a window input.
+			if (!/\boptions[?:]/.test(line) && !(method === "find" && line.includes("(query: AxQuery)"))) return line;
+			let guard = Object.hasOwn(guards, method) ? guards[method] : undefined;
+			if (window && method === "press") guard = 'strictOptions(options, inputOptionsKeys, "press");';
+			return guard ? line + "\t\t" + guard + "\n" : line;
+		},
+	);
+	const elements = one("class RefBook {");
+	const elementsOld = latest(elements);
+	const elementAnchor = swap(guarded(elementsOld.anchor),
+		'sendInput(this.#session, context, "type", native.takeover,',
+		'sendType(this.#session, context, native.takeover,')
+		.replace('\tasync press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<void> {\n',
+			'\tasync press(chord?: string | string[] | MenuOptions, options?: InputOptions): Promise<void> {\n\t\t// Validate the overload being executed, not the union of its option types.\n');
+	const elementPatched = swap(guarded(elementsOld.patched),
+		'sendInput(this.#session, context, "type", native.takeover,',
+		'sendType(this.#session, context, native.takeover,');
+	alternate(elements, { marker: elements.marker, anchor: elementAnchor, patched: elementPatched }, worker);
+	const win = one("return windowInputResult(action, this.id, options);");
+	const winOld = latest(win);
+	const winAnchor = swap(guarded(winOld.anchor, true),
+		'await sendInput(\n\t\t\tthis.#session,\n\t\t\tcontext,\n\t\t\t"type",',
+		'await sendType(\n\t\t\tthis.#session,\n\t\t\tcontext,');
+	const oldType = '\t\treturn this.#input("type", context, native.takeover, fallback =>\n\t\t\tthis.#session.typeText(this.id, text, { ...native, ...fallback }),\n\t\t);';
+	const newType = '\t\tlet tookOver = false;\n\t\ttry {\n\t\t\tawait sendType(this.#session, context, native.takeover, fallback => {\n\t\t\t\ttookOver ||= fallback !== undefined;\n\t\t\t\treturn this.#session.typeText(this.id, text, { ...native, ...fallback });\n\t\t\t}, this.pid);\n\t\t} catch (error) {\n\t\t\tthrow refuseAction(error, "type", undefined, native.takeover);\n\t\t}\n\t\treturn windowInputResult("type", this.id, native.takeover, tookOver);';
+	alternate(win, {
+		marker: winOld.marker,
+		anchor: winAnchor,
+		patched: swap(guarded(winOld.patched, true), oldType, newType),
+	}, worker);
+	const wait = one("this.#waitForGoal(");
+	const waitOld = latest(wait);
+	const waitGuard = '\n\t\t\t\t\tstrictOptions(options, typeof msOrPredicate === "number" ? {} : waitPredicateOptionsKeys, "wait");';
+	const addWaitGuard = text => swap(text,
+		'options?: WaitPredicateOptions): Promise<unknown> => {',
+		'options?: WaitPredicateOptions): Promise<unknown> => {' + waitGuard);
+	alternate(wait, { marker: wait.marker, anchor: addWaitGuard(waitOld.anchor), patched: addWaitGuard(waitOld.patched) }, worker);
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&j$e(c))continue';
+	const advisor = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	noop(advisor, skip);
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

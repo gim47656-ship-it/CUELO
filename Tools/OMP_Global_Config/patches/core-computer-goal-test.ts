@@ -5,7 +5,7 @@
 // 간격 기본값은 Playwright pollAgainstDeadline([100, 250, 500, 1000]) 을 따른다:
 // https://github.com/microsoft/playwright/blob/main/packages/isomorphic/timeoutRunner.ts
 import { mock } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -118,6 +118,9 @@ const session = {
 		state.windowClicks.push([x, y]);
 	},
 	keyChord: async () => void state.keys++,
+	typeText: async () => { state.keys++; return { unconfirmed: "fixture readback unavailable" }; },
+	axType: async () => { state.keys++; return { unconfirmed: "fixture readback unavailable" }; },
+	axKeyChord: async () => void state.keys++,
 	close: async () => {},
 	// 18.6.3 worker 는 run 이 끝날 때 native session 의 retire()(성공)·cancel()(실패·취소)을 부른다.
 	cancel: () => {},
@@ -342,6 +345,23 @@ try { await ${call}; await win.press("enter"); return { ok: true }; } catch (e) 
 	const unrelated = outcome(await clickRun("win.click(120, 80)"));
 	state.nativeFailure = "";
 	check("숫자 좌표의 다른 native 실패는 문구를 바꾸지 않는다", unrelated.ok === false && unrelated.message === "Internal: window is gone" && state.windowClicks.length === 0, JSON.stringify(unrelated));
+}
+
+if (readFileSync(`${core}/tools/computer/worker.ts`, "utf8").includes("const inputOptionsKeys:")) {
+	realConsole.log("[9] upstream unknown-option refusals precede every native input");
+	for (const call of ["win.click(1, 1, { bogus: 1 })", "win.type('x', { bogus: 1 })", "save.press('a', { bogus: 1 })", "win.move(1, 1, { bogus: 1 })", "win.find({ bogus: 1 })"]) {
+		reset(0);
+		const result = await run(`${prologue}\nawait ${call};`);
+		check(`${call}: rejects unknown options before native input`, !result.ok && /unknown.*bogus|bogus.*unknown/i.test(result.error?.message ?? "") && state.keys === 0 && state.windowClicks.length === 0, show(result));
+	}
+	reset(0);
+	const typed = await run(`${prologue}\nreturn await win.type("x");`);
+	const typedValue = typed.payload?.returnValue;
+	check("new native type result is adapted and window typing stays unverified", typed.ok && typeof typedValue === "object" && typedValue !== null && "status" in typedValue && typedValue.status === "unverified" && state.keys === 1, show(typed));
+	reset(0);
+	const elementTyped = await run(`${prologue}\nreturn await save.type("x");`);
+	const elementTypedValue = elementTyped.payload?.returnValue;
+	check("element typing accepts native DesktopTypeResult without a false verification", elementTyped.ok && typeof elementTypedValue === "object" && elementTypedValue !== null && "status" in elementTypedValue && elementTypedValue.status === "unverified" && state.keys === 1, show(elementTyped));
 }
 
 clearInterval(keepAlive);

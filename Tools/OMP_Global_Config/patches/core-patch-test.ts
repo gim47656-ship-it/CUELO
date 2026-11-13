@@ -186,6 +186,13 @@ const runPromise = runInTab(deadWorkerTab.name, {
 	signal: abortController.signal,
 	session: { settings: settingsLike({ get: () => undefined }) } as never,
 });
+const { ToolAbortError } = await import(`${CORE}/tools/tool-errors.ts`);
+const cancellationWins = readFileSync(`${CORE}/tools/browser/tab-supervisor.ts`, "utf8").includes("const cancellation = new AbortController();");
+// 18.20.0 cancellation wins even when the worker settles during its grace period.
+const cancelledResult = runPromise.then(() => false, error => {
+	if (!(error instanceof ToolAbortError)) throw error;
+	return true;
+});
 await runDispatched;
 const pendingRun = [...pendingRuns.values()][0]!;
 pendingRun.toolCalls.set("in-flight", { abort: () => { toolCallAborted = true; } });
@@ -198,7 +205,7 @@ try {
 check("종료된 워커 abort 전송이 호출자까지 던지지 않는다", !abortThrew);
 check("전송 실패 뒤에도 pending tool call을 abort한다", toolCallAborted);
 pendingRun.resolve({ displays: [], returnValue: undefined, screenshots: [] });
-await runPromise;
+check("취소된 호출의 완료 결과는 해당 코어의 취소 계약을 따른다", await cancelledResult === cancellationWins);
 tabs.delete(deadWorkerTab.name);
 
 console.log("\n[8] browser.open Relay 기본값 — 사용자 탭을 빼앗지 않는다");

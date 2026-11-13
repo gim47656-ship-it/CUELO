@@ -74,9 +74,8 @@ try {
 
 	console.log("\n[2] 패치된 소스");
 	check("lifecycle 경로에 #reconcileTodosWithSubagents() 호출이 없다", !/this\.#reconcileTodosWithSubagents\(/.test(patched));
-	check("Main 수용 보호 주석이 flush 안에 있다", /never changes TodoTracker|never change TodoTracker/.test(patched));
+	const upstreamOwnsTodos = !patched.includes("#observerUiSyncNeedsTodoReconcile");
 	const optimized = patched.includes("const badgeChanged = this.syncRunningSubagentBadge(");
-	check(optimized ? "upstream redraw 최적화(badgeChanged/todoChanged/hudChanged)가 보존된다" : "18.13.0 이하 flush 모양이다(최적화 flag 없음)", optimized ? /if \(badgeChanged \|\| todoChanged \|\| hudChanged\) this\.ui\.requestRender\(\)/.test(patched) && /const hudChanged = this\.#renderSubagentList\(\)/.test(patched) : /#flushObserverUiSync\(\): void \{/.test(patched));
 
 	console.log("\n[3] 패치된 flush·schedule 본문 실행");
 	const method = (name: string): string => {
@@ -129,9 +128,13 @@ try {
 		const f = makeFake({ needsReconcile: true });
 		flush.call(f);
 		check("lifecycle flush 는 reconciler 를 호출하지 않는다", f.calls.reconcile === 0);
-		check("lifecycle flush 는 HUD 상태를 한 번 동기화하고 todo 목록을 다시 그린다", f.calls.syncHud === 1 && f.calls.renderTodo === 1, JSON.stringify(f.calls));
-		check("lifecycle flush 는 flag 를 내린다", f.$_observerUiSyncNeedsTodoReconcile === false);
-		check("lifecycle flush 는 오래된 todo 를 남기지 않도록 다시 그리기를 요청한다", f.calls.requestRender === 1);
+		if (upstreamOwnsTodos) {
+			check("lifecycle leaves todo visibility and its auto-clear timer untouched", f.calls.syncHud === 0 && f.calls.renderTodo === 0 && f.calls.requestRender === 0, JSON.stringify(f.calls));
+		} else {
+			check("lifecycle flush 는 HUD 상태를 한 번 동기화하고 todo 목록을 다시 그린다", f.calls.syncHud === 1 && f.calls.renderTodo === 1, JSON.stringify(f.calls));
+			check("lifecycle flush 는 flag 를 내린다", f.$_observerUiSyncNeedsTodoReconcile === false);
+			check("lifecycle flush 는 오래된 todo 를 남기지 않도록 다시 그리기를 요청한다", f.calls.requestRender === 1);
+		}
 	}
 	{
 		const f = makeFake({ descs: ["a"], key: "a" });
@@ -159,9 +162,9 @@ try {
 		schedule.call(f, "progress");
 		check("progress 변화는 reconcile flag 를 세우지 않는다", f.$_observerUiSyncNeedsTodoReconcile === false && timers.length === 1);
 		schedule.call(f, "completed");
-		check("lifecycle 변화는 flag 를 세우되 timer 는 하나로 합친다", f.$_observerUiSyncNeedsTodoReconcile === true && timers.length === 1);
+		check("lifecycle changes coalesce into one timer without accepting todos", f.$_observerUiSyncNeedsTodoReconcile === !upstreamOwnsTodos && timers.length === 1);
 		timers[0]!();
-		check("합쳐진 flush 는 reconciler 없이 HUD 만 동기화한다", f.calls.reconcile === 0 && f.calls.syncHud === 1 && f.$_observerUiSyncNeedsTodoReconcile === false, JSON.stringify(f.calls));
+		check("coalesced flush never reconciles and preserves upstream visibility ownership", f.calls.reconcile === 0 && f.calls.syncHud === (upstreamOwnsTodos ? 0 : 1) && f.$_observerUiSyncNeedsTodoReconcile === false, JSON.stringify(f.calls));
 	}
 	console.log(`\nRESULT: ${pass} pass, ${fail} fail`);
 	exitCode = fail === 0 ? 0 : 1;
