@@ -629,6 +629,37 @@ test('a credit that becomes usable with under ten minutes left is sent on the ne
     assert.deepEqual((await fx.controls.sweepExpiring()).outcomes.map(outcome => outcome.code), ['reset']);
 });
 
+test('quiet sweeps reuse a recent list and read again only near expiry; a manual reset reuses a fresh list', async t => {
+    // 11-13: the per-minute forced sweep list plus the button's own forced list hit Anthropic 429 before any send.
+    const expiresAt = iso(T0 + 30 * 24 * HOUR);
+    const fx = await expiryFixture(t, [{ provider: 'anthropic', expiresAt }]);
+    await fx.controls.sweepExpiring();
+    fx.clock.now += 60_000;
+    await fx.controls.sweepExpiring();
+    assert.deepEqual([fx.lists, fx.calls], [['anthropic'], []]);
+    assert.equal((await fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
+    assert.deepEqual([fx.lists, fx.calls.length], [['anthropic'], 1]);
+    // A sent grant is read again before the next manual answer (it may have been renewed).
+    assert.equal((await fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
+    assert.deepEqual([fx.lists, fx.calls.length], [['anthropic', 'anthropic'], 1]);
+
+    const near = await expiryFixture(t, [{ provider: 'anthropic', expiresAt }]);
+    await near.controls.sweepExpiring();
+    near.clock.now = Date.parse(expiresAt) - 30 * 60_000;
+    assert.deepEqual((await near.controls.sweepExpiring()).outcomes.map(outcome => outcome.code), ['reset']);
+    assert.deepEqual(near.lists, ['anthropic', 'anthropic', 'anthropic']);
+});
+
+test('a manual reset whose live list hit a rate limit says rate_limited and sends nothing', async t => {
+    const failed = { error: 'Failed to load saved resets', availableCount: 0, credits: [] };
+    const fx = await expiryFixture(t, [{ provider: 'anthropic', expiresAt: iso(T0 + 30 * 24 * HOUR),
+        status: { ...failed, retryAfterMs: 0 } }], null);
+    await assert.rejects(fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'rate_limited' });
+    fx.setAccounts([{ provider: 'anthropic', expiresAt: iso(T0 + 30 * 24 * HOUR), status: failed }]);
+    await assert.rejects(fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' }), { code: 'credit_list_failed' });
+    assert.deepEqual(fx.calls, []);
+});
+
 test('a ledger row with a malformed identity or state fails closed for manual and automatic sends and is kept', async t => {
     const valid = { id: 'a1', provider: 'openai-codex', credentialId: 1, creditId: 'credit-1', expiresAt: iso(T0 + 30 * 60_000),
         remainingCount: null, origin: 'auto', state: 'unknown', code: 'reset_outcome_unknown', claimedAt: iso(T0) };

@@ -477,6 +477,8 @@ function resetErrorFeedback(error: unknown): CredentialFeedback {
         return { tone: "error", message: "리셋 사용 실패: 계정을 찾을 수 없습니다." };
       case "account_unavailable":
         return { tone: "error", message: "리셋 사용 실패: 계정에 연결할 수 없습니다." };
+      case "rate_limited":
+        return { tone: "error", message: "리셋 사용 실패: 리셋 목록 조회가 요청 한도에 걸렸습니다. 1분쯤 뒤 다시 시도하세요. 리셋은 쓰지 않았습니다." };
       case "credit_list_failed":
         return { tone: "error", message: "리셋 사용 실패: 저장된 리셋 목록을 확인하지 못했습니다." };
       default:

@@ -118,6 +118,8 @@ const EXPIRY_POLICY_FILE = 'cuelo-reset-expiry.json';
 const RESET_LEDGER_FILE = 'cuelo-reset-expiry-attempts.json';
 const EXPIRY_WINDOW_MS = 3_600_000;
 const EXPIRY_SWEEP_MS = 60_000;
+// 만료 창 근처의 리셋권이 없으면 점검은 이 시간 안의 성공 목록을 믿고 provider 조회를 건너뛴다(11-13: 매분 강제 조회가 Anthropic 429를 불렀다).
+const EXPIRY_SKIP_MAX_AGE_MS = 10 * 60_000;
 // provider가 소비하지 않았다고 확정한 결과(SDK pi-ai auth/resets.ts·usage/claude-reset.ts·usage/openai-codex-reset.ts의 코드). 자동 점검은
 // 즉시 다시 보내지 않고 다음 60초 점검에서 forced fresh 목록의 eligibility·쿨다운으로 다시 판단한다. 한도 거절도 여기 든다:
 // Anthropic 429는 rate_limited(SDK가 새 claim의 pending을 지운다), 본문 code가 없는 Codex 429는 http_429다. 목록 조회가 한도에 걸린
@@ -574,10 +576,24 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         }
         if (manual) throw controlError(409, 'account_disabled');
         const signal = AbortSignal.timeout(CONTROL_TIMEOUT_MS);
-        const live = await creditStatuses(entry.provider, true, signal);
-        const status = live.statuses.find(value => value.credentialId === id);
+        // 수동 요청은 1분 안의 성공 목록에 그 권리가 있고 아직 결과를 보관하지 않은 권리면 다시 조회하지 않는다.
+        // 전송 직전 SDK가 그 계정 목록을 새로 읽어 다시 확인한다. 보관한 권리를 가리키면 갱신됐을 수 있으니 새로 읽는다.
+        // 자동 전송은 만료 시각과 정책 재확인을 위해 늘 새 목록을 읽는다.
+        const recent = auto ? undefined : lastGoodResets.get(`${entry.provider}:${id}`);
+        const recentCredit = recent && Date.now() - recent.at < CACHE_MS
+            ? savedReset(recent.status, recent.at, entry.provider).credits.find(value => value.id === creditId) : undefined;
+        let status;
+        let checkedAt;
+        if (recentCredit && !settledResets.has(grantKey(resetGrant(entry.provider, id, recentCredit)))) {
+            ({ status, at: checkedAt } = recent);
+        } else {
+            const live = await creditStatuses(entry.provider, true, signal);
+            status = live.statuses.find(value => value.credentialId === id);
+            checkedAt = live.at;
+        }
+        if (status?.error && status.retryAfterMs !== undefined) throw controlError(429, 'rate_limited');
         if (!status || status.error) throw controlError(502, 'credit_list_failed');
-        const credit = savedReset(status, live.at, entry.provider).credits.find(value => value.id === creditId);
+        const credit = savedReset(status, checkedAt, entry.provider).credits.find(value => value.id === creditId);
         if (!credit || (entry.provider === 'anthropic' && (status.eligible !== true || credit.usable !== true))) {
             throw controlError(409, 'credit_unavailable');
         }
@@ -644,7 +660,16 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         for (const provider of RESET_PROVIDERS) {
             const ids = new Set(accounts.filter(account => account.provider === provider).map(account => account.credentialId));
             if (!ids.size) continue;
-            // 점검마다 provider 목록을 새로 읽는다(쿨다운·usable 변화를 만료 창 안에서 놓치지 않는다). 전송 직전 확인은 따로 한다.
+            const recentlyQuiet = [...ids].every(credentialId => {
+                const prior = lastGoodResets.get(`${provider}:${credentialId}`);
+                return prior && Date.now() - prior.at < EXPIRY_SKIP_MAX_AGE_MS
+                    && !savedReset(prior.status, prior.at, provider).credits.some(credit => {
+                        const left = (typeof credit.expiresAt === 'string' ? Date.parse(credit.expiresAt) : NaN) - now();
+                        return !(left > EXPIRY_WINDOW_MS + EXPIRY_SWEEP_MS);
+                    });
+            });
+            if (recentlyQuiet) continue;
+            // 만료 창 근처면 목록을 새로 읽는다(쿨다운·usable 변화를 만료 창 안에서 놓치지 않는다). 전송 직전 확인은 따로 한다.
             let statuses;
             try { statuses = (await creditStatuses(provider, true)).statuses; } catch { continue; }
             for (const status of statuses) {
