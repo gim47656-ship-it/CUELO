@@ -37,6 +37,7 @@ import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
 import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
+import { RoutinePanel, RoutineView } from "./routines/RoutineView";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { UpkeepNotice, UpkeepView } from "./upkeep/UpkeepView";
 import { UPKEEP_TEXT } from "./upkeep/text";
@@ -167,6 +168,9 @@ export function AppShell({
   // 돌아가도 마운트해 둬 통역 기록이 남는다.
   const [translatorOpen, setTranslatorOpen] = useState(false);
   const [translatorVisited, setTranslatorVisited] = useState(false);
+  // 루틴 게시판도 통역과 같은 자리에 덮이는 화면이다. 둘 중 하나만 열린다.
+  const [routineOpen, setRoutineOpen] = useState(false);
+  const [routineVisited, setRoutineVisited] = useState(false);
   // 보수 점검판도 통역처럼 처음 열 때 마운트하고 계속 둬, 다시 열면 읽어 둔 보고서가 바로 보인다.
   const [upkeepOpen, setUpkeepOpen] = useState(false);
   const [upkeepVisited, setUpkeepVisited] = useState(false);
@@ -266,14 +270,28 @@ export function AppShell({
   // 통역 화면을 열고 닫는다. 작업 ChatWindow는 그대로 마운트된 채 가려질 뿐이라 선택 세션·초안·
   // 실행 중인 작업이 그대로 남고, 닫으면 작업 입력창으로 초점을 돌려준다.
   const setTranslatorActive = useCallback((active: boolean) => {
-    if (active) setTranslatorVisited(true);
+    if (active) {
+      setTranslatorVisited(true);
+      setRoutineOpen(false);
+    }
     setTranslatorOpen(active);
     if (!active) requestComposerFocus();
   }, [requestComposerFocus]);
+  const setRoutineActive = useCallback((active: boolean) => {
+    if (active) {
+      setRoutineVisited(true);
+      setTranslatorOpen(false);
+    }
+    setRoutineOpen(active);
+    if (!active) requestComposerFocus();
+  }, [requestComposerFocus]);
   // 홈 화면 앱의 「통역」 바로가기(`/?view=translator`, `app/manifest.ts`)로 열면 처음부터 통역 화면을 띄운다.
+  // `/?view=routine`은 루틴 게시판을 띄운다.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("view") === "translator") setTranslatorActive(true);
-  }, [setTranslatorActive]);
+    const view = new URLSearchParams(window.location.search).get("view");
+    if (view === "translator") setTranslatorActive(true);
+    if (view === "routine") setRoutineActive(true);
+  }, [setTranslatorActive, setRoutineActive]);
   // 보수 점검판은 화면 전체를 덮는다. 뒤의 작업 화면은 마운트된 채 남고, 닫으면 입력창으로 초점을 돌려준다.
   const setUpkeepActive = useCallback((active: boolean) => {
     if (active) setUpkeepVisited(true);
@@ -1941,6 +1959,9 @@ export function AppShell({
         )}
         translatorActive={translatorOpen}
         onTranslatorActiveChange={setTranslatorActive}
+        routinePanel={<RoutinePanel onOpen={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined} />}
+        routineActive={routineOpen}
+        onRoutineActiveChange={setRoutineActive}
       />
       {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. */}
       <div className="navigator-footer" style={{ padding: "8px", flexShrink: 0 }}>
@@ -2550,6 +2571,7 @@ export function AppShell({
             id="workspace-transcript"
             className="chat-session-column"
             data-translator-open={translatorOpen ? "true" : undefined}
+            data-routine-open={routineOpen ? "true" : undefined}
           >
           {showChat ? (
             <ChatWindow
@@ -2645,6 +2667,9 @@ export function AppShell({
               실행 상태가 그대로 살아 있고, 닫으면 떠나기 전 그대로 돌아온다. */}
           {translatorVisited ? (
             <TranslatorView visible={translatorOpen} onBack={() => setTranslatorActive(false)} />
+          ) : null}
+          {routineVisited ? (
+            <RoutineView visible={routineOpen} onBack={() => setRoutineActive(false)} />
           ) : null}
           </div>
           {pinDecision.deck === "pinned" && showAuxiliaryDeck && !deckPresentation.expanded && (

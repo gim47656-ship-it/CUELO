@@ -56,6 +56,10 @@ interface Props {
   /** 통역 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모가 들고 있다. */
   translatorActive?: boolean;
   onTranslatorActiveChange?: (active: boolean) => void;
+  /** 「루틴」 보기의 내용(루틴 목록). 주어질 때만 보기 전환에 루틴이 생긴다. 통역 보기와 같은 자리를 쓴다. */
+  routinePanel?: ReactNode;
+  routineActive?: boolean;
+  onRoutineActiveChange?: (active: boolean) => void;
 }
 
 interface WorktreeEntry {
@@ -390,7 +394,7 @@ async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): 
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, onTranslatorActiveChange }: Props) {
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, onTranslatorActiveChange, routinePanel, routineActive = false, onRoutineActiveChange }: Props) {
   const { tt } = useTranslatorText();
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
@@ -1415,6 +1419,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   // 통역 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
   // 통역에서 돌아오면 떠나기 전 보기로 돌아간다.
   const translatorOn = translatorPanel !== undefined && translatorActive;
+  const routineOn = routinePanel !== undefined && routineActive;
+  // 통역·루틴 보기는 같은 자리(프로젝트·우선 보기 위)에 얹히고 한 번에 하나만 열린다(부모가 맞춘다).
+  const sideViewOn = translatorOn || routineOn;
   const ProjectPicker = cloudProjects ? CloudProjectPicker : DirectoryPicker;
 
   return (
@@ -1537,7 +1544,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </div>
 
       </div>
-      {cloudProjects && !translatorOn && (
+      {cloudProjects && !sideViewOn && (
         <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
           style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           {t("cloudProjects.launch")}
@@ -1576,7 +1583,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             const label = mode === "projects"
               ? t("sidebar.projects")
               : t("navigator.priority");
-            const active = !translatorOn && navigatorMode === mode;
+            const active = !sideViewOn && navigatorMode === mode;
             return (
               <button
                 key={mode}
@@ -1588,6 +1595,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 onClick={() => {
                   selectNavigatorMode(mode);
                   if (translatorOn) onTranslatorActiveChange?.(false);
+                  if (routineOn) onRoutineActiveChange?.(false);
                 }}
                 style={{
                   minWidth: 0,
@@ -1634,8 +1642,34 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               {tt("translator.tab")}
             </button>
           )}
+          {routinePanel !== undefined && (
+            <button
+              type="button"
+              aria-label={t("navigator.view", { label: t("routines.tab") })}
+              aria-pressed={routineOn}
+              aria-controls="navigator-routine-panel"
+              data-navigator-mode="routine"
+              onClick={() => onRoutineActiveChange?.(!routineOn)}
+              style={{
+                minWidth: 0,
+                minHeight: 26,
+                flex: 1,
+                padding: "3px 4px",
+                border: "none",
+                borderRadius: "var(--radius-control)",
+                background: routineOn ? "var(--bg-selected)" : "transparent",
+                color: routineOn ? "var(--text)" : "var(--text-dim)",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: routineOn ? 600 : 500,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t("routines.tab")}
+            </button>
+          )}
         </div>
-        {!translatorOn && navigatorMode === "projects" && (
+        {!sideViewOn && navigatorMode === "projects" && (
           <button
             type="button"
             onClick={() => setShowHiddenProjects((show) => !show)}
@@ -1666,7 +1700,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             </svg>
           </button>
         )}
-        {!translatorOn && navigatorMode === "projects" && (
+        {!sideViewOn && navigatorMode === "projects" && (
           <button
             className="navigator-add-project"
             type="button"
@@ -1704,7 +1738,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         )}
       </div>
       {translatorOn && translatorPanel}
-      {!translatorOn && navigatorMode === "projects" && (
+      {routineOn && routinePanel}
+      {!sideViewOn && navigatorMode === "projects" && (
         <label className="navigator-search" style={{ position: "relative", display: "block", margin: "0 8px 8px" }}>
           <svg
             width="14"
@@ -1750,7 +1785,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </label>
       )}
 
-      {!translatorOn && navigatorMode === "projects" && (
+      {!sideViewOn && navigatorMode === "projects" && (
       <div
         id="navigator-projects-panel"
         className="navigator-session-list"
@@ -2601,7 +2636,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       )}
 
-      {!translatorOn && (
+      {!sideViewOn && (
         <ArchivedSessionsSection
           refreshKey={archiveRefreshKey}
           selectedSessionId={selectedSessionId}
@@ -2610,7 +2645,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         />
       )}
 
-      {!translatorOn && navigatorMode === "priority" && (
+      {!sideViewOn && navigatorMode === "priority" && (
         <div
           id="navigator-priority-panel"
           style={{ flex: "1 1 auto", minHeight: 80, overflowY: "auto", padding: "0 6px 10px" }}
