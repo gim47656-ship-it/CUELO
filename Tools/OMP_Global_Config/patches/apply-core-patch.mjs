@@ -1570,7 +1570,7 @@ const EDITS = [
 	{
 		file: "../pi-ai/src/auth/resets.ts",
 		requires: "#pendingClaudeResets",
-		marker: "// CUELO: reconcile the pending grant before choosing another usable grant.",
+		marker: "// CUELO: reconcile the pending grant; a vanished unconfirmed grant keeps blocking default retries.",
 		anchor: `			const selected = list.credits.find(credit => credit.id === list.nextCreditId);
 			if (creditId && creditId !== list.nextCreditId) {
 				return { ...identity, ok: false, code: "offer_changed", creditId };
@@ -1610,7 +1610,49 @@ const EDITS = [
 					return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
 				}
 			}`,
-		patched: `			// CUELO: reconcile the pending grant before choosing another usable grant.
+		patched: `			// CUELO: reconcile the pending grant; a vanished unconfirmed grant keeps blocking default retries.
+			let pending = this.#pendingClaudeResets.get(accountKey);
+			let releaseVanished = false;
+			if (pending) {
+				const previous = list.credits.find(credit => credit.id === pending!.creditId);
+				const spent = previous !== undefined && pending.remainingCount !== undefined &&
+					previous.remainingCount !== undefined && previous.remainingCount < pending.remainingCount;
+				// Absence can also mean expiry; do not claim a spend or POST another grant. The claim stays
+				// pending so later default retries stay blocked too; only an explicit other grant that turns
+				// out usable below releases it.
+				if (!previous && (!creditId || creditId === pending.creditId)) {
+					return { ...identity, ok: false, code: "reset_unconfirmed", creditId: pending.creditId };
+				}
+				if (spent) {
+					this.#pendingClaudeResets.delete(accountKey);
+					this.#deps.usageCache.invalidateAfterReset(provider, options.baseUrl, {
+						resetSpentCredentialId: access.credentialId,
+					});
+					if (!creditId || creditId === pending.creditId) {
+						return { ...identity, ok: false, code: "already_redeemed", creditId: pending.creditId };
+					}
+					pending = undefined;
+				} else if (!previous) {
+					releaseVanished = true;
+					pending = undefined;
+				}
+			}
+			const selected = list.credits.find(credit => credit.id === (creditId ?? list.nextCreditId));
+			if (creditId && (!list.eligible || !selected?.usable)) {
+				return { ...identity, ok: false, code: "offer_changed", creditId };
+			}
+			if (!list.eligible || !selected?.usable) {
+				return { ...identity, ok: false, code: list.availableCount > 0 ? "ineligible" : "no_credit",
+					reason: list.reason };
+			}
+			creditId = selected.id;
+			if (releaseVanished) this.#pendingClaudeResets.delete(accountKey);
+			if (pending && (pending.creditId !== creditId || pending.program === "juniper_tide")) {
+				return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
+			}`,
+		// 2026-11-13 판(#86 이전): 사라진 grant의 첫 기본 재시도에서 대기 상태를 지워, 다음 기본 재시도가 다른 grant를
+		// POST했다. 설치본에 남아 있으면 위 본문으로 올린다.
+		legacyPatched: `			// CUELO: reconcile the pending grant before choosing another usable grant.
 			let pending = this.#pendingClaudeResets.get(accountKey);
 			if (pending) {
 				const previous = list.credits.find(credit => credit.id === pending!.creditId);

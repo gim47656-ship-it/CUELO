@@ -22,6 +22,7 @@ TASK_TITLE: <이 조각의 업무 한 줄 — 한국어>
 TODO_TASKS: ["<현재 Main TODO의 정확한 문자열>", "…"]
 EXPECTED_MINUTES: <이 조각의 예상 소요 분, 정수 — 권장>
 DONE_WHEN: <이 조각이 끝났다고 볼 조건 한 줄 — 권장>
+REPLAN_WHEN: <이 조각에서 Main의 가정이 깨졌다고 볼 조건 — 선택>
 ```
 
 - **`TASK_GUARD:` 바로 뒤에 정본 필드가 연속되는 구간이 guard 블록이다.** 필드 일부는 생략·상속될
@@ -29,6 +30,7 @@ DONE_WHEN: <이 조각이 끝났다고 볼 조건 한 줄 — 권장>
 - `TASK_TITLE`은 **조각마다 다른 그 조각의 stable 업무 정체성**이다. 앞뒤 공백 없는 한 줄 한국어여야 하고 본문에 정확히 한 번만 나와야 한다. subagent 카드 제목이 이 값이고, follow-up `write agent://<id>` 메시지의 진행 단계(마지막 의도·현재 도구)가 이 값을 덮지 않는다. 없으면 카드는 업무 미확인으로 표시된다.
 - `TODO_TASKS`는 **현재 Main TODO 항목의 exact 문자열** JSON 배열이다. 비어 있지 않은 고유 문자열이어야 하고 trim·유사도 정규화 없이 그대로 비교되므로 Main이 실제로 가진 문자열을 그대로 쓴다. 두 메타 중 하나라도 있으면 런타임이 TODO 진행 관측을 시작한다.
 - `EXPECTED_MINUTES`·`DONE_WHEN`도 `TASK_TITLE`·`TODO_TASKS`처럼 `TASK_GUARD` 블록 **밖**의 공유 메타데이터이고 **권장**이다(2026-10-20 사용자 결정). 런타임은 검증하지 않고 없다고 거부하지도 않으며 `TASK_GUARD` 필드로도 `task` 인자로도 만들지 않는다. `EXPECTED_MINUTES`는 줄 첫머리의 `EXPECTED_MINUTES: <1~1440 정수>` 한 줄이어야 child 활동 감시가 읽는다(문장 속에 섞인 값·정수가 아닌 값은 무시). 읽히면 감시가 모든 경고의 `stats.expectedMinutes`에 그 값을 싣고, 경과가 그 값을 넘는 순간 `over_expected` 경고를 한 번 보낸다. 값은 Main이 조각의 크기를 보고 정직하게 적는다(조사·구현·검증을 합친 벽시계 분). `DONE_WHEN`은 "무엇이 통과하면 끝인가"를 한 줄로 적어 Maker가 끝없이 다듬지 않게 하고 Main이 경고 때 진척을 대조하는 기준이 된다. 둘 다 시간 제한이 아니며 어떤 child도 이 값 때문에 중단·취소·재발주되지 않는다.
+- `REPLAN_WHEN`은 같은 위치의 **선택** 공유 메타데이터다(2026-11-13 사용자 결정, 반중력 오케스트레이터의 재계획 조건 참고). Main이 조사로 세운 가정 가운데 틀리면 계획을 다시 짜야 하는 것을 작업에 맞게 적는다(예: "이 값의 소유자가 `lib/x.ts`가 아니면", "기존 화면 전환 구조를 바꿔야 하면"). Maker는 그 조건을 관측하면 더 고치기 전에 멈추고 근거를 Main에 보고하며, Main은 계획을 고쳐 같은 담당자에게 이어서 맡긴다. 런타임은 검증하지 않고 막지도 않으며, 공통 Main 반환 조건(`rule://subagent`의 반복 실패와 큰 재설계)을 대신하지 않는다.
 - `TASK_GUARD` **안에서** Main이 직접 판단해야 하는 값만 적는다. **무엇을 만드는가**(`WORK_CLASS`·`PRIMARY_DELIVERABLE`)와 **어디까지 고치는가**(`OWNED_PATHS`)가 그것이고, 나머지는 런타임이 승인된 값에서 조립한다. 한 요청의 첫 child가 앞의 둘로 lock을 세우면 그 다음 child부터는 `OWNED_PATHS`(와 rework면 `FINDING_ID`)만 적어도 된다. 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock 값으로 채워지고, `PURPOSE`는 `FINDING_ID` 유무에서(`FINDING_ID` 있으면 `rework`, 그 밖엔 `primary`) 파생되며, `BLOCKS_PRIMARY`는 `yes`로 채워진다. 조립이 일어난 항목은 런타임이 그 브리프의 `TASK_GUARD` 블록을 실제 적용된 값으로 다시 써서 실행하므로 child와 기록이 같은 계약을 본다.
 - 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock이 있으면 상속한다. 첫 발주에 lock이 없으면 `WORK_CLASS`는 `feature`, `PRIMARY_DELIVERABLE`은 `TASK_TITLE` 값(없으면 task name)으로 채운다. `WORK_CLASS: feat`처럼 유효 enum의 유일한 접두어는 정식 값으로 보정하며, 어느 값인지 정할 수 없는 오값은 거절한다. 보정·파생한 계약은 child에게 전달하는 guard 블록에도 반영한다.
 - lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 이 요청의 추가 완료물로 받아들이고, 기준 값과 새 값을 advisory로 알린다. 첫 lock은 생략 필드의 상속 기준으로 유지하며 누적 budget을 초기화하지 않는다. `maker_route` 준비·발주와 실제 TaskGuard에 같은 동작을 적용한다.

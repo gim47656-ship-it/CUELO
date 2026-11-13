@@ -28,8 +28,9 @@ function fixture() {
     }
     assert.match(url, /\/usage\?/);
     if (state.unreadableAfter && posts.length) return new Response("", { status: 503 });
-    return Response.json({ cedar_ember: { eligible: true, next_grant_id: grants[0].id,
-      grants: state.omitSpent ? grants.filter(g => g.resets_left > 0) : grants } });
+    const visible = state.omitSpent ? grants.filter(g => g.resets_left > 0) : grants;
+    // The provider advances next_grant_id to a remaining grant once the old one disappears.
+    return Response.json({ cedar_ember: { eligible: true, next_grant_id: visible[0]?.id ?? null, grants: visible } });
   };
   const access = { ok: true, accessToken: "fixture", orgId: "fixture-org", credentialId: 1 };
   const auth = { ...access, fetch: fetchImpl };
@@ -99,7 +100,15 @@ function fixture() {
   assert.equal((await f.redeem()).code, "reset_unconfirmed");
   assert.equal(f.posts.length, 1);
   assert.equal(f.invalidations.length, 0, "a vanished pending grant is not proof of a spend");
-  console.log("OK default retry with vanished pending grant sends no second POST");
+  assert.equal((await f.redeem()).code, "reset_unconfirmed", "later default retries stay blocked");
+  assert.equal((await f.redeem(f.grants[0].id)).code, "reset_unconfirmed", "re-picking the vanished grant stays blocked");
+  assert.equal((await f.redeem("missing")).code, "offer_changed", "an explicit unknown grant is refused");
+  assert.equal((await f.redeem()).code, "reset_unconfirmed", "a refused explicit pick does not release the claim");
+  assert.equal(f.posts.length, 1, "unresolved default retries must not POST another grant");
+  assert.equal((await f.redeem(f.grants[1].id)).code, "reset", "an explicit other grant is still allowed");
+  assert.equal(f.posts.length, 2);
+  assert.equal(f.posts[1].grant_id, f.grants[1].id);
+  console.log("OK repeated default retries with vanished pending grant send no second POST (#86)");
 }
 {
   const f = fixture();

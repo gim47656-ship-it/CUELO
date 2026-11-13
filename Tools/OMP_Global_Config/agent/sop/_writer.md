@@ -50,7 +50,10 @@
   short line before a tool call. After a `generation_heavy` steer, switch at once. `DONE_WHEN` is
   the stop line: once those checks pass, write the record and yield instead of polishing.
   `EXPECTED_MINUTES` is a size signal, never a license to weaken a check; if you will clearly pass
-  it, say so with the cause in your terminal report.
+  it, say so with the cause in your terminal report. `REPLAN_WHEN` (optional) names the brief's
+  assumptions that, if false, invalidate Main's plan: when you observe one, stop before further
+  edits and report the evidence to Main instead of working around it; Main repairs the plan and
+  you continue the same task.
 
 ## Writer Rules
 
