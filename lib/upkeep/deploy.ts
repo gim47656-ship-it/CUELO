@@ -33,11 +33,13 @@ const OFF_PC_PREFIXES = ["Tools/CUELO_Phone_Bridge/"];
  * 기억 동기화 파일이다. 기억 동기화 파일은 update.sh가 배포 리비전이 아니라 개발 사본에서 바로 읽는다. 배포 뒤에는
  * 늘 이런 기록 커밋이 따라와서, 해시만 비교하면 이 지표가 거의 항상 「주의」였다(10-30 59dc49f6 → 4832bf87).
  * 폰 브리지 커밋도 PC 배포 없이 폰에 설치되는데 배포 필요로 세어 「주의」가 났다(11-01 f6f957a0 → 0c5ccfb0).
+ * 비교는 공통 조상에서 HEAD까지(`배포...HEAD`)다. 두 점 비교는 HEAD가 배포보다 뒤처진 몇 초(배포 직후 개발 사본이 따라오기 전)에
+ * 배포 쪽에만 있는 변경을 배포 필요로 셌다(11-14 HEAD cd63268f / 배포 cdd39f70, 22개).
  */
 export async function pendingDeployFiles(repo: string, deployed: string, head: string): Promise<{ pending: string[]; records: number; offPc: number } | null> {
   try {
     // -z는 한글 등 특수 문자 경로를 따옴표 없이 주고, --no-renames는 lib→doc 이동이 삭제를 숨기지 않게 양쪽 경로를 다 준다.
-    const { stdout } = await exec("git", ["-C", repo, "diff", "-z", "--no-renames", "--name-only", deployed, head], { timeout: 10000 });
+    const { stdout } = await exec("git", ["-C", repo, "diff", "-z", "--no-renames", "--name-only", `${deployed}...${head}`], { timeout: 10000 });
     const files = stdout.split("\0").filter(Boolean);
     const nonRecords = files.filter((file) => !/(^|\/)doc\//.test(file) && !/(^|\/)HANDOFF\.md$/.test(file) && file !== "Tools/OMP_Global_Config/memory-sync/memories.jsonl");
     const pending = nonRecords.filter((file) => !OFF_PC_PREFIXES.some((prefix) => file.startsWith(prefix)));
