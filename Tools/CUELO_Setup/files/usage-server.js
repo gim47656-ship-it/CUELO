@@ -194,7 +194,24 @@ function savedReset(status, checkedAt = Date.now(), provider = 'openai-codex') {
         checkedAt,
         credits,
         ...(provider === 'anthropic' ? pick(status, ['redeemableCount', 'nextCreditId', 'eligible', 'reason', 'cooldownUntil']) : {}),
+        ...(status.unconfirmed ? { unconfirmed: true } : {}),
     };
+}
+
+// 보낸 리셋을 뺀 직전 목록. 확인 전 표시에만 쓰며 판정과 재사용에는 쓰지 않는다.
+function withoutSpent(status, spentIds) {
+    const spent = new Set(spentIds);
+    let removed = 0;
+    const credits = (status.credits || []).flatMap(credit => {
+        if (!spent.has(credit.id)) return [credit];
+        removed += 1;
+        const left = (credit.remainingCount ?? 1) - 1;
+        return left > 0 ? [{ ...credit, remainingCount: left }] : [];
+    });
+    const less = count => (Number.isSafeInteger(count) ? Math.max(0, count - removed) : count);
+    const nextCreditId = credits.some(credit => credit.id === status.nextCreditId) ? status.nextCreditId : credits[0]?.id;
+    return { ...status, credits, availableCount: less(status.availableCount), redeemableCount: less(status.redeemableCount),
+        nextCreditId };
 }
 
 function controlError(status, code, outcomeUnknown = false) {
@@ -418,7 +435,9 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             const key = `${provider}:${status.credentialId}`;
             if (!status.error) { lastGoodResets.set(key, { at: now, status }); return status; }
             const prior = lastGoodResets.get(key);
-            return prior && now - prior.at < 30 * 60_000 ? prior.status : status;
+            // 리셋 뒤 '확인 중' 목록은 다음 성공 조회가 대신할 때까지 둔다(30분 제한을 받지 않는다).
+            return prior && (prior.unconfirmed || now - prior.at < 30 * 60_000)
+                ? (prior.unconfirmed ? { ...prior.status, unconfirmed: true } : prior.status) : status;
         });
         const at = Date.now();
         if (currentEpoch === epoch) resets.set(provider, { at, statuses: shown });
@@ -580,7 +599,7 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         // 전송 직전 SDK가 그 계정 목록을 새로 읽어 다시 확인한다. 보관한 권리를 가리키면 갱신됐을 수 있으니 새로 읽는다.
         // 자동 전송은 만료 시각과 정책 재확인을 위해 늘 새 목록을 읽는다.
         const recent = auto ? undefined : lastGoodResets.get(`${entry.provider}:${id}`);
-        const recentCredit = recent && Date.now() - recent.at < CACHE_MS
+        const recentCredit = recent && !recent.unconfirmed && Date.now() - recent.at < CACHE_MS
             ? savedReset(recent.status, recent.at, entry.provider).credits.find(value => value.id === creditId) : undefined;
         let status;
         let checkedAt;
@@ -640,8 +659,16 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             error = controlError(502, 'reset_outcome_unknown', true);
         }
         settledResets.set(grantKey(grant), error ? { error } : { result });
-        // 보낸 뒤에는 provider 쪽 잔량이 바뀌었을 수 있다. 보내기 전 성공값으로 표시를 메우지 않는다.
-        lastGoodResets.delete(`${entry.provider}:${id}`);
+        // 보낸 뒤에는 provider 쪽 잔량이 바뀌었을 수 있어 보내기 전 성공값을 그대로 쓰지 않는다. 성공한 Anthropic 리셋만
+        // 쓴 리셋을 뺀 직전 목록을 다음 성공 조회 전까지 '확인 중'으로 표시한다(11-13 사용자 결정: 리셋 직후 조회가
+        // 429로 몇 분 막혀 남은 리셋이 안 보였다). 이 값은 수동 재사용과 만료 점검 건너뛰기에 쓰지 않는다.
+        // 기준은 전송 직전 확인한 목록이다. 전송 중 다른 조회가 바꾼 lastGood 값을 쓰면 쓴 리셋을 두 번 뺄 수 있다.
+        const goodKey = `${entry.provider}:${id}`;
+        lastGoodResets.delete(goodKey);
+        if (entry.provider === 'anthropic' && result?.code === 'reset') {
+            lastGoodResets.set(goodKey, { at: Date.now(), unconfirmed: true,
+                status: withoutSpent(status, result.consumedCreditIds?.length ? result.consumedCreditIds : [creditId]) });
+        }
         if (ledger) {
             await settleResetAttempt(ledger, ctl.withFileLock, attempt, ledgerState(result, error), (result ?? error).code, now())
                 .catch(() => console.warn('[reset-expiry] attempt record not settled; it keeps blocking that credit'));
@@ -662,7 +689,7 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             if (!ids.size) continue;
             const recentlyQuiet = [...ids].every(credentialId => {
                 const prior = lastGoodResets.get(`${provider}:${credentialId}`);
-                return prior && Date.now() - prior.at < EXPIRY_SKIP_MAX_AGE_MS
+                return prior && !prior.unconfirmed && Date.now() - prior.at < EXPIRY_SKIP_MAX_AGE_MS
                     && !savedReset(prior.status, prior.at, provider).credits.some(credit => {
                         const left = (typeof credit.expiresAt === 'string' ? Date.parse(credit.expiresAt) : NaN) - now();
                         return !(left > EXPIRY_WINDOW_MS + EXPIRY_SWEEP_MS);

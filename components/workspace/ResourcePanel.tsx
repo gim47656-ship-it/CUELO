@@ -663,9 +663,9 @@ export function UsageAccount({
   const resetValue = !savedReset || savedReset.state === "unavailable"
     ? "확인 불가"
     : savedReset.state === "empty" || count === 0
-      ? "없음"
+      ? `없음${savedReset.unconfirmed ? " · 확인 중" : ""}`
       : report.provider === "anthropic"
-        ? `${count ?? anthropicCredits.length}개`
+        ? `${count ?? anthropicCredits.length}개${savedReset.unconfirmed ? " · 확인 중" : ""}`
         : `${count ?? savedReset.credits.length}개${expiryLabel ? ` · ${expiryLabel}` : ""}`;
   const confirmSummary = `저장된 리셋 ${resetValue}`;
   const recommendationText = resetRecommendationCopy(recommendation, now);
@@ -884,7 +884,7 @@ export function UsageAccount({
                   const isNext = credit.id === nextAnthropicCredit?.id;
                   const expiry = formatExpiry(credit.expiresAt, now);
                   const remaining = credit.remainingCount ?? 1;
-                  const usable = brokerOk && canToggle && report.disabled !== true
+                  const usable = brokerOk && canToggle && report.disabled !== true && savedReset?.unconfirmed !== true
                     && savedReset?.eligible === true && credit.usable === true && remaining > 0;
                   return (
                     <li
@@ -915,7 +915,7 @@ export function UsageAccount({
                               summary: [t("resource.reset.summary", { name: kind.name }), kind.covers, expiry].filter(Boolean).join(", ") });
                           }}
                         >{t("resource.reset.use")}</button>
-                      ) : <span className="ml-auto text-text-muted">{t("resource.reset.unavailable")}</span>}
+                      ) : <span className="ml-auto text-text-muted">{savedReset?.unconfirmed ? "확인 중" : t("resource.reset.unavailable")}</span>}
                     </li>
                   );
                 })}

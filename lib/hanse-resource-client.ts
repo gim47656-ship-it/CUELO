@@ -123,6 +123,8 @@ export interface SavedReset {
   reason?: string;
   cooldownUntil?: string;
   error?: string;
+  /** Anthropic: right after a sent reset the live list could not be read yet; this is the prior list minus the spent reset. */
+  unconfirmed?: boolean;
 }
 
 export interface UsageReport {

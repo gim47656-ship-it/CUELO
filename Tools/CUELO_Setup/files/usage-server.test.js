@@ -320,6 +320,28 @@ test('business non-success remains a typed result and refresh observes post-muta
     assert.equal((await controls.enrich({ reports: [report()] })).reports[0].savedReset.state, 'empty');
 });
 
+test('right after an Anthropic reset a rate-limited list shows the prior list minus the spent reset as unconfirmed', async () => {
+    // 11-13: the full reset vanished for minutes after a Fable reset because the post-send list read got 429.
+    const { controls, storage, setStatuses } = fixture('anthropic');
+    const grant = id => ({ id, expiresAt: '2099-01-01T00:00:00Z', status: 'available',
+        program: 'cedar_ember', usable: true, remainingCount: 1 });
+    const live = { provider: 'anthropic', credentialId: 1, availableCount: 2, redeemableCount: 2, eligible: true,
+        nextCreditId: 'fable', credits: [grant('fable'), grant('full')] };
+    setStatuses([live]);
+    assert.equal((await controls.enrich({ reports: [report(1, 'anthropic')] })).reports[0].savedReset.availableCount, 2);
+    storage.resets.redeem = async () => {
+        setStatuses([{ provider: 'anthropic', credentialId: 1, availableCount: 0, credits: [],
+            error: 'Failed to load saved resets', retryAfterMs: 227_000 }]);
+        return { code: 'reset' };
+    };
+    assert.equal((await controls.redeem(1, { confirm: true, creditId: 'fable' })).code, 'reset');
+    const shown = (await controls.enrich({ reports: [report(1, 'anthropic')] })).reports[0].savedReset;
+    assert.deepEqual([shown.state, shown.unconfirmed, shown.availableCount, shown.nextCreditId, shown.credits.map(credit => credit.id)],
+        ['available', true, 1, 'full', ['full']]);
+    // A manual press while unconfirmed reads the live list again instead of trusting the shown one.
+    await assert.rejects(controls.redeem(1, { confirm: true, creditId: 'full' }), { code: 'rate_limited' });
+});
+
 test('expired or unavailable credit entries do not inflate the actionable saved reset count', async () => {
     const { controls, setStatuses } = fixture();
     setStatuses([{ credentialId: 1, availableCount: 2, credits: [
@@ -477,7 +499,7 @@ test('enabled sweep redeems every due credit by exact target and skips outside, 
     assert.equal(fx.calls.length, 3);
 });
 
-test('a rate-limited expiry sweep keeps the last good reset display, and a sent reset drops it', async t => {
+test('a rate-limited expiry sweep keeps the last good reset display, and a sent reset shows it spent until confirmed', async t => {
     const fx = await expiryFixture(t, [{ provider: 'anthropic', expiresAt: iso(T0 + 2 * HOUR) }]);
     const shown = async () => (await fx.controls.enrich({ reports: [{ provider: 'anthropic', fetchedAt: Date.now(),
         metadata: { accountId: 'acct-1' }, limits: [] }] })).reports[0].savedReset;
@@ -490,7 +512,8 @@ test('a rate-limited expiry sweep keeps the last good reset display, and a sent 
     fx.statuses = good;
     assert.equal((await fx.controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
     fx.statuses = limited;
-    assert.equal((await shown()).state, 'unavailable');
+    const after = await shown();
+    assert.deepEqual([after.state, after.unconfirmed, after.availableCount], ['empty', true, 0]);
 });
 
 test('point-of-send recheck refuses when the fresh expiry moved, the policy went off, or the sweep stopped', async t => {
