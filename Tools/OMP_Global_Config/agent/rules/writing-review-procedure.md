@@ -6,9 +6,9 @@ description: 새 글·문단 초안, 문서·UI 문구의 draft 및 slop_check �
   이상 다시 쓰는 글은 Main·Maker 모두 먼저 `draft`로 쓴다. README·CHANGELOG·`docs/`·보고서·안내서·소개 글·게시물,
   `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
   UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
-  Gemini가 작성해 cwd 안에 저장하고, 실패하면 `modelRoles.draftFallback`이 가리키는 모델(소스 프로필은 GPT-6.1 Terra, 미설정 설치는
+  Gemini가 작성해 cwd 안에 저장하고, 실패하면 `modelRoles.draftFallback`이 가리키는 모델(소스 프로필은 AI Studio 중계기의 Gemini 4 Argon, 미설정 설치는
   Hive의 DeepSeek 1017)로 한 번 대체한다. 주 모델이 사용량 한도로 막혔고 프로필 `retry.fallbackChains`의 그 모델 항목에 같은 모델의 다른
-  경로(집과 사무실은 Vertex Argon)가 있으면 대체 모델보다 그 경로를 먼저 한 번 시도한다(2026-11-11 사용자 결정).
+  경로(집과 사무실은 Vertex Hydrogen)가 있으면 대체 모델보다 그 경로를 먼저 한 번 시도한다(2026-11-11 사용자 결정).
   설정한 대체가 실패하면 DeepSeek로 넘어가지 않는다(참고 텍스트는 Google 또는 대체 모델의 제공자로
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐

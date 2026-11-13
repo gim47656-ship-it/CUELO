@@ -578,15 +578,16 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
         const status = live.statuses.find(value => value.credentialId === id);
         if (!status || status.error) throw controlError(502, 'credit_list_failed');
         const credit = savedReset(status, live.at, entry.provider).credits.find(value => value.id === creditId);
-        if (!credit || (entry.provider === 'anthropic' && status.nextCreditId !== creditId)) {
+        if (!credit || (entry.provider === 'anthropic' && (status.eligible !== true || credit.usable !== true))) {
             throw controlError(409, 'credit_unavailable');
         }
         // 전송한 결과는 그 권리 실체에 묶어 보관한다. 불확실한 결과를 다시 보내지 않고,
         // 새로 발급된 같은 id의 권리나 남은 다음 회차에는 지난 결과를 돌려주지 않는다.
         const grant = resetGrant(entry.provider, id, credit);
         const retained = settledResets.get(grantKey(grant));
-        // provider가 소비하지 않았다고 확정한 결과(DEFINITE_NOT_CONSUMED)만 자동·수동 모두 보관 결과를 넘어 fresh 상태로 다시 판단한다.
-        if (retained && autoFinal(retained)) {
+        // A confirmed mismatch may leave the requested grant untouched. A new manual confirmation
+        // may try it again; automatic expiry sweeps must never repeat that mutation.
+        if (retained && autoFinal(retained) && (auto || !retained.result?.consumedCreditIds?.length)) {
             if (retained.error) throw retained.error;
             return retained.result;
         }
@@ -615,7 +616,10 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
             const code = known.includes(outcome.code) || /^http_[1-5]\d\d$/.test(outcome.code)
                 ? outcome.code : 'unknown_outcome';
             result = { ok: code === 'reset', credentialId: id, creditId, code,
-                ...(code === 'unknown_outcome' || /^http_5/.test(code) ? { outcomeUnknown: true } : {}) };
+                ...(code === 'unknown_outcome' || /^http_5/.test(code) ? { outcomeUnknown: true } : {}),
+                ...(entry.provider === 'anthropic' && typeof outcome.reason === 'string' ? { reason: outcome.reason } : {}),
+                ...(entry.provider === 'anthropic' && Array.isArray(outcome.consumedCreditIds)
+                    ? { consumedCreditIds: outcome.consumedCreditIds } : {}) };
         } catch {
             error = controlError(502, 'reset_outcome_unknown', true);
         }

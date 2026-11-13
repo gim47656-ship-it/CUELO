@@ -66,24 +66,44 @@ test('identity join rejects ambiguous emails and conflicting single candidates',
     assert.equal(matchCredential(report(2), accounts)?.credentialId, 2);
 });
 
-test('Anthropic reset redeems only the server-selected credit with an anthropic target', async () => {
-    const { controls, calls, setStatuses } = fixture('anthropic');
-    setStatuses([1, 2].map(id => ({ provider: 'anthropic', credentialId: id, availableCount: 1, nextCreditId: `credit-${id}`,
-        credits: [{ id: `credit-${id}`, expiresAt: '2099-01-01T00:00:00Z', status: 'available', remainingCount: 1 }] })));
-    await assert.rejects(controls.redeem(1, { confirm: true, creditId: 'credit-2' }), { code: 'credit_unavailable' });
-    assert.equal((await controls.redeem(1, { confirm: true, creditId: 'credit-1' })).code, 'reset');
-    assert.deepEqual(calls.map(call => call.target), [{ provider: 'anthropic', credentialId: 1, creditId: 'credit-1' }]);
+test('Anthropic reset redeems any usable grant, rejects unusable or absent grants, and retains mismatch evidence', async () => {
+    const { controls, storage, calls, setStatuses } = fixture('anthropic');
+    setStatuses([{ provider: 'anthropic', credentialId: 1, availableCount: 3, eligible: true, nextCreditId: 'next',
+        credits: ['next', 'other', 'paused'].map(id => ({ id, expiresAt: '2099-01-01T00:00:00Z',
+            status: id === 'paused' ? 'paused' : 'available', remainingCount: 1, usable: id !== 'paused' })) }]);
+    await assert.rejects(controls.redeem(1, { confirm: true, creditId: 'absent' }), { code: 'credit_unavailable' });
+    await assert.rejects(controls.redeem(1, { confirm: true, creditId: 'paused' }), { code: 'credit_unavailable' });
+    assert.equal((await controls.redeem(1, { confirm: true, creditId: 'other' })).code, 'reset');
+    assert.deepEqual(calls.map(call => call.target), [{ provider: 'anthropic', credentialId: 1, creditId: 'other' }]);
+    storage.resets.redeem = async () => ({ code: 'reset', consumedCreditIds: ['other'] });
+    const mismatch = await controls.redeem(1, { confirm: true, creditId: 'next' });
+    assert.equal(mismatch.ok, true);
+    assert.equal(mismatch.creditId, 'next');
+    assert.deepEqual(mismatch.consumedCreditIds, ['other']);
+    let retryCalls = 0;
+    storage.resets.redeem = async () => { retryCalls++; return { code: 'reset' }; };
+    assert.equal((await controls.redeem(1, { confirm: true, creditId: 'next' })).code, 'reset');
+    assert.equal(retryCalls, 1, 'a new manual confirmation can redeem the still-unspent requested grant');
+});
+
+test('Anthropic HTTP rejection retains the provider reason', async () => {
+    const { controls, storage, setStatuses } = fixture('anthropic');
+    setStatuses([{ provider: 'anthropic', credentialId: 1, availableCount: 1, eligible: true,
+        credits: [{ id: 'other', usable: true, remainingCount: 1 }] }]);
+    storage.resets.redeem = async () => ({ code: 'http_400', reason: 'grant_not_allowed' });
+    assert.equal((await controls.redeem(1, { confirm: true, creditId: 'other' })).reason, 'grant_not_allowed');
 });
 
 test('a rate-limited reset lookup keeps the last successful status instead of unavailable', async () => {
     const { controls, setStatuses } = fixture('anthropic');
-    const ok = [1, 2].map(id => ({ provider: 'anthropic', credentialId: id, availableCount: 1, nextCreditId: `credit-${id}`,
+    const ok = [1, 2].map(id => ({ provider: 'anthropic', credentialId: id, availableCount: 1, eligible: true, nextCreditId: `credit-${id}`,
         credits: [{ id: `credit-${id}`, expiresAt: '2099-01-01T00:00:00Z', status: 'available', remainingCount: 1 }] }));
     setStatuses(ok);
     assert.equal((await controls.enrich({ reports: [report(1, 'anthropic')] })).reports[0].savedReset.state, 'available');
     setStatuses(ok.map(status => ({ ...status, availableCount: 0, credits: [], error: 'Failed to load saved resets' })));
     controls.invalidate();
     assert.equal((await controls.enrich({ reports: [report(1, 'anthropic')] })).reports[0].savedReset.state, 'available');
+    assert.equal((await controls.enrich({ reports: [report(1, 'anthropic')] })).reports[0].savedReset.eligible, true);
 });
 test('unmatched quota and local credential rows expose distinct non-joining roles', async () => {
     const { controls } = fixture('opencode-go');
@@ -350,6 +370,8 @@ test('Anthropic reset lookup is provider-specific and retains only reset-scope f
     assert.equal(result.reports[0].savedReset.credits[0].program, 'cedar_ember');
     assert.deepEqual(result.reports[0].savedReset.credits[0].clears, ['anthropic:5h']);
     assert.equal(result.reports[0].savedReset.nextCreditId, 'cedar-1');
+    assert.equal(result.reports[0].savedReset.eligible, true);
+    console.log('R1-ANT-5: shaped Anthropic savedReset.eligible =', result.reports[0].savedReset.eligible);
     assert.equal(result.reports[0].savedReset.credits[0].mystery, undefined);
     assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });

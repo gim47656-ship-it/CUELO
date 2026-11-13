@@ -1056,6 +1056,8 @@ export interface CredentialResetResult {
   creditId: string;
   code: string;
   outcomeUnknown?: boolean;
+  reason?: string;
+  consumedCreditIds?: string[];
 }
 
 export async function redeemCredentialReset(

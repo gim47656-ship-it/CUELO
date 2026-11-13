@@ -422,7 +422,12 @@ function resetRecommendationCopy(recommendation: ResetRecommendation | undefined
   return `권고 — 리셋 1개가 ${expiryPhrase}됩니다.${usage}`;
 }
 
-function resetFeedback(result: CredentialResetResult): CredentialFeedback {
+function resetFeedback(result: CredentialResetResult, t: Translate, provider: string): CredentialFeedback {
+  if (provider === "anthropic" && result.consumedCreditIds?.length) {
+    return { tone: "error", message: t("resource.reset.mismatch", {
+      requested: result.creditId, consumed: result.consumedCreditIds.join(", "),
+    }) };
+  }
   switch (result.code) {
     case "reset":
       return { tone: "status", message: "리셋 사용함" };
@@ -450,7 +455,9 @@ function resetFeedback(result: CredentialResetResult): CredentialFeedback {
       return { tone: "error", message: "리셋 사용 실패: 저장된 리셋 목록을 확인하지 못했습니다." };
     default:
       return result.code.startsWith("http_")
-        ? { tone: "error", message: `리셋 사용 실패: 서비스 응답 오류 (${result.code})` }
+        ? { tone: "error", message: provider === "anthropic"
+          ? t("resource.reset.rejection", { code: result.code, reason: result.reason ?? "" })
+          : `리셋 사용 실패: 서비스 응답 오류 (${result.code})` }
         : { tone: "error", message: `리셋 사용 실패: ${result.code}` };
   }
 }
@@ -494,28 +501,28 @@ function earliestResetCredit(report: UsageReport): { id: string; expiresAt: stri
   return selected ? { id: selected.id, expiresAt: selected.expiresAt } : null;
 }
 
-const ANTHROPIC_RESET_WINDOW_LABELS: Record<string, string> = {
-  "anthropic:5h": "5시간",
-  "anthropic:7d": "주간",
-  "anthropic:7d:fable": "페이블 주간",
-  "anthropic:7d:opus": "Opus 주간",
-  "anthropic:7d:sonnet": "Sonnet 주간",
-};
-const ANTHROPIC_TIER_LABELS: Record<string, string> = { fable: "페이블", opus: "Opus", sonnet: "Sonnet" };
-
-/** Anthropic 리셋권 한 장의 종류. 공유 주간(`anthropic:7d`)까지 지우면 전체 리셋, 모델 주간만 지우면 그 모델 리셋이다. */
-function anthropicCreditKind(credit: SavedResetCredit): { name: string; covers: string | null } {
+/** Names and covered limits come from the grant's normalized clears, never its position. */
+function anthropicCreditKind(credit: SavedResetCredit, t: Translate): { name: string; covers: string | null } {
   const clears = credit.clears ?? [];
-  const labels = [...new Set(clears
-    .map(id => ANTHROPIC_RESET_WINDOW_LABELS[id])
-    .filter((label): label is string => label !== undefined))];
+  const labels = clears.map(id => {
+    switch (id) {
+      case "anthropic:5h": return t("resource.reset.window.fiveHour");
+      case "anthropic:7d": return t("resource.reset.window.weekly");
+      case "anthropic:7d:fable": return t("resource.reset.includedOverage");
+      case "anthropic:7d:opus": return `Opus ${t("resource.reset.window.weekly")}`;
+      case "anthropic:7d:sonnet": return `Sonnet ${t("resource.reset.window.weekly")}`;
+      default: return id;
+    }
+  });
   const tier = clears.map(id => /^anthropic:7d:(.+)$/.exec(id)?.[1]).find(value => value !== undefined);
   const name = clears.includes("anthropic:7d")
-    ? "전체 리셋"
-    : tier
-      ? `${ANTHROPIC_TIER_LABELS[tier] ?? tier} 리셋`
-      : clears.includes("anthropic:5h") ? "5시간 리셋" : "리셋";
-  return { name, covers: labels.length ? `${labels.join("·")} 한도` : null };
+    ? t("resource.reset.name.full")
+    : clears.includes("anthropic:7d:fable")
+      ? t("resource.reset.name.fable")
+      : tier
+        ? `${tier === "opus" ? "Opus" : tier === "sonnet" ? "Sonnet" : tier} ${t("resource.reset.name.generic")}`
+        : clears.includes("anthropic:5h") ? t("resource.reset.name.fiveHour") : t("resource.reset.name.generic");
+  return { name, covers: labels.length ? t("resource.reset.covers", { limits: [...new Set(labels)].join(", ") }) : null };
 }
 
 export function focusResetTrigger(trigger: Pick<HTMLButtonElement, "focus"> | null): void {
@@ -588,6 +595,7 @@ export function UsageAccount({
   feedback,
   onToggle,
   onReset,
+  t,
 }: {
   report: UsageReport;
   brokerOk: boolean;
@@ -600,6 +608,7 @@ export function UsageAccount({
   feedback?: CredentialFeedback;
   onToggle: (report: UsageReport) => void;
   onReset: (report: UsageReport, creditId: string) => Promise<void>;
+  t: Translate;
 }) {
   const metadata = report.metadata ?? {};
   // 목록 단위 배정이 원칙이다. 단독 렌더(단일 계정)에서도 같은 규칙을 그대로 쓴다.
@@ -643,12 +652,9 @@ export function UsageAccount({
   const restoreTriggerRef = useRef(false);
   const resetSubmitRef = useRef(false);
   const savedReset = report.provider === "openai-codex" || report.provider === "anthropic" ? report.savedReset : undefined;
-  // Anthropic은 provider가 정한 다음 차례(nextCreditId) 한 장만 받는다. 다른 장을 보내면 offer_changed로 거절된다.
   const anthropicCredits = report.provider === "anthropic" && savedReset?.state === "available" ? savedReset.credits : [];
   const nextAnthropicCredit = anthropicCredits.find(credit => credit.id === savedReset?.nextCreditId) ?? null;
-  const selectedCredit = report.provider === "anthropic"
-    ? (nextAnthropicCredit?.usable === true ? nextAnthropicCredit : null)
-    : earliestResetCredit(report);
+  const selectedCredit = report.provider === "openai-codex" ? earliestResetCredit(report) : null;
   const selectedCreditId = selectedCredit?.id ?? null;
   const expiryLabel = formatExpiry(selectedCredit?.expiresAt ?? null, now);
   const count = savedReset?.availableCount;
@@ -659,13 +665,9 @@ export function UsageAccount({
       : report.provider === "anthropic"
         ? `${count ?? anthropicCredits.length}개`
         : `${count ?? savedReset.credits.length}개${expiryLabel ? ` · ${expiryLabel}` : ""}`;
-  const confirmSummary = (() => {
-    if (report.provider !== "anthropic" || !nextAnthropicCredit) return `저장된 리셋 ${resetValue}`;
-    const kind = anthropicCreditKind(nextAnthropicCredit);
-    return [`사용할 리셋: ${kind.name}`, kind.covers, expiryLabel].filter(Boolean).join(" · ");
-  })();
+  const confirmSummary = `저장된 리셋 ${resetValue}`;
   const recommendationText = resetRecommendationCopy(recommendation, now);
-  const showResetAction = (report.provider === "openai-codex" || report.provider === "anthropic")
+  const showResetAction = report.provider === "openai-codex"
     && brokerOk
     && report.disabled !== true
     && savedReset?.state === "available"
@@ -871,17 +873,17 @@ export function UsageAccount({
               ) : brokerOk && report.disabled
                 && savedReset?.state === "available" ? (
                 <span className="ml-auto text-xs text-text-muted">켠 뒤 사용 가능</span>
-              ) : brokerOk && report.provider === "anthropic" && anthropicCredits.length > 0 ? (
-                <span className="ml-auto text-xs text-text-muted">지금은 사용 불가</span>
               ) : null}
             </div>
             {anthropicCredits.length > 0 ? (
               <ul className="resource-reset-credits m-0 mt-1.5 list-none space-y-1 p-0" aria-label="저장된 리셋 종류">
                 {anthropicCredits.map((credit) => {
-                  const kind = anthropicCreditKind(credit);
+                  const kind = anthropicCreditKind(credit, t);
                   const isNext = credit.id === nextAnthropicCredit?.id;
                   const expiry = formatExpiry(credit.expiresAt, now);
                   const remaining = credit.remainingCount ?? 1;
+                  const usable = brokerOk && canToggle && report.disabled !== true
+                    && savedReset?.eligible === true && credit.usable === true && remaining > 0;
                   return (
                     <li
                       key={credit.id}
@@ -891,10 +893,27 @@ export function UsageAccount({
                       <span className={classNames("font-medium", isNext ? "text-text" : "text-text-muted")}>
                         {remaining > 1 ? `${kind.name} ${remaining}개` : kind.name}
                       </span>
-                      {isNext ? <span className="usage-chip">다음 사용</span> : null}
+                      {isNext ? <span className="usage-chip">{t("resource.reset.chip.nextUse")}</span> : null}
                       <span className="min-w-0 text-text-muted">
-                        {[kind.covers, expiry].filter(Boolean).join(" · ")}
+                        {[kind.covers, expiry].filter(Boolean).join(", ")}
                       </span>
+                      {usable ? (
+                        <button
+                          ref={element => {
+                            if (element && resetTriggerRef.current?.dataset.creditId === credit.id) resetTriggerRef.current = element;
+                          }}
+                          data-credit-id={credit.id}
+                          type="button"
+                          className={classNames(buttonClass, "ml-auto flex-none")}
+                          disabled={pendingAction != null}
+                          aria-label={`${kind.name}: ${t("resource.reset.use")}`}
+                          onClick={event => {
+                            resetTriggerRef.current = event.currentTarget;
+                            setResetConfirmation({ creditId: credit.id,
+                              summary: [t("resource.reset.summary", { name: kind.name }), kind.covers, expiry].filter(Boolean).join(", ") });
+                          }}
+                        >{t("resource.reset.use")}</button>
+                      ) : <span className="ml-auto text-text-muted">{t("resource.reset.unavailable")}</span>}
                     </li>
                   );
                 })}
@@ -916,6 +935,7 @@ export function UsageView({
   feedbackByCredential,
   onToggle,
   onReset,
+  t,
 }: {
   state: PanelState<UsageSnapshot>;
   loading: boolean;
@@ -924,6 +944,7 @@ export function UsageView({
   feedbackByCredential: ReadonlyMap<number, CredentialFeedback>;
   onToggle: (report: UsageReport) => void;
   onReset: (report: UsageReport, creditId: string) => Promise<void>;
+  t: Translate;
 }) {
   // 리셋·만료 카운트다운은 분 단위라 10초 시계로 충분하다.
   const now = useNow(10_000);
@@ -969,6 +990,7 @@ export function UsageView({
             feedback={credentialId == null ? undefined : feedbackByCredential.get(credentialId)}
             onToggle={onToggle}
             onReset={onReset}
+            t={t}
           />
         );
       })}
@@ -1833,6 +1855,7 @@ export function ResourcePanel({
   usage,
   className,
 }: ResourcePanelProps) {
+  const { t } = useI18n();
   const headingId = useId();
   const usageState = usage.state;
   const usageLoading = usage.loading;
@@ -1994,9 +2017,9 @@ export function ResourcePanel({
     });
     try {
       const result = await redeemCredentialReset(credentialId, creditId, { signal: controller.signal });
-      const feedback = resetFeedback(result);
+      const feedback = resetFeedback(result, t, report.provider);
       const refreshed = await reloadUsage();
-      if (result.ok) {
+      if (result.ok && !result.consumedCreditIds?.length) {
         const updatedReport = refreshed.status === "fresh"
           ? refreshed.data.reports.find((item) => item.credentialId === credentialId)
           : undefined;
@@ -2027,7 +2050,7 @@ export function ResourcePanel({
         return next;
       });
     }
-  }, [reloadUsage, usage]);
+  }, [reloadUsage, usage, t]);
 
   if (!open) return null;
 
@@ -2082,6 +2105,7 @@ export function ResourcePanel({
             feedbackByCredential={feedbackByCredential}
             onToggle={(report) => { void toggleCredential(report); }}
             onReset={resetCredential}
+            t={t}
           />
           <ApiCreditsView refreshToken={creditsRefreshToken} />
         </Tabs.Content>

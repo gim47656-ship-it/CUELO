@@ -1531,6 +1531,168 @@ const ANTHROPIC_LOWEST_WEEKLY_SELECTION = `		// CUELO: fresh Anthropic sessions 
 
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
+	// Claude 18.20.0 Cedar grants: next_grant_id is a suggestion, not a redemption restriction.
+	{
+		file: "../pi-ai/src/usage/claude-reset.ts",
+		requires: "function normalizeCedarList(status: CedarStatus",
+		marker: "let redeemableCount = 0; // CUELO: all usable Cedar grants",
+		anchor: "\tlet selectedCredit: UsageResetCredit | undefined;",
+		patched: "\tlet redeemableCount = 0; // CUELO: all usable Cedar grants",
+	},
+	{
+		file: "../pi-ai/src/usage/claude-reset.ts",
+		requires: "function normalizeCedarList(status: CedarStatus",
+		marker: "\t\tconst usable =\n\t\t\tstatus.eligible &&\n\t\t\tgrant.usableNow",
+		anchor: "\t\tconst selected = grant.id === status.nextGrantId;\n\t\tconst usable =\n\t\t\tstatus.eligible &&\n\t\t\tselected &&\n\t\t\tgrant.usableNow",
+		patched: "\t\tconst usable =\n\t\t\tstatus.eligible &&\n\t\t\tgrant.usableNow",
+	},
+	{
+		file: "../pi-ai/src/usage/claude-reset.ts",
+		requires: "function normalizeCedarList(status: CedarStatus",
+		marker: "\t\tif (usable) redeemableCount += grant.remainingCount;",
+		anchor: "\t\tif (selected) selectedCredit = credit;",
+		patched: "\t\tif (usable) redeemableCount += grant.remainingCount;",
+	},
+	{
+		file: "../pi-ai/src/usage/claude-reset.ts",
+		requires: "function normalizeCedarList(status: CedarStatus",
+		marker: "\t\tredeemableCount,\n\t\t...(status.nextGrantId",
+		anchor: "\t\tredeemableCount: selectedCredit?.usable ? (selectedCredit.remainingCount ?? 0) : 0,",
+		patched: "\t\tredeemableCount,",
+	},
+	{
+		file: "../pi-ai/src/usage/claude-reset.ts",
+		requires: "const CEDAR_PROGRAM = \"cedar_ember\";",
+		marker: "/** Spend exactly the requested usable Claude reset.",
+		anchor: "/** Spend exactly the server-selected Claude reset. Mutation requests are never retried. */",
+		patched: "/** Spend exactly the requested usable Claude reset. Mutation requests are never retried. */",
+	},
+	{
+		file: "../pi-ai/src/auth/resets.ts",
+		requires: "#pendingClaudeResets",
+		marker: "// CUELO: reconcile the pending grant before choosing another usable grant.",
+		anchor: `			const selected = list.credits.find(credit => credit.id === list.nextCreditId);
+			if (creditId && creditId !== list.nextCreditId) {
+				return { ...identity, ok: false, code: "offer_changed", creditId };
+			}
+			if (!list.eligible || !selected || !selected.usable || (list.redeemableCount ?? 0) < 1) {
+				return {
+					...identity,
+					ok: false,
+					code: list.availableCount > 0 ? "ineligible" : "no_credit",
+					reason: list.reason,
+				};
+			}
+			creditId = selected.id;
+			let pending = this.#pendingClaudeResets.get(accountKey);
+			const pendingCreditId = pending?.creditId;
+			// The ambiguous claim's credit left the live offer: it was consumed or
+			// expired. Either way its idempotency key can never settle, and the
+			// account is at a wall again now, so a new offer is a fresh claim.
+			if (pendingCreditId !== undefined && !list.credits.some(credit => credit.id === pendingCreditId)) {
+				this.#pendingClaudeResets.delete(accountKey);
+				pending = undefined;
+			}
+			if (pending) {
+				if (pending.creditId !== creditId) return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
+				if (
+					pending.remainingCount !== undefined &&
+					selected.remainingCount !== undefined &&
+					selected.remainingCount < pending.remainingCount
+				) {
+					this.#pendingClaudeResets.delete(accountKey);
+					this.#deps.usageCache.invalidateAfterReset(provider, options.baseUrl, {
+						resetSpentCredentialId: access.credentialId,
+					});
+					return { ...identity, ok: false, code: "already_redeemed", creditId };
+				}
+				if (pending.program === "juniper_tide") {
+					return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
+				}
+			}`,
+		patched: `			// CUELO: reconcile the pending grant before choosing another usable grant.
+			let pending = this.#pendingClaudeResets.get(accountKey);
+			if (pending) {
+				const previous = list.credits.find(credit => credit.id === pending!.creditId);
+				const spent = previous !== undefined && pending.remainingCount !== undefined &&
+					previous.remainingCount !== undefined && previous.remainingCount < pending.remainingCount;
+				if (!previous || spent) {
+					this.#pendingClaudeResets.delete(accountKey);
+					// Absence can also mean expiry; do not claim a spend or POST another grant.
+					if (!previous && (!creditId || creditId === pending.creditId)) {
+						return { ...identity, ok: false, code: "reset_unconfirmed", creditId: pending.creditId };
+					}
+					if (spent) {
+						this.#deps.usageCache.invalidateAfterReset(provider, options.baseUrl, {
+							resetSpentCredentialId: access.credentialId,
+						});
+						if (!creditId || creditId === pending.creditId) {
+							return { ...identity, ok: false, code: "already_redeemed", creditId: pending.creditId };
+						}
+					}
+					pending = undefined;
+				}
+			}
+			const selected = list.credits.find(credit => credit.id === (creditId ?? list.nextCreditId));
+			if (creditId && (!list.eligible || !selected?.usable)) {
+				return { ...identity, ok: false, code: "offer_changed", creditId };
+			}
+			if (!list.eligible || !selected?.usable) {
+				return { ...identity, ok: false, code: list.availableCount > 0 ? "ineligible" : "no_credit",
+					reason: list.reason };
+			}
+			creditId = selected.id;
+			if (pending && (pending.creditId !== creditId || pending.program === "juniper_tide")) {
+				return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
+			}`,
+	},
+	{
+		file: "../pi-ai/src/auth/resets.ts",
+		requires: "#pendingClaudeResets",
+		marker: "// CUELO: observe which grant dropped; never repeat a successful mutation.",
+		anchor: `			result = {
+				...identity,
+				ok: consumed.ok,
+				code: consumed.code,
+				reason: consumed.reason,
+				cleared: consumed.cleared,
+				creditId,
+			};`,
+		patched: `			// CUELO: observe which grant dropped; never repeat a successful mutation.
+			let consumedCreditIds: string[] | undefined;
+			if (consumed.ok) {
+				const after = await listClaudeResetCredits(auth).catch(() => null);
+				if (after) {
+					const dropped = list.credits.filter(before => {
+						const current = after.credits.find(credit => credit.id === before.id);
+						const expired = before.expiresAt !== undefined && Date.parse(before.expiresAt) <= Date.now();
+						return !expired && before.remainingCount !== undefined &&
+							(current?.remainingCount ?? 0) < before.remainingCount;
+					});
+					if (dropped.some(credit => credit.id !== creditId)) {
+						consumedCreditIds = dropped.map(credit => credit.id);
+						consumed.cleared = [...new Set(dropped.flatMap(credit => credit.clears ?? []))];
+					}
+				}
+			}
+			result = {
+				...identity,
+				ok: consumed.ok,
+				code: consumed.code,
+				reason: consumed.reason ?? (/^http_4/.test(consumed.code) && consumed.raw !== undefined
+					? JSON.stringify(consumed.raw).slice(0, 1000) : undefined),
+				cleared: consumed.cleared,
+				creditId,
+				...(consumedCreditIds ? { consumedCreditIds } : {}),
+			};`,
+	},
+	{
+		file: "../pi-ai/src/auth/types.ts",
+		requires: "export interface ResetCreditRedeemOutcome",
+		marker: "\tconsumedCreditIds?: string[];",
+		anchor: "\t/** The credit that was spent (when one was). */\n\tcreditId?: string;",
+		patched: "\t/** Requested credit (or the default next credit). */\n\tcreditId?: string;\n\t/** Observed count drops when the provider consumed a different grant. */\n\tconsumedCreditIds?: string[];",
+	},
 	{
 		file: "src/session/agent-session.ts",
 		marker: "async replayRevivedSystemPrompt(): Promise<void>",

@@ -25,11 +25,11 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   편집 대상의 정확한 줄은 `read`로 다시 확인한다.
 - 글씨가 들어가는 콘텐츠를 새로 쓰거나 한 문단 이상 다시 쓸 때(README·CHANGELOG·`docs/`·보고서·소개 글, `HANDOFF.md`·작업
   기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드·HTML·UI 문구)는 Main·Maker 모두 먼저
-  `draft(instruction, output, paths?)`로 `modelRoles.draft` 모델(PC별: AI Studio 중계기 또는 Vertex의 Gemini 4 Argon)에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 `modelRoles.draftFallback`이 가리키는
-  모델 — 소스 프로필은 GPT-6.1 Terra, 미설정 설치는 Hive의 DeepSeek 1017 — 로 한 번 대체하고 설정한 대체가 실패해도 DeepSeek로 넘어가지 않는다, 참고 텍스트는 Google 또는 대체 모델의 제공자로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
+  `draft(instruction, output, paths?)`로 `modelRoles.draft` 모델(소스 프로필: AI Studio 중계기의 Gemini 4 Hydrogen, 2026-11-13 사용자 결정)에 쓰게 한다(2026-10-25 사용자 결정, 실패 시 `modelRoles.draftFallback`이 가리키는
+  모델 — 소스 프로필은 AI Studio 중계기의 Gemini 4 Argon, 미설정 설치는 Hive의 DeepSeek 1017 — 로 한 번 대체하고 설정한 대체가 실패해도 DeepSeek로 넘어가지 않는다, 참고 텍스트는 Google 또는 대체 모델의 제공자로 전송). 사실·수치·경로는 지시나 `paths`로 넘기고, 결과를 직접 검토한 뒤
   AI 슬롭 점검(한국어 `humanizer`, 영어 `stop-slop`, 화면 문구 `kill-ai-slop`)을 거쳐 반영한다. 코드·설정·규칙 파일,
   몇 줄 이하의 정확한 수정, 대화 답변은 대상이 아니다. Vertex Argon 호출은 Google Cloud 크레딧으로 과금되며 OCR 역할과
-  같은 프로젝트를 쓴다(2026-10-26 사용자 결정). 집(2026-11-07)과 사무실(2026-11-08)은 사용자 결정으로 draft·OCR을 AI Studio 중계기 Argon으로 쓴다.
+  같은 프로젝트를 쓴다(2026-10-26 사용자 결정). 집(2026-11-07)과 사무실(2026-11-08)은 사용자 결정으로 draft·OCR을 AI Studio 중계기로 쓰고, 2026-11-13 사용자 결정으로 두 자리 모두 Argon에서 Hydrogen으로 옮겼다.
   일부 문단만 draft로 쓴 뒤 나머지 설명을 직접 작성하지 않는다. 새로 쓰거나 문단 단위로 다시 쓰는 각 블록을 반영 전에 draft로 작성하며, 초안 밖의 설명·예시·결론 추가는 사실·슬롭 교정 예외가 아니다. 짧은 호출 여러 번이나 HTML 한 줄로 나눠도 동일하다. 기존 문구의 정확한 사실·오탈자 교정과 문구가 그대로인 코드·레이아웃 변경은 허용한다. 반영할 문구를 초안과 대조해 빠진 블록만 다시 작성한다.
 - 문서의 `slop_check`는 사람이 실제로 보는 산출물(슬라이드·HTML·Office·PDF·보고서 csv·UI 문구·매뉴얼)에 적용한다(2026-10-26 사용자 지시,
   2026-10-29 범위 축소). 마크다운(README·CHANGELOG·`docs/`·문서 지도)은 `.slop-gate.json` `visible`이 선언하지 않으면 대상이 아니다. 공개 저장소
@@ -76,7 +76,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
   - 한도 여유 비교나 과거 성공률만으로 후보를 바꾸지 않는다. Anthropic 하루 몫 소진도 Maker 후보를 바꾸는 근거가 아니며, 미관측은 소진이 아니고 해당 결정의 후보가 없으면 null과 Main 재판단 사유를 돌려준다. Sonnet 기본값은 유지하고 Sol 또는 Opus 후보가 없다고 다른 모델로 자동 대체하지 않는다.
     Sol(openai-codex)은 관측 사용률이나 계정 신호로 소진 판정하지 않는다(2026-11-11 사용자 결정: 「sol 한도도 크레딧이있으니까 실제 발주가 나갔다가 거절되면 돌리는걸로하자」). 구독 한도를 넘겨도 크레딧으로 이어지므로 추천 조건이면 그대로 추천·발주하고, 실제 사용 한도 거절은 `retry.fallbackOn: usage-limit`과 `openai-codex/gpt-6.1-sol` fallback 체인(Sonnet)이 받는다. 거절 뒤 다음 발주도 다시 Sol을 시도하며, core의 계정 차단(`autoBlockedUntil`)과 쿨다운은 그대로다.
   - `HARD_CODE_OPUS`, `HARD_CODE_TERRA`, `NORMAL_DEEPSEEK`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. `NORMAL_OPUS`와 `HARD_UI_OPUS`는 어려운 UI에서만, `NORMAL_SONNET`·`HARD_CODE_SONNET`은 일반 구현에서, `NORMAL_SONNET`·`HARD_UI_SONNET`은 보통 UI에서 추천하고 그 밖의 선택은 명시 전용이다. Gemini와 GLM은 2026-11-11 사용자 결정으로 Maker 후보가 아니다. `implGemini`는 HIKARI 호출과 사전 점검에만 쓰고, 두 모델로 발주하면 후보 밖이라 근거를 적어도 거절된다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다. Sol의 `NORMAL_SOL`과 `HARD_CODE_SOL61`은 위 추천 조건에서 자동 추천한다.
-    Sol 식별자는 기존 계약으로 유지하고 그 슬롯의 실제 모델은 `config.yml`이 정한다(`skim`·`draftFallback`의 Terra는 그대로다). GPT-6 Astra는 YUKI 및 교차검토 slot `crossReviewOpenAI`에 쓰며 일반 Maker 추천 후보는 아니다. 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
+    Sol 식별자는 기존 계약으로 유지하고 그 슬롯의 실제 모델은 `config.yml`이 정한다(`skim`의 Terra는 그대로다). GPT-6 Astra는 YUKI 및 교차검토 slot `crossReviewOpenAI`에 쓰며 일반 Maker 추천 후보는 아니다. 다른 모델의 과거 평가 수치를 이 슬롯의 성능 증거로 옮기지 않는다.
     추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
   - 기존 eval은 소표본(n=1)과 오래된 Main 벤치라 어느 쪽도 우월하다는 근거가 아니며 자동 승격·상시 게이트를 만들지 않는다.
   강도 하한·상한은 정책에 두지 않는다(child 하한은 core 설정 overlay가 건다). 별도 접근 모드는 쓰지 않는다. 구체적인 독립 판단이 필요한 cross-frontier 선택은 그 근거를 남긴다.
