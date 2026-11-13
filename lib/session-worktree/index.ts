@@ -235,7 +235,8 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
         } else result.reason = repair;
         continue;
       }
-      if (await git(tree.path, ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"])) { result.reason = "dirty"; continue; }
+      // 무시 파일(node_modules, 빌드 결과 등)만 남은 워크트리도 지운다(2026-11-14 사용자 결정 「무시 파일째 지운다」). 추적 파일 수정과 무시 대상이 아닌 새 파일은 그대로 막는다.
+      if (await git(tree.path, ["status", "--porcelain", "--untracked-files=all"])) { result.reason = "dirty"; continue; }
       const tip = await git(tree.path, ["rev-parse", "HEAD"]);
       const untouched = tip === base;
       if (!untouched) {
@@ -251,7 +252,7 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
       if (reservation.busy.length || checkoutIsBusy(tree.path, host.live())) { reservation.release(); result.reason = "live"; continue; }
       try {
         if (await git(tree.path, ["rev-parse", "HEAD"]) !== tip) { result.reason = "head-changed"; continue; }
-        if (await git(tree.path, ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"])) { result.reason = "dirty"; continue; }
+        if (await git(tree.path, ["status", "--porcelain", "--untracked-files=all"])) { result.reason = "dirty"; continue; }
         await removeWorktree(repo.main, tree.path);
         result.removed = true;
         try {

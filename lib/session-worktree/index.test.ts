@@ -122,17 +122,18 @@ describe("automatic cleanup", () => {
     expect(existsSync(empty.cwd)).toBe(false);
     expect(git(f.main, "branch", "--list", "wt/issue-2")).toBe("");
   });
-  test("MAIN-1: no-commit checkouts with untracked or ignored files or live use stay", async () => {
+  test("MAIN-1: no-commit checkouts with untracked files or live use stay; ignored-only ones are removed", async () => {
     const f = fixture();
-    writeFileSync(join(f.main, ".gitignore"), ".env\n"); git(f.main, "add", "."); git(f.main, "commit", "-qm", "ignore"); git(f.main, "push", "-q");
+    writeFileSync(join(f.main, ".gitignore"), ".env\nnode_modules/\n"); git(f.main, "add", "."); git(f.main, "commit", "-qm", "ignore"); git(f.main, "push", "-q");
     const untracked = await auto(f, "#1"); writeFileSync(join(untracked.cwd, "notes"), "keep");
-    const ignored = await auto(f, "#2"); writeFileSync(join(ignored.cwd, ".env"), "keep");
+    const ignored = await auto(f, "#2"); writeFileSync(join(ignored.cwd, ".env"), "drop"); mkdirSync(join(ignored.cwd, "node_modules")); writeFileSync(join(ignored.cwd, "node_modules", "x.js"), "drop");
     const live = await auto(f, "#3"); f.uses.push({ id: "live-empty", cwd: live.cwd });
     const results = await sweepSessionWorktrees(f.main, f.host);
     expect(results.find((item) => item.path === untracked.cwd)?.reason).toBe("dirty");
-    expect(results.find((item) => item.path === ignored.cwd)?.reason).toBe("dirty");
+    expect(results.find((item) => item.path === ignored.cwd)?.removed).toBe(true);
     expect(results.find((item) => item.path === live.cwd)?.reason).toBe("live");
-    for (const item of [untracked, ignored, live]) expect(existsSync(item.cwd)).toBe(true);
+    for (const item of [untracked, live]) expect(existsSync(item.cwd)).toBe(true);
+    expect(existsSync(ignored.cwd)).toBe(false);
   });
   test("MAIN-1: no-commit cleanup keeps reservation and late HEAD/status protections", async () => {
     for (const change of ["reservation", "head", "untracked"]) {
@@ -212,7 +213,7 @@ test("probe R1-ANT-7: git_finalize publishes the auto branch, never origin/main"
   expect(git(selected.cwd, "config", "--get", "branch.wt/issue-7.merge")).toBe("refs/heads/wt/issue-7");
   expect(git(f.main, "ls-remote", "origin", "refs/heads/wt/issue-7").split(/\s/)[0]).toBe(git(selected.cwd, "rev-parse", "HEAD"));
 }, 30_000);
-test("probe R1-ANT-8: late untracked/ignored writes and changed HEAD prevent cleanup", async () => {
+test("probe R1-ANT-8: late untracked writes and changed HEAD prevent cleanup; a late ignored file does not", async () => {
   for (const change of ["untracked", "ignored", "head"]) {
     const f = fixture(); const selected = await auto(f); ownCommit(selected.cwd); land(selected.cwd);
     if (change === "ignored") {
@@ -224,6 +225,7 @@ test("probe R1-ANT-8: late untracked/ignored writes and changed HEAD prevent cle
       return { busy: [], release() {} };
     };
     const [result] = await sweepSessionWorktrees(f.main, f.host);
+    if (change === "ignored") { expect(result.removed).toBe(true); expect(existsSync(selected.cwd)).toBe(false); continue; }
     expect(result.removed).toBe(false); expect(existsSync(selected.cwd)).toBe(true);
     expect(result.reason).toBe(change === "head" ? "head-changed" : "dirty");
   }

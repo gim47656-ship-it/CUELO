@@ -54,8 +54,8 @@ async function commitIn(cwd: string, files: Record<string, string>, message: str
 }
 
 /** bare 원격, 원격 main을 쓰는 main clone(work), 그 linked worktree(wt/x), main에 먼저 올리는 다른 세션 clone(other). */
-async function fixture(base: Record<string, string> = {}): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), "omp-integrate-test-"));
+async function fixture(base: Record<string, string> = {}, prefix = "omp-integrate-test-"): Promise<Fixture> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
   tempRoots.push(root);
   const remote = join(root, "remote.git");
   const work = join(root, "work");
@@ -137,10 +137,36 @@ describe("git_integrate", () => {
     expect(output?.details.branchSync).toBe("deleted origin refs/heads/wt/x (its work is in main)");
     git(f.root, ["--git-dir", f.remote, "show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
     expect(existsSync(stateFile(f))).toBe(false);
+    // 같은 대상 브랜치에 있는 메인 체크아웃은 게시한 커밋으로 따라온다(2026-11-14 사용자 목표).
+    expect(git(f.work, ["rev-parse", "HEAD"])).toBe(pushed);
+    expect(output?.details.mainCheckout).toContain(`fast-forwarded ${f.work} by 2 commit(s)`);
     // 다시 부르면 올릴 것이 없다.
     const again = await integrate(f.tree, { checks: [] });
     expect(again.output?.details).toMatchObject({ ok: true, stage: "up-to-date" });
     expect(remoteRef(f)).toBe(pushed);
+  }, TIMEOUT);
+
+  test("leaves the main checkout alone when its uncommitted edit conflicts with the published commit", async () => {
+    const f = await fixture();
+    const before = git(f.work, ["rev-parse", "HEAD"]);
+    await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    await writeFile(join(f.work, "b.txt"), "local-b\n");
+    const { output, error } = await integrate(f.tree, { checks: [] });
+    expect(error).toBeUndefined();
+    expect(output?.details.ok).toBe(true);
+    expect(git(f.work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await readFile(join(f.work, "b.txt"), "utf8")).toBe("local-b\n");
+    expect(output?.details.mainCheckout).not.toContain("fast-forwarded");
+  }, TIMEOUT);
+
+  test("follows a main checkout whose path contains a tab (read with -z, never git's quoted form)", async () => {
+    const f = await fixture({}, "omp-integrate\ttab-");
+    await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    const { output, error } = await integrate(f.tree, { checks: [] });
+    expect(error).toBeUndefined();
+    const pushed = remoteRef(f);
+    expect(git(f.work, ["rev-parse", "HEAD"])).toBe(pushed);
+    expect(output?.details.mainCheckout).toBe(`fast-forwarded ${f.work} by 1 commit(s)`);
   }, TIMEOUT);
 
   test("stops on a conflict with both intents, refuses leftover markers, then publishes the resolution", async () => {

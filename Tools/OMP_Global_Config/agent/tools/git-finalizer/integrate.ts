@@ -19,6 +19,7 @@ import { DELETED_BLOB, ledgerPath, runGate, spawnExec } from "../../extensions/l
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import type { ToolApi } from "./index";
 import { isWindowsDrivePath } from "./wsl-git";
+import { syncBehindUpstream } from "./sync-upstream";
 
 const lockScriptPath = fileURLToPath(new URL("./integrate-lock.ps1", import.meta.url));
 const syncCheckoutPath = fileURLToPath(new URL("./sync-checkout.ts", import.meta.url));
@@ -487,6 +488,26 @@ async function retireSessionBranch(repo: Repo, state: State, pushed: string): Pr
   return deleted.code === 0 ? `deleted ${branchRemote} ${merge} (its work is in ${state.target})` : `could not delete ${branchRemote} ${merge}: ${(deleted.stderr || deleted.stdout).trim()}`;
 }
 
+/**
+ * 게시한 뒤 메인 체크아웃이 같은 대상 브랜치에 있으면 git_finalize 앞단과 같은 방식(뒤처지기만 했을 때 fast-forward, 겹치는
+ * 커밋 안 한 수정은 충돌 없을 때만 3-way)으로 따라가게 한다(2026-11-14 사용자 목표: 합친 뒤 메인 체크아웃이 main을 받는다).
+ * 다른 브랜치·분리된 HEAD·갈라진 이력이면 건드리지 않고 그 이유만 돌려준다.
+ */
+async function followMainCheckout(repo: Repo, state: State): Promise<string> {
+  // -z: 탭·줄바꿈 같은 문자가 든 경로를 git이 따옴표로 감싸 바꾸지 않게 NUL 구분 출력으로 읽는다. 첫 빈 필드까지가 첫 항목(메인 체크아웃)이다.
+  const listed = await git(repo, ["worktree", "list", "--porcelain", "-z"]);
+  if (listed.code !== 0) return `could not list worktrees: ${(listed.stderr || listed.stdout).trim()}`;
+  const fields = listed.stdout.split("\0");
+  const main = fields.slice(0, Math.max(0, fields.indexOf("")));
+  const path = main.find((field) => field.startsWith("worktree "))?.slice("worktree ".length);
+  if (!path || main.includes("bare")) return "the repository has no main checkout";
+  const branch = main.find((field) => field.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+  if (branch !== state.target) return `${path} is on ${branch ?? "a detached HEAD"}, not ${state.target}; left unchanged`;
+  const sync = await syncBehindUpstream(spawnExec(), "git", path);
+  if (sync.pulled === 0) return `${path}: ${sync.note ?? "already up to date"}`;
+  return `fast-forwarded ${path} by ${sync.pulled} commit(s)` + (sync.merged.length ? `; merged uncommitted edits in ${sync.merged.join(", ")}` : "");
+}
+
 async function ensureCleanTracked(repo: Repo, stage: string): Promise<void> {
   const dirty = await gitOk(repo, stage, ["status", "--porcelain=v1", "--untracked-files=no"]);
   if (dirty) throw new IntegrateFailure(stage, `tracked changes are present:\n${dirty}`);
@@ -536,6 +557,7 @@ async function checkAndPublish(repo: Repo, state: State) {
       continue;
     }
     const branchNote = await retireSessionBranch(repo, state, outcome.pushed).catch((syncError) => `branch cleanup failed: ${String(syncError)}`);
+    const mainNote = await followMainCheckout(repo, state).catch((syncError) => `main checkout follow failed: ${String(syncError)}`);
     const files = (await gitOk(repo, "complete", ["diff", "--name-only", "-z", "--no-renames", state.previousTarget, outcome.pushed])).split("\0").filter(Boolean);
     await clearState(repo);
     const syncHint = process.platform === "win32" ? "" : `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
@@ -545,11 +567,11 @@ async function checkAndPublish(repo: Repo, state: State) {
         type: "text" as const,
         text: `Integrated ${state.branch} and pushed ${outcome.pushed} to ${state.remote} ${upstreamRef}.`
           + (state.moves > 0 ? ` The target moved ${state.moves} time(s) before the push; the branch was rebased and checked again.` : "")
-          + ` Session branch: ${branchNote}.` + syncHint,
+          + ` Session branch: ${branchNote}.` + ` Main checkout: ${mainNote}.` + syncHint,
       }],
       details: {
         ok: true, stage: "complete", commitSha: outcome.pushed, remote: state.remote, upstreamRef, branch: state.branch,
-        previousTarget: state.previousTarget, moves: state.moves, checks: ran, branchSync: branchNote,
+        previousTarget: state.previousTarget, moves: state.moves, checks: ran, branchSync: branchNote, mainCheckout: mainNote,
         ...(files.length <= 1000 ? { files } : { filesTruncated: true }),
       },
     };
