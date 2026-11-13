@@ -27,6 +27,8 @@ interface GitHubReleasePayload {
 interface UpdateStatusOptions {
   currentAppVersion?: string;
   fetcher?: Fetcher;
+  /** Skip the shared Next.js data cache. A stale hit there answers with the old release and refreshes only in the background. */
+  fresh?: boolean;
 }
 
 function parseVersion(value: unknown): ParsedVersion | null {
@@ -113,7 +115,7 @@ function releaseFromPayload(payload: GitHubReleasePayload): CueloReleaseInfo {
 }
 
 /** Latest CUELO release, or null when the repository has not published one (HTTP 404). */
-async function fetchLatestRelease(fetcher: Fetcher): Promise<GitHubReleasePayload | null> {
+async function fetchLatestRelease(fetcher: Fetcher, fresh: boolean): Promise<GitHubReleasePayload | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -125,8 +127,8 @@ async function fetchLatestRelease(fetcher: Fetcher): Promise<GitHubReleasePayloa
       signal: controller.signal,
       // Next.js caches this server-side request so every browser tab does not
       // consume a GitHub API request. The injected fetcher in tests ignores it.
-      next: { revalidate: RELEASE_CACHE_SECONDS },
-    } as RequestInit & { next: { revalidate: number } });
+      ...(fresh ? { cache: "no-store" as const } : { next: { revalidate: RELEASE_CACHE_SECONDS } }),
+    } as RequestInit & { next?: { revalidate: number } });
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`Update source returned HTTP ${response.status}`);
     return await response.json() as GitHubReleasePayload;
@@ -139,7 +141,7 @@ export async function getCueloUpdateStatus(options: UpdateStatusOptions = {}): P
   const fetcher = options.fetcher ?? fetch;
   const currentAppVersion = canonicalVersion(options.currentAppVersion ?? process.env.NEXT_PUBLIC_APP_VERSION) ?? "unknown";
 
-  const payload = await fetchLatestRelease(fetcher);
+  const payload = await fetchLatestRelease(fetcher, options.fresh === true);
   const latestRelease = payload ? releaseFromPayload(payload) : null;
 
   return {

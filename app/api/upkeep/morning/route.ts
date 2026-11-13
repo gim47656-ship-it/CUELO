@@ -2,7 +2,9 @@ import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { getCueloUpdateStatus } from "@/lib/omp-updates";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
-import { type AgentSessionWrapper, getRunningRpcSessionIds, startNewRpcSession } from "@/lib/rpc-manager";
+import { allowFileRoot } from "@/lib/file-access";
+import { type AgentSessionWrapper, getRunningRpcSessionIds } from "@/lib/rpc-manager";
+import { startSessionWithWorktree } from "@/lib/session-worktree/runtime";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { inspectDeploy } from "@/lib/upkeep/deploy";
@@ -59,7 +61,8 @@ export async function POST(req: Request) {
 
 async function readRelease(warnings: string[]): Promise<ReleaseInfo | null> {
   try {
-    const status = await getCueloUpdateStatus();
+    // 동기화는 2시간마다 부르고 캐시는 1시간이라, 캐시를 거치면 늘 지난 주기의 릴리스를 보고 새 릴리스 설치를 한 주기씩 미룬다.
+    const status = await getCueloUpdateStatus({ fresh: true });
     return { current: status.currentAppVersion, latest: status.latestRelease?.version ?? null, available: status.updateAvailable };
   } catch (error) {
     warnings.push(`공개 릴리스를 확인하지 못했습니다(${error instanceof Error ? error.message : String(error)}).`);
@@ -131,7 +134,9 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
   let accepted = false;
   let sessionId: string | undefined;
   try {
-    const started = await startNewRpcSession(undefined, plan.repoCwd);
+    // 다른 새 세션과 같은 규칙: 메인 체크아웃을 다른 세션이 쓰고 있으면 자동 워크트리에서 연다.
+    const started = await startSessionWithWorktree(undefined, plan.repoCwd, {}, {});
+    allowFileRoot(started.cwd);
     session = started.session;
     sessionId = started.realSessionId;
     await session.send({ type: "set_session_name", name: plan.sessionName });
@@ -140,7 +145,7 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
     accepted = true;
     globalThis.__cueloMorningSessionId = sessionId;
     writeMorningState(agentDir, morningStateAfterRun(plan, state, sessionId, new Date().toISOString()));
-    log(`started ${sessionId} in ${plan.repoCwd} for ${describe(plan)}`);
+    log(`started ${sessionId} in ${started.cwd} for ${describe(plan)}`);
     return NextResponse.json({ action: "started", sessionId });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

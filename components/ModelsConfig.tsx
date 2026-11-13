@@ -1297,8 +1297,9 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         setLoginState({ phase: "select", message: data.message!, options: data.options ?? [], token: data.token! });
       } else if (data.type === "progress") {
         const message = data.message!;
+        // 브라우저 콜백을 기다린다는 진행 알림이 와도 붙여넣기 칸은 남긴다. 원격 서버에서는 콜백이 서버에 닿지 않아 그 칸이 유일한 길이다.
         setLoginState((prev) =>
-          prev.phase === "auth" && prev.device ? { ...prev, progress: message } : { phase: "progress", message });
+          prev.phase === "auth" ? { ...prev, progress: message } : { phase: "progress", message });
       } else if (data.type === "success") {
         finishLoginSuccess();
       } else if (data.type === "error") {
@@ -1486,6 +1487,9 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                  {t("i18n.submit")}
               </button>
             </div>
+            {loginState.phase === "auth" && loginState.progress && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>{loginState.progress}</p>
+            )}
           </div>
         )}
         {loginState.phase === "device_code" && (
