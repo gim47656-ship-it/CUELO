@@ -1,0 +1,42 @@
+.notice {
+  width: 100%;
+  margin: 6px 0;
+  border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--border));
+  border-radius: var(--radius-surface);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  font-size: 11px;
+  color: var(--text);
+}
+.notice > summary {
+  padding: 8px 10px;
+  min-height: 34px;
+  cursor: pointer;
+  color: var(--warning);
+  font-family: var(--font-mono);
+}
+.body {
+  padding: 0 8px 8px;
+  max-height: 40vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.body p { margin: 8px 0; }
+.body small { display: block; color: var(--text-muted); }
+.repo { padding: 7px 0; border-bottom: 1px solid var(--border); }
+.actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.notice button {
+  min-height: 32px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.notice button:disabled { opacity: 0.5; cursor: default; }
+.notice button:focus-visible, .notice summary:focus-visible { outline: 2px solid var(--warning); outline-offset: 2px; }
+.body details > summary { padding: 8px 0; cursor: pointer; }
+@media (max-width: 767px) {
+  .notice button, .notice summary { min-height: 44px; }
+}

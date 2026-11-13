@@ -209,6 +209,7 @@ const dir = path.join(process.cwd(), ".gitnexus");
 const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH");
 const args = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, "calls.txt"), args.join(" ") + "|" + process.env[pathKey].split(path.delimiter)[0] + "\n");
+fs.writeFileSync(path.join(dir, "pool.txt"), process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? "");
 const rowsFile = path.join(dir, "rows.txt");
 if (args[0] === "cypher") {
   // Function 행 수 질의는 total, id가 온전한 행 수 질의(STARTS WITH)는 intact를 돌려준다.
@@ -293,6 +294,28 @@ describe.skipIf(!nodePath)("gitnexus autosync 워커", () => {
     expect(JSON.parse(fs.readFileSync(path.join(r.storage, "meta.json"), "utf8")).lastCommit).toBe(HEAD);
     expect(readLog(r)).toMatch(/end: exit=0 .*\(matches head\)/);
     expect(await syncGitNexusIndex(r.root, d)).toBe("fresh");
+  });
+
+  test("색인 DB 버퍼를 정하지 않았으면 4 GiB를 주고, 사용자가 정한 값은 그대로 둔다", async () => {
+    const previous = process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
+    try {
+      delete process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
+      const r = repo();
+      fs.writeFileSync(path.join(r.storage, "exit.txt"), "0");
+      expect(await syncGitNexusIndex(r.root, realDeps(r))).toBe("started");
+      await waitForRelease(r.lockPath);
+      expect(fs.readFileSync(path.join(r.storage, "pool.txt"), "utf8")).toBe("4294967296");
+
+      process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = "0";
+      const s = repo();
+      fs.writeFileSync(path.join(s.storage, "exit.txt"), "0");
+      expect(await syncGitNexusIndex(s.root, realDeps(s))).toBe("started");
+      await waitForRelease(s.lockPath);
+      expect(fs.readFileSync(path.join(s.storage, "pool.txt"), "utf8")).toBe("0");
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
+      else process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = previous;
+    }
   });
 
   test("analyze 실패는 로그에 exit 코드로 남고 잠금을 풀어 다음 세션이 다시 시도한다", async () => {

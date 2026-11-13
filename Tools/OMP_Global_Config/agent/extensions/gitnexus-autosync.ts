@@ -10,9 +10,11 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
  *
  * - 색인(`.gitnexus/meta.json`)이 없는 저장소는 건드리지 않는다. 새 색인은 만들지 않는다.
  * - `--index-only`라 AGENTS.md·CLAUDE.md·`.claude/skills`를 쓰지 않는다. 추적 파일을 더럽히지 않는다.
- * - 이미 설치된 GitNexus만 쓴다: PATH의 `gitnexus`, 없으면 `bun x --no-install gitnexus`(MCP 서버가 쓰는
- *   것과 같은 캐시). `.gitnexus/run.cjs`는 쓰지 않는다. bun 경로에서 run.cjs는 `bunx gitnexus@latest`를 골라
- *   실행 중인 MCP가 쓰는 공용 캐시에 강제 재설치를 시도하기 때문이다.
+ * - 이미 설치된 GitNexus만 쓴다: PATH의 `gitnexus`(집·사무실·클라우드 공통 `~/.npm-global` 설치를 `~/.local/bin`에
+ *   링크), 없으면 `bun x --no-install gitnexus`. `.gitnexus/run.cjs`는 쓰지 않는다. bun 경로에서 run.cjs는
+ *   `bunx gitnexus@latest`를 골라 공용 캐시에 강제 재설치를 시도하기 때문이다. GitNexus MCP는 2026-11-13부터 쓰지 않는다.
+ * - 색인 DB 버퍼(`GITNEXUS_LBUG_BUFFER_POOL_SIZE`)를 사용자가 정하지 않았으면 4 GiB로 준다. 기본값(약 1.3~1.4 GiB)은
+ *   2026-11-13 집 CUELO-private(파일 약 1만 7천 개) 전체 재색인과 커밋 52개 증분에서 bulk COPY로 소진돼 실패했다.
  * - 서브에이전트 세션은 같은 저장소의 main 세션 아래에서 뜨므로 건너뛴다(중복 점검만 늘어난다).
  * - 저장소당 하나만 돈다: `.gitnexus/autosync.lock`을 O_EXCL로 만들고, 기록된 pid가 죽었거나
  *   너무 오래된 잠금은 회수한다. 실제 색인 쓰기는 GitNexus 자체 단일 작성자 잠금도 함께 지킨다.
@@ -173,6 +175,7 @@ const functionRows = async (env) => {
       return;
     }
     const env = { ...process.env };
+    if (!env.GITNEXUS_LBUG_BUFFER_POOL_SIZE) env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = "4294967296";
     if (job.pathPrefix) {
       const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") || "PATH";
       env[key] = job.pathPrefix + (process.platform === "win32" ? ";" : ":") + (env[key] || "");

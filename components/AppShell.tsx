@@ -39,6 +39,7 @@ import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from 
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
 import { RoutinePanel, RoutineView } from "./routines/RoutineView";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
+import { RepoSyncIndicator } from "./RepoSyncIndicator";
 import { UpkeepNotice, UpkeepView } from "./upkeep/UpkeepView";
 import { UPKEEP_TEXT } from "./upkeep/text";
 import { copyText } from "@/lib/clipboard";
@@ -1974,6 +1975,7 @@ export function AppShell({
           onRelogin={openRelogin}
         />
         <OmpUpdateIndicator />
+        <RepoSyncIndicator />
         {/* 「보수」는 설정과 같은 모양으로 나란히 둔다. 누르면 화면 전체를 덮는 보수 점검판이 열린다. */}
         <div style={{ display: "flex", gap: 6 }}>
         <button

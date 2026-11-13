@@ -17,8 +17,9 @@ ALLOWED_EMAIL_DOMAIN = re.compile(
     r"(^|\.)(example\.(com|org|net)|example|test|invalid|localhost|users\.noreply\.github\.com)$",
     re.IGNORECASE,
 )
-# Public credits that ship with bundled assets (voice model authors in voices.json).
-ALLOWED_EMAILS = {"cs@tr1ppy.com"}
+# Public credits that ship with bundled assets (voice model authors in voices.json),
+# and GitHub's fixed SSH user in `git@github.com:<owner>/<repo>` remote URLs.
+ALLOWED_EMAILS = {"cs@tr1ppy.com", "git@github.com"}
 
 USER_PATH = re.compile(
     r"(?:[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}|/c/Users/|/Users/|/home/)([A-Za-z0-9%$~{*._-][^\\/\s\"'`<>()\[\],;:|]*)",
