@@ -203,6 +203,8 @@ interface Props {
   turnSummary?: FinishedTurnSummary;
   /** Hidden English rendering of this user message (user-input-interpreter); shown collapsed under the bubble. */
   inputTranslation?: string;
+  /** A failed attempt the core retried within the same turn (`isRecoveredAssistantError`); drawn as a muted line, not an alert. */
+  recoveredError?: boolean;
 }
 
 // One formatter per shape: `toLocale*String` with options builds a new
@@ -241,12 +243,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary, inputTranslation }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary, inputTranslation, recoveredError }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} inputTranslation={inputTranslation} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} dispatchSlot={dispatchSlot} turnSummary={turnSummary} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} dispatchSlot={dispatchSlot} turnSummary={turnSummary} recoveredError={recoveredError} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -280,7 +282,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.sessionId === next.sessionId
     && prev.dispatchSlot === next.dispatchSlot
     && prev.turnSummary === next.turnSummary
-    && prev.inputTranslation === next.inputTranslation;
+    && prev.inputTranslation === next.inputTranslation
+    && prev.recoveredError === next.recoveredError;
 });
 
 function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, inputTranslation }: {
@@ -577,6 +580,7 @@ function AssistantMessageView({
   writtenFiles,
   dispatchSlot,
   turnSummary,
+  recoveredError,
 }: {
   message: AssistantMessage;
   isStreaming?: boolean;
@@ -591,6 +595,7 @@ function AssistantMessageView({
   writtenFiles?: WrittenFile[];
   dispatchSlot?: DispatchSlot;
   turnSummary?: FinishedTurnSummary;
+  recoveredError?: boolean;
 }) {
   const { t } = useI18n();
   const { hideThinkingBlock } = useDisplaySettings();
@@ -788,7 +793,19 @@ function AssistantMessageView({
 
       {dispatchSlot?.placement === "after" && <DispatchCard calls={dispatchSlot.calls} />}
 
-      {providerError && (
+      {providerError && recoveredError ? (
+        <details
+          className="message-recovered-error"
+          style={{ marginTop: blocks.length > 0 ? 6 : 0, fontSize: 12, color: "var(--text-dim)" }}
+        >
+          <summary style={{ cursor: "pointer" }}>
+            {t("chat.recoveredError")} <span style={{ textDecoration: "underline" }}>{t("chat.recoveredErrorDetail")}</span>
+          </summary>
+          <div style={{ marginTop: 4, fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+            {providerError}
+          </div>
+        </details>
+      ) : providerError && (
         <div
           role="alert"
           style={{

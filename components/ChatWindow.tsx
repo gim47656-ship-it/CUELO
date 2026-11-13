@@ -20,7 +20,7 @@ import type {
 } from "@/lib/types";
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { countToolCallBlocks, latestOutputTokensPerSecond, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
+import { countToolCallBlocks, isRecoveredAssistantError, latestOutputTokensPerSecond, splitAssistantBlockRuns, withAssistantBlocks, type DisplayOptions } from "@/lib/message-display";
 import { attachReplyTranslations } from "@/lib/reply-translation";
 import { AUTOLEARN_SAVED_CUSTOM_TYPE, buildTranscriptRenderPlan, collectUserInputTranslations, isGroupAnchor, isLocalCommandEntryId, partitionTranscriptPlan, type ConversationRenderItem, type ProcessTurnGroup } from "@/lib/transcript-plan";
 import { collectSavedLessonPlacements } from "@/lib/turn-saved-lessons";
@@ -428,6 +428,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         dispatchSlot={options.dispatchSlot}
         turnSummary={options.turnSummary}
         inputTranslation={msg.role === "user" ? inputTranslations.get(idx) : undefined}
+        recoveredError={isRecoveredAssistantError(messages, idx)}
       />
     );
   };

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ActionButton } from "@seed-design/react";
 import { useI18n } from "@/hooks/useI18n";
-import { withAssistantBlocks } from "@/lib/message-display";
+import { isRecoveredAssistantError, withAssistantBlocks } from "@/lib/message-display";
 import type { ProcessTurnGroup } from "@/lib/transcript-plan";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "@/lib/types";
 import { MessageView } from "../MessageView";
@@ -106,6 +106,7 @@ export function ProcessLogPanel({ title, data, onOpenFile }: ProcessLogPanelProp
                         entryId={data?.entryIds[entry.idx]}
                         sessionId={data?.sessionId}
                         showTimestamp={false}
+                        recoveredError={isRecoveredAssistantError(data?.messages ?? [], entry.idx)}
                       />
                     );
                   })}

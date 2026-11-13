@@ -360,6 +360,8 @@ export const enLocale = {
     "chat.recallTitle": "Remove all queued messages and put them back into the input box for editing",
     "chat.queueRemove": "Cancel this queued message only",
     "chat.retrying": "Retrying ({attempt}/{max})…",
+    "chat.recoveredError": "This attempt failed and was retried automatically.",
+    "chat.recoveredErrorDetail": "Show error",
     "chat.loadingCommands": "Loading commands...",
     "chat.slashCommands": "Slash commands · {label}",
     "chat.tabEnter": "Tab / Enter",

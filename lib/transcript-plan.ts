@@ -1,4 +1,4 @@
-import { countToolCallBlocks, createToolImageCollector, getAssistantErrorMessage, splitAssistantBlockRuns, type DisplayOptions } from "./message-display";
+import { countToolCallBlocks, createToolImageCollector, getAssistantErrorMessage, isRecoveredAssistantError, splitAssistantBlockRuns, type DisplayOptions } from "./message-display";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, CustomMessage } from "./types";
 import { isAttachedReplyTranslation } from "./reply-translation";
 
@@ -245,6 +245,17 @@ function planTurn(messages: AgentMessage[], anchorIdx: number, endIdx: number, o
 
     const assistant = message as AssistantMessage;
     const runs = splitAssistantBlockRuns(assistant, options);
+    // An attempt the core retried within the same turn is work log as a whole,
+    // including any text it got out before the stream died: the turn's answer
+    // comes from the attempt that followed it.
+    if (getAssistantErrorMessage(assistant, options) && isRecoveredAssistantError(messages, idx)) {
+      const blocks = runs.flatMap((run) => run.blocks);
+      entries.push({ idx });
+      toolCallCount += countToolCallBlocks(blocks);
+      toolImages.collect(idx, blocks);
+      for (const run of runs) if (run.kind === "process") precedingBlocks.push(...run.blocks);
+      continue;
+    }
     const answerRuns = runs.reduce((count, run) => (run.kind === "answer" ? count + 1 : count), 0);
     for (const run of runs) {
       if (run.kind === "answer") {
@@ -412,6 +423,13 @@ export function partitionTranscriptPlan(
     // turn is classified instead of leaking tool calls into the conversation.
     const assistant = message as AssistantMessage;
     const runs = splitAssistantBlockRuns(assistant, options);
+    // An attempt the core retried within the same turn is work log as a whole.
+    if (getAssistantErrorMessage(assistant, options) && isRecoveredAssistantError(messages, item.idx)) {
+      const blocks = runs.flatMap((run) => run.blocks);
+      addEntries(anchorIdx, [{ idx: item.idx }], countToolCallBlocks(blocks));
+      toolImages.collect(item.idx, blocks);
+      continue;
+    }
     let answered = false;
     for (const run of runs) {
       if (run.kind === "answer") {

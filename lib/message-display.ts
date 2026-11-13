@@ -1,5 +1,5 @@
 import { isImagePath } from "./file-types";
-import type { AssistantContentBlock, AssistantMessage, ImageContent, ThinkingContent, ToolCallContent, ToolResultMessage } from "./types";
+import type { AgentMessage, AssistantContentBlock, AssistantMessage, ImageContent, ThinkingContent, ToolCallContent, ToolResultMessage } from "./types";
 
 export interface DisplayOptions {
   isStreaming?: boolean;
@@ -46,6 +46,22 @@ export function getAssistantErrorMessage(
 ): string | null {
   if (options.isStreaming || message.stopReason !== "error") return null;
   return message.errorMessage?.trim() || "Unknown provider error";
+}
+
+/**
+ * 실패로 끝난 응답 뒤에 같은 턴(다음 사용자 말 전)에서 다른 응답이 이어졌으면, 코어가 그 시도를
+ * 다시 보내 작업이 계속된 것이다. 이 시도는 턴의 결과가 아니므로 오류 상자 대신 흐린 한 줄로 그린다.
+ * omp TUI도 이런 오류는 재시도 동안만 고정해 두고 성공하면 걷어 낸다.
+ */
+export function isRecoveredAssistantError(messages: readonly AgentMessage[], idx: number): boolean {
+  const message = messages[idx];
+  if (message?.role !== "assistant" || (message as AssistantMessage).stopReason !== "error") return false;
+  for (let next = idx + 1; next < messages.length; next++) {
+    const role = messages[next].role;
+    if (role === "user") return false;
+    if (role === "assistant") return true;
+  }
+  return false;
 }
 
 export type AssistantBlockRunKind = "answer" | "process";
