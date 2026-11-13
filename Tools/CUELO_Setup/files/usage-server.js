@@ -36,6 +36,10 @@ function resolveOmpExecutable({ platform = process.platform, env = process.env, 
 const OMP = resolveOmpExecutable();
 const ORIGIN = 'http://127.0.0.1:' + (Number(process.env.PORT) || 30141);
 const CACHE_MS = 60_000;
+// SDK 경로의 사용량 보고서는 SDK가 계정별로 이미 캐시한다(provider 조회는 SDK TTL과 응답 헤더 반영이 정한다).
+// 여기서 다시 60초를 묵히면 화면이 최대 2분 넘게 늦었다(2026-11-13 실측: 보고서 2~7ms, 표시 나이 37~101초).
+// 그래서 SDK 경로는 짧게 두고, 프로세스를 띄우는 CLI 경로만 CACHE_MS를 쓴다. 리셋권 목록은 provider를 부르므로 CACHE_MS 그대로다.
+const SDK_REPORT_CACHE_MS = 5_000;
 // 만료 뒤 이 나이까지는 직전 스냅샷을 바로 내고 뒤에서 새로 조회한다. 콜드 조회(0.25s~수 초)가
 // maker_route의 2초 잔량 예산을 넘겨 발주 준비가 잔량 없이 끝나던 것을 막는다. 계정 차단 상태는
 // enrich가 매 응답마다 새로 붙이므로 여기 걸리는 것은 provider 한도 수치뿐이고, 각 report의
@@ -95,9 +99,9 @@ function invalidateUsage() {
 }
 
 /** 신선하면 그대로, STALE_MS 안의 만료분이면 즉시 돌려주고 뒤에서 갱신, 그보다 오래됐거나 무효화됐으면 새 조회를 기다린다. */
-function usageEntry(entry, refresh, now = Date.now()) {
+function usageEntry(entry, refresh, now = Date.now(), freshMs = localControl ? SDK_REPORT_CACHE_MS : CACHE_MS) {
     const age = entry ? now - entry.at : Infinity;
-    if (age <= CACHE_MS) return entry;
+    if (age <= freshMs) return entry;
     if (age <= STALE_MS) {
         refresh().catch(() => { /* 다음 요청이 다시 시도한다. 직전 스냅샷은 그대로 둔다. */ });
         return entry;

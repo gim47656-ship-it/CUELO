@@ -159,6 +159,13 @@ test('expired usage is served at once inside the stale window while one refresh 
     assert.equal(calls.length, 4);
     // 뒤에서 도는 갱신의 실패는 직전 스냅샷 응답을 깨지 않는다.
     assert.equal(await usageEntry(expired, () => Promise.reject(new Error('offline')), now), expired);
+    // SDK 경로는 짧은 신선 기간을 넘기면 바로 뒤에서 다시 읽는다(30초 묵은 값이 다음 폴링까지 그대로 가지 않는다).
+    calls.length = 0;
+    assert.equal(await usageEntry(recent, refresh, now, 5_000), recent);
+    assert.equal(calls.length, 1);
+    const sdkFresh = { at: now - 2_000, body: 'sdk-fresh' };
+    assert.equal(await usageEntry(sdkFresh, refresh, now, 5_000), sdkFresh);
+    assert.equal(calls.length, 1);
 });
 
 test('quota and reset failures retain account rows without leaking raw credentials or errors', async t => {

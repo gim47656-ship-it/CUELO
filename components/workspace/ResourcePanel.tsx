@@ -53,6 +53,7 @@ import {
   type SessionAccountState,
   type UsageDaySlot,
   type UsageLimit,
+  type SavedResetCredit,
   type UsageReport,
   type UsageSnapshot,
 } from "../../lib/hanse-resource-client";
@@ -493,21 +494,28 @@ function earliestResetCredit(report: UsageReport): { id: string; expiresAt: stri
   return selected ? { id: selected.id, expiresAt: selected.expiresAt } : null;
 }
 
-const ANTHROPIC_RESET_SCOPE_LABELS: Record<string, string> = {
+const ANTHROPIC_RESET_WINDOW_LABELS: Record<string, string> = {
   "anthropic:5h": "5시간",
   "anthropic:7d": "주간",
-  "anthropic:7d:opus": "주간",
-  "anthropic:7d:sonnet": "주간",
+  "anthropic:7d:fable": "페이블 주간",
+  "anthropic:7d:opus": "Opus 주간",
+  "anthropic:7d:sonnet": "Sonnet 주간",
 };
+const ANTHROPIC_TIER_LABELS: Record<string, string> = { fable: "페이블", opus: "Opus", sonnet: "Sonnet" };
 
-function anthropicResetScope(report: UsageReport): string | null {
-  if (report.provider !== "anthropic") return null;
-  const saved = report.savedReset;
-  const selected = saved?.credits.find(credit => credit.id === saved.nextCreditId) ?? saved?.credits[0];
-  const labels = [...new Set((selected?.clears ?? [])
-    .map(id => ANTHROPIC_RESET_SCOPE_LABELS[id])
+/** Anthropic 리셋권 한 장의 종류. 공유 주간(`anthropic:7d`)까지 지우면 전체 리셋, 모델 주간만 지우면 그 모델 리셋이다. */
+function anthropicCreditKind(credit: SavedResetCredit): { name: string; covers: string | null } {
+  const clears = credit.clears ?? [];
+  const labels = [...new Set(clears
+    .map(id => ANTHROPIC_RESET_WINDOW_LABELS[id])
     .filter((label): label is string => label !== undefined))];
-  return labels.length ? `${labels.join("·")} 한도만` : null;
+  const tier = clears.map(id => /^anthropic:7d:(.+)$/.exec(id)?.[1]).find(value => value !== undefined);
+  const name = clears.includes("anthropic:7d")
+    ? "전체 리셋"
+    : tier
+      ? `${ANTHROPIC_TIER_LABELS[tier] ?? tier} 리셋`
+      : clears.includes("anthropic:5h") ? "5시간 리셋" : "리셋";
+  return { name, covers: labels.length ? `${labels.join("·")} 한도` : null };
 }
 
 export function focusResetTrigger(trigger: Pick<HTMLButtonElement, "focus"> | null): void {
@@ -544,7 +552,7 @@ export function ResetConfirmation({
       aria-label="리셋 사용 확인"
       onKeyDown={onKeyDown}
     >
-      <p className="m-0 text-xs leading-5 text-text-muted">저장된 리셋 {summary}</p>
+      <p className="m-0 text-xs leading-5 text-text-muted">{summary}</p>
       <p id={confirmId} className="m-0 text-xs leading-5 text-text">
         리셋 1개를 지금 사용합니다. 되돌릴 수 없습니다.
       </p>
@@ -635,7 +643,12 @@ export function UsageAccount({
   const restoreTriggerRef = useRef(false);
   const resetSubmitRef = useRef(false);
   const savedReset = report.provider === "openai-codex" || report.provider === "anthropic" ? report.savedReset : undefined;
-  const selectedCredit = earliestResetCredit(report);
+  // Anthropic은 provider가 정한 다음 차례(nextCreditId) 한 장만 받는다. 다른 장을 보내면 offer_changed로 거절된다.
+  const anthropicCredits = report.provider === "anthropic" && savedReset?.state === "available" ? savedReset.credits : [];
+  const nextAnthropicCredit = anthropicCredits.find(credit => credit.id === savedReset?.nextCreditId) ?? null;
+  const selectedCredit = report.provider === "anthropic"
+    ? (nextAnthropicCredit?.usable === true ? nextAnthropicCredit : null)
+    : earliestResetCredit(report);
   const selectedCreditId = selectedCredit?.id ?? null;
   const expiryLabel = formatExpiry(selectedCredit?.expiresAt ?? null, now);
   const count = savedReset?.availableCount;
@@ -643,8 +656,14 @@ export function UsageAccount({
     ? "확인 불가"
     : savedReset.state === "empty" || count === 0
       ? "없음"
-      : `${count ?? savedReset.credits.length}개${expiryLabel ? ` · ${expiryLabel}` : ""}`;
-  const resetScope = anthropicResetScope(report);
+      : report.provider === "anthropic"
+        ? `${count ?? anthropicCredits.length}개`
+        : `${count ?? savedReset.credits.length}개${expiryLabel ? ` · ${expiryLabel}` : ""}`;
+  const confirmSummary = (() => {
+    if (report.provider !== "anthropic" || !nextAnthropicCredit) return `저장된 리셋 ${resetValue}`;
+    const kind = anthropicCreditKind(nextAnthropicCredit);
+    return [`사용할 리셋: ${kind.name}`, kind.covers, expiryLabel].filter(Boolean).join(" · ");
+  })();
   const recommendationText = resetRecommendationCopy(recommendation, now);
   const showResetAction = (report.provider === "openai-codex" || report.provider === "anthropic")
     && brokerOk
@@ -837,7 +856,6 @@ export function UsageAccount({
                   {resetValue}
                 </span>
               </div>
-              {resetScope ? <span className="text-xs text-text-muted">{resetScope}</span> : null}
               {showResetAction ? (
                 <button
                   ref={resetTriggerRef}
@@ -845,7 +863,7 @@ export function UsageAccount({
                   className={classNames(buttonClass, "ml-auto flex-none")}
                   disabled={pendingAction != null}
                   onClick={() => {
-                    if (selectedCreditId) setResetConfirmation({ creditId: selectedCreditId, summary: resetValue });
+                    if (selectedCreditId) setResetConfirmation({ creditId: selectedCreditId, summary: confirmSummary });
                   }}
                 >
                   리셋 사용
@@ -853,8 +871,35 @@ export function UsageAccount({
               ) : brokerOk && report.disabled
                 && savedReset?.state === "available" ? (
                 <span className="ml-auto text-xs text-text-muted">켠 뒤 사용 가능</span>
+              ) : brokerOk && report.provider === "anthropic" && anthropicCredits.length > 0 ? (
+                <span className="ml-auto text-xs text-text-muted">지금은 사용 불가</span>
               ) : null}
             </div>
+            {anthropicCredits.length > 0 ? (
+              <ul className="resource-reset-credits m-0 mt-1.5 list-none space-y-1 p-0" aria-label="저장된 리셋 종류">
+                {anthropicCredits.map((credit) => {
+                  const kind = anthropicCreditKind(credit);
+                  const isNext = credit.id === nextAnthropicCredit?.id;
+                  const expiry = formatExpiry(credit.expiresAt, now);
+                  const remaining = credit.remainingCount ?? 1;
+                  return (
+                    <li
+                      key={credit.id}
+                      className="flex flex-wrap items-baseline gap-x-2 text-xs"
+                      data-reset-next={isNext ? "true" : undefined}
+                    >
+                      <span className={classNames("font-medium", isNext ? "text-text" : "text-text-muted")}>
+                        {remaining > 1 ? `${kind.name} ${remaining}개` : kind.name}
+                      </span>
+                      {isNext ? <span className="usage-chip">다음 사용</span> : null}
+                      <span className="min-w-0 text-text-muted">
+                        {[kind.covers, expiry].filter(Boolean).join(" · ")}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
             {recommendationText ? <p className="m-0 mt-1.5 text-xs leading-5 text-text-muted">{recommendationText}</p> : null}
           </div>
         )

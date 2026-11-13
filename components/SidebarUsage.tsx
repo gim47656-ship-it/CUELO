@@ -36,7 +36,7 @@ import { useNow } from "@/hooks/useNow";
 
 /** The limit rows the strip draws before the reader opens the rest. */
 const MAX_ROWS = 2;
-/** 자동 차단 해제 시각을 판정할 시계의 갱신 간격. 사용량 폴링(60초)보다 촘촘하다. */
+/** 자동 차단 해제 시각을 판정할 시계의 갱신 간격. 사용량 폴링(15초)보다 촘촘하다. */
 const NOW_TICK_MS = 10_000;
 
 /**

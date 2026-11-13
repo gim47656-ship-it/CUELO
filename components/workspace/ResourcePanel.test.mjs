@@ -367,7 +367,7 @@ test("shows the available count, earliest expiry, and only the core-provided rec
   assert.match(html, />리셋 사용</);
 });
 
-test("renders Anthropic Cedar reset count, earliest expiry, and covered window on both account cards", () => {
+test("renders Anthropic Cedar reset count, kind, and covered window on both account cards", () => {
   const reports = [7, 8].map((credentialId) => ({
     provider: "anthropic",
     credentialId,
@@ -395,8 +395,9 @@ test("renders Anthropic Cedar reset count, earliest expiry, and covered window o
   const html = renderUsage(reports, null);
   assert.match(html, /린/);
   assert.match(html, /미오/);
-  assert.equal(html.match(/2개 · \d+h \d+m 후 만료/g)?.length, 2);
-  assert.equal(html.match(/5시간 한도만/g)?.length, 2);
+  assert.equal(html.match(/>2개</g)?.length, 2);
+  assert.equal(html.match(/>5시간 리셋</g)?.length, 2);
+  assert.equal(html.match(/5시간 한도 · \d+h \d+m 후 만료/g)?.length, 2);
   assert.equal(html.match(/>리셋 사용</g)?.length, 2);
 
   const unavailable = renderAccount({
@@ -407,6 +408,69 @@ test("renders Anthropic Cedar reset count, earliest expiry, and covered window o
   assert.match(unavailable, /data-reset-state="unavailable"/);
   assert.match(unavailable, />확인 불가</);
   assert.doesNotMatch(unavailable, />리셋 사용</);
+});
+
+// 실제 계정에서 관측한 모양(2026-11-13): 전체 리셋과 페이블 리셋을 함께 가진 계정. provider는 다음 차례 한 장만 받는다.
+function fableAndFullReset(nextCreditId, nextUsable = true) {
+  const full = {
+    id: "full-reset-2611",
+    expiresAt: new Date(Date.now() + 27 * 86_400_000).toISOString(),
+    program: "cedar_ember",
+    remainingCount: 1,
+    usable: nextCreditId === "full-reset-2611" && nextUsable,
+    requiresLimit: false,
+    clears: ["anthropic:5h", "anthropic:7d", "anthropic:7d:fable"],
+    blocking: [],
+  };
+  const fable = {
+    id: "launch-2610-fable",
+    expiresAt: new Date(Date.now() + 4 * 86_400_000).toISOString(),
+    program: "cedar_ember",
+    remainingCount: 1,
+    usable: nextCreditId === "launch-2610-fable" && nextUsable,
+    requiresLimit: false,
+    clears: ["anthropic:5h", "anthropic:7d:fable"],
+    blocking: [],
+  };
+  return {
+    provider: "anthropic",
+    credentialId: 6,
+    disabled: false,
+    savedReset: {
+      state: "available",
+      availableCount: 2,
+      redeemableCount: nextUsable ? 1 : 0,
+      nextCreditId,
+      eligible: true,
+      checkedAt: 1,
+      credits: [full, fable],
+    },
+  };
+}
+
+test("lists Anthropic full and Fable resets separately and marks the one the provider will use next", () => {
+  for (const [nextId, nextName, otherName] of [
+    ["full-reset-2611", "전체 리셋", "페이블 리셋"],
+    ["launch-2610-fable", "페이블 리셋", "전체 리셋"],
+  ]) {
+    const html = renderAccount(fableAndFullReset(nextId));
+    assert.match(html, />전체 리셋</);
+    assert.match(html, /5시간·주간·페이블 주간 한도 · \d+d \d+h 후 만료/);
+    assert.match(html, />페이블 리셋</);
+    assert.match(html, /5시간·페이블 주간 한도 · \d+d \d+h 후 만료/);
+    assert.equal(html.match(/>다음 사용</g)?.length, 1);
+    assert.match(html, new RegExp(`data-reset-next="true"[^>]*>(?:(?!</li>).)*>${nextName}<`));
+    assert.doesNotMatch(html, new RegExp(`data-reset-next="true"[^>]*>(?:(?!</li>).)*>${otherName}<`));
+    assert.match(html, />리셋 사용</);
+  }
+});
+
+test("Anthropic reset is not offered when the provider's next credit cannot be used now", () => {
+  const html = renderAccount(fableAndFullReset("full-reset-2611", false));
+  assert.match(html, />전체 리셋</);
+  assert.match(html, />페이블 리셋</);
+  assert.match(html, />지금은 사용 불가</);
+  assert.doesNotMatch(html, />리셋 사용</);
 });
 
 test("confirmation has explicit irreversible copy, two actions, and a focus-return seam", () => {

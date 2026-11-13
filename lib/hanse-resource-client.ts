@@ -8,7 +8,7 @@ import {
 import { OFFICE_CUE_ROOT, parseCueManifest, type CueManifest } from "./completion-audio";
 
 export const HANSE_RESOURCE_ORIGIN = "/api/sidecars/resource";
-export const USAGE_POLL_INTERVAL_MS = 60_000;
+export const USAGE_POLL_INTERVAL_MS = 15_000;
 export const MODEL_REQUEST_TIMEOUT_MS = 120_000;
 export const CREDENTIAL_ACTION_TIMEOUT_MS = 20_000;
 export const ACCOUNT_STATE_POLL_INTERVAL_MS = 2_500;
