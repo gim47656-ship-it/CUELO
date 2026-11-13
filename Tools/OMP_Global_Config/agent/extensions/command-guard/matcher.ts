@@ -2446,34 +2446,47 @@ function nestedScripts(
   return scripts;
 }
 
+/** 호출이 놓인 자리. `pipeline`은 `<스크립트 번호>.<파이프라인 번호>`이고 `|`로 이어진 호출끼리만 같다. `after`는 그 파이프라인이 끝난
+ * 바로 다음 세그먼트(같은 스크립트 안, `rc=$?`처럼 호출이 없는 세그먼트 포함)의 낱말이며, 없으면 빈 배열이다. */
+type InvocationPlace = { pipeline: string; after: readonly string[] };
+
 /**
  * 명령이 실제로 부르는 호출마다 부르는 낱말(따옴표를 벗긴 첫 낱말)·해석한 이름·인자를 넘긴다. 따옴표 안 언급·주석·heredoc 본문의
  * 글자는 호출이 아니고, 명령 치환·`bash -c '…'`·래퍼 뒤의 명령은 호출이다. `assigned`는 그 호출까지 같은 명령에서 `S=…`로 대입한 값이다.
+ * `place`는 호출 자신의 자리이고(중첩 스크립트는 바깥과 다른 스크립트 번호), `outer`는 그 호출을 품은 맨 바깥 세그먼트의 자리다
+ * (중첩되지 않은 호출은 `place`와 같다).
  */
 function walkInvocations(
   command: string,
-  onInvocation: (word: string, name: string, args: string[], assigned: readonly string[]) => void,
+  onInvocation: (word: string, name: string, args: string[], assigned: readonly string[], place: InvocationPlace, outer: InvocationPlace) => void,
 ): void {
   const assigned: string[] = [];
-  const visit = (text: string, depth: number): void => {
+  let visits = 0;
+  const visit = (text: string, depth: number, outer: InvocationPlace | undefined): void => {
     const tokenized = tokenizeShell(text);
-    const descend = (script: string): void => {
-      if (depth < MAX_NESTING) visit(script, depth + 1);
+    const visitId = visits++;
+    let group = 0;
+    const descend = (script: string, enclosing: InvocationPlace | undefined): void => {
+      if (depth < MAX_NESTING) visit(script, depth + 1, enclosing);
     };
-    tokenized.loose.forEach(descend);
+    tokenized.loose.forEach((script) => descend(script, outer));
     tokenized.segments.forEach((segment, index) => {
+      if (index > 0 && segment.separatorBefore !== "|") group += 1;
       for (const token of segment.tokens) {
         if (!isEnvironmentAssignment(token.value)) break;
         assigned.push(token.value.slice(token.value.indexOf("=") + 1));
       }
+      let next = index + 1;
+      while (tokenized.segments[next]?.separatorBefore === "|") next += 1;
+      const place = { pipeline: `${visitId}.${group}`, after: tokenized.segments[next]?.tokens.map((token) => token.value) ?? [] };
       const invocation = resolveInvocation(segment.tokens);
-      nestedScripts(segment, invocation, tokenized.segments[index - 1]).forEach(descend);
+      nestedScripts(segment, invocation, tokenized.segments[index - 1]).forEach((script) => descend(script, outer ?? place));
       if (!invocation) return;
       const values = segment.tokens.map((token) => token.value);
-      onInvocation(values[invocation.index]!, invocation.name, values.slice(invocation.index + 1), assigned);
+      onInvocation(values[invocation.index]!, invocation.name, values.slice(invocation.index + 1), assigned, place, outer ?? place);
     });
   };
-  visit(command, 0);
+  visit(command, 0, undefined);
 }
 
 /**
@@ -2494,15 +2507,18 @@ export function invokedCommands(command: string): string[] {
   return invoked;
 }
 
+type CommandLine = { word: string; args: string[]; pipeline: string; after: readonly string[]; outer: InvocationPlace };
+
 /**
- * 명령이 실제로 부르는 호출마다 부르는 낱말과 인자. 부르는 낱말이 `"$R"`처럼 변수면, 같은 명령에서 앞서 대입한 값마다
+ * 명령이 실제로 부르는 호출마다 부르는 낱말과 인자, 실행 순서대로. 부르는 낱말이 `"$R"`처럼 변수면, 같은 명령에서 앞서 대입한 값마다
  * 같은 인자로 부른 호출 후보를 함께 돌려준다({@link invokedCommands}와 같은 기준). 호스트 시스템 변경 명령을 인자까지 보고 알아보는 데 쓴다.
+ * `pipeline`과 `after`는 호출 자신의 자리, `outer`는 그것을 품은 맨 바깥 세그먼트의 자리다({@link walkInvocations}).
  */
-export function invokedCommandLines(command: string): Array<{ word: string; args: string[] }> {
-  const lines: Array<{ word: string; args: string[] }> = [];
-  walkInvocations(command, (word, _name, args, assigned) => {
-    lines.push({ word, args });
-    if (word.startsWith("$")) lines.push(...assigned.map((value) => ({ word: value, args })));
+export function invokedCommandLines(command: string): CommandLine[] {
+  const lines: CommandLine[] = [];
+  walkInvocations(command, (word, _name, args, assigned, place, outer) => {
+    lines.push({ word, args, pipeline: place.pipeline, after: place.after, outer });
+    if (word.startsWith("$")) lines.push(...assigned.map((value) => ({ word: value, args, pipeline: place.pipeline, after: place.after, outer })));
   });
   return lines;
 }

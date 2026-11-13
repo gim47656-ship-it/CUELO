@@ -47,7 +47,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | R8 | obsolete 제거, 삭제만 확인하는 테스트 금지 | 문서 | — | |
 | R9 | 실행 코드 변경 뒤 최소 검사, 지정 명령은 그대로 실행·보고 | eval | `evals/cases/security/missing-evidence.json`, `evals/cases/security/stale-validation-evidence.json`; Maker 검증 지시 유지는 `patches/core-subagent-verify-test.ts` | |
 | R10 | 측정 수치는 횟수·편차·제약 요인과 번갈아 측정 | 문서 | — | |
-| R11 | 파이프 뒤 명령 성공을 검사 성공으로 보지 않고 exit code 보존 | 안내 | `extensions/command-guard/check-output-hint.ts`(검사+출력 가공 bash 결과에 `[검사 종료 코드]` 안내) | 실사용 관찰은 `Tools/OMP_Global_Config/HANDOFF.md`의 11-13 점검 항목 |
+| R11 | 파이프 뒤 명령 성공을 검사 성공으로 보지 않고 exit code 보존 | 안내 | `extensions/command-guard/check-output-hint.ts`(검사 뒤에 오는 출력 가공 명령이 종료 코드를 덮을 수 있는 bash 결과에 `[검사 종료 코드]` 안내), `extensions/command-guard/check-output-hint.test.ts` | 2026-11-14 야간 점검에서 `PIPESTATUS`나 바로 뒤 `$?`로 이미 남긴 명령에도 붙던 오탐(한 세션 8번 중 8번)을 고쳤다. 검사 파이프라인(중첩 셸이면 맨 바깥 파이프라인) 바로 다음 세그먼트가 `${PIPESTATUS…}`(파이프)나 `$?`(순차 실행)를 읽거나 검사 전에 `set -o pipefail`을 켰을 때만 보존으로 본다. 명령 글자를 읽는 휴리스틱이다. 실사용 관찰은 `Tools/OMP_Global_Config/HANDOFF.md`의 점검 항목 |
 | R12 | 임시 스크립트의 런타임·의존성 해석 먼저 확인 | 문서 | — | |
 | R13 | 일회성 산출물 정리·근거 후보 보고 | 문서 | — | |
 | R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서. 2026-11-11부터 RULES.md에는 한 줄만 두고 세부는 도구 설명이 정본 |

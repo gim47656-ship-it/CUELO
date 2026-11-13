@@ -28,8 +28,9 @@ export function parseHandoff(text: string, path: string, now = new Date()): Upke
     const bodyText = full.slice(full.indexOf("**", full.indexOf("**") + 2) + 2).replace(/\[[^\]]*\]\([^)]*\)/g, "[]");
     // 단서는 lookahead로 둬서 한 날짜의 단서 구간이 뒤 날짜를 삼키지 않게 하고, 「…에 … 다시 센다」는 한 문장 안에서만 본다.
     // 「다음 점검일은 X」는 작성자가 적은 다음 점검일이라, 같은 본문의 다른 단서(「11-12 점검에서」 같은 지난 점검 기록)를 대신한다.
+    // 「N-N 점검에서 …」는 그 점검에서 찾은 것을 적는 지난 기록이라 단서가 아니다(HANDOFF 이력의 여섯 쓰임이 모두 지난 기록).
     const nextDue = /다음 점검일은[^.\n]{0,60}?(\d{1,2})-(\d{1,2})/.exec(bodyText);
-    const bodyDates = nextDue ? [nextDue] : [...bodyText.matchAll(/(\d{1,2})-(\d{1,2})(?=\s*(?:점검|판정|쯤|까지|뒤에|(?:오전|오후)?\s*에\s*(?:다시|만료))|에(?:(?![.。!?！？]\s|\n).){0,120}?(?:다시 센다|함께 센다))/g)];
+    const bodyDates = nextDue ? [nextDue] : [...bodyText.matchAll(/(\d{1,2})-(\d{1,2})(?=\s*(?:점검(?!에서)|판정|쯤|까지|뒤에|(?:오전|오후)?\s*에\s*(?:다시|만료))|에(?:(?![.。!?！？]\s|\n).){0,120}?(?:다시 센다|함께 센다))/g)];
     const dateOrder = (x: RegExpExecArray) => +x[1] * 100 + +x[2] + (titleDate && +x[1] < +titleDate[1] - 6 ? 1200 : 0);
     // 제목 날짜(작성일)와 같은 날짜는 「그날 한 일」이므로 본문 날짜는 그보다 뒤일 때만 점검일로 본다.
     const titleOrder = titleDate ? +titleDate[1] * 100 + +titleDate[2] : 0;
