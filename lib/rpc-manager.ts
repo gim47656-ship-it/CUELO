@@ -84,6 +84,7 @@ import {
   validateAskFormSubmission,
 } from "./ask-form/server";
 import { ASK_FORM_ACTIVITY_PREFIX } from "./ask-form/types";
+import { notifySessionWorktreeClosed, prepareResumedWorktree } from "./session-worktree/runtime";
 
 /** `extension_ui_input` data a timed ask dialog sends while the user is choosing or typing (components/ChatWindow.tsx). */
 const EXTENSION_UI_ACTIVITY = "activity";
@@ -2165,6 +2166,7 @@ export class AgentSessionWrapper {
         this.onDestroyCallback?.();
       } finally {
         notifyRunningChange();
+        void notifySessionWorktreeClosed(this.cwd);
       }
     }
   }
@@ -2842,6 +2844,28 @@ export function getRunningRpcSessionIds(): string[] {
   return [...ids];
 }
 
+/** Read-only checkout use, including idle live conversations and actual worker/job directories. */
+export function getLiveSessionWorktreeUses(): Array<{ id: string; cwd: string }> {
+  const uses: Array<{ id: string; cwd: string }> = [];
+  for (const [id, session] of getRegistry()) {
+    if (!session.isAlive()) continue;
+    uses.push({ id: session.sessionId || id, cwd: session.cwd });
+    for (const raw of backgroundJobManagerOf(session.inner)?.getRunningJobs() ?? []) {
+      const job = raw as { id?: string; process?: { cwd?: string }; cwd?: string; ownerId?: string };
+      const owner = job.ownerId ? AgentRegistry.global().get(job.ownerId)?.session : undefined;
+      uses.push({ id: job.id ?? id, cwd: job.process?.cwd ?? job.cwd ?? owner?.sessionManager.getCwd() ?? session.cwd });
+    }
+  }
+  for (const agent of AgentRegistry.global().list()) {
+    if (agent.kind !== "sub" || !AgentRegistry.global().isRunning(agent)) continue;
+    const parent = agent.parentId ? AgentRegistry.global().get(agent.parentId)?.session : undefined;
+    const cwd = agent.session?.sessionManager.getCwd() ?? parent?.sessionManager.getCwd();
+    if (cwd) uses.push({ id: agent.id, cwd });
+  }
+  for (const cwd of getStartingSessionCwds().keys()) uses.push({ id: `starting:${cwd}`, cwd });
+  return uses;
+}
+
 /** 사람 답(ask·승인 등 확장 UI)을 기다리며 멈춘 세션. 사이드바 「확인할 결과」와 업데이트 영수증이 쓴다. */
 export function getWaitingRpcSessionIds(): string[] {
   const ids = new Set<string>();
@@ -2908,6 +2932,9 @@ export async function startRpcSession(
         if (!cwd) throw new Error("cwd is required for a new session");
         return SessionManager.create(cwd, undefined);
       })();
+    const releaseResumeWorktree = sessionFile
+      ? await prepareResumedWorktree(sessionManager)
+      : undefined;
     const sessionCwd = sessionManager.getCwd();
     const finishStartingSession = trackStartingSession(sessionCwd);
 
@@ -3126,6 +3153,7 @@ export async function startRpcSession(
       return { session: wrapper, realSessionId };
     } finally {
       finishStartingSession();
+      releaseResumeWorktree?.();
     }
   })().finally(() => {
     locks.delete(sessionId);

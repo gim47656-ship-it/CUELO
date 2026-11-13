@@ -3,7 +3,7 @@ import { parseConfiguredThinkingLevel as parseOmpThinkingLevel, type ConfiguredT
 import { existsSync } from "fs";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
-import { startNewRpcSession } from "@/lib/rpc-manager";
+import { startSessionWithWorktree } from "@/lib/session-worktree/runtime";
 import { describeMissingModel } from "@/lib/model-discovery-recovery";
 import { findModelWithRecovery, getOmpRuntime } from "@/lib/omp-runtime";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    const { provider, modelId, toolNames, thinkingLevel, oauthPosition, createRequestId, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: unknown; oauthPosition?: unknown; createRequestId?: unknown; [key: string]: unknown };
+    const { provider, modelId, toolNames, thinkingLevel, oauthPosition, createRequestId, issue, autoWorktree, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: unknown; oauthPosition?: unknown; createRequestId?: unknown; issue?: unknown; autoWorktree?: unknown; [key: string]: unknown };
     if ((provider && !modelId) || (!provider && modelId)) {
       throw new Error("provider and modelId must be provided together");
     }
@@ -94,6 +94,7 @@ export async function POST(req: Request) {
       throw new Error("provider and modelId are required to select an account");
     }
     const explicitCreateRequestId = parseCreateRequestId(createRequestId);
+    if (autoWorktree !== undefined && typeof autoWorktree !== "boolean") throw new Error("autoWorktree must be boolean");
 
     // `initialModel` came directly from this request, unlike configured role
     // references recovered during session startup. Give only this explicit
@@ -103,17 +104,17 @@ export async function POST(req: Request) {
       const lookup = await findModelWithRecovery(modelRegistry, provider, modelId, { forceDiscovery: true });
       if (lookup.miss) throw new Error(describeMissingModel(lookup.miss));
     }
-    const { session, realSessionId } = await startNewRpcSession(explicitCreateRequestId, cwd, {
+    const { session, realSessionId, cwd: effectiveCwd, worktree } = await startSessionWithWorktree(explicitCreateRequestId, cwd, {
       ...(toolNames ? { toolNames } : {}),
       ...(provider && modelId ? { initialModel: { provider, modelId } } : {}),
       ...(explicitThinkingLevel ? { thinkingLevel: explicitThinkingLevel } : {}),
       ...(explicitOauthPosition !== undefined ? { accountOauthPosition: explicitOauthPosition } : {}),
-    });
+    }, { issue, autoWorktree: autoWorktree as boolean | undefined });
 
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)
     // in sync so the new cwd is immediately readable via /api/files. Without this,
     // a file request under a brand-new cwd would 403 for up to the cache TTL.
-    allowFileRoot(cwd);
+    allowFileRoot(effectiveCwd);
     invalidateSessionListCache();
 
     const state = await session.send({ type: "get_state" }) as {
@@ -127,6 +128,8 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: true,
         sessionId: realSessionId,
+        cwd: effectiveCwd,
+        worktree,
         data: null,
         model: state.model
           ? { provider: state.model.provider, modelId: state.model.id }
@@ -145,6 +148,8 @@ export async function POST(req: Request) {
     return NextResponse.json({
       success: true,
       sessionId: realSessionId,
+      cwd: effectiveCwd,
+      worktree,
       data: result,
       model: state.model
         ? { provider: state.model.provider, modelId: state.model.id }

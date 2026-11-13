@@ -3,10 +3,11 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSyn
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { writePrivateFileAtomicSync } from "../atomic-file";
+import { readBusySnapshots } from "./busy-files";
 
 export const ACCOUNT = "gim47656-ship-it";
 export type Repo = { name: string; isPrivate: boolean; isFork: boolean; isArchived: boolean; defaultBranchRef: { name: string } | null };
-export type Reason = "dirty" | "diverged" | "ahead" | "detached" | "other-branch" | "untracked" | "busy" | "unknown-idle" | "git-lock" | "fetch-error" | "ff-error";
+export type Reason = "dirty" | "diverged" | "ahead" | "detached" | "other-branch" | "untracked" | "busy" | "unknown-idle" | "server-auth" | "git-lock" | "fetch-error" | "ff-error";
 export type Result = { name: string; path: string; outcome: "updated" | "current" | "skipped"; reason?: Reason; before?: string; after?: string; lastSuccess?: string; skipCount: number };
 export type CloneAttempt = { status: "running" | "done" | "failed"; startedAt: string; error?: "auth" | "clone" | "interrupted" };
 export type SyncState = {
@@ -66,10 +67,12 @@ export async function discover(o: Options = {}): Promise<{ name: string; path: s
   const entries = exists(src) ? readdirSync(src).map((n) => join(src, n)) : [];
   entries.push(join(home, "cuelo-routines"));
   const found: { name: string; path: string }[] = [];
+  const installs = [resolve(home, "cuelo-run"), resolve(home, "app"), process.env.CUELO_APP_DIR, ...readBusySnapshots(join(home, ".omp/agent")).map((s) => s.appDir)]
+    .filter((p): p is string => !!p).map((p) => { try { return realpathSync(p); } catch { return resolve(p); } });
   for (const path of entries) {
     // A .git file is a linked worktree/submodule, not an independently owned clone.
     if (!exists(path) || !lstatSync(path).isDirectory() || !exists(join(path, ".git")) || !lstatSync(join(path, ".git")).isDirectory()) continue;
-    if (realpathSync(path) === resolve(home, "cuelo-run") || realpathSync(path) !== resolve(path)) continue;
+    if (installs.includes(realpathSync(path)) || realpathSync(path) !== resolve(path)) continue;
     try {
       const name = originName(await command(["git", "remote", "get-url", "origin"], path));
       if (name) found.push({ name, path });
@@ -88,22 +91,35 @@ export function resolveBusy(ids: string[], sessions: { id: string; cwd?: string 
   }
   return { cwds, unresolved };
 }
-export async function busyState(o: Options = {}): Promise<{ cwds: string[]; unresolved: number; known: boolean }> {
+export async function busyState(o: Options = {}): Promise<{ cwds: string[]; unresolved: number; known: boolean; reason?: "server-auth" | "unknown-idle" }> {
   const base = o.server ?? "http://127.0.0.1:30141";
+  const port = Number(new URL(base).port || (new URL(base).protocol === "https:" ? 443 : 80));
+  const snapshots = readBusySnapshots(join(homeOf(o), ".omp/agent"));
+  const cwds = [...new Set(snapshots.flatMap((s) => s.cwds))];
+  const unresolved = snapshots.reduce((n, s) => n + s.unresolved, 0);
+  let auth = false;
+  let runningRead = false;
   try {
     const get = async (path: string) => {
       const res = await fetch(base + path, { signal: AbortSignal.timeout(10_000) });
+      if ([401, 403, 503].includes(res.status)) auth = true;
       if (!res.ok) throw new Error("Session request failed");
       return res.json();
     };
     const running = await get("/api/agent/running") as { runningSessionIds: string[] };
     if (!Array.isArray(running.runningSessionIds)) throw new Error("Missing running IDs");
-    if (!running.runningSessionIds.length) return { cwds: [], unresolved: 0, known: true };
-    const list = await get("/api/sessions?archived=0") as { sessions: { id: string; cwd?: string }[] };
-    const archived = await get("/api/sessions?archived=1") as { sessions: { id: string; cwd?: string }[] };
-    const resolved = resolveBusy(running.runningSessionIds, [...list.sessions, ...archived.sessions]);
-    return { ...resolved, known: resolved.unresolved === 0 };
-  } catch { return { cwds: [], unresolved: -1, known: false }; }
+    runningRead = true;
+    let resolved = { cwds: [] as string[], unresolved: 0 };
+    if (running.runningSessionIds.length) {
+      const list = await get("/api/sessions?archived=0") as { sessions: { id: string; cwd?: string }[] };
+      const archived = await get("/api/sessions?archived=1") as { sessions: { id: string; cwd?: string }[] };
+      resolved = resolveBusy(running.runningSessionIds, [...list.sessions, ...archived.sessions]);
+    }
+    return { cwds: [...cwds, ...resolved.cwds], unresolved: unresolved + resolved.unresolved, known: unresolved + resolved.unresolved === 0 };
+  } catch {
+    if (auth && !runningRead && snapshots.some((s) => s.port === port)) return { cwds, unresolved, known: unresolved === 0 };
+    return { cwds, unresolved: unresolved || -1, known: false, reason: unresolved ? "unknown-idle" : auth ? "server-auth" : "unknown-idle" };
+  }
 }
 function inside(root: string, cwd: string) {
   const rel = relative(root, cwd);
@@ -119,8 +135,8 @@ export async function syncClone(repo: { name: string; path: string }, defaultBra
   const safety = async (): Promise<Reason | undefined> => {
     if (hasGitLock(join(repo.path, ".git"))) return "git-lock";
     const busy = await busyState(o);
-    if (!busy.known) return "unknown-idle";
     if (busy.cwds.some((cwd) => inside(realpathSync(repo.path), cwd))) return "busy";
+    if (!busy.known) return busy.reason ?? "unknown-idle";
     if (await git("status", "--porcelain")) return "dirty";
     const branch = await git("symbolic-ref", "--quiet", "--short", "HEAD").catch(() => "");
     if (!branch) return "detached";

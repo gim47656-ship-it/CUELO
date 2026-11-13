@@ -4,6 +4,7 @@ import { addWorktree, listWorktrees, removeWorktree, resolveProject } from "@/li
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { reserveWorktreeRemoval } from "@/lib/rpc-manager";
+import { sweepUnusedSessionWorktrees } from "@/lib/session-worktree/runtime";
 
 /** Same gate as /api/files: only session cwds / project roots / explicitly
  *  allowed dirs may be inspected or mutated through this endpoint. */
@@ -35,6 +36,8 @@ export async function GET(req: Request) {
     try {
       // For a removed-worktree cwd (session of a deleted worktree), fall back
       // to the inferred project root so the switcher still shows the project.
+      await sweepUnusedSessionWorktrees(existsSync(cwd) ? cwd : project.projectRoot)
+        .catch((error) => console.error("[session-worktree] opportunistic cleanup failed:", error));
       worktrees = await listWorktrees(existsSync(cwd) ? cwd : project.projectRoot);
     } catch {
       isGit = false;

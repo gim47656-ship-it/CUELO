@@ -173,11 +173,11 @@ export async function resolveProject(cwd: string): Promise<ProjectInfo> {
 // common dir, so callers can pass session cwds directly.
 // ============================================================================
 
-/** Main repo root (parent of the shared .git dir), or throws for non-git dirs */
+/** Main checkout verified by git (also handles separate git dirs and submodules). */
 async function getRepoRoot(cwd: string): Promise<string> {
-  const executor = await selectGitExecutor(cwd);
-  const commonDir = executor.toPosix(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], executor));
-  return dirname(commonDir);
+  const main = (await listWorktrees(cwd))[0];
+  if (!main) throw new Error("Cannot find the repository main checkout");
+  return main.path;
 }
 
 export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
@@ -218,6 +218,13 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
     }
   }
   flush();
+  // Git can list a submodule's common gitdir as its primary worktree path.
+  // Resolve that entry using its own core.worktree before using it as a checkout.
+  const main = worktrees[0];
+  if (main) {
+    try { main.path = executor.toPosix(await git(main.path, ["rev-parse", "--show-toplevel"], executor)); }
+    catch { /* Bare or inaccessible primary checkout: retain git's registered path. */ }
+  }
   return worktrees;
 }
 
@@ -248,6 +255,13 @@ export async function addWorktree(cwd: string, branch: string): Promise<{ path: 
   } catch {
     branchExists = false;
   }
+  // A recreated checkout must not inherit stale automatic-cleanup ownership.
+  for (const key of ["base", "base-ref", "path", "target"]) {
+    try { await git(repoRoot, ["config", "--unset-all", `branch.${trimmed}.cuelo-${key}`]); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === 5)) throw error; // 5 means this key was absent.
+    }
+  }
 
   try {
     if (branchExists) {
@@ -269,11 +283,17 @@ export async function removeWorktree(cwd: string, worktreePath: string, force = 
   const target = worktrees.find((w) => w.path === worktreePath);
   if (!target) throw new Error(`Not a worktree of this repository: ${worktreePath}`);
   if (target.isMain) throw new Error("Cannot remove the main worktree");
+  const repoRoot = worktrees[0].path;
 
   try {
     await git(cwd, ["worktree", "remove", ...(force ? ["--force"] : []), worktreePath], undefined, WORKTREE_WRITE_TIMEOUT_MS);
   } catch (error) {
     throw new Error(extractGitError(error));
+  }
+  if (target.branch) {
+    for (const key of ["base", "base-ref", "path", "target"]) {
+      await git(repoRoot, ["config", "--unset-all", `branch.${target.branch}.cuelo-${key}`]).catch(() => {});
+    }
   }
   invalidateProjectCache();
 }

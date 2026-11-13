@@ -11,6 +11,8 @@ export async function register() {
     ensureAttachmentCleanupScheduler();
     const { ensureRoutineScheduler } = await import("./lib/routines/scheduler");
     ensureRoutineScheduler();
+    const { ensureSessionBusyStateWriter } = await import("./lib/session-busy-state");
+    await ensureSessionBusyStateWriter().catch((error) => console.error("[session-busy-state] startup failed", error));
     // 직전 서버 세대가 갑자기 죽어 끊긴 부모 세션을 기존 복구 대기열에 올린다. 서버 시작을 막지 않는다.
     void import("./lib/update-interrupt")
       .then(({ recoverAbruptStop }) => recoverAbruptStop())

@@ -10,6 +10,7 @@ const reasons: Record<Reason, string> = {
   detached: "분리된 HEAD 상태", "other-branch": "기본 브랜치가 아님", untracked: "origin 브랜치를 추적하지 않음",
   busy: "세션 사용 중", "unknown-idle": "유휴 상태 확인 불가", "git-lock": "Git 잠금 파일 존재",
   "fetch-error": "가져오기(fetch) 오류", "ff-error": "빨리 감기(fast-forward) 병합 오류",
+  "server-auth": "서버 비밀번호 잠금으로 세션 확인 불가",
 };
 export function RepoSyncIndicator() {
   const [state, setState] = useState<State | null>(null);

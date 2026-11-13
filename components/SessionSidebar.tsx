@@ -35,6 +35,7 @@ import { DirectoryPicker } from "./DirectoryPicker";
 import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
 import { useTranslatorText } from "./translator/i18n";
+import { missingSubdirectoryText, readWorktreeNotice, rememberWorktreeNotice, worktreeText, type SessionWorktreeNotice } from "@/lib/session-worktree/client";
 
 interface Props {
   selectedSessionId: string | null;
@@ -437,6 +438,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const [wtNewOpen, setWtNewOpen] = useState(false);
   const [wtNewBranch, setWtNewBranch] = useState("");
   const [wtError, setWtError] = useState<string | null>(null);
+  const [issueReference, setIssueReference] = useState("");
+  const [issueBusy, setIssueBusy] = useState(false);
+  const [issueError, setIssueError] = useState<string | null>(null);
+  const issueRequestRef = useRef<{ issue: string; cwd: string; id: string } | null>(null);
   const [wtBusy, setWtBusy] = useState(false);
   const [wtConfirmRemove, setWtConfirmRemove] = useState<string | null>(null);
   const wtDropdownRef = useRef<HTMLDivElement>(null);
@@ -1114,6 +1119,34 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     onNewSession?.(tempId, project);
   }, [selectedCwd, onNewSession]);
 
+  const handleIssueSession = useCallback(async () => {
+    const cwd = worktreeState?.projectRoot;
+    const issue = issueReference.trim();
+    if (!cwd || !issue || issueBusy) return;
+    setIssueBusy(true);
+    setIssueError(null);
+    const prior = issueRequestRef.current;
+    const createRequestId = prior?.issue === issue && prior.cwd === cwd ? prior.id
+      : typeof crypto.randomUUID === "function" ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    issueRequestRef.current = { issue, cwd, id: createRequestId };
+    try {
+      const response = await fetch("/api/agent/new", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd, issue, type: "ensure_session", createRequestId }),
+      });
+      const data = await response.json() as { sessionId?: string; cwd?: string; worktree?: SessionWorktreeNotice; error?: string };
+      if (!response.ok || !data.sessionId || !data.cwd) throw new Error(data.error ?? `HTTP ${response.status}`);
+      rememberWorktreeNotice(data.cwd, data.worktree);
+      issueRequestRef.current = null;
+      setIssueReference("");
+      setSelectedCwd(data.cwd);
+      setWtRefreshKey((key) => key + 1);
+      onSelectSession({ id: data.sessionId, cwd: data.cwd, projectRoot: cwd, path: "", created: new Date().toISOString(), modified: new Date().toISOString(), messageCount: 0, firstMessage: "(no messages)", transient: true });
+    } catch (error) { setIssueError(error instanceof Error ? error.message : String(error)); }
+    finally { setIssueBusy(false); }
+  }, [worktreeState, issueReference, issueBusy, onSelectSession]);
+
   // The priority view has no project context, so a session started from it runs in the
   // dated scratch folder that `/api/default-cwd` creates (and allow-lists) on demand.
   const [scratchSessionBusy, setScratchSessionBusy] = useState(false);
@@ -1393,6 +1426,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     ? (worktreeState?.worktrees ?? []).filter((worktree) =>
         (worktree.branch ?? displayCwd(worktree.path, homeDir)).toLowerCase().includes(wtFilter.trim().toLowerCase()))
     : (worktreeState?.worktrees ?? []);
+  const issueText = worktreeText[locale.startsWith("ko") ? "ko" : locale.startsWith("zh") ? "zh" : "en"];
+  const worktreeNotice = readWorktreeNotice(selectedCwd);
 
   // 프로젝트 범위는 화면에 보이는 5개나 검색 결과가 아니라 그 프로젝트의 전체 세션이다.
   const bulkClearTargets: SessionInfo[] = (() => {
@@ -1542,6 +1577,31 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             </button>
           </div>
         </div>
+        {showWorktreeSwitcher && (
+          <form onSubmit={(event) => { event.preventDefault(); void handleIssueSession(); }} style={{ marginTop: 8 }}>
+            <label htmlFor="session-issue" style={{ display: "block", fontSize: 12, color: "var(--text-muted)" }}>{issueText.issueLabel}</label>
+            <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+              <input id="session-issue" value={issueReference} disabled={issueBusy}
+                onChange={(event) => { setIssueReference(event.target.value); setIssueError(null); }}
+                placeholder={issueText.issuePlaceholder} aria-describedby={issueError ? "session-issue-error" : undefined}
+                aria-invalid={Boolean(issueError)}
+                style={{ minWidth: 0, flex: 1, padding: "6px 8px", fontSize: 12, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }} />
+              <button type="submit" disabled={issueBusy || !issueReference.trim()} title={issueText.issueStart} aria-label={issueText.issueStart}
+                style={{ minWidth: 32, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", cursor: issueBusy ? "wait" : "pointer" }}>
+                {issueBusy ? "…" : "↵"}
+              </button>
+            </div>
+            {issueBusy && <div role="status" style={{ fontSize: 12 }}>{issueText.issueBusy}</div>}
+            {issueError && <div id="session-issue-error" role="alert" style={{ fontSize: 12, color: "var(--danger)", overflowWrap: "anywhere" }}>{issueError}</div>}
+          </form>
+        )}
+        {(worktreeNotice || (currentWt && !currentWt.isMain)) && (
+          <div role="status" title={selectedCwd ?? undefined} style={{ marginTop: 4, fontSize: 12, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+            {worktreeNotice?.branch ?? currentWt?.branch}
+            {worktreeNotice?.fallback && <div>{issueText.fallbackBase.replace("{branch}", worktreeNotice.base)}</div>}
+            {worktreeNotice?.missingSubdirectory && <div>{missingSubdirectoryText[locale.startsWith("ko") ? "ko" : locale.startsWith("zh") ? "zh" : "en"].replace("{path}", worktreeNotice.missingSubdirectory)}</div>}
+          </div>
+        )}
 
       </div>
       {cloudProjects && !sideViewOn && (

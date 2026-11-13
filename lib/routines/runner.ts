@@ -8,6 +8,8 @@ import { type RoutinePost, type RoutinePostStatus, extractPostTitle } from "./po
 import { runStamp } from "./schedule";
 import { type RoutineLastRun, type RoutineRunning, readRoutineRunStates, updateRoutineRunState } from "./state";
 import { type Routine, expandHome, isExistingDirectory, readRoutine, routinePaths, thisRoutineHost, writePostFile } from "./store";
+import { routineModelSettings, runRoutineChecker } from "./model";
+import { checkRoutineAnswer, parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 
 /**
  * 루틴 한 회차: 새 세션을 열어 지시문을 보내고, 세션이 끝날 때까지 서버 안에서 지켜본 뒤 마지막 답을 게시판 글로
@@ -163,8 +165,22 @@ function timedOut(answer: string): RunResult {
 async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolean, postsDir: string, trigger: RoutineRunning["trigger"],
   started: Date, stampDisplay: string, onSession: (sessionId: string) => void): Promise<{ result: RunResult; closed: Promise<void> }> {
   const deadline = started.getTime() + RUN_TIMEOUT_MS;
-  const starting = startNewRpcSession(undefined, cwd);
-  const startedSession = await untilDeadline(starting, deadline);
+  let settings;
+  try {
+    settings = await untilDeadline(routineModelSettings(routine.model), deadline);
+  } catch (error) {
+    throw new Error(`PC ${thisRoutineHost()}의 루틴 모델 설정을 읽지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!settings) return { result: timedOut(""), closed: Promise.resolve() };
+  const { enabled, model } = settings.value;
+  const starting = startNewRpcSession(undefined, cwd, model ? { initialModel: parseRoutineModel(model) } : {});
+  let startedSession;
+  try {
+    startedSession = await untilDeadline(starting, deadline);
+  } catch (error) {
+    if (!enabled) throw error;
+    throw new Error(`루틴 모델 ${model ?? "(세션 기본값)"}을 PC ${thisRoutineHost()}에서 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!startedSession) {
     // 늦게라도 열리면 프롬프트 없이 바로 닫는다.
     void starting.then(({ session }) => session.shutdown()).catch(() => undefined);
@@ -186,13 +202,29 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
   }
   const raw = await lastAnswer(session);
   const answer = raw.trim();
-  const closed = Promise.resolve();
+  let closed = Promise.resolve();
   if (!observed.error && raw.split("\n", 1)[0].replace(/\r$/, "") === QUIET_MARKER) return { result: { status: "quiet" }, closed };
   if (!answer || observed.error) {
     const reason = observed.error ? `세션이 오류로 끝났습니다: ${observed.error}` : "세션이 마지막 답 없이 끝났습니다.";
     return { result: { status: "failed", body: answer ? `${answer}\n\n---\n\n_${reason}_` : reason }, closed };
   }
-  return { result: { status: "ok", body: answer }, closed };
+  const body = enabled ? await checkRoutineAnswer({
+    instruction: routine.prompt, answer, deadline, check: runRoutineChecker,
+    log: (message) => log(`${routine.id} ${message}`),
+    revise: async (message, revisionDeadline) => {
+      const revision = await promptAndObserve(session, message, revisionDeadline);
+      if (revision.timedOut) {
+        const stopped = await stopTimedOutSession(session);
+        closed = stopped.closed;
+        throw new Error("revision exceeded routine deadline");
+      }
+      if (revision.error) throw new Error(revision.error);
+      const result = await untilDeadline(lastAnswer(session), revisionDeadline);
+      if (!result) throw new Error("revision answer exceeded routine deadline");
+      return result.value;
+    },
+  }) : answer;
+  return { result: { status: "ok", body }, closed };
 }
 
 /** 글을 커밋해 올린다. 그사이 루틴이 지워졌으면 글을 쓰지 않는다(지운 폴더를 되살리지 않는다). */

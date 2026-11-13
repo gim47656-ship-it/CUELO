@@ -403,6 +403,7 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
   const [onceTime, setOnceTime] = useState(initial?.kind === "once" ? initial.time : "09:00");
   const [host, setHost] = useState(routine?.host ?? data.thisHost);
   const [cwd, setCwd] = useState(routine?.cwd ?? "");
+  const [model, setModel] = useState(routine?.model ?? "");
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
   const [enabled, setEnabled] = useState(routine?.enabled ?? true);
   const [busy, setBusy] = useState(false);
@@ -428,7 +429,7 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
     const result = await request<{ routine: { id: string } }>(routine ? `/api/routines/${encodeURIComponent(routine.id)}` : "/api/routines", {
       method: routine ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled, schedule: built, host, prompt, cwd }),
+      body: JSON.stringify({ name, enabled, schedule: built, host, prompt, cwd, model }),
     }, t);
     setBusy(false);
     if (!result.ok) {
@@ -546,6 +547,13 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
             <input id="routine-host" className={styles.narrow} type="text" required list="routine-hosts" value={host} onChange={(e) => setHost(e.target.value)} />
             <datalist id="routine-hosts">{data.hosts.map((known) => <option key={known} value={known} />)}</datalist>
             <span className={styles.hint}>{t("routines.form.hostHint", { host: data.thisHost })}</span>
+          </div>
+        </div>
+        <div className={styles.row}>
+          <label className={styles.rowLabel} htmlFor="routine-model">{t("routines.form.model")}</label>
+          <div className={styles.field}>
+            <input id="routine-model" type="text" maxLength={300} value={model} placeholder={t("routines.form.modelPlaceholder")} aria-describedby="routine-model-hint" onChange={(e) => setModel(e.target.value)} />
+            <span id="routine-model-hint" className={styles.hint}>{t("routines.form.modelHint")}</span>
           </div>
         </div>
         <div className={styles.row}>

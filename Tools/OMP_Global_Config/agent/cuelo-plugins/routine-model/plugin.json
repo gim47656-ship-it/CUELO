@@ -1,0 +1,7 @@
+{
+  "id": "routine-model",
+  "name": "루틴 모델 전환",
+  "description": "PC별 루틴 Main 모델 지정과 Sonnet 게시 전 점검을 활성화하며, 일반 세션에는 영향을 주지 않습니다.",
+  "createdAt": "2026-11-13T12:00:00.000Z",
+  "tools": []
+}

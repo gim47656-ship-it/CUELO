@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { nightlySourceName, sanitizeSource } from "@/lib/upkeep/nightly-inbox";
 import { type RoutinePost, type RoutinePostMeta, parseRoutinePost, serializeRoutinePost } from "./post";
 import { ROUTINE_TIMEZONE, type RoutineSchedule, isValidTimeZone, parseSchedule } from "./schedule";
+import { parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 
 /**
  * 공용 루틴 저장소의 작업 사본. `routines/<id>/routine.json`(루틴 정의)과 `routines/<id>/posts/*.md`(게시판 글)만
@@ -21,6 +22,7 @@ export interface Routine {
   host: string;
   prompt: string;
   cwd: string | null;
+  model?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -98,7 +100,7 @@ export function newRoutineId(now: Date): string {
   return `r-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${randomBytes(4).toString("hex")}`;
 }
 
-export type RoutineInput = Pick<Routine, "name" | "enabled" | "schedule" | "host" | "prompt" | "cwd">;
+export type RoutineInput = Pick<Routine, "name" | "enabled" | "schedule" | "host" | "prompt" | "cwd" | "model">;
 
 const isAbsoluteCwd = (cwd: string) => cwd.startsWith("/") || cwd === "~" || cwd.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(cwd);
 
@@ -118,7 +120,14 @@ export function parseRoutineInput(raw: unknown): { input: RoutineInput } | { err
   const cwdRaw = typeof value.cwd === "string" ? value.cwd.trim() : "";
   if (cwdRaw.length > CWD_LIMIT) return { error: "cwd is too long" };
   if (cwdRaw && !isAbsoluteCwd(cwdRaw)) return { error: "cwd must be an absolute path or start with ~/" };
-  return { input: { name, enabled: value.enabled, schedule, host, prompt, cwd: cwdRaw || null } };
+  if (value.model !== undefined && value.model !== null && typeof value.model !== "string") return { error: "model must be a string" };
+  const model = typeof value.model === "string" ? value.model.trim() : "";
+  try {
+    if (model) parseRoutineModel(model);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  return { input: { name, enabled: value.enabled, schedule, host, prompt, cwd: cwdRaw || null, model: model || null } };
 }
 
 function parseRoutineFile(text: string, id: string): Routine | null {
@@ -128,13 +137,17 @@ function parseRoutineFile(text: string, id: string): Routine | null {
   } catch {
     return null;
   }
-  const parsed = parseRoutineInput(raw);
-  if ("error" in parsed) return null;
+  if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
+  // Invalid shared model values must not hide a routine when this plugin is off.
+  // Save-time validation stays strict; enabled execution reports the bad selector.
+  const parsed = parseRoutineInput({ ...value, model: null });
+  if ("error" in parsed) return null;
   if (value.id !== id) return null;
   return {
     id,
     ...parsed.input,
+    model: value.model == null ? null : typeof value.model === "string" ? value.model.trim() || null : JSON.stringify(value.model),
     timezone: typeof value.timezone === "string" && isValidTimeZone(value.timezone) ? value.timezone : ROUTINE_TIMEZONE,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",

@@ -18,6 +18,7 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { stripAnsi } from "@/lib/ansi";
 import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
+import { rememberWorktreeNotice, type SessionWorktreeNotice } from "@/lib/session-worktree/client";
 import type { ContextUsage, GoalStatusInfo, RestoredQueuedMessage, SessionStatsInfo, SlashCommandInfo } from "@/lib/omp-types";
 import type { ModelRoleAssignment } from "@/lib/api-types";
 import {
@@ -743,6 +744,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // 서버가 이미 만든 세션을 돌려받는다(본문이 바뀌면 다른 요청이다).
   const pendingNewSessionRequestRef = useRef<{ body: string; createRequestId: string } | null>(null);
   const newSessionPromotedRef = useRef(false);
+  const effectiveNewSessionCwdRef = useRef<string | null>(null);
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const newSessionAccountRef = useRef<number | null>(null);
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
@@ -1031,11 +1033,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const promoteNewSession = useCallback((messageCount = 0, firstMessage = "(no messages)") => {
     const sid = sessionIdRef.current;
     if (!isNew || !newSessionCwd || !sid || newSessionPromotedRef.current) return;
+    const cwd = effectiveNewSessionCwdRef.current ?? newSessionCwd;
     newSessionPromotedRef.current = true;
     onSessionCreated?.({
       id: sid,
       path: "",
-      cwd: newSessionCwd,
+      cwd,
+      // The sidebar may not have fetched the newly created checkout yet.
+      ...(cwd !== newSessionCwd ? { projectRoot: newSessionCwd } : {}),
       name: undefined,
       created: new Date().toISOString(),
       modified: new Date().toISOString(),
@@ -1081,9 +1086,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...request, createRequestId }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          const rejected = await res.json().catch(() => ({})) as { error?: string };
+          throw new Error(rejected.error ?? `HTTP ${res.status}`);
+        }
         const result = await res.json() as {
           sessionId: string;
+          cwd?: string;
+          worktree?: SessionWorktreeNotice;
           model?: SelectedModel | null;
           thinkingLevel?: ThinkingLevelOption;
           configuredThinkingLevel?: ThinkingLevelOption;
@@ -1091,6 +1101,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         pendingNewSessionRequestRef.current = null;
         realId = result.sessionId;
         sessionIdRef.current = realId;
+        effectiveNewSessionCwdRef.current = result.cwd ?? newSessionCwd ?? null;
+        if (effectiveNewSessionCwdRef.current) rememberWorktreeNotice(effectiveNewSessionCwdRef.current, result.worktree);
         // 상한이 서버에 걸릴 때까지 이 세션은 미완성이다. 실패하면 다음 호출이 같은 세션에서 다시 건다.
         if (thinkingCeilingOverrideRef.current !== null) pendingCeilingSessionRef.current = realId;
         if (result.model && newSessionModelOverrideRef.current === selectedModel) {

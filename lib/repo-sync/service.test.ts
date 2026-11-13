@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { busyState, decide, discover, getState, originName, readState, resolveBusy, runSync, syncClone, withLock } from "./service";
 import { GET, POST } from "../../app/api/repo-sync/route";
+import { rejectUnauthorizedRequest } from "../api-request-guard";
 
 const roots: string[] = [];
 const servers: Bun.Server<undefined>[] = [];
@@ -15,14 +16,20 @@ function git(path: string, ...args: string[]) {
   assert.equal(run.status, 0, run.stderr);
   return run.stdout.trim();
 }
-function fixture() {
+function fixture(locked = false) {
   const home = mkdtempSync(join(tmpdir(), "cuelo-repo-sync-")); roots.push(home);
   const seed = join(home, "seed"), path = join(home, "src/Example");
   mkdirSync(seed); mkdirSync(join(home, "src"));
   git(seed, "init", "-b", "main"); writeFileSync(join(seed, "a"), "first\n"); git(seed, "add", "a"); git(seed, "commit", "-m", "first");
   git(home, "clone", seed, path);
   const running = { runningSessionIds: [] as string[], sessions: [] as { id: string; cwd: string }[] };
-  const server = Bun.serve({ port: 0, fetch: (req) => Response.json(req.url.includes("/running") ? { runningSessionIds: running.runningSessionIds } : { sessions: running.sessions }) });
+  const server = Bun.serve({ port: 0, fetch: (req) => {
+    if (locked) {
+      const rejected = rejectUnauthorizedRequest(req, new URL(req.url).pathname, { env: { NODE_ENV: "test", CUELO_PASSWORD: "isolated-repo-sync-test" }, file: join(home, "missing-auth.json") });
+      if (rejected) return rejected;
+    }
+    return Response.json(req.url.includes("/running") ? { runningSessionIds: running.runningSessionIds } : { sessions: running.sessions });
+  } });
   servers.push(server);
   return { home, seed, path, running, server: server.url.origin };
 }
@@ -129,4 +136,42 @@ test("failed gh clone releases empty reservation and can retry", async () => {
     await decide("Missing", "clone", f);
     assert.equal(readState(f).clones.Missing.status, "failed");
   } finally { process.env.PATH = old; }
+});
+test("locked server uses fresh process snapshot to fast-forward behind clone", async () => {
+  const f = fixture(true); advance(f.seed);
+  const port = Number(new URL(f.server).port), dir = join(f.home, ".omp/agent/cuelo-busy-cwds");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${port}-${process.pid}.json`), JSON.stringify({ writtenAt: Date.now(), pid: process.pid, port, cwds: [], unresolved: 0, appDir: f.seed }), { mode: 0o600 });
+  assert.equal((await fetch(f.server + "/api/agent/running")).status, 401);
+  const result = await syncClone({ name: "Example", path: f.path }, "main", f);
+  assert.equal(result.outcome, "updated", JSON.stringify(result));
+});
+for (const mode of ["busy", "sibling-busy", "stale", "missing", "unresolved"] as const) {
+  test(`locked snapshot boundary: ${mode}`, async () => {
+    const f = fixture(true); advance(f.seed);
+    const port = Number(new URL(f.server).port), dir = join(f.home, ".omp/agent/cuelo-busy-cwds");
+    mkdirSync(dir, { recursive: true });
+    const snapshot = { writtenAt: mode === "stale" ? Date.now() - 120_001 : Date.now(), pid: process.pid, port, cwds: mode === "busy" ? [f.path] : [], unresolved: mode === "unresolved" ? 1 : 0, appDir: f.seed };
+    if (mode !== "missing") writeFileSync(join(dir, `${port}-${process.pid}.json`), JSON.stringify(snapshot), { mode: 0o600 });
+    if (mode === "sibling-busy") writeFileSync(join(dir, `30163-${process.pid}.json`), JSON.stringify({ ...snapshot, port: 30163, cwds: [f.path] }), { mode: 0o600 });
+    const before = git(f.path, "rev-parse", "HEAD");
+    const result = await syncClone({ name: "Example", path: f.path }, "main", f);
+    assert.equal(result.reason, mode.includes("busy") ? "busy" : mode === "unresolved" ? "unknown-idle" : "server-auth");
+    assert.equal(git(f.path, "rev-parse", "HEAD"), before);
+  });
+}
+test("running install clone is excluded before any fetch", async () => {
+  const f = fixture();
+  git(f.path, "remote", "set-url", "origin", "https://github.com/gim47656-ship-it/CUELO.git");
+  const old = process.env.CUELO_APP_DIR; process.env.CUELO_APP_DIR = f.path;
+  try { assert.deepEqual(await discover(f), []); }
+  finally { if (old === undefined) delete process.env.CUELO_APP_DIR; else process.env.CUELO_APP_DIR = old; }
+});
+test("live running IDs cannot be replaced by idle snapshot after session API 503", async () => {
+  const f = fixture();
+  const server = Bun.serve({ port: 0, fetch: req => req.url.includes("/running") ? Response.json({ runningSessionIds: ["active"] }) : new Response("unavailable", { status: 503 }) });
+  servers.push(server);
+  const port = server.port, dir = join(f.home, ".omp/agent/cuelo-busy-cwds"); mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${port}-${process.pid}.json`), JSON.stringify({ writtenAt: Date.now(), pid: process.pid, port, cwds: [], unresolved: 0, appDir: f.seed }), { mode: 0o600 });
+  assert.equal((await busyState({ home: f.home, server: server.url.origin })).known, false);
 });
