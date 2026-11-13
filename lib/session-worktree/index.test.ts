@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkoutIsBusy, parseIssue, removedAutoWorktreeRoot, rollbackUnstartedWorktree, selectSessionWorktree, sweepSessionWorktrees, withRepositoryLock, type LiveUse, type WorktreeHost } from "./index";
@@ -308,4 +308,85 @@ test("MAIN-1 review R1-ANT-2: production checkout exclusion protects untouched t
   expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(JSON.parse(child.stdout.toString())).toEqual([]);
   expect(existsSync(selected.cwd)).toBe(true);
+});
+
+describe("issue #88 missing worktree registrations", () => {
+  test("an issue restarts on its original branch without losing unintegrated commits", async () => {
+    const f = fixture(); const first = await auto(f);
+    ownCommit(first.cwd); const tip = git(first.cwd, "rev-parse", "HEAD");
+    rmSync(first.cwd, { recursive: true });
+    const restarted = await auto(f);
+    expect(restarted.cwd).toBe(first.cwd);
+    expect(restarted.worktree?.branch).toBe("wt/issue-7");
+    expect(git(restarted.cwd, "rev-parse", "HEAD")).toBe(tip);
+    expect(git(f.main, "worktree", "list", "--porcelain")).toContain(`worktree ${first.cwd}\nHEAD ${tip}\nbranch refs/heads/wt/issue-7`);
+    // Reusing an existing branch must not adopt it for subsequent automatic deletion.
+    expect(await sweepSessionWorktrees(f.main, f.host)).toEqual([]);
+    expect(existsSync(first.cwd)).toBe(true);
+  });
+
+  test("a missing issue registration still in live use gets a collision branch", async () => {
+    const f = fixture(); const first = await auto(f);
+    const tip = git(first.cwd, "rev-parse", "HEAD");
+    rmSync(first.cwd, { recursive: true }); f.uses.push({ id: "live", cwd: first.cwd });
+    const second = await auto(f);
+    expect(second.worktree?.branch).toMatch(/^wt\/issue-7-[a-f0-9]{8}$/);
+    expect(second.cwd).not.toBe(first.cwd);
+    expect(git(f.main, "worktree", "list", "--porcelain")).toContain(`worktree ${first.cwd}\nHEAD ${tip}\nbranch refs/heads/wt/issue-7`);
+  });
+
+  for (const protectedBy of ["lock", "dangling-symlink"] as const) {
+    test(`review regression: an issue restart leaves a ${protectedBy} intact and uses a collision branch`, async () => {
+      const f = fixture(); const first = await auto(f);
+      const tip = git(first.cwd, "rev-parse", "HEAD");
+      if (protectedBy === "lock") git(f.main, "worktree", "lock", first.cwd);
+      rmSync(first.cwd, { recursive: true });
+      if (protectedBy === "dangling-symlink") symlinkSync(join(f.root, "absent"), first.cwd);
+      const second = await auto(f);
+      expect(second.worktree?.branch).toMatch(/^wt\/issue-7-[a-f0-9]{8}$/);
+      expect(existsSync(second.cwd)).toBe(true);
+      expect(git(f.main, "rev-parse", "refs/heads/wt/issue-7")).toBe(tip);
+      expect(git(f.main, "worktree", "list", "--porcelain")).toContain(`worktree ${first.cwd}\nHEAD ${tip}\nbranch refs/heads/wt/issue-7`);
+      if (protectedBy === "dangling-symlink") expect(lstatSync(first.cwd).isSymbolicLink()).toBe(true);
+    });
+  }
+
+  for (const kind of ["issue", "session"] as const) {
+    test(`a sweep clears a missing auto ${kind} registration but keeps its unlanded branch`, async () => {
+      const f = fixture();
+      f.uses.push({ id: "main", cwd: f.main });
+      const selected = kind === "issue" ? await auto(f) : await selectSessionWorktree(f.main, f.host);
+      const branch = selected.worktree!.branch;
+      ownCommit(selected.cwd); const tip = git(selected.cwd, "rev-parse", "HEAD");
+      rmSync(selected.cwd, { recursive: true });
+      expect(await sweepSessionWorktrees(f.main, f.host)).toEqual([
+        { path: selected.cwd, branch, removed: true, branchKept: true, reason: "missing-registration" },
+      ]);
+      expect(git(f.main, "worktree", "list", "--porcelain")).not.toContain(`worktree ${selected.cwd}\n`);
+      expect(git(f.main, "rev-parse", `refs/heads/${branch}`)).toBe(tip);
+      expect(Bun.spawnSync(["git", "config", "--get", `branch.${branch}.cuelo-path`], { cwd: f.main }).exitCode).toBe(1);
+    });
+  }
+
+  for (const protectedBy of ["live", "reservation", "late-live", "reappearance", "locked", "user-created"] as const) {
+    test(`a missing registration protected by ${protectedBy} is not cleared`, async () => {
+      const f = fixture();
+      const selected = protectedBy === "user-created" ? await addWorktree(f.main, "wt/issue-7") : await auto(f);
+      const path = "path" in selected ? selected.path : selected.cwd;
+      const tip = git(path, "rev-parse", "HEAD");
+      if (protectedBy === "locked") git(f.main, "worktree", "lock", path);
+      rmSync(path, { recursive: true });
+      if (protectedBy === "live") f.uses.push({ id: "live", cwd: path });
+      f.host.reserve = () => {
+        if (protectedBy === "late-live") f.uses.push({ id: "late-live", cwd: path });
+        if (protectedBy === "reappearance") { mkdirSync(path); writeFileSync(join(path, "keep.txt"), "keep"); }
+        return { busy: protectedBy === "reservation" ? ["reserved"] : [], release() {} };
+      };
+      const results = await sweepSessionWorktrees(f.main, f.host);
+      expect(results.every((result) => !result.removed)).toBe(true);
+      expect(git(f.main, "worktree", "list", "--porcelain")).toContain(`worktree ${path}\nHEAD ${tip}\nbranch refs/heads/wt/issue-7`);
+      expect(git(f.main, "rev-parse", "refs/heads/wt/issue-7")).toBe(tip);
+      if (protectedBy === "reappearance") expect(await Bun.file(join(path, "keep.txt")).text()).toBe("keep");
+    });
+  }
 });

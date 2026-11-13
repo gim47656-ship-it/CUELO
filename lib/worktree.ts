@@ -32,6 +32,7 @@ export interface WorktreeInfo {
   path: string;
   branch: string | null;
   isMain: boolean;
+  locked?: boolean;
 }
 
 /** What session grouping reads from a project. */
@@ -180,7 +181,7 @@ async function getRepoRoot(cwd: string): Promise<string> {
   return main.path;
 }
 
-export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
+export async function listWorktrees(cwd: string, options: { includeMissing?: boolean } = {}): Promise<WorktreeInfo[]> {
   const executor = await selectGitExecutor(cwd);
   const out = await git(cwd, ["worktree", "list", "--porcelain"], executor);
   const worktrees: WorktreeInfo[] = [];
@@ -188,14 +189,15 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
 
   const flush = () => {
     if (current?.path) {
-      // Prunable worktrees point at missing/broken gitdirs and cannot be
-      // browsed or selected usefully. Also skip vanished paths even if git has
-      // not marked them prunable yet.
-      if (!current.prunable && existsSync(current.path)) {
+      // Display callers omit missing/broken checkouts. Lifecycle callers also
+      // need missing registrations so they can repair one without a global prune.
+      const present = existsSync(current.path);
+      if ((!current.prunable && present) || (options.includeMissing && !present)) {
         worktrees.push({
           path: current.path,
           branch: current.branch ?? null,
           isMain: worktrees.length === 0,
+          ...(options.includeMissing && current.locked ? { locked: true } : {}),
         });
       }
     }
@@ -213,6 +215,8 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
       current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
     } else if (line.startsWith("prunable") && current) {
       if (!current.linuxRegistered) current.prunable = true;
+    } else if ((line === "locked" || line.startsWith("locked ")) && current) {
+      current.locked = true;
     } else if (line.trim() === "") {
       flush();
     }

@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { addWorktree, listWorktrees, removeWorktree } from "../worktree";
+import { addWorktree, listWorktrees, removeWorktree, type WorktreeInfo } from "../worktree";
 
 const exec = promisify(execFile);
 async function git(cwd: string, args: string[], timeout = 10_000): Promise<string> {
@@ -106,6 +106,34 @@ async function freshBase(cwd: string) {
 const autoBranch = /^wt\/(?:s-\d{8}-[a-f0-9]{8}|issue-[1-9]\d*(?:-[a-f0-9]{8})?)$/;
 const configKey = (branch: string, key: string) => `branch.${branch}.cuelo-${key}`;
 
+function pathIsMissing(path: string): boolean {
+  try { lstatSync(path); return false; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+/** Caller holds the repository lock; reserve runtime use before repairing Git's registration. */
+async function clearMissingRegistration(root: string, tree: WorktreeInfo, host: WorktreeHost) {
+  if (tree.isMain || !tree.branch || !autoBranch.test(tree.branch)
+    || resolve(tree.path) !== join(`${root}-worktrees`, tree.branch.replaceAll("/", "-"))) return "protected-path";
+  if (checkoutIsBusy(tree.path, host.live())) return "live";
+  const reservation = host.reserve(tree.path);
+  try {
+    if (reservation.busy.length || checkoutIsBusy(tree.path, host.live())) return "live";
+    const current = (await listWorktrees(root, { includeMissing: true })).find((entry) => entry.path === tree.path);
+    if (!current || current.isMain || current.branch !== tree.branch) return "registration-changed";
+    if (current.locked) return "locked";
+    if (checkoutIsBusy(tree.path, host.live())) return "live";
+    // lstat fails closed on errors and treats even dangling symlinks as present.
+    // No await between this final absence check and the targeted Git invocation.
+    if (!pathIsMissing(tree.path)) return "path-reappeared";
+    await git(root, ["worktree", "remove", tree.path]);
+    return "removed";
+  } finally { reservation.release(); }
+}
+
 /** Caller holds the repo lock through runtime registration, not just checkout creation. */
 export async function selectSessionWorktree(cwd: string, host: WorktreeHost, options: { issue?: unknown; autoWorktree?: boolean } = {}): Promise<Selection> {
   const repo = await repository(cwd);
@@ -125,9 +153,11 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
   };
   const short = () => randomUUID().replaceAll("-", "").slice(0, 8);
   let branch = issue ? `wt/issue-${issue}` : `wt/s-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${short()}`;
-  const trees = await listWorktrees(repo.main);
-  const existing = trees.find((tree) => tree.branch === branch);
-  if (existing && !checkoutIsBusy(existing.path, host.live())) {
+  const trees = await listWorktrees(repo.main, { includeMissing: true });
+  let existing = trees.find((tree) => tree.branch === branch);
+  const reusable = existing && existsSync(existing.path);
+  if (existing && !reusable && await clearMissingRegistration(repo.main, existing, host) === "removed") existing = undefined;
+  if (existing && reusable && !checkoutIsBusy(existing.path, host.live())) {
     const base = await optionalGit(repo.main, ["config", "--get", configKey(branch, "base")]);
     return inRequestedDirectory({ cwd: existing.path, worktree: { branch, base: base ?? "existing branch", fallback: false } });
   }
@@ -182,7 +212,7 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
     if (!repo || canonical(repo.main) === canonical(join(homedir(), "cuelo-run"))) return [];
     const results: SweepResult[] = [];
     const fetched = new Map<string, boolean>();
-    for (const tree of await listWorktrees(repo.main)) {
+    for (const tree of await listWorktrees(repo.main, { includeMissing: true })) {
       const branch = tree.branch;
       if (tree.isMain || !branch || !autoBranch.test(branch)) continue;
       const base = await optionalGit(repo.main, ["config", "--get", configKey(branch, "base")]);
@@ -194,6 +224,17 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
       results.push(result);
       try {
       if (checkoutIsBusy(tree.path, host.live())) { result.reason = "live"; continue; }
+      if (pathIsMissing(tree.path)) {
+        const repair = await clearMissingRegistration(repo.main, tree, host);
+        if (repair === "removed") {
+          result.removed = true; result.branchKept = true; result.reason = "missing-registration";
+          for (const key of ["base", "base-ref", "path", "target"]) {
+            try { await git(repo.main, ["config", "--unset-all", configKey(branch, key)]); }
+            catch (error) { if ((error as { code?: number }).code !== 5) throw error; }
+          }
+        } else result.reason = repair;
+        continue;
+      }
       if (await git(tree.path, ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"])) { result.reason = "dirty"; continue; }
       const tip = await git(tree.path, ["rev-parse", "HEAD"]);
       const untouched = tip === base;
