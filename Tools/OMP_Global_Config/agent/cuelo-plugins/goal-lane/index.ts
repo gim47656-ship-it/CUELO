@@ -56,8 +56,11 @@ const EXCERPT = 400;
 const URL_TIMEOUT_MS = 10_000;
 // Ends that ask the user for a decision or approval are left alone. Polite offers ("말씀해 주세요", "알려 주세요") are not
 // decisions: the 11-05 trial showed a closing offer hiding an unverified deliverable, so they do not count here.
+// The regex only decides which endings reach the closing judge; that judge still clears an ending that asks nothing.
+// Endings that wait on the user's decision or input ("정해 주시면", "네 결정이야", "약관 동의를 기다리고") missed it in 7 of
+// 20 read turn-end reminders in the 11-14 home measurement, so the reminder was posted over a legitimate wait.
 const CONFIRMATION_PATTERN =
-  /(승인(?:이 필요|을 (?:요청|부탁|기다)|해 주|받아야)|허락(?:이 필요|해 주|받아야)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|정해 주세요|골라 주세요|선택해 주세요|어느 쪽|shall I|may I|would you like|(?:need|needs|awaiting|waiting for) your (?:approval|decision|permission))/i;
+  /(승인(?:이 필요|을 (?:요청|부탁|기다)|해 주|받아야)|허락(?:이 필요|해 주|받아야)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|정해\s?주세요|정해\s?줘|주시면|라고\s?(?:알려|말해)\s?(?:줘|주세요)|(?:네|너의|당신의|사용자님의?)\s?결정|동의(?:를|가)?\s?(?:기다리|필요)|골라 주세요|선택해 주세요|어느 쪽|shall I|may I|would you like|(?:need|needs|awaiting|waiting for) your (?:approval|decision|permission))/i;
 
 const SYSTEM_BLOCK = `# Goal lane (Main only)
 On a request whose result the user will judge (an image, a document, a site, a feature, a fix, an investigation), call \`lab_goal\` \`op: "frame"\` before the first substantive tool call: \`goal\` = the purpose behind the request, \`explicit\` = conditions in the user's own words, \`assumptions\` = conditions you added yourself, \`deliverables\` = what must exist at the end and the check that would convince an outside expert. A pure typo or one-line edit is \`size: "small"\` (the plugin then stays silent) or no frame at all.
@@ -231,10 +234,35 @@ export async function judgeUnstated(items: readonly string[], userWords: string,
   const checked = items.slice(0, EXPLICIT_JUDGE_LIMIT);
   // Scan the whole text before cutting it: a marker outside the sent tail must still keep the tail from being sent.
   if (!checked.length || SECRET_PATTERN.test(userWords)) return unstated;
-  const words = userWords.trim().slice(-USER_WORDS_LIMIT);
-  if (!words) return unstated;
+  const all = userWords.trim();
+  if (!all) return unstated;
+  const tail = all.slice(-USER_WORDS_LIMIT);
+  const tailStart = all.length - tail.length;
   const verdicts = await Promise.all(checked.map(async (item) => {
     if (SECRET_PATTERN.test(item)) return false;
+    // The tail alone hid a condition stated earlier in the session (11-14 home measurement: a no-edit rule matched the
+    // whole text 15/15 but sat before the last 4000 characters, and the judge answered not-stated). When the tail does
+    // not show the condition, put the earlier line sharing the most words with it in front of a shorter tail.
+    let words = tail;
+    if (tailStart > 0 && !grounded(item, normalize(tail))) {
+      const tokens = item.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+      let best = "";
+      let bestHits = 0;
+      let start = 0;
+      // Whole lines that start before the tail, so a line crossing the cut keeps its negation ("… was rejected").
+      for (const line of all.split("\n")) {
+        if (start >= tailStart) break;
+        start += line.length + 1;
+        const haystack = normalize(line);
+        const hits = tokens.filter((token) => haystack.includes(token)).length;
+        if (hits > bestHits) [best, bestHits] = [line, hits];
+      }
+      // A line longer than the head keeps the part around the condition's first matching word.
+      const found = tokens.map((token) => best.toLowerCase().indexOf(token)).filter((index) => index >= 0);
+      const from = best.length > USER_WORDS_LIMIT / 2 && found.length ? Math.max(0, Math.min(...found) - USER_WORDS_LIMIT / 4) : 0;
+      const head = best.slice(from, from + USER_WORDS_LIMIT / 2).trim();
+      if (head) words = `${head}\n…\n${all.slice(-(USER_WORDS_LIMIT - head.length - 3))}`;
+    }
     const answers = await askJudge({ source: "untrusted-session-user-messages", userMessages: words, condition: item }, EXPLICIT_QUESTIONS, ctx, EXPLICIT_JUDGE_PURPOSE, resolveJudge, timeoutMs);
     return confident(answers?.asked, "not-stated");
   }));
