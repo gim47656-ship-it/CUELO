@@ -70,8 +70,11 @@ export type HelperModels = Record<Role, Set<string>>;
 type LedgerLine = {
   type?: string;
   sessionId?: string;
+  attemptId?: string;
   reviewId?: string;
   chosenModel?: string;
+  /** outcome 줄: 실행 끝에 실제로 응답한 모델. 대체 체인으로 넘어가면 dispatch의 chosenModel과 다르다. */
+  resolvedModel?: string;
   reviewers?: unknown;
   advisory?: unknown;
 };
@@ -85,11 +88,20 @@ function answeredModel(value: unknown): string | undefined {
   return status === "ok" && typeof model === "string" && model.length > 0 ? model : undefined;
 }
 
-/** 원장에서 이 세션의 발주 모델과, 이 세션 것이거나 세션 기록에 나온 검토 id의 실제 응답 검토자. */
+/**
+ * 원장에서 이 세션 Maker의 실제 응답 모델과, 이 세션 것이거나 세션 기록에 나온 검토 id의 실제 응답 검토자. Maker는 같은 attempt의
+ * outcome에 resolvedModel이 있으면 그 모델이고(실행 중 대체 전환), 없으면(실행 중·미관측·옛 기록) 발주 모델이다.
+ */
 export function helpersFromLedger(lines: readonly LedgerLine[], sessionId: string, reviewIds: ReadonlySet<string>, into: HelperModels): void {
+  const resolved = new Map<string, string>();
+  for (const line of lines) {
+    if (line?.type === "outcome" && line.sessionId === sessionId && typeof line.attemptId === "string" && typeof line.resolvedModel === "string" && line.resolvedModel) resolved.set(line.attemptId, line.resolvedModel);
+  }
   for (const line of lines) {
     if (!line || typeof line !== "object") continue;
-    if (line.type === "dispatch" && line.sessionId === sessionId && typeof line.chosenModel === "string") into.maker.add(line.chosenModel);
+    if (line.type === "dispatch" && line.sessionId === sessionId && typeof line.chosenModel === "string") {
+      into.maker.add((typeof line.attemptId === "string" ? resolved.get(line.attemptId) : undefined) ?? line.chosenModel);
+    }
     if (line.type !== "cross-review") continue;
     if (line.sessionId !== sessionId && !(typeof line.reviewId === "string" && reviewIds.has(line.reviewId))) continue;
     // 실제로 답한 자리만 센다. 늦거나 실패한 보조 검토자는 「답한 모델」이 아니다.
@@ -111,7 +123,7 @@ export function readLedgerLines(path: string): LedgerLine[] {
   }
   const out: LedgerLine[] = [];
   for (const line of text.split("\n")) {
-    if (!line.includes('"type":"dispatch"') && !line.includes('"type":"cross-review"')) continue;
+    if (!line.includes('"type":"dispatch"') && !line.includes('"type":"outcome"') && !line.includes('"type":"cross-review"')) continue;
     try {
       out.push(JSON.parse(line) as LedgerLine);
     } catch {

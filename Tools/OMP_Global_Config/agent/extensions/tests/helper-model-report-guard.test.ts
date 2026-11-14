@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { createHelperModelReportGuard, findings, namesOf, REMINDER_TYPE, type HelperModels } from "../helper-model-report-guard";
+import { createHelperModelReportGuard, findings, namesOf, readLedgerLines, REMINDER_TYPE, type HelperModels } from "../helper-model-report-guard";
 
 const SESSION = "01a1d7d1-3e0a-73d7-b068-dfcab44fb971";
 const OTHER = "maker-child-session";
@@ -177,5 +180,32 @@ describe("helper-model-report-guard", () => {
     expect(findings(GUARD_REPORT, real)).toEqual([]);
     // 같은 보고라도 명단 줄(목록 항목)에 계열만 적으면 여전히 잡는다.
     expect(findings(`${GUARD_REPORT}\n\n- 코드 교차 검토: GPT 쪽 검토자`, real)).toEqual([{ kind: "family-only", phrase: "GPT 쪽" }]);
+  });
+
+  test("실행 중 대체 모델로 넘어간 Maker는 원장 outcome의 실제 응답 모델로 판정한다", () => {
+    // dispatch는 Sonnet으로 남고, 같은 attempt의 outcome resolvedModel이 Opus면 실제로 답한 Maker는 Opus다.
+    // 예전에는 outcome 줄을 읽지 않아 맞게 적은 「Opus」를 다른 모델로 잡고 Sonnet으로 정정하게 했다.
+    const dir = mkdtempSync(join(tmpdir(), "hmrg-"));
+    try {
+      const path = join(dir, "routing-ledger.jsonl");
+      const identity = { sessionId: SESSION, assignmentId: `${SESSION}#c#0`, attempt: 1, attemptId: "attempt-fallback", agentId: "0-Fix", jobId: "" };
+      writeFileSync(path, [
+        JSON.stringify({ type: "dispatch", ts: "2026-11-14T08:00:00Z", ...identity, name: "Fix", chosenModel: "anthropic/claude-sonnet-5-5", chosenEffort: "auto" }),
+        JSON.stringify({ type: "outcome", ts: "2026-11-14T08:20:00Z", ...identity, jobId: "job-1", status: "completed", durationSec: 1200, resolvedModel: "anthropic/claude-opus-5-5", resolvedModelIsFallback: true }),
+        // 다른 세션의 같은 attemptId outcome은 이 세션의 응답 모델이 아니다.
+        JSON.stringify({ type: "outcome", ts: "2026-11-14T08:21:00Z", ...identity, sessionId: OTHER, status: "completed", resolvedModel: "openai-codex/gpt-6.1-sol" }),
+      ].join("\n"));
+      const h = harness("main", readLedgerLines(path));
+      h.user("보고");
+      h.assistant("- 구현 Maker: Opus");
+      expect(h.sent).toHaveLength(0);
+      h.user("다시");
+      h.assistant("- 구현 Maker: Sonnet");
+      expect(h.sent).toHaveLength(1);
+      expect(h.sent[0].content).toContain("오퍼스(anthropic/claude-opus-5-5)");
+      expect(h.sent[0].content).not.toContain("소네트(");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
