@@ -149,6 +149,17 @@ describe("pending reads", () => {
     expect(FLUSH_DELAY_MS).toBeLessThanOrEqual(60_000);
   });
 
+  test("keys timed well in the future are neither queued nor kept, so they cannot outlive the keep window", () => {
+    const dir = temp("reads-future-");
+    const soon = keyAt(now + 10 * 60_000, "r-soon");
+    const future = "r-1/29991231T2359-instabox.md";
+    expect(queueRoutineReads(dir, [soon, future, keyAt(now + 2 * DAY, "r-2")], now)).toBe(1);
+    writeReads(dir, "host-a", { version: 1, posts: [future, keyAt(now - DAY)] });
+    mergeOwnReads(dir, "host-a", [], now);
+    expect(JSON.parse(readFileSync(ownFile(dir, "host-a"), "utf8")).posts).toEqual([keyAt(now - DAY)]);
+    expect(readSavedReadKeys(dir, now + 30 * DAY).size).toBe(0);
+  });
+
   test("a failed flush keeps the keys for the next attempt", async () => {
     const dir = temp("reads-failflush-");
     mkdirSync(join(dir, "reads"));

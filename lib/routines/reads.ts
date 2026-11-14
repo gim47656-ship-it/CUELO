@@ -8,7 +8,8 @@ import { thisRoutineHost } from "./store";
 /**
  * PC별 읽음 기록. 공용 루틴 저장소의 `reads/<PC 이름>.json`(`{ "version": 1, "posts": ["<루틴 id>/<글 파일>", ...] }`)에
  * 이 PC에서 열어 본 글을 둔다. 각 서버는 자기 파일만 쓰므로 PC끼리 내용이 부딪히지 않고, 읽음은 모든 파일의 합집합이다.
- * 글 파일 이름의 실행 시각이 8일을 넘은 키는 쓸 때 버려 파일이 계속 자라지 않는다(「새 글」은 7일 안의 글만 센다).
+ * 글 파일 이름의 실행 시각이 8일을 넘은 키는 쓸 때 버려 파일이 계속 자라지 않는다(「새 글」은 7일 안의 글만 센다). 실행 시각이
+ * PC 시계 차이를 넘어 미래인 키도 받지 않는다: 그런 키는 정리 기간이 끝나지 않아 파일에 영영 남는다.
  *
  * 열어 본 글은 서버 메모리에 모았다가 `FLUSH_DELAY_MS` 뒤 한 번의 커밋으로 올린다(클릭마다 커밋하지 않는다). 올리지
  * 못하면 키를 남겨 다시 시도한다. 서버가 그 사이 꺼져 잃은 키는 브라우저가 목록을 받을 때 다시 올려 준다.
@@ -20,6 +21,7 @@ const FILE_VERSION = 1;
 const KEEP_MS = 8 * 24 * 60 * 60 * 1000;
 const FILE_SIZE_LIMIT = 1024 * 1024;
 const PENDING_LIMIT = 2000;
+const FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
 const HOST_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 interface PendingReads {
@@ -37,11 +39,11 @@ function pending(): PendingReads {
   return globalThis.__cueloRoutineReads;
 }
 
-/** 읽음 키로 받을 수 있는 글 키이고 아직 정리 기간 안인지. */
+/** 읽음 키로 받을 수 있는 글 키이고 실행 시각이 정리 기간 안인지(시계 차이 여유를 넘는 미래 시각은 아니다). */
 function isRecentKey(key: string, now: number): boolean {
   const parsed = parsePostKey(key);
   const at = parsed ? postFileStartedAt(parsed.file) : null;
-  return at !== null && now - at <= KEEP_MS;
+  return at !== null && at - now <= FUTURE_SKEW_MS && now - at <= KEEP_MS;
 }
 
 /** 파일 이름으로 안전한 PC 이름인지(`thisRoutineHost()`는 소문자·숫자·하이픈이다). */
