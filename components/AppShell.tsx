@@ -2,9 +2,9 @@
 
 import { useState, useCallback, useRef, useEffect, useReducer, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/navigation";
-import { ActionButton, Icon, Menu, ToggleButton } from "@seed-design/react";
+import { ActionButton, Icon, Menu } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { SessionSidebar } from "./SessionSidebar";
+import { SessionSidebar, type SessionActivity } from "./SessionSidebar";
 import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
 import { ComputerTakeoverControl } from "./ComputerTakeoverControl";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
@@ -15,6 +15,13 @@ import { SettingsConfig } from "./SettingsConfig";
 import { NotificationPermission, useNotificationPermission } from "./NotificationPermission";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { AuxiliaryDeck, type AuxiliaryDeckView } from "./workspace/AuxiliaryDeck";
+import { CueloMark, WorkbenchIcon, type WorkbenchIconName } from "./workspace/WorkbenchIcon";
+import {
+  LEGACY_PRIORITY_MODE_STORAGE_KEY,
+  NAVIGATOR_MODE_STORAGE_KEY,
+  parseStoredNavigatorMode,
+  type NavigatorMode,
+} from "@/lib/navigator-modes";
 import { ProcessLogPanel, type ProcessLogData } from "./workspace/ProcessLogPanel";
 import { SideChatPanel } from "./workspace/SideChatPanel";
 import { ResourcePanel, type ResourceTab } from "./workspace/ResourcePanel";
@@ -37,6 +44,7 @@ import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
 import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
+import { useTranslatorText } from "./translator/i18n";
 import { RoutinePanel, RoutineView } from "./routines/RoutineView";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { RepoSyncIndicator } from "./RepoSyncIndicator";
@@ -115,6 +123,7 @@ type AutoNameStatus =
 const TRANSIENT_LAYER_FOCUSABLE_SELECTOR =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 const WIDE_CHAT_STORAGE_KEY = "omp-web:wide-chat";
+const INSPECTOR_STORAGE_KEY = "omp-web:inspector-open";
 function createAppSideChatStore() {
   try {
     return createSideChatHistoryStore(typeof window === "undefined" ? null : window.localStorage);
@@ -151,6 +160,8 @@ export function AppShell({
   const themeLabelKey =
     preference === "light" ? "theme.light" : preference === "dark" ? "theme.dark" : "theme.auto";
   const { locale, setLocale, t: translate, supportedLocales } = useI18n();
+  const { tt: translateTranslator } = useTranslatorText();
+  const translatorTabLabel = translateTranslator("translator.tab");
   const notificationPermission = useNotificationPermission();
   const isCompactWorkspace = useIsCompactWorkspace();
   useViewportHeight();
@@ -809,13 +820,58 @@ export function AppShell({
   const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [lastPanelView, setLastPanelView] = useState<WorkspacePanelViewId>("subagents");
+  // The right inspector stays open on a wide desktop until the operator hides it (per browser).
+  // Below its pin width, and on the phone, 이번 턴 opens on request (turn row, peek strip, toggle).
+  const [inspectorOpen, setInspectorOpenState] = useState(true);
+  useEffect(() => {
+    try {
+      setInspectorOpenState(window.localStorage.getItem(INSPECTOR_STORAGE_KEY) !== "0");
+    } catch {
+      // Without storage the inspector stays open.
+    }
+  }, []);
+  const setInspectorOpen = useCallback((open: boolean) => {
+    setInspectorOpenState(open);
+    try {
+      window.localStorage.setItem(INSPECTOR_STORAGE_KEY, open ? "1" : "0");
+    } catch {
+      // The choice lasts for this tab only.
+    }
+  }, []);
+  const [turnStackOpen, setTurnStackOpen] = useState(false);
+  // ChatWindow portals the selected turn into this node while 이번 턴 is on screen.
+  const [turnSlot, setTurnSlot] = useState<HTMLDivElement | null>(null);
+  const inspectorPinned = pinDecision.deck === "pinned";
+  // The list column's place (프로젝트 or 우선순위), chosen in the rail; restored after hydration.
+  const [navigatorMode, setNavigatorModeState] = useState<NavigatorMode>("projects");
+  useEffect(() => {
+    try {
+      setNavigatorModeState(parseStoredNavigatorMode(
+        window.localStorage.getItem(NAVIGATOR_MODE_STORAGE_KEY),
+        window.localStorage.getItem(LEGACY_PRIORITY_MODE_STORAGE_KEY),
+      ));
+    } catch {
+      // Keep the projects mode when browser storage is unavailable.
+    }
+  }, []);
+  const setNavigatorMode = useCallback((mode: NavigatorMode) => {
+    setNavigatorModeState(mode);
+    try {
+      window.localStorage.setItem(NAVIGATOR_MODE_STORAGE_KEY, mode);
+      window.localStorage.setItem(LEGACY_PRIORITY_MODE_STORAGE_KEY, mode === "priority" ? "1" : "0");
+    } catch {
+      // Keep the current-tab mode when browser storage is unavailable.
+    }
+  }, []);
+  // Sessions waiting for the user's answer, reported by the list; the rail's 우선순위 item counts them.
+  const [sessionActivity, setSessionActivity] = useState<SessionActivity>({ running: 0, waiting: [] });
 
   const selectWorkspaceView = useCallback((view: WorkspaceViewId, restoreFocus = false) => {
     dispatchWorkspaceLayout({ type: "select-view", view });
     setActiveTopPanel(null);
-    if (isCompactWorkspace) setCompactDrawerOpen(false);
+    if (view === "chat") setTurnStackOpen(false);
     if (restoreFocus || view === "chat") requestComposerFocus();
+    if (isCompactWorkspace) setCompactDrawerOpen(false);
   }, [isCompactWorkspace, requestComposerFocus, setCompactDrawerOpen]);
 
   // 넓게 보기/원래 크기를 바꾼 뒤 초점을 새 자리의 같은 토글에 둔다. 덱이 다른 자리로 다시 마운트된다.
@@ -882,16 +938,53 @@ export function AppShell({
     if (closing) requestComposerFocus();
   }, [isCompactWorkspace, requestComposerFocus, setCompactDrawerOpen, workspaceLayout.transientLayer]);
 
-  // The auxiliary panel toggle returns to the view the operator last used, so
-  // closing and reopening it does not reset their place in the workspace.
+  // The inspector toggle. Pinned beside the conversation it hides and shows the inspector and keeps the
+  // choice; stacked (narrow window, phone) it opens 이번 턴 in the conversation's place and closes back.
   const toggleAuxiliaryPanel = useCallback(() => {
-    if (workspaceLayout.activeView !== "chat") {
-      setLastPanelView(workspaceLayout.activeView as WorkspacePanelViewId);
+    const panelView = workspaceLayout.activeView !== "chat";
+    if (inspectorPinned) {
+      if (inspectorOpen || panelView) {
+        if (panelView) selectWorkspaceView("chat", true);
+        setInspectorOpen(false);
+      } else {
+        setInspectorOpen(true);
+      }
+      return;
+    }
+    if (panelView || turnStackOpen) {
+      setTurnStackOpen(false);
       selectWorkspaceView("chat", true);
       return;
     }
-    selectWorkspaceView(lastPanelView, true);
-  }, [lastPanelView, selectWorkspaceView, workspaceLayout.activeView]);
+    setTurnStackOpen(true);
+  }, [inspectorOpen, inspectorPinned, selectWorkspaceView, setInspectorOpen, turnStackOpen, workspaceLayout.activeView]);
+  // A turn row or the phone's peek strip asks for 이번 턴 of that turn.
+  const showTurnInspector = useCallback(() => {
+    if (workspaceLayout.activeView !== "chat") dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
+    if (inspectorPinned) setInspectorOpen(true);
+    else setTurnStackOpen(true);
+  }, [inspectorPinned, setInspectorOpen, workspaceLayout.activeView]);
+  const selectInspectorView = useCallback((view: AuxiliaryDeckView) => {
+    if (view !== "turn") {
+      selectWorkspaceView(view);
+      return;
+    }
+    dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
+    setActiveTopPanel(null);
+    if (inspectorPinned) setInspectorOpen(true);
+    else setTurnStackOpen(true);
+  }, [inspectorPinned, selectWorkspaceView, setInspectorOpen]);
+  const closeInspector = useCallback(() => {
+    if (inspectorPinned) setInspectorOpen(false);
+    setTurnStackOpen(false);
+    dispatchWorkspaceLayout({ type: "select-view", view: "chat" });
+  }, [inspectorPinned, setInspectorOpen]);
+
+  // The phone sheet is a modal dialog: focus moves into it on open so Escape
+  // and Tab act inside the sheet, not on the covered chat behind it.
+  const focusInspectorSheet = useCallback((node: HTMLElement | null) => {
+    node?.focus({ preventScroll: true });
+  }, []);
 
   // 재로그인은 설정 진입과 같은 자리를 비우고, 기존 Models 화면의 OAuth 상세를 그 계정 안내와 함께
   // 연다. 로그인은 사용자가 그 화면에서 직접 시작한다.
@@ -1640,7 +1733,15 @@ export function AppShell({
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
   const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
-  const showAuxiliaryDeck = workspaceLayout.activeView !== "chat";
+  // Pinned: the inspector shows while open, or while a panel view was asked for. Stacked: a panel view
+  // or 이번 턴 on request takes the conversation's place; on the phone it is the bottom sheet instead.
+  const showAuxiliaryDeck = inspectorPinned
+    ? inspectorOpen || workspaceLayout.activeView !== "chat"
+    : workspaceLayout.activeView !== "chat" || turnStackOpen;
+  const deckAsSheet = isMobile && showAuxiliaryDeck;
+  const inspectorView: AuxiliaryDeckView = workspaceLayout.activeView === "chat"
+    ? "turn"
+    : workspaceLayout.activeView as WorkspacePanelViewId;
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
@@ -1761,7 +1862,7 @@ export function AppShell({
     pinDecision,
     deckExpanded: workspaceLayout.deckExpanded,
   });
-  const deckReplacesTranscript = deckPresentation.replacesTranscript;
+  const deckReplacesTranscript = deckPresentation.replacesTranscript && !deckAsSheet;
   const deckExpand = deckPresentation.expandable
     ? { expanded: deckPresentation.expanded, onToggle: toggleDeckExpanded }
     : null;
@@ -1784,10 +1885,8 @@ export function AppShell({
   const viewLabels: Record<WorkspaceViewId, string> = locale === "ko"
     ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적" }
     : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace" };
-  const panelOpen = workspaceLayout.activeView !== "chat";
-  const activePanelLabel = panelOpen
-    ? viewLabels[workspaceLayout.activeView]
-    : viewLabels[lastPanelView];
+  const inspectorViewLabels: Record<AuxiliaryDeckView, string> = { ...viewLabels, turn: translate("inspector.turn") };
+  const inspectorShown = showAuxiliaryDeck && !deckPresentation.expanded;
   // One context indicator. The number carries the meaning; the bar and the
   // level only reinforce it, so colour is never the sole signal.
   const contextIndicator = getContextIndicator(contextUsage);
@@ -1916,11 +2015,15 @@ export function AppShell({
       visible={workspaceLayout.activeView === "sidechat"}
     />
   );
+  const turnSlotContent = showChat
+    ? <div ref={setTurnSlot} className="turn-inspector-slot" />
+    : <p className="inspector-empty">{translate("inspector.noTurn")}</p>;
   const nativeAuxiliaryDeck = showAuxiliaryDeck ? (
     <AuxiliaryDeck
-      activeView={workspaceLayout.activeView as AuxiliaryDeckView}
-      onViewChange={(view) => selectWorkspaceView(view)}
-      viewLabels={viewLabels}
+      activeView={inspectorView}
+      onViewChange={selectInspectorView}
+      viewLabels={inspectorViewLabels}
+      turnSlot={turnSlotContent}
       sessionId={selectedSession?.id ?? null}
       sessionPath={selectedSessionPath}
       sessionName={selectedSession?.name}
@@ -1934,7 +2037,8 @@ export function AppShell({
       pluginsSlot={pluginsSlot}
       memorySlot={memorySlot}
       visible
-      onClose={() => dispatchWorkspaceLayout({ type: "select-view", view: "chat" })}
+      onClose={closeInspector}
+      closeLabel={inspectorPinned ? translate("inspector.hide") : translate("inspector.backToChat")}
       onReturnFocus={requestComposerFocus}
       expand={deckExpand}
       selectedMaker={selectedMaker}
@@ -1967,13 +2071,13 @@ export function AppShell({
           <TranslatorPanel onOpen={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined} />
         )}
         translatorActive={translatorOpen}
-        onTranslatorActiveChange={setTranslatorActive}
         routinePanel={<RoutinePanel onOpen={isCompactWorkspace ? () => setCompactDrawerOpen(false) : undefined} />}
         routineActive={routineOpen}
-        onRoutineActiveChange={setRoutineActive}
+        navigatorMode={navigatorMode}
+        onActivityChange={setSessionActivity}
       />
-      {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. */}
-      <div className="navigator-footer" style={{ padding: "8px", flexShrink: 0 }}>
+      {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. 보수·설정은 레일에 있다. */}
+      <div className="navigator-footer">
         <SidebarUsage
           usage={usage}
           onOpen={() => {
@@ -1984,54 +2088,71 @@ export function AppShell({
         />
         <OmpUpdateIndicator />
         <RepoSyncIndicator />
-        {/* 「보수」는 설정과 같은 모양으로 나란히 둔다. 누르면 화면 전체를 덮는 보수 점검판이 열린다. */}
-        <div style={{ display: "flex", gap: 6 }}>
-        <button
-          type="button"
-          className="navigator-settings-action"
-          onClick={() => {
-            if (isCompactWorkspace) setCompactDrawerOpen(false);
-            setUpkeepActive(true);
-          }}
-          title={UPKEEP_TEXT.menuTitle}
-          style={{
-            width: "100%", height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            cursor: "pointer", fontSize: 12, fontFamily: "var(--font-mono)",
-            transition: "background 0.12s, color 0.12s, border-color 0.12s",
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-          </svg>
-          {UPKEEP_TEXT.menu}
-        </button>
-        <button
-          className="navigator-settings-action"
-          onClick={() => {
-            setActiveTopPanel(null);
-            dispatchWorkspaceLayout({ type: "close-layer" });
-            if (isCompactWorkspace) setCompactDrawerOpen(false);
-            setSettingsConfigOpen(true);
-          }}
-          title={translate("common.settings")}
-          style={{
-            width: "100%", height: 34, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)",
-            color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
-            fontFamily: "var(--font-mono)", transition: "background 0.12s, color 0.12s, border-color 0.12s",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.borderColor = "var(--text-dim)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.borderColor = "var(--border)"; }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.39.33.74.6 1 .3.28.69.42 1.1.4h.09v4h-.09A1.7 1.7 0 0 0 19.4 15Z" />
-          </svg>
-          {translate("common.settings")}
-        </button>
-        </div>
       </div>
     </>
+  );
+
+  // The rail names places: the list column's 프로젝트 / 우선순위, the 통역 and 루틴 screens, and the 보수
+  // and 설정 places at its foot. It stays on screen when Ctrl B hides the list; in the drawer it rides
+  // along with the list.
+  const sidePlaceOpen = translatorOpen || routineOpen;
+  const openListPlace = (mode: NavigatorMode) => {
+    setNavigatorMode(mode);
+    if (translatorOpen) setTranslatorActive(false);
+    if (routineOpen) setRoutineActive(false);
+    if (!isCompactWorkspace && !sidebarOpen) handleSidebarToggle();
+  };
+  const railItem = (
+    key: string,
+    icon: WorkbenchIconName,
+    label: string,
+    current: boolean,
+    onClick: () => void,
+    extra?: ReactNode,
+  ) => (
+    <button
+      key={key}
+      type="button"
+      className="workspace-rail-item"
+      aria-current={current ? "page" : undefined}
+      title={label}
+      onClick={onClick}
+    >
+      <WorkbenchIcon name={icon} />
+      <span className="workspace-rail-label">{label}</span>
+      {extra}
+    </button>
+  );
+  const railContent = (
+    <nav className="workspace-rail" aria-label={translate("workbench.places")}>
+      <span className="workspace-rail-logo" title="CUELO"><CueloMark size={30} /></span>
+      {railItem("projects", "folder", translate("sidebar.projects"), !sidePlaceOpen && navigatorMode === "projects", () => openListPlace("projects"))}
+      {railItem(
+        "priority",
+        "list-ordered",
+        translate("navigator.priority"),
+        !sidePlaceOpen && navigatorMode === "priority",
+        () => openListPlace("priority"),
+        sessionActivity.waiting.length > 0 ? (
+          <span className="workspace-rail-badge" aria-label={translate("workbench.needsInputCount", { count: sessionActivity.waiting.length })}>
+            {sessionActivity.waiting.length}
+          </span>
+        ) : undefined,
+      )}
+      {railItem("translator", "languages", translatorTabLabel, translatorOpen, () => setTranslatorActive(!translatorOpen))}
+      {railItem("routine", "repeat", translate("routines.tab"), routineOpen, () => setRoutineActive(!routineOpen))}
+      <span className="workspace-rail-spacer" />
+      {railItem("upkeep", "activity", UPKEEP_TEXT.menu, upkeepOpen, () => {
+        if (isCompactWorkspace) setCompactDrawerOpen(false);
+        setUpkeepActive(true);
+      })}
+      {railItem("settings", "settings", translate("common.settings"), settingsConfigOpen, () => {
+        setActiveTopPanel(null);
+        dispatchWorkspaceLayout({ type: "close-layer" });
+        if (isCompactWorkspace) setCompactDrawerOpen(false);
+        setSettingsConfigOpen(true);
+      })}
+    </nav>
   );
 
   // 상단 업데이트 상태 줄. 배포 완료가 확인된 request에만 붙고, 정리 진행/완료/실패를
@@ -2065,6 +2186,7 @@ export function AppShell({
       data-deck-visible={showAuxiliaryDeck}
       data-chat-wide={wideChat ? "true" : undefined}
     >
+      {!isCompactWorkspace && railContent}
       {/* Navigator drawer backdrop */}
       <div
         aria-hidden="true"
@@ -2085,7 +2207,8 @@ export function AppShell({
           "--sidebar-width": `${sidebarResizer.width}px`,
         } as React.CSSProperties}
       >
-        {sidebarContent}
+        {isCompactWorkspace && railContent}
+        <div className="sidebar-list">{sidebarContent}</div>
       </div>
       {navigatorPresentation.laidOut && (
         <div
@@ -2153,35 +2276,23 @@ export function AppShell({
               title={navigatorPresentation.presented ? translate("sidebar.hide") : translate("sidebar.show")}
               aria-label={navigatorPresentation.presented ? translate("sidebar.hide") : translate("sidebar.show")}
             >
-              {navigatorPresentation.presented ? (
-                <Icon
-                  size="16px"
-                  svg={
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
-                    </svg>
-                  }
-                />
-              ) : (
-                <Icon
-                  size="18px"
-                  svg={
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                      <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
-                    </svg>
-                  }
-                />
-              )}
+              <WorkbenchIcon name={isCompactWorkspace ? "menu" : "panel-left"} />
             </ActionButton>
             <div className="workspace-session-identity" title={sessionIdentityTooltip}>
-              <div className="workspace-session-identity-line">
+              <div className="workspace-session-where">
                 {conversationProjectName && (
-                  <em className="workspace-session-project">{conversationProjectName}</em>
+                  <span className="workspace-session-project">{conversationProjectName}</span>
                 )}
-                <strong>{boundedSessionTitle}</strong>
+                {sessionActivity.running > 0 && (
+                  <span className="workspace-session-running">
+                    <span className="workbench-lamp" aria-hidden="true" />
+                    {translate("workbench.runningCount", { count: sessionActivity.running })}
+                  </span>
+                )}
               </div>
-              <span className="workspace-session-status" aria-live="polite">{mainStatusSummary}</span>
+              <strong className="workspace-session-title">{boundedSessionTitle}</strong>
             </div>
+            <span className="workspace-session-status" aria-live="polite">{mainStatusSummary}</span>
             {/* Title generation reports through the menu label; keep one live region mounted. */}
             <span className="sr-only" role="status">
               {autoNameStatus.kind === "error" ? autoNameStatus.message : ""}
@@ -2237,17 +2348,20 @@ export function AppShell({
               </ActionButton>
             )}
             {showChat && (
-              <ToggleButton
+              <ActionButton
                 className="workspace-panel-toggle"
-                variant="neutralWeak"
+                variant="ghost"
                 size="small"
-                pressed={panelOpen}
-                onPressedChange={toggleAuxiliaryPanel}
+                layout="iconOnly"
+                type="button"
+                onClick={toggleAuxiliaryPanel}
                 aria-controls="workspace-auxiliary-panel"
-                title={locale === "ko" ? "보조 패널" : "Auxiliary panel"}
+                aria-pressed={showAuxiliaryDeck}
+                title={showAuxiliaryDeck ? translate("inspector.hide") : translate("inspector.show")}
+                aria-label={showAuxiliaryDeck ? translate("inspector.hide") : translate("inspector.show")}
               >
-                <span className="workspace-panel-toggle-label">{activePanelLabel}</span>
-              </ToggleButton>
+                <WorkbenchIcon name="panel-right" />
+              </ActionButton>
             )}
             <Menu.Root
               open={moreMenuOpen}
@@ -2282,6 +2396,13 @@ export function AppShell({
                   <Menu.ScrollArea>
                     <Menu.Group>
                       <Menu.GroupLabel>{locale === "ko" ? "세션" : "Session"}</Menu.GroupLabel>
+                      {showChat && (
+                        <Menu.Item onClick={toggleAuxiliaryPanel}>
+                          <Menu.ItemBody>
+                            <Menu.ItemLabel>{showAuxiliaryDeck ? translate("inspector.hide") : translate("inspector.show")}</Menu.ItemLabel>
+                          </Menu.ItemBody>
+                        </Menu.Item>
+                      )}
                       <Menu.Item onClick={openSessionStatsPanel}>
                         <Menu.ItemBody><Menu.ItemLabel>{translate("session.title")}</Menu.ItemLabel></Menu.ItemBody>
                       </Menu.Item>
@@ -2374,8 +2495,7 @@ export function AppShell({
               )}
               {activeTopPanel === "system" && (
                 <div style={{
-                  background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--border)",
+                  background: "var(--bg-subtle)",
                 }}>
                   {systemPrompt ? (
                     <div style={{
@@ -2403,8 +2523,7 @@ export function AppShell({
               )}
               {activeTopPanel === "session" && (
                 <div className="session-info-popover" style={{
-                  background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--border)",
+                  background: "var(--bg-subtle)",
                   padding: "12px 16px",
                 }}>
                   {sessionStats ? (() => {
@@ -2496,20 +2615,18 @@ export function AppShell({
                             marginTop: -2,
                             color: copied ? "var(--accent)" : "var(--text-dim)",
                             background: "transparent",
-                            border: "1px solid var(--border)",
+                            border: 0,
                             borderRadius: "var(--radius-control)",
                             cursor: "pointer",
                             flex: "0 0 auto",
-                            transition: "color 0.12s, border-color 0.12s, background 0.12s",
+                            transition: "color 0.12s, background 0.12s",
                           }}
                           onMouseEnter={(e) => {
                             e.currentTarget.style.color = "var(--accent)";
-                            e.currentTarget.style.borderColor = "var(--accent)";
                             e.currentTarget.style.background = "var(--bg-hover)";
                           }}
                           onMouseLeave={(e) => {
                             e.currentTarget.style.color = copied ? "var(--accent)" : "var(--text-dim)";
-                            e.currentTarget.style.borderColor = "var(--border)";
                             e.currentTarget.style.background = "transparent";
                           }}
                         >
@@ -2628,6 +2745,9 @@ export function AppShell({
               unlockAudio={unlockAudio}
               jumpRequest={chatJump}
               onJumpHandled={handleChatJumpHandled}
+              turnInspectorTarget={showAuxiliaryDeck && inspectorView === "turn" ? turnSlot : null}
+              onShowTurnInspector={showTurnInspector}
+              turnInspectorFolded={isMobile}
             />
           ) : deckReplacesTranscript ? (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
@@ -2683,13 +2803,35 @@ export function AppShell({
             <RoutineView visible={routineOpen} onBack={() => setRoutineActive(false)} />
           ) : null}
           </div>
-          {pinDecision.deck === "pinned" && showAuxiliaryDeck && !deckPresentation.expanded && (
-            <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
-              {auxiliaryDeckContent}
-            </aside>
-          )}
         </div>
       </div>
+      {inspectorPinned && inspectorShown && !sidePlaceOpen && (
+        <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
+          {auxiliaryDeckContent}
+        </aside>
+      )}
+      {deckAsSheet && (
+        <div className="inspector-sheet-layer">
+          <div className="inspector-sheet-scrim" aria-hidden="true" onClick={closeInspector} />
+          <aside
+            id="workspace-auxiliary-panel"
+            className="workspace-auxiliary-deck-slot is-sheet"
+            data-workspace-region="deck"
+            role="dialog"
+            aria-modal="true"
+            aria-label={translate("inspector.label")}
+            tabIndex={-1}
+            ref={focusInspectorSheet}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.stopPropagation();
+              closeInspector();
+            }}
+          >
+            {auxiliaryDeckContent}
+          </aside>
+        </div>
+      )}
       {workspaceLayout.transientLayer === "command-palette" && (
         <div
           className="workspace-command-layer"
@@ -2722,6 +2864,24 @@ export function AppShell({
               }}
             />
             <div className="workspace-command-list">
+              {sessionActivity.waiting.map((session) => (
+                <button
+                  key={`waiting-${session.id}`}
+                  type="button"
+                  className="workspace-command-waiting"
+                  onClick={() => {
+                    dispatchWorkspaceLayout({ type: "close-layer" });
+                    selectWorkspaceView("chat", true);
+                    handleSelectSession(session);
+                  }}
+                >
+                  <span>
+                    <span className="workbench-lamp" data-kind="input" aria-hidden="true" />
+                    {session.name?.trim() || session.firstMessage?.trim() || session.id}
+                  </span>
+                  <small>{translate("workbench.needsInput")}</small>
+                </button>
+              ))}
               {WORKSPACE_VIEW_IDS.map((view) => (
                 <button key={view} type="button" onClick={() => selectWorkspaceView(view, true)}>
                   <span>{viewLabels[view]}</span>

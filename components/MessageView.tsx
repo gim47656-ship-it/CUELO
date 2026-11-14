@@ -41,10 +41,6 @@ import { TodoChecklistRow } from "./TodoChecklistRow";
 import { normalizeCustomPanelLines, parseAnsiLine, stripAnsi } from "@/lib/ansi";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
-import type { DispatchSlot } from "@/lib/answer-status/dispatch";
-import type { FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
-import { DispatchCard } from "./answer-status/DispatchCard";
-import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
 import {
   attachedDocumentKind,
   formatAttachmentSize,
@@ -110,7 +106,7 @@ function SafeMarkdownBody({ children, className, ...props }: React.ComponentProp
           width: "100%",
           margin: "4px 0",
           padding: "7px 10px",
-          border: "1px solid var(--border)",
+          border: 0,
           borderRadius: "var(--radius-control)",
           background: "var(--bg-panel)",
           color: "var(--text-muted)",
@@ -197,10 +193,8 @@ interface Props {
    * final answer text-only.
    */
   writtenFiles?: WrittenFile[];
-  /** `task` calls whose in-answer card sits in this answer, and on which side of the text. */
-  dispatchSlot?: DispatchSlot;
-  /** Observed summary of the finished turn this answer closes; replaces the segment file chips. */
-  turnSummary?: FinishedTurnSummary;
+  /** This answer closes a finished turn; its result row (and 이번 턴) replaces the segment file chips. */
+  hasTurnSummary?: boolean;
   /** Hidden English rendering of this user message (user-input-interpreter); shown collapsed under the bubble. */
   inputTranslation?: string;
   /** A failed attempt the core retried within the same turn (`isRecoveredAssistantError`); drawn as a muted line, not an alert. */
@@ -243,12 +237,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, dispatchSlot, turnSummary, inputTranslation, recoveredError }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, hasTurnSummary, inputTranslation, recoveredError }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} inputTranslation={inputTranslation} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} dispatchSlot={dispatchSlot} turnSummary={turnSummary} recoveredError={recoveredError} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} hasTurnSummary={hasTurnSummary} recoveredError={recoveredError} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -280,8 +274,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
     && prev.sessionId === next.sessionId
-    && prev.dispatchSlot === next.dispatchSlot
-    && prev.turnSummary === next.turnSummary
+    && prev.hasTurnSummary === next.hasTurnSummary
     && prev.inputTranslation === next.inputTranslation
     && prev.recoveredError === next.recoveredError;
 });
@@ -343,7 +336,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
             flex: 1,
             minWidth: 0,
             background: "var(--user-bg)",
-            border: "1px solid var(--accent-line)",
+            border: 0,
             borderRadius: "var(--seed-radius-r3)",
             padding: "8px 12px",
             fontSize: 14,
@@ -373,7 +366,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     key={i}
                     src={src}
                     alt=""
-                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: "var(--radius-control)", objectFit: "contain", display: "block", border: "1px solid var(--border)" }}
+                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: "var(--radius-control)", objectFit: "contain", display: "block" }}
                   />
                 );
               })}
@@ -395,9 +388,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                     gap: 7,
                     minWidth: 0,
                     padding: "5px 7px",
-                    border: "1px solid var(--accent-line)",
+                    border: 0,
                     borderRadius: "var(--radius-control)",
-                    background: "color-mix(in srgb, var(--user-bg) 70%, var(--bg-panel))",
+                    background: "var(--bg-hover)",
                   }}
                 >
                   {getFileIcon(document.name, 14)}
@@ -557,7 +550,7 @@ function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?:
           id={bodyId}
           lang="en"
           className="message-user-translation-body"
-          style={{ alignSelf: "stretch", paddingLeft: 10, borderLeft: "2px solid var(--border)" }}
+          style={{ alignSelf: "stretch", padding: "8px 10px", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)" }}
         >
           <SafeMarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{text}</SafeMarkdownBody>
         </div>
@@ -578,8 +571,7 @@ function AssistantMessageView({
   sessionId,
   entryId,
   writtenFiles,
-  dispatchSlot,
-  turnSummary,
+  hasTurnSummary,
   recoveredError,
 }: {
   message: AssistantMessage;
@@ -593,8 +585,7 @@ function AssistantMessageView({
   sessionId?: string;
   entryId?: string;
   writtenFiles?: WrittenFile[];
-  dispatchSlot?: DispatchSlot;
-  turnSummary?: FinishedTurnSummary;
+  hasTurnSummary?: boolean;
   recoveredError?: boolean;
 }) {
   const { t } = useI18n();
@@ -775,8 +766,6 @@ function AssistantMessageView({
             folds into the same usage disclosure as the settled numbers. */}
       </div>
 
-      {dispatchSlot?.placement === "before" && <DispatchCard calls={dispatchSlot.calls} />}
-
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blockItems.map(({ block, originalIndex }, itemIndex) => {
           if (translatedReply && block.type === "text") {
@@ -790,9 +779,6 @@ function AssistantMessageView({
           <div className="reply-translation-note" style={{ fontSize: 12, color: "var(--text-dim)" }}>{replyTranslation.text}</div>
         )}
       </div>
-
-      {dispatchSlot?.placement === "after" && <DispatchCard calls={dispatchSlot.calls} />}
-
       {providerError && recoveredError ? (
         <details
           className="message-recovered-error"
@@ -811,7 +797,7 @@ function AssistantMessageView({
           style={{
             marginTop: blocks.length > 0 ? 8 : 0,
             padding: "7px 10px",
-            border: "1px solid var(--danger-line)",
+            border: 0,
             borderRadius: "var(--radius-control)",
             background: "var(--danger-soft)",
             color: "var(--danger)",
@@ -826,9 +812,7 @@ function AssistantMessageView({
         </div>
       )}
 
-      {turnSummary ? (
-        <TurnSummaryLine summary={turnSummary} onOpenFile={onOpenFile} />
-      ) : writtenFiles && writtenFiles.length > 0 && (
+      {!hasTurnSummary && writtenFiles && writtenFiles.length > 0 && (
         <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
       )}
 
@@ -946,7 +930,7 @@ function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { trans
         {originalOpen ? t("i18n.hideOriginalReply") : t("i18n.showOriginalReply")}
       </button>
       {originalOpen && (
-        <div className="reply-translation-original" style={{ paddingLeft: 10, borderLeft: "2px solid var(--border)", color: "var(--text-muted)" }}>
+        <div className="reply-translation-original" style={{ padding: "8px 10px", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", color: "var(--text-muted)" }}>
           <SafeMarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{original}</SafeMarkdownBody>
         </div>
       )}
@@ -995,7 +979,6 @@ function ImageBlock({ block }: { block: ImageContent }) {
         borderRadius: "var(--radius-control)",
         objectFit: "contain",
         display: "block",
-        border: "1px solid var(--border)",
       }}
     />
   );
@@ -1780,7 +1763,6 @@ function PairedDiffResult({ diff }: {
   return (
     <div
       style={{
-        borderTop: "1px solid var(--success-line)",
         background: "var(--bg)",
       }}
     >
@@ -1802,7 +1784,7 @@ function SplitPatchView({ text }: { text: string }) {
           key={fileIndex}
           style={{
             minWidth: 0,
-            borderTop: fileIndex === 0 ? "none" : "1px solid var(--border)",
+            marginTop: fileIndex === 0 ? 0 : 8,
             fontFamily: "var(--font-mono)",
             fontSize: 12,
             lineHeight: 1.55,
@@ -1817,7 +1799,6 @@ function SplitPatchView({ text }: { text: string }) {
                 top: 0,
                 zIndex: 1,
                 background: "var(--bg-panel)",
-                borderBottom: "1px solid var(--border)",
               }}
             >
                <SplitDiffHeader title={file.oldPath || t("i18n.before")} side="left" />
@@ -1850,9 +1831,8 @@ function SplitDiffHeader({ title, side }: { title: string; side: "left" | "right
     <div
       title={title}
       style={{
-        padding: "5px 10px",
+        padding: side === "left" ? "5px 14px 5px 10px" : "5px 10px 5px 14px",
         color: "var(--text-dim)",
-        borderRight: side === "left" ? "1px solid var(--border)" : "none",
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -1883,7 +1863,8 @@ function SplitDiffCellView({ cell, side }: { cell: SplitDiffCell; side: "left" |
         display: "flex",
         minWidth: 0,
         background: bg,
-        borderRight: side === "left" ? "1px solid var(--border)" : "none",
+        // A 4px gap between the two columns replaces the old divider line.
+        marginInlineEnd: side === "left" ? 4 : 0,
       }}
     >
       <span
@@ -1894,7 +1875,6 @@ function SplitDiffCellView({ cell, side }: { cell: SplitDiffCell; side: "left" |
           color: "var(--text-dim)",
           userSelect: "none",
           background: "var(--bg-panel)",
-          borderRight: "1px solid var(--border)",
           flexShrink: 0,
         }}
       >
@@ -1956,13 +1936,6 @@ function PatchTextView({ text }: { text: string }) {
             style={{
               display: "flex",
               background: bg,
-              borderLeft: kind === "added"
-                ? "3px solid var(--success)"
-                : kind === "removed"
-                ? "3px solid var(--danger)"
-                : kind === "hunk"
-                ? "3px solid var(--accent)"
-                : "3px solid transparent",
             }}
           >
             <span
@@ -1971,7 +1944,6 @@ function PatchTextView({ text }: { text: string }) {
                 padding: "0 8px",
                 color: "var(--text-dim)",
                 background: "var(--bg-panel)",
-                borderRight: "1px solid var(--border)",
                 textAlign: "right",
                 userSelect: "none",
                 flexShrink: 0,
@@ -2015,7 +1987,6 @@ function PairedResult({ text, isEmpty, isError }: {
   return (
     <div
       style={{
-        borderTop: `1px solid ${isError ? "var(--danger-line)" : "var(--success-line)"}`,
         background: isError ? "var(--danger-soft)" : "var(--bg-subtle)",
       }}
     >
@@ -2055,10 +2026,10 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
     <div style={{ marginBottom: 16 }}>
       <div
         style={{
-          border: "1px solid var(--border)",
+          border: 0,
           borderRadius: "var(--radius-surface)",
           overflow: "hidden",
-          background: "var(--bg)",
+          background: "var(--bg-subtle)",
         }}
       >
         <div
@@ -2067,7 +2038,6 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
             alignItems: "center",
             gap: 8,
             padding: "7px 10px",
-            borderBottom: "1px solid var(--border)",
             background: "var(--bg-panel)",
             color: "var(--text-muted)",
           }}
@@ -2155,10 +2125,10 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
     <div style={{ marginBottom: 16 }}>
       <div
         style={{
-          border: "1px solid var(--border)",
+          border: 0,
           borderRadius: "var(--radius-surface)",
           overflow: "hidden",
-          background: isHiddenDisplay ? "var(--bg-subtle)" : "var(--bg)",
+          background: isHiddenDisplay ? "var(--bg-hover)" : "var(--bg-subtle)",
           opacity: isHiddenDisplay && !contentExpanded ? 0.82 : 1,
         }}
       >
@@ -2168,7 +2138,6 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
             alignItems: "center",
             gap: 8,
             padding: "7px 10px",
-            borderBottom: "1px solid var(--border)",
             background: "var(--bg-panel)",
             color: "var(--text-muted)",
             fontSize: 12,
@@ -2194,7 +2163,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
                       key={i}
                       src={src}
                       alt=""
-                      style={{ maxWidth: 240, maxHeight: 240, borderRadius: "var(--radius-control)", objectFit: "contain", display: "block", border: "1px solid var(--border)" }}
+                      style={{ maxWidth: 240, maxHeight: 240, borderRadius: "var(--radius-control)", objectFit: "contain", display: "block" }}
                     />
                   );
                 })}
@@ -2227,7 +2196,6 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
             alignItems: "center",
             gap: 8,
             padding: "4px 9px",
-            borderTop: "1px solid var(--border)",
             background: "var(--bg-subtle)",
           }}
         >
@@ -2275,7 +2243,6 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
             style={{
               margin: 0,
               padding: "9px 10px",
-              borderTop: "1px solid var(--border)",
               background: "var(--bg)",
               color: "var(--text-muted)",
               fontSize: 12,

@@ -1,7 +1,7 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import type {
   AgentMessage,
   AssistantContentBlock,
@@ -11,7 +11,6 @@ import type {
   BlockingExtensionUiRequest,
   ExtensionUiRequest,
   ExtensionWidgetItem,
-  OpenRequestEvidence,
   SessionInfo,
   SessionTreeNode,
   SubagentSnapshot,
@@ -32,9 +31,8 @@ import { getFileName } from "@/lib/file-paths";
 import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
-import { buildDispatchLedger, placeCompactedDispatch, placeDispatchCards, withCompactedWork, type CompactedDispatchPlacement, type DispatchSlot } from "@/lib/answer-status/dispatch";
-import { DispatchCard } from "./answer-status/DispatchCard";
-import { TurnSummaryLine } from "./answer-status/TurnSummaryLine";
+import { buildDispatchLedger, placeCompactedDispatch, withCompactedWork } from "@/lib/answer-status/dispatch";
+import { TurnInspector, TurnPeek, TurnResultRow, TurnSelectionContext, type TurnKey } from "./answer-status/TurnInspector";
 import { collectJobNotices, collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { deriveWorkFlow } from "@/lib/answer-status/work-flow";
 import { ChatSearchBar } from "./ChatSearchBar";
@@ -153,6 +151,12 @@ interface Props {
   /** Open this session at a message found by the palette's transcript search. */
   jumpRequest?: ChatJumpRequest | null;
   onJumpHandled?: (id: number) => void;
+  /** The inspector's 이번 턴 node while it is on screen; the selected turn is portalled into it. */
+  turnInspectorTarget?: HTMLElement | null;
+  /** A turn row (or the phone's peek strip) asks the shell to bring 이번 턴 on screen. */
+  onShowTurnInspector?: () => void;
+  /** Phone: 이번 턴 folds its blocks, and a peek strip above the composer opens the sheet. */
+  turnInspectorFolded?: boolean;
 }
 
 export interface ChatJumpRequest {
@@ -228,12 +232,8 @@ interface HistoricalTranscriptProps {
   /** The conversation (user turns and answer runs) and the work log behind it. */
   main: ConversationRenderItem[];
   process: ProcessTurnGroup[];
-  /** 발주 카드 자리(`placeDispatchCards`). */
-  dispatchSlots: ReadonlyMap<number, DispatchSlot>;
-  /** Dispatches the latest compaction hid that no shown answer carries, drawn at the compaction point. */
-  compactedDispatch: CompactedDispatchPlacement | null;
-  /** The request the latest compaction cut into, classified from its full records (`CompactedWork.openRequest`); finished cards only. */
-  openRequest: OpenRequestEvidence | null;
+  /** Finished-turn summaries by conversation position (`summarizeFinishedTurns`); each draws one result row. */
+  turnSummaries: ReadonlyMap<number, FinishedTurnSummary>;
   /** Rendered conversation items: [startIndex, endIndex). */
   startIndex: number;
   endIndex: number;
@@ -331,7 +331,7 @@ function writeDismissedInterruption(sessionId: string, entryId: string): void {
 const HistoricalTranscript = memo(function HistoricalTranscript({
   messages, entryIds, toolResultsMap, modelNames, messageCwd, onOpenFile,
   sessionBusy, isNew, isStreaming, handleFork, forkingEntryId, handleNavigate,
-  handleEditContent, sessionId, main, process, dispatchSlots, compactedDispatch, openRequest, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
+  handleEditContent, sessionId, main, process, turnSummaries, startIndex, endIndex, sentinelRef, laterSentinelRef, flashItem, t,
   onProcessLogChange, cues, cueFollowRef,
 }: HistoricalTranscriptProps) {
   useEffect(() => {
@@ -370,20 +370,12 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
     return notices;
   }, [main, process, messages, toolResultsMap, t]);
 
-  // 발주 카드는 그 task 호출에 가장 가까운 같은 턴 답변에(dispatchSlots), 결과 카드는 끝난 턴의 마지막 답변에 붙는다.
-  // 실행 중인 마지막 턴은 아직 끝난 답변이 아니므로 요약하지 않는다. 끝난 턴 가운데 가장 나중 것만 처음에 펼친다.
-  const turnSummaries = useMemo(() => {
-    let liveTurnAnchor: number | null = null;
-    if (sessionBusy) {
-      for (const item of main) if (item.kind === "message" && messages[item.idx]?.role === "user") liveTurnAnchor = item.idx;
-    }
-    return summarizeFinishedTurns(main, messages, liveTurnAnchor, toolResultsMap, messageCwd, openRequest, entryIds);
-  }, [main, messages, toolResultsMap, messageCwd, sessionBusy, openRequest, entryIds]);
+  // 끝난 턴의 결과는 그 턴의 마지막 답변 아래 한 줄(TurnResultRow)이고, 흐름·발주·변경 결과는 인스펙터의 이번 턴에 있다.
 
   // Window the lightweight ordered items, not an already-built JSX transcript.
   const hasMore = startIndex > 0;
   const hasLater = endIndex < main.length;
-  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; dispatchSlot?: DispatchSlot; turnSummary?: FinishedTurnSummary } = {}): ReactNode => {
+  const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; turnSummary?: FinishedTurnSummary } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
     // A tab-local command result between the answer and the next prompt does
     // not take away the prompt's "edit from here" target.
@@ -426,8 +418,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
         sessionId={sessionId}
         writtenFiles={options.writtenFiles}
-        dispatchSlot={options.dispatchSlot}
-        turnSummary={options.turnSummary}
+        hasTurnSummary={options.turnSummary !== undefined}
         inputTranslation={msg.role === "user" ? inputTranslations.get(idx) : undefined}
         recoveredError={isRecoveredAssistantError(messages, idx)}
       />
@@ -460,10 +451,6 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
       )}
       {main.slice(startIndex, endIndex).map((item, offset) => {
         const position = startIndex + offset;
-        // Only the window holding the card's own position draws it, so an earlier page never repeats it.
-        const compactedCard = compactedDispatch?.position === position
-          ? <DispatchCard calls={compactedDispatch.calls} />
-          : null;
         // 이 턴의 발화는 그 턴의 마지막 항목 뒤에 붙는다. 어느 항목이 턴의 끝인지는
         // 작업 로그가 턴을 묶는 자리(anchorIdx)와 같은 규칙이라 두 화면이 어긋나지 않는다.
         const turnIndex = item.kind === "message" ? item.anchorIdx ?? item.idx : item.anchorIdx;
@@ -498,7 +485,6 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         if (item.kind === "message") {
           return (
             <Fragment key={`message-${item.idx}`}>
-              {compactedCard}
               {holder(position, renderMessage(item.idx))}
               {savedLessons}
               {thread}
@@ -509,25 +495,22 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
         // Each tool call is its own assistant entry, so the write/edit summaries
         // of this answer's own segment ride along with it.
         const writtenFiles = extractTurnWrittenFiles(item.precedingBlocks, toolResultsMap, messageCwd);
+        const turnSummary = turnSummaries.get(position);
         return (
           <Fragment key={`answer-${item.idx}-${item.runIndex}`}>
-            {compactedCard}
             {holder(position, renderMessage(item.idx, {
               keyPrefix: `answer-${item.runIndex}`,
               messageOverride: answerRunMessage(messages[item.idx] as AssistantMessage, item.blocks),
               writtenFiles,
-              dispatchSlot: dispatchSlots.get(position),
-              turnSummary: turnSummaries.get(position),
+              turnSummary,
             }))}
+            {turnSummary && <TurnResultRow summary={turnSummary} turnKey={position} />}
             {savedLessons}
             {thread}
             {cueNodes}
           </Fragment>
         );
       })}
-      {compactedDispatch?.position === main.length && endIndex === main.length && (
-        <DispatchCard calls={compactedDispatch.calls} />
-      )}
       {hasLater && (
         <div ref={laterSentinelRef} className="py-3 text-center text-xs text-text-muted">
           {t("chat.loadLater", { count: main.length - endIndex })}
@@ -537,7 +520,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -837,11 +820,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     ),
     [messages, sessionBusy, streamState.isStreaming, displayOptions],
   );
-  // 발주 카드 자리: 그 발주가 붙을 답변 위치.
-  const dispatchSlots = useMemo(
-    () => placeDispatchCards(main, messages, compactedWork?.messages),
-    [main, messages, compactedWork],
-  );
+  // Dispatches the latest compaction hid that no shown turn carries; 이번 턴 of the latest turn lists them.
   const compactedDispatch = useMemo(
     () => placeCompactedDispatch(main, messages, compactedWork?.messages),
     [main, messages, compactedWork],
@@ -1365,6 +1344,49 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     () => (liveTurn ? { ...liveTurn, flow: stripFlow, latest: true } : null),
     [liveTurn, stripFlow],
   );
+  // One summary per finished turn, by the position of its last answer. The running turn is not finished yet,
+  // so it is left to `liveSummary`.
+  const turnSummaries = useMemo(() => {
+    let liveTurnAnchor: number | null = null;
+    if (sessionBusy) {
+      for (const item of main) if (item.kind === "message" && messages[item.idx]?.role === "user") liveTurnAnchor = item.idx;
+    }
+    return summarizeFinishedTurns(main, messages, liveTurnAnchor, toolResultsMap, messageCwd, compactedWork?.openRequest ?? null, entryIds);
+  }, [main, messages, toolResultsMap, messageCwd, sessionBusy, compactedWork, entryIds]);
+  // 이번 턴 follows the running turn, else the latest finished one, until a turn row picks another turn.
+  // A pick that no longer exists (other session, edited history) falls back the same way.
+  const [pickedTurn, setPickedTurn] = useState<TurnKey | null>(null);
+  const currentSessionId = session?.id ?? null;
+  useEffect(() => {
+    setPickedTurn(null);
+  }, [currentSessionId]);
+  let latestTurn: number | null = null;
+  for (const position of turnSummaries.keys()) if (latestTurn === null || position > latestTurn) latestTurn = position;
+  const pickedValid = pickedTurn === "live" ? liveSummary !== null : pickedTurn !== null && turnSummaries.has(pickedTurn);
+  const shownTurn: TurnKey | null = pickedValid ? pickedTurn : liveSummary ? "live" : latestTurn;
+  const shownSummary = shownTurn === "live" ? liveSummary : shownTurn === null ? null : turnSummaries.get(shownTurn) ?? null;
+  const turnSelection = useMemo(() => ({
+    selected: shownTurn,
+    shown: turnInspectorTarget !== null,
+    select: (key: TurnKey) => {
+      setPickedTurn(key);
+      onShowTurnInspector?.();
+    },
+  }), [onShowTurnInspector, shownTurn, turnInspectorTarget]);
+  // The compacted dispatches belong to the request the compaction cut into, which is the latest turn.
+  const latestShown = shownTurn === null || shownTurn === "live" || shownTurn === latestTurn;
+  const turnInspectorPortal = turnInspectorTarget && createPortal(
+    <AnswerStatusContext.Provider value={answerStatus}>
+      <TurnInspector
+        summary={shownSummary}
+        live={shownTurn === "live"}
+        folded={turnInspectorFolded}
+        compactedCalls={latestShown ? compactedDispatch?.calls : undefined}
+        onOpenFile={onOpenFile}
+      />
+    </AnswerStatusContext.Provider>,
+    turnInspectorTarget,
+  );
   const progressStarted = agentRunning && (
     agentPhase?.kind === "running_tools"
     || (streamingAssistant?.content ?? []).some((block) => (block.type === "text" && /\S/.test(block.text)) || block.type === "toolCall")
@@ -1484,7 +1506,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     >
       {transitionBusy ? (
         <div className="absolute inset-0 z-40 cursor-wait">
-          <div className="absolute right-3 top-3 border border-border bg-bg-panel px-3 py-2 text-sm text-text-muted shadow-sm" role="status">
+          <div className="absolute right-3 top-3 bg-bg-raised px-3 py-2 text-sm text-text-muted shadow-sm" role="status">
             {t("chat.loadingSession")}
           </div>
         </div>
@@ -1492,13 +1514,13 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
       {isDragOver && !sessionBusy && (
         <div
           className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center"
-          style={{ background: "var(--accent-soft)", border: "2px dashed var(--accent-line)" }}
+          style={{ background: "var(--accent-soft)" }}
         >
           <span
             className="px-3 py-1 text-sm font-medium"
             style={{
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
+              background: "var(--bg-raised)",
+              boxShadow: "var(--shadow-float)",
               borderRadius: "var(--radius-surface)",
               color: "var(--text)",
             }}
@@ -1519,7 +1541,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         // 바깥 칸은 0까지 줄 수 있어야 한다: 세로 여백을 여기 두면 그만큼은 줄지 않아, 높이가 낮은 가로 폰에서
         // 입력란과 도구 줄을 밀어냈다. 여백은 안쪽에 두고 my-auto로 가운데 맞춘다(넘치면 이 칸 안에서 스크롤된다).
         <div className="flex flex-1 flex-col items-center overflow-y-auto px-4">
-          <div className="chat-empty-start my-auto w-full max-w-[860px] py-8">
+          <div className="chat-empty-start my-auto w-full max-w-[var(--reading-measure)] py-8">
             <div
               className="mb-3"
               style={{
@@ -1585,7 +1607,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             pointerEvents: "none",
           }}
         >
-          <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <div className="chat-column-cap" style={{ maxWidth: "var(--reading-measure)", margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
             <ChatSearchBar
               open={searchOpen}
               onClose={closeSearch}
@@ -1608,10 +1630,11 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         {/* relative: 메시지 안의 absolute 요소(sr-only 등)가 이 스크롤 상자를 기준으로 잘리게 한다. 아니면 바깥 overflow-hidden 상자가 늘어나고 scrollIntoView가 그 상자를 밀어 대화가 화면 밖으로 사라진다. */}
         <div ref={scrollContainerRef} className="chat-session-scroll relative min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: 860, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             <AnswerStatusContext.Provider value={answerStatus}>
+            <TurnSelectionContext.Provider value={turnSelection}>
             <InlineUtterancesProvider utterances={inlineUtterances}>
               <HistoricalTranscript
                 messages={messages}
@@ -1629,9 +1652,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
                 handleEditContent={handleEditContent}
                 sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                 main={main}
-                dispatchSlots={dispatchSlots}
-                compactedDispatch={compactedDispatch}
-                openRequest={compactedWork?.openRequest ?? null}
+                turnSummaries={turnSummaries}
                 process={processGroups}
                 startIndex={startIndex}
                 endIndex={endIndex}
@@ -1655,7 +1676,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
                 onOpenFile={onOpenFile}
               />
             )}
-            {!detached && liveSummary && <TurnSummaryLine summary={liveSummary} live onOpenFile={onOpenFile} />}
+            {!detached && liveSummary && <TurnResultRow summary={liveSummary} turnKey="live" live />}
+            </TurnSelectionContext.Provider>
             </AnswerStatusContext.Provider>
             {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}
 
@@ -1682,14 +1704,13 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
               padding: "6px 12px",
               // 휴대폰에서는 손가락 표적 44px(데스크톱은 그대로).
               minHeight: isMobile ? 44 : undefined,
-              borderRadius: "var(--seed-radius-full)",
-              border: "1px solid var(--border)",
-              background: "var(--bg-panel)",
+              borderRadius: "var(--radius-control)",
+              border: 0,
+              background: "var(--bg-raised)",
+              boxShadow: "var(--shadow-float)",
               color: "var(--text-muted)",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
+              fontSize: 12,
               cursor: "pointer",
-              boxShadow: "0 2px 10px rgba(0,0,0,0.28)",
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1707,7 +1728,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
       <div ref={composerDockRef} className="relative chat-composer-dock flex min-h-0 flex-col">
         {extensionDialog && (
           <div style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
+            <div className="chat-column-cap" style={{ maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
               <ExtensionDialog
                 request={extensionDialog}
                 onRespond={respondToExtensionUi}
@@ -1723,16 +1744,26 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
           }}
         >
-          <div className="chat-column-cap" style={{ maxWidth: 860, margin: "0 auto" }}>
+          <div className="chat-column-cap" style={{ maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
             <ExtensionWidgets widgets={belowEditorWidgets} />
             {(todoPhases || stripFlow.steps.length > 0) && !keyboardCompact && <TodoStrip phases={todoPhases} flow={stripFlow} busy={sessionBusy} />}
           </div>
         </div>
+        {turnInspectorFolded && !turnInspectorTarget && shownSummary && shownTurn !== null && (
+          <div className="turn-peek-dock" style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
+            <div className="chat-column-cap">
+              <AnswerStatusContext.Provider value={answerStatus}>
+                <TurnPeek summary={shownSummary} live={shownTurn === "live"} onOpen={() => turnSelection.select(shownTurn)} />
+              </AnswerStatusContext.Provider>
+            </div>
+          </div>
+        )}
         {chatInputElement}
         <ExtensionStatusBar statuses={extensionStatuses} />
       </div>
+      {turnInspectorPortal}
     </div>
   );
 }
@@ -1755,7 +1786,7 @@ function GoalBar({ goal, t }: { goal: GoalStatusInfo | null; t: (key: string, pa
         gap: 8,
         marginBottom: 8,
         padding: "5px 10px",
-        border: "1px solid var(--border)",
+        border: 0,
         borderRadius: "var(--radius-control)",
         background: "var(--bg-panel)",
         color: "var(--text-muted)",
@@ -1786,13 +1817,13 @@ function ExtensionWidgets({ widgets }: { widgets: Array<{ key: string; lines: st
         <div
           key={widget.key}
           style={{
-            border: "1px solid var(--border)",
+            border: 0,
             borderRadius: "var(--radius-surface)",
             background: "var(--bg-panel)",
             overflow: "hidden",
           }}
         >
-          <div style={{ padding: "5px 9px", borderBottom: "1px solid var(--border)", color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+          <div style={{ padding: "5px 9px", background: "var(--bg-hover)", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
             {widget.key}
           </div>
           <pre style={{ margin: 0, padding: "8px 9px", color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--font-mono)" }}>
@@ -1837,8 +1868,8 @@ function NoticeShelf({ notices, floating = false, align = "left" }: { notices: N
               marginBottom: index === notices.length - 1 ? 0 : 6,
               overflow: "hidden",
               borderRadius: "var(--seed-radius-r3)",
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
+              border: 0,
+              background: "var(--bg-subtle)",
               color: "var(--text-muted)",
               width: "fit-content",
               maxWidth: "min(100%, 620px)",
@@ -2112,7 +2143,7 @@ function ExtensionDialog({
         delivery={delivery}
       >
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px" }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>{t("chat.agentQuestion")}</div>
               <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)" }}>{t("chat.agentQuestionHint")}</div>
@@ -2133,7 +2164,6 @@ function ExtensionDialog({
                     key={question.id}
                     style={{
                       paddingTop: questionIndex === 0 ? 0 : 20,
-                      borderTop: questionIndex === 0 ? "none" : "1px solid var(--hairline)",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
@@ -2177,7 +2207,7 @@ function ExtensionDialog({
                               width: "100%",
                               minHeight: 40,
                               padding: "9px 10px",
-                              border: `1px solid ${checked ? "var(--border-strong)" : "transparent"}`,
+                              border: 0,
                               borderRadius: "var(--radius-control)",
                               background: checked ? "var(--bg-selected)" : "transparent",
                               color: "var(--text)",
@@ -2193,9 +2223,9 @@ function ExtensionDialog({
                                 width: 16,
                                 height: 16,
                                 marginTop: 1,
-                                border: `1px solid ${checked ? "var(--text)" : "var(--text-dim)"}`,
+                                border: 0,
                                 borderRadius: question.multi ? "var(--radius-control)" : "50%",
-                                background: checked ? "var(--seed-color-fg-neutral)" : "transparent",
+                                background: checked ? "var(--seed-color-fg-neutral)" : "var(--bg-selected)",
                                 color: "var(--seed-color-fg-neutral-inverted)",
                                 fontSize: "var(--seed-font-size-t2-static)",
                                 lineHeight: 1,
@@ -2217,7 +2247,7 @@ function ExtensionDialog({
                                 </span>
                               )}
                               {checked && option.preview && (
-                                <span style={{ display: "block", marginTop: 8, padding: "7px 8px", borderLeft: "2px solid var(--border-strong)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                                <span style={{ display: "block", marginTop: 8, padding: "7px 8px", borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
                                   {option.preview}
                                 </span>
                               )}
@@ -2248,7 +2278,7 @@ function ExtensionDialog({
                         height: 36,
                         marginTop: 9,
                         padding: "0 10px",
-                        border: "1px solid var(--border)",
+                        border: 0,
                         borderRadius: "var(--radius-control)",
                         // The shared :focus-visible ring is this app's only focus
                         // indication; an inline `outline: none` here would erase
@@ -2265,18 +2295,18 @@ function ExtensionDialog({
             </div>
           </div>
 
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 16px" }}>
             <button
               type="button"
               onClick={() => onRespond(request, { cancelled: true })}
-              style={{ minHeight: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}
+              style={{ minHeight: 36, padding: "0 12px", border: 0, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text-muted)", cursor: "pointer" }}
             >
               {t("chat.cancel")}
             </button>
             <button
               type="button"
               onClick={() => onRespond(request, { value: JSON.stringify({ kind: "chat" }) })}
-              style={{ minHeight: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text)", cursor: "pointer" }}
+              style={{ minHeight: 36, padding: "0 12px", border: 0, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", cursor: "pointer" }}
             >
               {t("chat.chatAboutThis")}
             </button>
@@ -2287,7 +2317,7 @@ function ExtensionDialog({
               style={{
                 minHeight: 36,
                 padding: "0 14px",
-                border: "1px solid transparent",
+                border: 0,
                 borderRadius: "var(--radius-control)",
                 background: canSubmit && delivery?.status !== "sending" ? "var(--seed-color-bg-neutral-inverted)" : "var(--seed-color-bg-disabled)",
                 color: canSubmit && delivery?.status !== "sending" ? "var(--seed-color-fg-neutral-inverted)" : "var(--seed-color-fg-disabled)",
@@ -2312,7 +2342,7 @@ function ExtensionDialog({
         delivery={delivery}
       >
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ padding: "12px 16px" }}>
             <div style={{ color: "var(--text-muted)", fontSize: "var(--seed-font-size-t2-static)", fontWeight: 600 }}>
               {t("chat.planApproval")}
             </div>
@@ -2328,7 +2358,7 @@ function ExtensionDialog({
             <MarkdownBody>{request.planContent}</MarkdownBody>
           </div>
 
-          <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+          <div style={{ padding: "12px 16px" }}>
             <textarea
               value={planFeedback}
               onChange={(event) => setPlanFeedback(event.target.value)}
@@ -2339,7 +2369,7 @@ function ExtensionDialog({
                 minHeight: 64,
                 maxHeight: 150,
                 padding: "9px 10px",
-                border: "1px solid var(--border)",
+                border: 0,
                 borderRadius: "var(--radius-control)",
                 outline: "none",
                 resize: "vertical",
@@ -2356,14 +2386,14 @@ function ExtensionDialog({
                 onClick={() => onRespond(request, {
                   value: JSON.stringify({ action: "refine", feedback: planFeedback.trim() }),
                 })}
-                style={{ minHeight: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text)", cursor: "pointer" }}
+                style={{ minHeight: 36, padding: "0 12px", border: 0, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", cursor: "pointer" }}
               >
                 {t("chat.refinePlan")}
               </button>
               <button
                 type="button"
                 onClick={() => onRespond(request, { value: JSON.stringify({ action: "approve" }) })}
-                style={{ minHeight: 36, padding: "0 14px", border: "1px solid transparent", borderRadius: "var(--radius-control)", background: "var(--seed-color-bg-neutral-inverted)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontWeight: 600 }}
+                style={{ minHeight: 36, padding: "0 14px", border: 0, borderRadius: "var(--radius-control)", background: "var(--seed-color-bg-neutral-inverted)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontWeight: 600 }}
               >
                 {t("chat.approvePlan")}
               </button>
@@ -2385,7 +2415,7 @@ function ExtensionDialog({
       delivery={delivery}
     >
       <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ padding: "12px 14px" }}>
           <div id={`extension-request-${request.id}`} style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>{request.title}</div>
           <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t2-static)", fontFamily: "var(--font-mono)" }}>{t("chat.extensionRequest")}</div>
         </div>
@@ -2405,8 +2435,8 @@ function ExtensionDialog({
                     minHeight: 40,
                     padding: "9px 10px",
                     borderRadius: "var(--radius-control)",
-                    border: "1px solid var(--border)",
-                    background: "transparent",
+                    border: 0,
+                    background: "var(--bg-hover)",
                     color: "var(--text)",
                     cursor: "pointer",
                     textAlign: "left",
@@ -2431,7 +2461,7 @@ function ExtensionDialog({
                 width: "100%",
                 padding: "9px 10px",
                 borderRadius: "var(--radius-control)",
-                border: "1px solid var(--border)",
+                border: 0,
                 background: "var(--bg)",
                 color: "var(--text)",
                 outline: "none",
@@ -2452,7 +2482,7 @@ function ExtensionDialog({
                 minHeight: 220,
                 padding: 10,
                 borderRadius: "var(--radius-control)",
-                border: "1px solid var(--border)",
+                border: 0,
                 background: "var(--bg)",
                 color: "var(--text)",
                 outline: "none",
@@ -2465,15 +2495,15 @@ function ExtensionDialog({
           )}
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 14px", borderTop: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 14px" }}>
           <button
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
               minHeight: 36,
               padding: "0 12px",
               borderRadius: "var(--radius-control)",
-              border: "1px solid var(--border)",
-              background: "transparent",
+              border: 0,
+              background: "var(--bg-hover)",
               color: "var(--text-muted)",
               cursor: "pointer",
             }}
@@ -2487,7 +2517,7 @@ function ExtensionDialog({
                 minHeight: 36,
                 padding: "0 14px",
                 borderRadius: "var(--radius-control)",
-                border: "1px solid transparent",
+                border: 0,
                 background: "var(--seed-color-bg-neutral-inverted)",
                 color: "var(--seed-color-fg-neutral-inverted)",
                 cursor: "pointer",
@@ -2503,7 +2533,7 @@ function ExtensionDialog({
                 minHeight: 36,
                 padding: "0 14px",
                 borderRadius: "var(--radius-control)",
-                border: "1px solid transparent",
+                border: 0,
                 background: "var(--seed-color-bg-neutral-inverted)",
                 color: "var(--seed-color-fg-neutral-inverted)",
                 cursor: "pointer",
@@ -2568,7 +2598,7 @@ function ExtensionCustomPanel({
           position: "relative",
           width: "min(920px, 100%)",
           maxHeight: "min(760px, calc(100vh - 40px))",
-          border: "1px solid var(--border)",
+          border: 0,
           borderRadius: "var(--radius-surface)",
           background: "var(--bg)",
           boxShadow: "var(--seed-shadow-s3)",
@@ -2624,15 +2654,15 @@ function ExtensionCustomPanel({
             pointerEvents: "none",
           }}
         />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", background: "var(--bg-panel)" }}>
            <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 650 }}>{t("chat.extensionPanel")}</div>
           <button
             onClick={() => onInput(request, "\x03")}
             style={{
               padding: "5px 9px",
               borderRadius: "var(--radius-control)",
-              border: "1px solid var(--border)",
-              background: "var(--bg-panel)",
+              border: 0,
+              background: "var(--bg-hover)",
               color: "var(--text-muted)",
               cursor: "pointer",
               fontSize: 12,

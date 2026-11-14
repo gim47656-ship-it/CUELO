@@ -49,8 +49,9 @@ const CHEVRON = (
 export function StageNode({ look }: { look: StageLook }) {
   return (
     <span className="flow-node" aria-hidden="true">
+      {/* 3.5 2 keeps the short leg of the dashed check; a sparser pattern erases it and the mark reads as a chevron. */}
       {(look === "done" || look === "stale") && (
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" strokeDasharray={look === "stale" ? "3 4" : undefined}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" strokeDasharray={look === "stale" ? "3.5 2" : undefined}>
           <polyline points="5 12 10 17 19 7" />
         </svg>
       )}

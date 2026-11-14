@@ -47,7 +47,6 @@ test("renders a single status line without identifier keys", () => {
 
   assert.match(html, /aria-label="ponytail memory"/);
   assert.match(html, /height:36px/);
-  assert.match(html, /border-top:1px solid var\(--border\)/);
   assert.match(html, /background:transparent/);
   assert.match(html, /font-family:var\(--font-mono\)/);
   assert.match(html, />ponytail <\/span>/);

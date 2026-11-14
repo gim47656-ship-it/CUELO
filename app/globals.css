@@ -111,6 +111,183 @@ html.dark {
   --brand-lamp: #f5a524;
 }
 
+/* ===========================================================================
+   CUELO workbench palette (UI redesign milestone 1, 2026-11-14)
+   ===========================================================================
+   Every colour value of the redesign lives in this block; revert or retune the
+   whole palette here. Source: doc/history/2026/11/14-ui-redesign/mockups/
+   a-workbench/contract.md, with the neutral steps widened so every neighbouring
+   zone pair (rail/list, list/centre, centre/inspector, panel/selected,
+   centre/composer) has a luminance ratio of at least 1.30 in light and dark.
+   Cool steel family; colour carries only state and the brand lamp.
+
+   The default light and dark themes take these values. Nord and anthracite
+   keep their accent and ink but get their own zone steps at the end of this
+   block, so the 1.30 pairs hold there too. The graphite wallpaper look keeps
+   its own tones (excluded below) and gets only the new role names, derived
+   from its SEED tokens in the `:root` part.
+   SEED semantic tokens are pointed at the same values so SEED components
+   (ActionButton, Menu, Tabs, ToggleButton, SegmentedControl) match.
+   =========================================================================== */
+:root {
+  /* new roles; these fallbacks serve the themes that keep their own palette */
+  --bg-rail: var(--seed-color-bg-layer-basement);
+  --focus-fill: var(--seed-color-stroke-focus-ring);
+  --focus-text: var(--seed-color-bg-layer-default);
+  --accent-text: var(--seed-color-fg-neutral-inverted);
+  /* --scrim and --shadow-float fallbacks stay in the 「Surface language」 :root block */
+  --lamp-size: 8px;
+  /* ink on a lamp-coloured badge; the lamp is amber in every theme */
+  --lamp-ink: #151D22;
+  --w-rail: 60px;
+  --w-inspector: 372px;
+  --reading-measure: 720px;
+  --dur-fast: 120ms;
+  --dur-sheet: 200ms;
+}
+
+html:not(.dark)[data-seed-color-mode] {
+  --bg: #FBFCFC;
+  --bg-panel: #D9DFE2;
+  --bg-rail: #BAC4CA;
+  --bg-hover: #CBD3D6;
+  --bg-selected: #BAC4CA;
+  --bg-raised: #FFFFFF;
+  --bg-subtle: #EFF2F3;
+  --border: #B3BDC2;
+  --border-strong: #7F8C93;
+  --text: #151D22;
+  --text-muted: #3D4A52;
+  --text-dim: #4A575F;
+  --accent: #151D22;
+  --accent-hover: #2B363D;
+  --accent-text: #FBFCFC;
+  --focus-fill: #2D5873;
+  --focus-text: #FFFFFF;
+  --user-bg: #E6EAEC;
+  --assistant-bg: transparent;
+  --tool-bg: #EFF2F3;
+  --success: #1D7149;
+  --warning: #7A4C00;
+  --danger: #AE2F28;
+  --metric: #3D5866;
+  --metric-track: #C3CCD0;
+  --brand-lamp: #E08C00;
+  --scrim: rgb(21 29 34 / 0.32);
+  --shadow-float: 0 12px 32px rgb(21 29 34 / 0.18), 0 2px 6px rgb(21 29 34 / 0.10);
+}
+
+html.dark:not([data-omp-theme-name="dark-nord"]):not([data-omp-theme-name="anthracite"]):not([data-cuelo-look="graphite"]) {
+  --bg: #15191B;
+  --bg-panel: #283035;
+  --bg-rail: #0F1314;
+  --bg-hover: #30393F;
+  --bg-selected: #38444A;
+  --bg-raised: #333D43;
+  --bg-subtle: #1C2124;
+  --border: #3A444A;
+  --border-strong: #6B787F;
+  --text: #E4E9EB;
+  --text-muted: #B0BAC0;
+  --text-dim: #9DA9AF;
+  --accent: #E4E9EB;
+  --accent-hover: #C9D1D5;
+  --accent-text: #141819;
+  --focus-fill: #9CC3DA;
+  --focus-text: #0E1214;
+  --user-bg: #232A2E;
+  --assistant-bg: transparent;
+  --tool-bg: #1C2124;
+  --success: #5FBF8C;
+  --warning: #E0A43C;
+  --danger: #EF7C72;
+  --metric: #8FB0C0;
+  --metric-track: #3A454B;
+  --brand-lamp: #F5A524;
+  --scrim: rgb(0 0 0 / 0.5);
+  --shadow-float: 0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+}
+
+html:not(.dark)[data-seed-color-mode],
+html.dark:not([data-omp-theme-name="dark-nord"]):not([data-omp-theme-name="anthracite"]):not([data-cuelo-look="graphite"]) {
+  --seed-color-bg-layer-default: var(--bg);
+  --seed-color-bg-layer-basement: var(--bg-panel);
+  --seed-color-bg-layer-fill: var(--bg-subtle);
+  --seed-color-bg-layer-floating: var(--bg-raised);
+  --seed-color-bg-layer-default-pressed: var(--bg-hover);
+  --seed-color-bg-neutral-weak: var(--bg-hover);
+  --seed-color-bg-neutral-weak-pressed: var(--bg-selected);
+  --seed-color-bg-neutral-weak-alpha: var(--bg-subtle);
+  --seed-color-bg-transparent-pressed: var(--bg-hover);
+  --seed-color-bg-transparent-selected: var(--bg-selected);
+  --seed-color-bg-neutral-inverted: var(--accent);
+  --seed-color-bg-neutral-inverted-pressed: var(--accent-hover);
+  --seed-color-fg-neutral-inverted: var(--accent-text);
+  --seed-color-fg-neutral: var(--text);
+  --seed-color-fg-neutral-muted: var(--text-muted);
+  --seed-color-fg-neutral-subtle: var(--text-dim);
+  --seed-color-fg-placeholder: var(--text-dim);
+  --seed-color-fg-positive: var(--success);
+  --seed-color-fg-warning: var(--warning);
+  --seed-color-fg-critical: var(--danger);
+  --seed-color-fg-informative: var(--metric);
+  --seed-color-stroke-neutral-weak: var(--border);
+  --seed-color-stroke-focus-ring: var(--focus-fill);
+}
+
+/* anthracite keeps its achromatic ink and blue accent, but its own block
+   folds the list, the rail and the centre into one layer (1.08). These steps
+   give the same 1.30 separation; the graphite look keeps its wallpaper tones. */
+html.dark[data-omp-theme-name="anthracite"]:not([data-cuelo-look="graphite"]) {
+  --bg: #1F1F1F;
+  --bg-panel: #363636;
+  --bg-rail: #1A1A1A;
+  --bg-hover: #404040;
+  --bg-selected: #4A4A4A;
+  --bg-raised: #3A3A3A;
+  --bg-subtle: #262626;
+  --text-muted: #BDBDBD;
+  --text-dim: #A8A8A8;
+  --focus-fill: #4DAAFC;
+  --focus-text: #1F1F1F;
+  --user-bg: #2A2A2A;
+  --tool-bg: #262626;
+  --metric-track: #404040;
+  /* #E6B45F, not #E0A43C: warning text on the selected fill #4A4A4A needs 4.5:1 (4.67; 4.03 before). */
+  --warning: #E6B45F;
+  --seed-color-fg-warning: var(--warning);
+  --seed-color-bg-layer-default: var(--bg);
+  --seed-color-bg-layer-basement: var(--bg-panel);
+  --seed-color-bg-layer-fill: var(--bg-subtle);
+  --seed-color-bg-layer-floating: var(--bg-raised);
+  --seed-color-bg-layer-default-pressed: var(--bg-hover);
+  --seed-color-bg-neutral-weak: var(--bg-hover);
+  --seed-color-bg-transparent-selected: var(--bg-selected);
+  --seed-color-fg-neutral-muted: var(--text-muted);
+  --seed-color-fg-neutral-subtle: var(--text-dim);
+}
+
+/* Nord keeps its frost accent and snow ink; the centre steps one shade below
+   nord0 and the selected row takes nord3 so both pairs reach 1.30. */
+html.dark[data-omp-theme-name="dark-nord"]:not([data-cuelo-look="graphite"]) {
+  --bg: #262B35;
+  --bg-panel: #3B4252;
+  --bg-rail: #21252E;
+  --bg-hover: #434C5E;
+  --bg-selected: #4C566A;
+  --bg-subtle: #313744;
+  --bg-raised: #434C5E;
+  --warning: #EBCB8B;
+  --seed-color-bg-layer-fill: var(--bg-subtle);
+  --seed-color-bg-layer-floating: var(--bg-raised);
+  --seed-color-fg-warning: var(--warning);
+  --seed-color-bg-layer-default: var(--bg);
+  --seed-color-bg-layer-basement: var(--bg-panel);
+  --seed-color-bg-layer-default-pressed: var(--bg-hover);
+  --seed-color-bg-transparent-selected: var(--bg-selected);
+}
+/* ========================= end workbench palette ========================= */
+
 /* Nord 선택에만 적용하는 SEED 역할 토큰. 밝은 청회색 층과 청록 강조로
    긴 작업 화면의 밝기·구분을 높이고 다른 테마와 light mode는 보존한다. */
 html.dark[data-omp-theme-name="dark-nord"] {
@@ -224,11 +401,27 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
+/* Arrow buttons add two drawn marks per scrollbar; the thin thumb is enough. */
+::-webkit-scrollbar-button {
+  display: none;
+}
 
+/* Chrome ignores every ::-webkit-scrollbar rule (and shows arrow buttons) on an
+   element that sets scrollbar-width or scrollbar-color, so those two apply only
+   where the WebKit pseudo-elements do not exist. */
 .chat-session-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
   scrollbar-gutter: stable;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .chat-session-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .navigator-session-list {
+    scrollbar-color: var(--border-strong) transparent;
+  }
 }
 
 .chat-session-scroll::-webkit-scrollbar {
@@ -237,6 +430,7 @@ body {
 
 .chat-session-scroll::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--text-dim) 65%, transparent);
+  /* deslop-ignore-next-line ln-03 -- transparent inset that narrows the thumb; it draws nothing */
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: var(--seed-radius-full);
@@ -281,6 +475,8 @@ pre, code {
   font-size: 16px;
   line-height: 1.72;
   color: var(--text);
+  /* Korean breaks between words; only long tokens (paths, hashes) break anywhere. Code blocks reset this below. */
+  word-break: keep-all;
   overflow-wrap: anywhere;
 }
 .markdown-body p { margin: 0 0 8px; }
@@ -351,7 +547,7 @@ pre, code {
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 0.92em;
-  box-shadow: inset 0 0 0 1px var(--hairline);
+  box-shadow: none;
 }
 .markdown-body .contains-task-list {
   padding-left: 0;
@@ -372,7 +568,8 @@ pre, code {
   width: 14px;
   height: 14px;
   margin: 0;
-  border: 1px solid var(--border);
+  border: 0;
+  box-shadow: inset 0 0 0 1.5px var(--text-dim);
   border-radius: var(--radius-control);
   background: var(--bg);
   display: inline-grid;
@@ -380,21 +577,22 @@ pre, code {
 }
 .markdown-body .task-list-item > input[type="checkbox"]:checked,
 .markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  box-shadow: none;
+  background: var(--accent);
 }
 .markdown-body .task-list-item > input[type="checkbox"]:checked::before,
 .markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked::before {
   content: "";
   width: 4px;
   height: 8px;
-  border: solid var(--accent);
+  border: solid var(--accent-text);
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg) translateY(-1px);
 }
+/* A quote is a filled block with muted text, not a side stripe. */
 .markdown-body blockquote {
-  border-left: 3px solid color-mix(in srgb, var(--border) 75%, var(--text-muted));
-  border-radius: 0 var(--radius-surface) var(--radius-surface) 0;
+  border: 0;
+  border-radius: var(--radius-surface);
   margin: 6px 0;
   padding: 6px 11px;
   background: var(--bg-subtle);
@@ -405,7 +603,7 @@ pre, code {
   margin: 8px 0;
   overflow-x: auto;
   overflow-y: hidden;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
 }
 .markdown-body table {
@@ -416,23 +614,23 @@ pre, code {
 }
 .markdown-body th, .markdown-body td {
   border: 0;
-  border-bottom: 1px solid var(--border);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
-.markdown-body tr:last-child td { border-bottom: 0; }
+/* deslop-ignore-next-line ln-04 -- the one kept rule: it separates column labels from data in a table */
+.markdown-body th { border-bottom: 1px solid var(--border); }
 .markdown-body th {
   background: var(--bg-panel);
   color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
   font-weight: 650;
 }
 .markdown-body tbody tr:nth-child(even) td { background: var(--bg-subtle); }
+/* A thematic break is space, not a drawn line. */
 .markdown-body hr {
   border: none;
-  height: 1px;
-  margin: 12px 0;
-  background: var(--border);
+  height: 0;
+  margin: 20px 0;
 }
 .markdown-body .katex-display {
   margin: 0.6em 0;
@@ -504,9 +702,7 @@ pre, code {
 }
 
 .compaction-file-details {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+  margin-top: 12px;
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -529,7 +725,7 @@ pre, code {
   margin: 0;
   padding: 7px 8px;
   overflow: auto;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
   font-family: var(--font-mono);
@@ -544,24 +740,24 @@ pre, code {
   margin-top: 3px;
 }
 
+/* Code block: one filled surface; the header is a darker fill step, no seam. */
 .markdown-code-block {
   position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  margin: 6px 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
+  margin: 12px 0;
+  border: 0;
+  border-radius: var(--seed-radius-r2);
   overflow: hidden;
-  background: var(--bg);
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  background: var(--bg-panel);
+  box-shadow: none;
 }
 .markdown-code-header {
-  padding: 5px 10px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 11px;
+  padding: 6px 12px;
+  background: var(--bg-selected);
+  color: var(--text-muted);
+  font-size: 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -578,19 +774,19 @@ pre, code {
   gap: 6px;
 }
 .markdown-code-action {
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
   padding: 2px 7px;
-  background: var(--bg);
+  background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.25;
 }
 .markdown-code-action:hover:not(:disabled) {
   color: var(--text);
-  border-color: color-mix(in srgb, var(--border) 70%, var(--text-muted));
+  background: var(--bg-hover);
 }
 .markdown-code-action:disabled {
   color: var(--text-dim);
@@ -609,7 +805,7 @@ pre, code {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.65;
-  font-style: italic;
+  font-style: normal;
 }
 .markdown-thinking-content {
   min-width: 0;
@@ -617,7 +813,7 @@ pre, code {
 }
 .markdown-thinking-body {
   color: var(--text-muted);
-  font-style: italic;
+  font-style: normal;
 }
 .markdown-thinking-body p {
   margin: 0 0 8px;
@@ -650,15 +846,15 @@ pre, code {
 .shell-output-preview {
   margin: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--text-muted));
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--tool-bg);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  box-shadow: none;
 }
-.shell-output-preview.is-error {
-  border-color: var(--danger-line);
+.shell-output-preview.is-error .shell-command-prompt {
+  color: var(--danger);
 }
 .shell-command-line {
   display: flex;
@@ -694,14 +890,13 @@ pre, code {
 .shell-local-label {
   flex: 0 0 auto;
   margin-top: 2px;
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border: 0;
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
   padding: 1px 5px;
   color: var(--warning);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 .shell-output-panel {
   padding: 0 0 8px;
@@ -718,9 +913,7 @@ pre, code {
   line-height: 1;
 }
 .shell-output-divider::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid color-mix(in srgb, var(--border) 82%, var(--text-muted));
+  content: none;
 }
 .shell-output-label {
   flex: 0 0 auto;
@@ -757,10 +950,10 @@ pre, code {
 
 .todo-checklist-preview {
   margin: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
   padding: 0 11px 10px;
-  background: var(--bg);
+  background: var(--bg-subtle);
   color: var(--text-muted);
 }
 .todo-checklist-header {
@@ -772,7 +965,7 @@ pre, code {
   margin: -9px 0 7px -5px;
   padding: 0 6px;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
   font-size: 14px;
   line-height: 1.2;
 }
@@ -800,8 +993,7 @@ pre, code {
   gap: 7px;
 }
 .todo-checklist-phase + .todo-checklist-phase {
-  padding-top: 6px;
-  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
 }
 .todo-checklist-phase-name {
   margin-bottom: 4px;
@@ -826,7 +1018,8 @@ pre, code {
   width: 14px;
   height: 14px;
   margin-top: 1px;
-  border: 1px solid var(--border);
+  border: 0;
+  box-shadow: inset 0 0 0 1.5px currentColor;
   border-radius: var(--radius-control);
   color: var(--text-dim);
   font-size: 10px;
@@ -839,7 +1032,7 @@ pre, code {
   text-decoration-thickness: 1px;
 }
 .todo-checklist-row.is-completed .todo-checklist-marker {
-  border-color: var(--success);
+  box-shadow: none;
   background: var(--success);
   color: var(--bg);
 }
@@ -849,18 +1042,15 @@ pre, code {
   text-decoration: line-through;
 }
 .todo-checklist-row.is-abandoned .todo-checklist-marker {
-  border-color: var(--text-dim);
   color: var(--text-dim);
 }
 .todo-checklist-row.is-active {
   color: var(--text);
 }
 .todo-checklist-row.is-active .todo-checklist-marker {
-  border-color: var(--accent);
-  color: var(--accent);
+  color: var(--text);
 }
 .todo-checklist-row.is-blocked .todo-checklist-marker {
-  border-color: var(--warning);
   color: var(--warning);
 }
 .todo-checklist-content {
@@ -880,7 +1070,6 @@ pre, code {
 /* The composer's goal line. One row when collapsed: it must not eat the composer's space. */
 .todo-strip {
   margin-bottom: 8px;
-  border-block-end: 1px solid var(--hairline);
 }
 .todo-strip-row {
   display: flex;
@@ -900,7 +1089,7 @@ pre, code {
   min-height: 30px;
   margin-left: auto;
   padding: 0 8px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
@@ -908,11 +1097,8 @@ pre, code {
   font-size: 14px;
   cursor: pointer;
 }
-.todo-strip-flow-toggle[aria-expanded="true"] { border-color: var(--border-strong); color: var(--text); }
+.todo-strip-flow-toggle[aria-expanded="true"] { background: var(--bg-selected); color: var(--text); }
 .todo-strip-flow-toggle:hover { background: var(--bg-hover); }
-.todo-strip-flow-toggle:focus-visible,
-.todo-strip-summary:focus-visible,
-.todo-strip-completed-toggle:focus-visible { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: 2px; }
 .todo-strip-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1057,7 +1243,7 @@ pre, code {
   min-height: 40px;
   padding: 7px 10px;
   background: var(--bg-panel);
-  border-bottom: 1px solid var(--border);
+  border: 0;
 }
 .mermaid-zoom-title {
   min-width: 0;
@@ -1080,9 +1266,9 @@ pre, code {
   align-items: center;
   height: 24px;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 .mermaid-zoom-stepper button,
 .mermaid-zoom-icon-button {
@@ -1101,13 +1287,8 @@ pre, code {
 .mermaid-zoom-stepper button {
   height: 22px;
 }
-.mermaid-zoom-stepper button + .mermaid-zoom-value,
-.mermaid-zoom-value + button {
-  border-left: 1px solid var(--border);
-}
 .mermaid-zoom-icon-button {
   flex: 0 0 24px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-control);
 }
 .mermaid-zoom-stepper button:hover:not(:disabled),
@@ -1121,8 +1302,7 @@ pre, code {
 }
 .mermaid-zoom-stepper button:focus-visible,
 .mermaid-zoom-icon-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: none;
 }
 .mermaid-zoom-value {
   min-width: 48px;
@@ -1144,7 +1324,7 @@ pre, code {
 }
 .mermaid-zoom-canvas {
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
   margin: 0 auto;
@@ -1294,7 +1474,7 @@ span.linenumber {
   min-width: 0;
   max-width: min(320px, 58vw);
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 12px;
   background: var(--bg-panel);
   color: var(--text);
@@ -1303,33 +1483,24 @@ span.linenumber {
   /* 한국어는 어절 단위로 끊어야 읽힌다. 한 어절이 폭보다 길 때만 글자에서 자른다. */
   word-break: keep-all;
   overflow-wrap: anywhere;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-float);
 }
 
-/* 왼쪽 스티커의 얼굴을 가리키는 꼬리. 테두리용·배경용 삼각형을 겹쳐 테두리가 끊기지 않게 한다. */
-.cue-bubble::before,
+/* 왼쪽 스티커의 얼굴을 가리키는 꼬리. 말풍선과 같은 채움으로 잘라 낸 삼각형이라 선이 없다. */
 .cue-bubble::after {
   content: "";
   position: absolute;
   top: 50%;
-  width: 0;
-  height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-right: 7px solid var(--border);
+  left: -7px;
+  width: 8px;
+  height: 12px;
+  background: var(--bg-panel);
+  clip-path: polygon(100% 0, 0 50%, 100% 100%);
   transform: translateY(-50%);
 }
 
-.cue-bubble::after {
-  border-right-color: var(--bg-panel);
-}
-
-.cue-bubble::before { left: -8px; }
-.cue-bubble::after { left: -6px; }
-
 /* 스티커 없이 말풍선만 뜰 때는 가리킬 대상이 없으므로 꼬리와 겹침을 없앤다. */
 .cue-bubble--solo { margin: 0; }
-.cue-bubble--solo::before,
 .cue-bubble--solo::after { display: none; }
 
 .cue-bubble-sticker {
@@ -1419,10 +1590,11 @@ span.linenumber {
 /* Workspace shell: content priorities drive pinning; media queries below are
    retained only for browsers without inline-size container queries. */
 .workspace-shell {
-  --workspace-min-transcript: 550px;
+  /* Pinning floors, kept equal to WORKSPACE_CONTENT_MINIMUMS in lib/workspace-layout.ts. The transcript
+     reads at --reading-measure (720px); 560px is only the floor below which the inspector stacks. */
+  --workspace-min-transcript: 560px;
   --workspace-min-navigator: 240px;
-  --workspace-min-deck: 384px;
-  /* The transcript measure is 860px, the composer's cap; 550px is only the pinning floor. */
+  --workspace-min-deck: var(--w-inspector);
   container-name: workspace-shell;
   container-type: inline-size;
   isolation: isolate;
@@ -1452,20 +1624,21 @@ span.linenumber {
   z-index: 1;
   flex: none;
   min-inline-size: 0;
-  background: var(--bg-panel);
+  background: var(--bg);
 }
 
+/* The header is part of the centre zone: same fill, no seam line. */
 .workspace-header-seam {
   display: flex;
   align-items: center;
   gap: var(--seed-dimension-x1);
-  block-size: calc(48px + env(safe-area-inset-top));
+  block-size: calc(52px + env(safe-area-inset-top));
   min-inline-size: 0;
   overflow: hidden;
   padding-block-start: env(safe-area-inset-top);
   padding-inline: var(--seed-dimension-x2);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
-  background: var(--seed-color-bg-layer-default);
+  border: 0;
+  background: var(--bg);
 }
 
 /* 업데이트 복귀 상태 줄: 페이지 상단 한 줄, 대화를 막지 않고 좁은 화면에서 줄바꿈한다. */
@@ -1476,8 +1649,8 @@ span.linenumber {
   gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
   min-inline-size: 0;
   padding: var(--seed-dimension-x1_5) var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--border);
-  background: var(--bg-raised);
+  border: 0;
+  background: var(--bg-subtle);
   color: var(--text);
   font-size: var(--seed-font-size-t3-static);
   line-height: 1.5;
@@ -1485,12 +1658,10 @@ span.linenumber {
 }
 
 .workspace-update-banner[data-tone="positive"] {
-  border-block-end-color: var(--success-line);
   background: var(--success-soft);
 }
 
 .workspace-update-banner[data-tone="warning"] {
-  border-block-end-color: var(--warning-line);
   background: var(--warning-soft);
 }
 
@@ -1510,9 +1681,9 @@ span.linenumber {
 .workspace-update-banner-dismiss {
   flex: 0 0 auto;
   min-block-size: 28px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: none;
+  background: var(--bg-hover);
   padding-inline: var(--seed-dimension-x2);
   color: var(--text-muted);
   font-size: var(--seed-font-size-t2-static);
@@ -1524,20 +1695,17 @@ span.linenumber {
   color: var(--text);
 }
 
-.workspace-update-banner-dismiss:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: 2px;
-}
 .workspace-session-identity {
   display: flex;
   flex: 1 1 160px;
   flex-direction: column;
+  gap: 2px;
   min-inline-size: 0;
-  padding-inline: 12px;
-  line-height: 1.2;
+  padding-inline: 8px;
+  line-height: 1.25;
 }
 
-.workspace-session-identity strong,
+.workspace-session-title,
 .workspace-session-project,
 .workspace-session-status {
   overflow: hidden;
@@ -1545,41 +1713,52 @@ span.linenumber {
   white-space: nowrap;
 }
 
-.workspace-session-identity strong {
+/* Title in the UI face at 15/650; the project and the run state sit above it at 12px. */
+.workspace-session-title {
   min-inline-size: 0;
   color: var(--text);
-  font-size: 12px;
+  font-family: var(--seed-font-family);
+  font-size: 15px;
   font-weight: 650;
 }
 
-/* Project first, then the title; the project yields width before the title does. */
-.workspace-session-identity-line {
+.workspace-session-where {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   min-inline-size: 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .workspace-session-project {
-  flex: 0 100 auto;
+  flex: 0 1 auto;
   min-inline-size: 3ch;
-  max-inline-size: 40%;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-style: normal;
   font-weight: 600;
 }
 
-.workspace-session-project::after {
-  content: " /";
-  color: var(--text-dim);
+.workspace-session-running {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
+/* The run phase is a filled chip, not a mono status line. */
 .workspace-session-status {
-  margin-block-start: 2px;
+  flex: 0 1 auto;
+  max-inline-size: 30%;
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.workspace-session-status:empty {
+  display: none;
 }
 
 /* Empty new-session screen: which folder the first message will start in. */
@@ -1592,7 +1771,7 @@ span.linenumber {
   margin: 4px 52px 12px 16px;
   padding: 12px 14px;
   min-inline-size: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--bg-subtle);
 }
@@ -1636,9 +1815,9 @@ span.linenumber {
 .empty-workspace-context-action {
   flex-shrink: 0;
   padding: 6px 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control, 6px);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
@@ -1648,7 +1827,6 @@ span.linenumber {
   background: var(--bg-hover);
 }
 
-.empty-workspace-context-action:focus-visible,
 .model-role-disclosure:focus-visible,
 .models-nav-row:focus-visible {
   outline: 2px solid var(--accent);
@@ -1722,11 +1900,11 @@ span.linenumber {
 }
 
 /* Secondary session surfaces (session info, system prompt, branches) drop
-   from the header row as one sheet, so they share one frame. */
+   from the header row as one filled sheet. */
 .workspace-top-panel {
   padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
-  background: var(--seed-color-bg-layer-default);
+  border: 0;
+  background: var(--bg-subtle);
 }
 
 .branch-navigator-tree {
@@ -1759,22 +1937,25 @@ span.linenumber {
   scroll-padding-block: 40px calc(var(--omp-dock-h, 204px) + 8px);
 }
 
+/* The reading measure: 720px of text plus the column padding. */
 .chat-session-column .chat-session-scroll > div {
   inline-size: 100%;
-  max-inline-size: calc(860px + 32px);
+  max-inline-size: calc(var(--reading-measure) + 32px);
   margin-inline: auto;
 }
 
-.chat-session-column .chat-session-scroll > div > div {
-  max-inline-size: 860px !important;
+.chat-session-column .chat-session-scroll > div > div,
+.chat-composer-dock .chat-column-cap {
+  max-inline-size: var(--reading-measure) !important;
 }
 
+/* The inspector is its own zone: the panel fill against the centre, no seam line. */
 .workspace-auxiliary-deck-slot {
   display: none;
   min-block-size: 0;
   overflow: hidden;
-  border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
-  background: var(--seed-color-bg-layer-default);
+  border: 0;
+  background: var(--bg-panel);
 }
 .workspace-auxiliary-deck-slot.is-replacement {
   display: flex;
@@ -1782,7 +1963,289 @@ span.linenumber {
   block-size: 100%;
   inline-size: 100%;
   min-inline-size: 0;
-  border-inline-start: 0;
+  background: var(--bg);
+}
+
+/* The drawer (below 860px) carries the rail beside the list. */
+.sidebar-container:has(> .workspace-rail) {
+  flex-direction: row;
+}
+
+/* --- phone: the inspector as a bottom sheet -------------------------------- */
+.inspector-sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.inspector-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  animation: inspector-scrim-in var(--dur-sheet) ease-out;
+}
+
+/* The sheet takes focus on open only so Escape lands inside it; the sheet
+   itself is not a control, so it shows no focus mark. */
+.workspace-auxiliary-deck-slot.is-sheet:focus {
+  outline: none;
+}
+
+.workspace-auxiliary-deck-slot.is-sheet {
+  position: relative;
+  display: flex;
+  block-size: min(78dvh, calc(var(--app-viewport-height, 100dvh) - 56px));
+  inline-size: 100%;
+  padding-block-end: env(safe-area-inset-bottom);
+  border-start-start-radius: 12px;
+  border-start-end-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-float);
+  animation: inspector-sheet-in var(--dur-sheet) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes inspector-sheet-in {
+  from { transform: translateY(24px); opacity: 0; }
+}
+
+@keyframes inspector-scrim-in {
+  from { opacity: 0; }
+}
+
+/* --- 이번 턴 ----------------------------------------------------------------- */
+.turn-inspector-slot {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+
+.inspector-empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.turn-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 16px 24px;
+  /* Korean breaks between words; only long tokens (paths, hashes) break anywhere. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.turn-inspector-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.turn-inspector-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--seed-font-family);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+/* Large figures with a small label under each; tones mark only what needs a look. */
+.turn-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+}
+
+/* Three per row; a short last row stretches so no slot is left empty. */
+.turn-metrics > .turn-metric {
+  flex: 1 1 calc((100% - 8px) / 3);
+  min-inline-size: 0;
+}
+
+.turn-metric {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+}
+
+.turn-metric dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-metric dt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.turn-metric[data-tone="warning"] dd { color: var(--warning); }
+.turn-metric[data-tone="danger"] dd { color: var(--danger); }
+
+.turn-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.turn-block-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--seed-font-family);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Phone: each block is a filled group with a title, a one-line summary and a chevron. */
+.turn-block[data-folded] {
+  gap: 0;
+  border-radius: var(--radius-surface);
+  background: var(--bg-subtle);
+}
+
+.turn-block-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  min-block-size: 52px;
+  padding: 8px 14px;
+  border-radius: var(--radius-surface);
+  cursor: pointer;
+  list-style: none;
+}
+
+.turn-block-summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-block-line {
+  grid-column: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-block-chevron {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) ease-out;
+}
+
+.turn-block[open] > .turn-block-summary .turn-block-chevron {
+  transform: rotate(180deg);
+}
+
+.turn-block-body {
+  padding: 0 14px 14px;
+}
+
+/* The folded group's summary already names the flow, so the graph keeps only 재생. */
+.turn-block[data-folded] .flow-heading {
+  display: none;
+}
+
+.turn-block[data-folded] .flow-graph-head {
+  justify-content: flex-end;
+}
+
+/* --- the stream's turn row and the phone's peek strip ---------------------- */
+.turn-row,
+.turn-peek {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  inline-size: 100%;
+  min-block-size: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease-out;
+}
+
+.turn-row {
+  margin-block: 8px 20px;
+}
+
+.turn-row:hover,
+.turn-peek:hover {
+  background: var(--bg-hover);
+}
+
+.turn-row[aria-pressed="true"] {
+  background: var(--bg-selected);
+}
+
+.turn-row[aria-pressed="true"] .turn-row-go {
+  color: var(--text);
+}
+
+.turn-row-counts,
+.turn-peek-counts {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-row-go,
+.turn-peek-open {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.turn-state-icon {
+  flex: none;
+  color: var(--success);
+}
+
+.turn-state-icon[data-tone="warning"] {
+  color: var(--warning);
+}
+
+.turn-peek-dock {
+  padding-block-start: 6px;
+}
+
+.turn-peek {
+  background: var(--bg-panel);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-auxiliary-deck-slot.is-sheet,
+  .inspector-sheet-scrim {
+    animation: none;
+  }
 }
 
 .workspace-file-view {
@@ -1801,7 +2264,7 @@ span.linenumber {
   min-inline-size: 0;
   block-size: 36px;
   overflow: hidden;
-  border-block-end: 1px solid var(--border);
+  border: 0;
   background: var(--bg-panel);
 }
 
@@ -1863,14 +2326,10 @@ span.linenumber {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
   list-style: none;
-}
-
-.file-doc-shortcuts-item + .file-doc-shortcuts-item {
-  border-block-start: 1px solid var(--border);
 }
 
 .file-doc-shortcuts-link,
@@ -1897,8 +2356,7 @@ span.linenumber {
 }
 
 .file-doc-shortcuts-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: none;
 }
 
 .file-doc-shortcuts-unavailable {
@@ -1945,11 +2403,14 @@ span.linenumber {
   background: var(--scrim);
 }
 
+/* The palette floats: raised fill and the float shadow, no frame or seams. */
 .workspace-command-palette {
   inline-size: min(520px, 100%);
   overflow: hidden;
-  border: 1px solid var(--border);
-  background: var(--bg-panel);
+  border: 0;
+  border-radius: var(--seed-radius-r2);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
 }
 
 .workspace-command-palette > header {
@@ -1958,7 +2419,7 @@ span.linenumber {
   justify-content: space-between;
   min-block-size: 42px;
   padding-inline: 14px;
-  border-block-end: 1px solid var(--border);
+  border: 0;
   color: var(--text);
   font-size: 12px;
 }
@@ -1973,9 +2434,9 @@ span.linenumber {
 .workspace-command-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  padding: 1px;
-  background: var(--border);
+  gap: 2px;
+  padding: 4px;
+  background: transparent;
 }
 
 .workspace-command-list button {
@@ -1986,7 +2447,8 @@ span.linenumber {
   gap: 12px;
   padding-inline: 12px;
   border: 0;
-  background: var(--bg);
+  border-radius: var(--radius-control);
+  background: transparent;
   color: var(--text);
   text-align: start;
   cursor: pointer;
@@ -1994,6 +2456,20 @@ span.linenumber {
 
 .workspace-command-list button:hover {
   background: var(--bg-hover);
+}
+
+/* The waiting entry names a session: Korean breaks between words, and the lamp
+   keeps a gap before the title. */
+.workspace-command-waiting {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.workspace-command-waiting > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
 }
 
 .workspace-command-list small {
@@ -2006,12 +2482,13 @@ span.linenumber {
 /* --- palette: transcript search ------------------------------------------- */
 .palette-search > input {
   display: block;
-  inline-size: 100%;
-  block-size: 44px;
-  padding-inline: 14px;
+  inline-size: calc(100% - 8px);
+  block-size: 40px;
+  margin: 0 4px;
+  padding-inline: 12px;
   border: 0;
-  border-block-end: 1px solid var(--border);
-  background: var(--bg);
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
   color: var(--text);
   font-size: 14px;
 }
@@ -2019,7 +2496,6 @@ span.linenumber {
 .palette-search-results {
   max-block-size: min(46vh, 420px);
   overflow-y: auto;
-  border-block-end: 1px solid var(--border);
 }
 
 .palette-search-status {
@@ -2032,8 +2508,9 @@ span.linenumber {
 
 .palette-search-list {
   display: grid;
-  gap: 1px;
-  background: var(--border);
+  gap: 2px;
+  padding: 0 4px 4px;
+  background: transparent;
 }
 
 .palette-search-list button {
@@ -2042,7 +2519,8 @@ span.linenumber {
   min-block-size: 44px;
   padding: 8px 14px;
   border: 0;
-  background: var(--bg);
+  border-radius: var(--radius-control);
+  background: transparent;
   color: var(--text);
   text-align: start;
   cursor: pointer;
@@ -2100,7 +2578,7 @@ span.linenumber {
   gap: 2px;
   inline-size: min(380px, 100%);
   padding: 4px 4px 4px 10px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
   box-shadow: var(--shadow-float);
@@ -2122,7 +2600,7 @@ span.linenumber {
 }
 
 .chat-find-bar:focus-within {
-  border-color: var(--accent-line);
+  background: var(--bg-raised);
 }
 
 .chat-find-count {
@@ -2169,7 +2647,7 @@ span.linenumber {
 .chat-jump-missing {
   max-inline-size: min(100%, 420px);
   padding: 6px 10px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
   color: var(--text-muted);
@@ -2188,8 +2666,7 @@ span.linenumber {
 @keyframes chat-jump-flash {
   from {
     border-radius: var(--radius-surface);
-    background-color: var(--accent-soft);
-    box-shadow: 0 0 0 2px var(--accent-line);
+    background-color: var(--bg-selected);
   }
 }
 
@@ -2197,8 +2674,7 @@ span.linenumber {
   .chat-jump-flash > * {
     border-radius: var(--radius-surface);
     animation: none;
-    outline: 2px solid var(--accent-line);
-    outline-offset: 4px;
+    background-color: var(--bg-hover);
   }
 }
 
@@ -2275,19 +2751,17 @@ span.linenumber {
   gap: 8px;
   margin-block-end: 8px;
   padding: 5px 10px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
   background: var(--bg-panel);
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .run-status-label {
   flex-shrink: 0;
+  font-family: var(--seed-font-family);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .run-status-line[data-tone="accent"] .run-status-label {
@@ -2307,7 +2781,7 @@ span.linenumber {
   gap: 10px;
   margin-block: 4px 16px;
   padding: 8px 6px 8px 12px;
-  border: 1px solid var(--warning-line);
+  border: 0;
   border-radius: var(--radius-surface);
   background: var(--warning-soft);
   color: var(--text);
@@ -2394,7 +2868,7 @@ span.linenumber {
   min-inline-size: min(var(--workspace-min-navigator), 100vw);
   overflow: hidden;
   padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
-  border-inline-end: 1px solid var(--border);
+  border: 0;
   background: var(--bg-panel);
   transition: transform 160ms ease-out, visibility 0s linear 160ms;
 }
@@ -2427,21 +2901,23 @@ span.linenumber {
   outline: none;
 }
 
+/* The drag target shows as a filled grip on hover, not a drawn line. */
 .panel-resize-handle::after {
   content: "";
   position: absolute;
   inset-block: 0;
-  inset-inline-start: 5px;
-  inline-size: 2px;
+  inset-inline-start: 3px;
+  inline-size: 6px;
+  border-radius: 3px;
   background: transparent;
   pointer-events: none;
-  transition: background 120ms ease-out;
+  transition: background var(--dur-fast) ease-out;
 }
 
 .panel-resize-handle:hover::after,
 .panel-resize-handle:focus-visible::after,
 .panel-resize-handle.is-resizing::after {
-  background: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .sidebar-container.sidebar-resizing,
@@ -2486,19 +2962,79 @@ span.linenumber {
   word-break: normal;
 }
 
-:where(
+/* Keyboard focus is a filled steel surface, never a line, and only under
+   :focus-visible, so a mouse click shows nothing (rule://frontend 「선과 테두리를
+   긋지 않는다」). `!important` because SEED recipes and inline styles paint their
+   own focus and background; while an element holds keyboard focus the fill wins.
+   Text fields match :focus-visible on every focus, so they drop the outline and
+   their container shows focus with :focus-within instead. Role-less [tabindex]
+   scroll regions take the same fill. Native check boxes, radios and ranges keep
+   their native look and fill their label or wrapper instead. The fill appears at
+   once: an animated focus state hides where focus is during the transition. */
+:is(
   button,
   a[href],
-  input,
-  textarea,
-  select,
   summary,
   [role="button"],
   [role="tab"],
-  [tabindex]:not([tabindex="-1"])
+  [role="link"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="menuitemcheckbox"],
+  [role="option"],
+  [role="switch"],
+  [tabindex]:not([tabindex="-1"]):not(input, textarea, select)
 ):focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: 1px;
+  outline: none !important;
+  background-color: var(--focus-fill) !important;
+  color: var(--focus-text) !important;
+  transition: none !important;
+}
+
+/* Text and icons inside the focused control take the focus ink. Filled marks
+   (chips, verdicts, stage nodes) drop their fill while the control holds focus:
+   several fills are translucent tints that would blend into the focus fill and
+   sink their ink below contrast. The rail badge is opaque and keeps its own. */
+:is(button, a[href], summary, [role="button"], [role="tab"], [role="link"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="switch"], [tabindex]:not([tabindex="-1"]):not(input, textarea, select)):focus-visible :is(span, small, strong, b, em, kbd, code, svg):not(.workspace-rail-badge) {
+  color: inherit !important;
+}
+
+:is(button, a[href], summary, [role="button"], [role="tab"], [role="link"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="switch"], [tabindex]:not([tabindex="-1"]):not(input, textarea, select)):focus-visible :is(.flow-graph-chip, .answer-status-run, .answer-status-verdict, .flow-compound, .flow-node) {
+  background-color: transparent !important;
+}
+
+/* The deploy-approval diamond is a fill with no glyph; it takes the focus ink.
+   The state sits on the station around the focused stop button. */
+.flow-graph-station[data-state="approval"] :is(button, [role="button"]):focus-visible .flow-node {
+  background-color: currentColor !important;
+}
+
+:where(input, textarea, select):focus-visible {
+  outline: none;
+}
+
+label:has(input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible),
+:not(label):has(> input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible) {
+  border-radius: var(--radius-control);
+  background-color: var(--focus-fill) !important;
+  color: var(--focus-text) !important;
+  transition: none !important;
+}
+
+label:has(input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible) :is(span, small, strong, b, em, kbd, code, svg),
+:not(label):has(> input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible) :is(span, small, strong, b, em, kbd, code, svg) {
+  color: inherit !important;
+}
+
+/* Forced colours drop background fills, so only there focus becomes an outline
+   (pending user confirmation, design-decisions.md 「Focus exceptions」). The
+   never-matching id in :not() lifts specificity above the fill rule's list,
+   whose `outline: none !important` would otherwise win. */
+@media (forced-colors: active) {
+  :focus-visible:not(#forced-colors-focus-outline) {
+    outline: 2px solid Highlight !important;
+    outline-offset: 1px;
+  }
 }
 
 :where(button, a[href], input, textarea, select, summary, [tabindex]):focus-visible {
@@ -2508,20 +3044,18 @@ span.linenumber {
 /* ===========================================================================
    Surface language
    ===========================================================================
-   Chat first: the transcript is the plane, and everything else is either a
-   hairline seam on it or one panel beside it. Two rules carry the system:
+   Workbench: zones are told apart by fill steps, never by drawn lines
+   (doc/history/2026/11/14-ui-redesign/mockups/a-workbench/contract.md).
 
-   1. PLANES  — structural seams use --border, framed content --border-strong.
-      Radius, spacing and type all come from SEED scales (r1 for controls, r2
-      for surfaces, x1…x4 for the 4px grid, t3/t4/t5 for type). The old 2/3px
-      brushed-panel seam language and its bevel catch are gone.
-   2. STATE   — colour is spent sparingly: a --spine on the inline-start edge
-      for selected / running / unread / confirming, and the named
-      *-soft / *-line tints for everything else. No colour literal belongs
-      below this comment — every value resolves to a SEED token.
-
-   Machine-state bands keep a quieter ground and tabular numerals so telemetry
-   still reads apart from prose, but they no longer shout in uppercase mono.
+   1. ZONES — rail, list, centre and inspector each take one fill; neighbours
+      differ by at least 1.30 in luminance. Radius, spacing and type come from
+      SEED scales (r1 controls, r2 surfaces, x1…x4 on the 4px grid).
+   2. LINES — exactly two kinds survive: the data-table header rule and the
+      work-flow stage connector with its rework loop mark. No borders, row
+      dividers, tab underlines or state spines.
+   3. STATE — selection is a filled row plus weight; a live process is the
+      brand lamp; 입력 필요 is the hollow lamp plus its label. Focus is a fill
+      under :focus-visible only.
    =========================================================================== */
 :root {
   --radius-control: var(--seed-radius-r1);
@@ -2589,10 +3123,14 @@ span.linenumber {
   background: var(--bg);
 }
 
+/* List column: one panel tone, no seam, no row dividers, no state spines.
+   Selection is a filled row plus weight; a running session shows the lamp,
+   unread shows a dot (SessionSidebar draws both). `!important` overrides the
+   inline styles SessionSidebar still carries. */
 .sidebar-container {
-  border-inline-end-color: var(--border);
+  border: 0 !important;
   background: var(--bg-panel);
-  box-shadow: inset -1px 0 0 var(--bevel-shade);
+  box-shadow: none;
 }
 
 .session-navigator {
@@ -2601,7 +3139,7 @@ span.linenumber {
 }
 
 .session-navigator-header {
-  border-block-end-color: var(--border) !important;
+  border: 0 !important;
   background: var(--bg-panel);
 }
 
@@ -2617,16 +3155,16 @@ span.linenumber {
 .navigator-add-project,
 .navigator-settings-action,
 .navigator-toolbar-icon {
-  border: 1px solid var(--border-strong) !important;
+  border: 0 !important;
   border-radius: var(--radius-control) !important;
-  background: var(--bg) !important;
+  background: transparent !important;
   color: var(--text-muted) !important;
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  box-shadow: none;
+  transition: background-color var(--dur-fast) ease-out, color var(--dur-fast) ease-out !important;
 }
 
 .navigator-icon-action.is-success {
-  border-color: var(--success-line) !important;
-  background: var(--success-soft) !important;
+  background: var(--bg-hover) !important;
   color: var(--success) !important;
 }
 
@@ -2634,57 +3172,40 @@ span.linenumber {
 .navigator-add-project:hover:not(:disabled),
 .navigator-settings-action:hover:not(:disabled),
 .navigator-toolbar-icon:hover:not(:disabled) {
-  border-color: var(--border-strong) !important;
   background: var(--bg-hover) !important;
   color: var(--text) !important;
 }
 
 .navigator-mode-bar {
-  border-block-end: 1px solid var(--border);
+  border: 0 !important;
 }
 
-.navigator-mode-switcher {
-  overflow: hidden;
-  border-color: var(--border-strong) !important;
-  border-radius: var(--radius-control) !important;
-  background: var(--bg) !important;
-}
-
-.navigator-mode-switcher button {
-  border-radius: 0 !important;
-  color: var(--text-muted) !important;
-}
-
-.navigator-mode-switcher button:hover {
-  background: var(--bg-hover) !important;
-  color: var(--text) !important;
-}
-
-.navigator-mode-switcher button[aria-pressed="true"] {
-  background: var(--bg-selected) !important;
-  color: var(--text) !important;
-  box-shadow: inset 0 -2px var(--accent);
-}
-
-.navigator-search-input {
-  border-color: var(--border-strong) !important;
+.navigator-search-input,
+#session-issue,
+.navigator-issue-submit {
+  border: 0 !important;
   border-radius: var(--radius-control) !important;
   background: var(--bg) !important;
   color: var(--text) !important;
 }
 
-.navigator-search-input::placeholder {
-  color: var(--text-muted);
+.navigator-search-input::placeholder,
+#session-issue::placeholder {
+  color: var(--text-dim);
 }
 
-.navigator-search-input:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px var(--accent-ring);
+.navigator-search-input:focus-visible,
+#session-issue:focus-visible {
+  background: var(--bg-raised) !important;
+  box-shadow: none;
 }
 
 .navigator-session-list {
   background: var(--bg-panel);
-  scrollbar-color: var(--border-strong) transparent;
+}
+
+.navigator-session-list::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
 }
 
 .navigator-project-group {
@@ -2692,9 +3213,9 @@ span.linenumber {
 }
 
 .navigator-project-row {
-  border-radius: 0 !important;
-  border-block-end: 1px solid var(--hairline);
-  color: var(--channel-ink);
+  border: 0 !important;
+  border-radius: var(--radius-control) !important;
+  color: var(--text);
 }
 
 .navigator-project-row:hover {
@@ -2702,70 +3223,264 @@ span.linenumber {
 }
 
 .navigator-project-row.is-selected {
-  background: var(--bg-selected) !important;
-  box-shadow: inset var(--spine) 0 var(--accent);
+  background: var(--bg-hover) !important;
+  box-shadow: none;
 }
 
 .navigator-project-row.is-selected .navigator-project-name {
   color: var(--text) !important;
 }
 
-/* session rows stay on the open ground; the spine alone carries state */
 .navigator-session-row,
 .priority-session-row {
-  border-radius: 0 !important;
-  border-block-end: 1px solid var(--hairline);
+  border: 0 !important;
+  border-radius: var(--radius-control) !important;
   background: transparent !important;
+  color: var(--text-muted);
 }
 
 .navigator-session-row:hover,
 .priority-session-row:hover {
   background: var(--bg-hover) !important;
+  color: var(--text);
 }
 
 .navigator-session-row.is-selected,
 .priority-session-row.is-selected {
   background: var(--bg-selected) !important;
-  box-shadow: inset var(--spine) 0 var(--accent);
+  color: var(--text);
+  font-weight: 650;
+  box-shadow: none;
 }
 
-.navigator-session-row.is-running:not(.is-selected),
-.priority-session-row.is-running:not(.is-selected) {
-  box-shadow: inset var(--spine) 0 var(--metric);
-}
-
-.navigator-session-row.is-unread:not(.is-selected):not(.is-running),
-.priority-session-row.is-unread:not(.is-selected):not(.is-running) {
-  box-shadow: inset var(--spine) 0 var(--border-strong);
+/* dim text falls below 4.5:1 on a selected fill, so selected rows lift it to muted */
+.navigator-session-row.is-selected [style*="--text-dim"],
+.priority-session-row.is-selected [style*="--text-dim"],
+[aria-selected="true"] .is-dim,
+[aria-current="true"] .is-dim,
+[aria-pressed="true"] .is-dim {
+  color: var(--text-muted) !important;
 }
 
 .navigator-session-row.is-confirming {
   background: var(--danger-soft) !important;
-  box-shadow: inset var(--spine) 0 var(--danger);
+  box-shadow: none;
 }
 
-.session-running-spinner {
-  animation: spin 0.9s linear infinite;
-  transform-origin: center;
-  will-change: transform;
+/* The brand lamp marks "a live process is here"; the needs-input lamp is a
+   hollow square with its own label so the two never rely on colour alone. */
+.workbench-lamp {
+  display: inline-block;
+  flex: none;
+  inline-size: var(--lamp-size);
+  block-size: var(--lamp-size);
+  border-radius: 2px;
+  background: var(--brand-lamp);
 }
 
-.session-unread-ring {
-  opacity: 0.32;
+.workbench-lamp[data-kind="input"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--brand-lamp);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .session-running-spinner {
-    animation: none;
-  }
+.workbench-lamp[data-kind="off"] {
+  background: var(--metric-track);
+}
+
+/* --- icon rail: places on the darkest zone --------------------------------- */
+.workspace-rail {
+  display: flex;
+  flex: 0 0 var(--w-rail);
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  inline-size: var(--w-rail);
+  min-block-size: 0;
+  padding-block: calc(10px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: var(--bg-rail);
+  color: var(--text-muted);
+}
+
+.workspace-rail-logo {
+  display: grid;
+  place-items: center;
+  inline-size: 40px;
+  block-size: 40px;
+  margin-block-end: 8px;
+  color: var(--text);
+}
+
+.workspace-rail-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  inline-size: 52px;
+  min-block-size: 52px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease-out, color var(--dur-fast) ease-out;
+}
+
+.workspace-rail-item:hover {
+  background: color-mix(in srgb, var(--bg-panel) 55%, var(--bg-rail));
+  color: var(--text);
+}
+
+/* The current place takes the list column's fill, so it reads as joined to it. */
+.workspace-rail-item[aria-current="page"] {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+/* With the list hidden (Ctrl B) the rail meets the centre directly; the rail
+   fill sits too close to the centre there, so the rail takes the list's fill
+   and the current place steps up to the selected fill. */
+.workspace-shell:has(> .sidebar-container.sidebar-closed) > .workspace-rail {
+  background: var(--bg-panel);
+}
+.workspace-shell:has(> .sidebar-container.sidebar-closed) > .workspace-rail .workspace-rail-item:hover {
+  background: var(--bg-hover);
+}
+.workspace-shell:has(> .sidebar-container.sidebar-closed) > .workspace-rail .workspace-rail-item[aria-current="page"] {
+  background: var(--bg-selected);
+}
+
+.workspace-rail-label {
+  max-inline-size: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-rail-badge {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-end: 6px;
+  min-inline-size: 16px;
+  block-size: 16px;
+  padding-inline: 4px;
+  border-radius: 8px;
+  background: var(--brand-lamp);
+  color: var(--lamp-ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-rail-spacer {
+  flex: 1 1 auto;
+}
+
+/* In the drawer the rail rides inside the list column. */
+.sidebar-container > .workspace-rail {
+  block-size: 100%;
+}
+
+.sidebar-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
 }
 
 .navigator-footer {
-  border-block-start: 1px solid var(--border);
+  border: 0;
+  padding-block-start: 8px;
 }
 
 .navigator-settings-action {
   box-shadow: none;
+}
+
+/* The place name heads the list column in the UI face; no mode switcher here any more. */
+.navigator-place-title {
+  margin: 0;
+  padding-inline: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--seed-font-family);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navigator-mode-spacer {
+  flex: 1 1 auto;
+}
+
+/* --- 우선순위: state groups ------------------------------------------------ */
+.priority-group + .priority-group {
+  margin-block-start: 12px;
+}
+
+.priority-group-heading,
+.priority-group-day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-family: var(--seed-font-family);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+h2.priority-group-heading {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.priority-group-day {
+  font-weight: 600;
+}
+
+.priority-group[data-group="input"] h3 {
+  color: var(--text);
+}
+
+.priority-group-count {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-running-indicator {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  inline-size: 14px;
+  block-size: 14px;
+}
+
+.session-waiting-indicator {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 /* The always-visible account usage readout above the settings action. Plain
@@ -3005,9 +3720,9 @@ span.linenumber {
   inline-size: 24px;
   block-size: 24px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: none;
+  background: var(--bg-hover);
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -3041,9 +3756,9 @@ span.linenumber {
 .navigator-usage-relogin {
   flex: 0 0 auto;
   padding: 2px var(--seed-dimension-x2);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: none;
+  background: var(--bg-hover);
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -3107,18 +3822,17 @@ span.linenumber {
 
 /* --- floating surfaces ----------------------------------------------------- */
 .workspace-command-palette {
-  border-color: var(--border-strong);
   border-radius: var(--radius-surface);
   box-shadow: var(--shadow-float);
 }
 
 /* --- transcript ------------------------------------------------------------ */
+/* The user's turn is a filled block, no frame and no spine. */
 .message-user-bubble {
-  border: 1px solid var(--border) !important;
-  border-inline-start: var(--spine) solid var(--accent-line) !important;
+  border: 0 !important;
   border-radius: var(--radius-surface) !important;
   background: var(--user-bg) !important;
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  box-shadow: none;
 }
 
 .message-user-bubble .markdown-body {
@@ -3143,14 +3857,14 @@ span.linenumber {
 }
 
 .tool-call-card {
-  border: 1px solid var(--border) !important;
+  border: 0 !important;
   border-radius: var(--radius-surface) !important;
-  background: var(--bg-panel) !important;
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  background: var(--tool-bg) !important;
+  box-shadow: none;
 }
 
 .tool-call-card.is-error {
-  border-color: var(--danger-line) !important;
+  background: var(--danger-soft) !important;
 }
 
 /* 도구 실행 줄: 이름은 중립 잉크이고 상태는 단어로 보인다(실행 중·실패 배지). 색은 상태에만 쓴다.
@@ -3247,7 +3961,7 @@ span.linenumber {
 }
 
 .tool-call-header[aria-expanded="true"] {
-  border-block-end: 1px solid var(--border) !important;
+  background: var(--bg-hover) !important;
 }
 
 .tool-call-header:hover {
@@ -3256,14 +3970,13 @@ span.linenumber {
 }
 
 .tool-call-input {
-  border-block-start: 1px solid var(--border) !important;
+  border: 0 !important;
   background: var(--tool-bg) !important;
 }
 
 .shell-output-preview {
-  border-color: var(--border-strong);
   background: var(--tool-bg);
-  box-shadow: inset 0 1px 0 var(--bevel-light);
+  box-shadow: none;
 }
 
 .shell-command-line {
@@ -3280,9 +3993,8 @@ span.linenumber {
 .todo-checklist-preview {
   overflow: hidden;
   padding: 0;
-  border-color: var(--border);
   border-radius: var(--radius-surface);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
 }
 
 .todo-checklist-header {
@@ -3290,7 +4002,7 @@ span.linenumber {
   min-height: 26px;
   margin: 0;
   padding: 0 10px;
-  border-block-end: 1px solid var(--border);
+  border: 0;
   letter-spacing: var(--readout-track);
 }
 
@@ -3310,39 +4022,42 @@ span.linenumber {
 }
 
 .todo-checklist-row {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .todo-checklist-row.is-active .todo-checklist-marker {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 2px var(--bg-panel);
+  background: var(--bg-selected);
+  box-shadow: none;
 }
 
 /* --- composer -------------------------------------------------------------- */
+/* The dock sits on the centre fill; the composer itself is the panel-filled box
+   (centre/composer 1.31 light, 1.32 dark). No frame, no focus ring: the caret
+   marks focus in a text field. */
 .chat-composer-dock {
-  border-block-start: 1px solid var(--border);
-  background: var(--bg-panel);
-  box-shadow: 0 -1px 0 var(--bevel-shade);
+  border: 0;
+  background: var(--bg);
+  box-shadow: none;
 }
 
-/* The agent's request for a response: a panel in the conversation column just
-   above the composer, never a sheet over the transcript. */
+/* The agent's request for a response: a filled panel in the conversation column
+   just above the composer, never a sheet over the transcript. */
 .chat-response-surface {
   display: flex;
   flex-direction: column;
   margin-block: var(--seed-dimension-x2);
   overflow-y: auto;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-surface);
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .chat-response-delivery {
   margin: 0;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--border);
-  color: var(--seed-color-fg-neutral-muted);
+  border: 0;
+  background: var(--bg-hover);
+  color: var(--text-muted);
   font-size: var(--seed-font-size-t4-static);
 }
 
@@ -3352,28 +4067,26 @@ span.linenumber {
 }
 
 .chat-composer {
-  background: var(--bg-panel) !important;
+  background: transparent !important;
 }
 
 .chat-composer-field {
-  border: 1px solid var(--border-strong) !important;
-  border-radius: var(--radius-surface) !important;
-  background: var(--bg) !important;
-  box-shadow: inset 0 1px 0 var(--bevel-light) !important;
+  border: 0 !important;
+  border-radius: var(--seed-radius-r2) !important;
+  background: var(--bg-panel) !important;
+  box-shadow: none !important;
 }
 
 .chat-composer-field:focus-within {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px var(--accent-ring) !important;
+  box-shadow: none !important;
 }
 
 .chat-composer-field.is-bash {
-  border-color: var(--accent-line) !important;
-  background: var(--tool-bg) !important;
+  background: color-mix(in srgb, var(--metric) 12%, var(--bg-panel)) !important;
 }
 
 .chat-composer-field.is-streaming {
-  border-color: var(--warning-line) !important;
+  background: color-mix(in srgb, var(--warning) 8%, var(--bg-panel)) !important;
 }
 
 .chat-composer-textarea::placeholder {
@@ -3382,7 +4095,7 @@ span.linenumber {
 
 /* one solid control per surface: SEED neutralSolid pair, never a tint fill */
 .chat-composer-send {
-  border: 1px solid transparent !important;
+  border: 0 !important;
   border-radius: var(--radius-control) !important;
   background: var(--seed-color-bg-neutral-inverted) !important;
   color: var(--seed-color-fg-neutral-inverted) !important;
@@ -3395,16 +4108,15 @@ span.linenumber {
 }
 
 .chat-composer-send:disabled {
-  border-color: transparent !important;
   background: var(--seed-color-bg-disabled) !important;
   color: var(--seed-color-fg-disabled) !important;
 }
 
-/* composer controls are square controls in the same family, not pills */
+/* composer controls are square controls in the same family, not pills; no frames */
 .composer-chip,
 .composer-icon-button,
 .composer-stream-action {
-  border: 1px solid var(--border) !important;
+  border: 0 !important;
   border-radius: var(--radius-control) !important;
   background: transparent !important;
   color: var(--text-muted) !important;
@@ -3429,39 +4141,39 @@ span.linenumber {
   flex-wrap: wrap;
 }
 
-.composer-chip:hover:not(:disabled),
-.composer-icon-button:hover:not(:disabled),
-.composer-stream-action:hover:not(:disabled) {
-  border-color: var(--border-strong) !important;
+.composer-chip:hover:not(:disabled):not(:focus-visible),
+.composer-icon-button:hover:not(:disabled):not(:focus-visible),
+.composer-stream-action:hover:not(:disabled):not(:focus-visible) {
   background: var(--bg-hover) !important;
   color: var(--text) !important;
 }
 
-.composer-chip.is-active,
-.composer-icon-button.is-active {
-  border-color: var(--border-strong) !important;
+.composer-chip.is-active:not(:focus-visible),
+.composer-icon-button.is-active:not(:focus-visible) {
   background: var(--bg-selected) !important;
   color: var(--text) !important;
   box-shadow: none !important;
 }
 
-.composer-chip.is-danger {
-  border-color: var(--danger-line) !important;
+.composer-chip.is-danger:not(:focus-visible) {
   background: var(--danger-soft) !important;
   color: var(--danger) !important;
-  box-shadow: inset 0 -2px var(--danger) !important;
+  box-shadow: none !important;
 }
 
-.composer-stream-action.is-warning {
-  border-color: var(--warning-line) !important;
+.composer-stream-action:not(:focus-visible) {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+
+.composer-stream-action.is-warning:not(:focus-visible) {
   background: var(--warning-soft) !important;
   color: var(--warning) !important;
 }
 
-.composer-stream-action.is-followup {
-  border-color: var(--accent-line) !important;
-  background: var(--accent-soft) !important;
-  color: var(--accent-hover) !important;
+.composer-stream-action.is-followup:not(:focus-visible) {
+  background: var(--bg-selected) !important;
+  color: var(--text) !important;
 }
 
 .composer-chip:disabled,
@@ -3473,13 +4185,13 @@ span.linenumber {
 
 /* --- auxiliary panel, files, resources, side chat -------------------------- */
 .auxiliary-deck {
-  background: var(--seed-color-bg-layer-default);
-  color: var(--seed-color-fg-neutral);
+  background: var(--bg-panel);
+  color: var(--text);
 }
 
 
-/* The auxiliary panel is SEED Tabs; only its frame and the close seam are
-   local, so the tab surfaces keep SEED's own states. */
+/* The inspector is SEED Tabs drawn as a segmented control: a tray fill with the
+   selected view raised. No sliding indicator, no underline. */
 .auxiliary-deck,
 .auxiliary-deck-tabs {
   display: flex;
@@ -3494,40 +4206,56 @@ span.linenumber {
 .auxiliary-deck-tabbar {
   display: flex;
   flex: none;
-  align-items: stretch;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
   min-inline-size: 0;
+  padding: 8px 8px 8px 12px;
 }
 
-/* SEED hides the list's scrollbar, so in a narrow deck the trailing tabs
-   (side chat last) were clipped with no visible way to reach them. Wrap the
-   six destinations onto a second row instead of an invisible inner scroll.
-   SEED's sliding indicator tracks only `left`, so on wrapped rows the
-   selected trigger draws its own 2px underline, matching SEED's SSR mark. */
 .auxiliary-deck-tabbar .seed-tabs__list {
   flex: 1 1 auto;
   flex-wrap: wrap;
+  gap: 2px;
   min-inline-size: 0;
+  padding: 2px;
   overflow: visible;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-rail);
+  box-shadow: none;
 }
 
-.auxiliary-deck-tabbar .seed-tabs__indicator {
-  display: none;
+.auxiliary-deck-tabbar .seed-tabs__indicator,
+.resource-view-tabs .seed-tabs__indicator {
+  display: none !important;
+}
+
+.auxiliary-deck-tabbar .seed-tabs__trigger {
+  flex: 1 1 auto;
+  justify-content: center;
+  min-block-size: 32px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 3px;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auxiliary-deck-tabbar .seed-tabs__trigger:hover:not(:is([aria-selected="true"], [data-selected])) {
+  color: var(--text);
 }
 
 .auxiliary-deck-tabbar .seed-tabs__trigger:is([aria-selected="true"], [data-selected]) {
-  box-shadow: inset 0 -2px var(--seed-color-fg-neutral);
+  background: var(--bg-raised);
+  box-shadow: none;
+  color: var(--text);
 }
 
-.auxiliary-deck-close {
+.auxiliary-deck-close,
+.auxiliary-deck-more {
   flex: none;
-  align-self: flex-start;
-  margin-inline: var(--seed-dimension-x1);
-}
-
-/* Keep the 36px close centred on the first 40px tab row; the extra class
-   outranks SEED's box-bleed margin reset on ActionButton. */
-.auxiliary-deck-tabbar .auxiliary-deck-close {
-  margin-block-start: var(--seed-dimension-x0_5);
 }
 
 .auxiliary-deck-tabs .seed-tabs__content {
@@ -3563,7 +4291,7 @@ span.linenumber {
   gap: var(--seed-dimension-x1);
   block-size: 32px;
   padding-inline: var(--seed-dimension-x2) var(--seed-dimension-x1);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  border: 0;
   white-space: nowrap;
 }
 
@@ -3862,12 +4590,14 @@ span.linenumber {
 
 .resource-view-tabs > .seed-tabs__list {
   flex: none;
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
-  background: var(--seed-color-bg-layer-basement);
+  border: 0;
+  background: var(--bg-subtle);
+  box-shadow: none;
 }
 
-.resource-view-tabs .seed-tabs__indicator {
-  border-block-end-color: var(--accent);
+.resource-view-tabs .seed-tabs__trigger:is([aria-selected="true"], [data-selected]) {
+  background: var(--bg-selected);
+  color: var(--text);
 }
 
 .resource-view-tabs .seed-tabs__trigger {
@@ -4166,8 +4896,9 @@ span.linenumber {
    경계가 사라져 얼굴이 아니라 얼룩으로 보인다. 그 한 겹이 윤곽을 세운다. */
 .account-avatar {
   flex: none;
-  border: 1px solid color-mix(in srgb, var(--text) 40%, transparent);
+  border: 0;
   border-radius: 50%;
+  background: var(--bg-selected);
   object-fit: cover;
 }
 
@@ -4191,21 +4922,21 @@ span.linenumber {
 
 /* 얼굴을 눌러 원본을 확인하는 자리. 화면에 박힌 얼굴은 24~48px 이라 누구인지 애매할 때가
    있는데, 그 확인에 필요한 것은 원본 한 장이지 배율 조작이 아니다. 버튼 자체는 그림만
-   담는 껍데기라 색도 테두리도 갖지 않는다 — 윤곽은 안쪽 `.account-avatar` 가 이미 세운다. */
+   담는 껍데기라 색도 테두리도 갖지 않는다 — 윤곽은 안쪽 `.account-avatar` 가 이미 세운다.
+   3px 안쪽 여백은 키보드 초점 때 그림 뒤로 초점 채움이 둘레로 드러나는 자리이고, 같은 만큼의
+   음수 바깥 여백이 배치 크기를 그대로 둔다. 인라인 width·height 는 그림 크기이므로 여백은
+   content-box 로 그 바깥에 붙는다. */
 .account-avatar-button {
+  box-sizing: content-box;
   display: inline-flex;
   flex: none;
-  padding: 0;
+  margin: -3px;
+  padding: 3px;
   border: 0;
   border-radius: 50%;
   background: none;
   cursor: pointer;
   line-height: 0;
-}
-
-.account-avatar-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .account-avatar-dialog {
@@ -4215,11 +4946,11 @@ span.linenumber {
      정렬(margin: auto)도 함께 사라진다. 여기서 되돌려 놓지 않으면 창이 왼쪽 위에 붙는다. */
   margin: auto;
   padding: 14px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
-  background: var(--bg-panel);
+  background: var(--bg-raised);
   color: var(--text);
-  box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+  box-shadow: var(--shadow-float);
   text-align: center;
 }
 
@@ -4233,7 +4964,8 @@ span.linenumber {
   display: block;
   inline-size: min(256px, 70vw);
   block-size: auto;
-  border: 1px solid color-mix(in srgb, var(--text) 40%, transparent);
+  border: 0;
+  background: var(--bg-selected);
   border-radius: 50%;
 }
 
@@ -4259,9 +4991,9 @@ span.linenumber {
 .account-avatar-close {
   margin-block-start: 10px;
   padding: 5px 14px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: none;
+  background: var(--bg-hover);
   color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
@@ -4279,26 +5011,25 @@ span.linenumber {
   gap: 6px;
 }
 
+/* The picture carries its own placeholder fill; the button stays clear with a
+   3px pad so keyboard focus shows the focus fill around the picture. */
 .tool-image-thumb {
   display: inline-flex;
-  padding: 0;
-  border: 1px solid var(--border);
+  margin: -3px;
+  padding: 3px;
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg-raised);
+  background: none;
   cursor: zoom-in;
   line-height: 0;
-  overflow: hidden;
-}
-
-.tool-image-thumb:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .tool-image-thumb img {
   display: block;
   max-inline-size: min(240px, 100%);
   max-block-size: 240px;
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
   object-fit: contain;
 }
 
@@ -4307,11 +5038,11 @@ span.linenumber {
   max-height: none;
   margin: auto;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-surface);
-  background: var(--bg-panel);
+  background: var(--bg-raised);
   color: var(--text);
-  box-shadow: 0 8px 32px rgb(0 0 0 / 18%);
+  box-shadow: var(--shadow-float);
   text-align: center;
 }
 
@@ -4344,17 +5075,17 @@ span.linenumber {
   touch-action: none;
 }
 
+/* The marked region is a tinted fill over the picture, not a drawn frame. */
 .tool-image-region {
   position: absolute;
   box-sizing: border-box;
-  border: 2px solid var(--danger);
-  /* 어떤 바탕의 스크린샷에서도 선이 보이도록 바깥에 패널색 한 줄을 덧댄다. */
-  box-shadow: 0 0 0 1px var(--bg-panel);
+  border: 0;
+  background: color-mix(in srgb, var(--danger) 26%, transparent);
   pointer-events: none;
 }
 
 .tool-image-region[data-draft="true"] {
-  border-style: dashed;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
 .tool-image-region-number {
@@ -5607,7 +6338,7 @@ section[aria-label="Subagent 기록"] .subagent-role {
   flex: 0 0 auto;
   max-inline-size: 26ch;
   overflow: hidden;
-  border: 1px solid var(--seed-color-stroke-neutral-muted);
+  border: 0;
   border-radius: var(--seed-radius-r1);
   padding: 0 var(--seed-dimension-x1_5);
   background: var(--seed-color-bg-neutral-weak);
@@ -5650,7 +6381,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-size: var(--seed-font-size-t4-static);
 }
 
-@container workspace-shell (min-width: 791px) {
+/* Thresholds equal WORKSPACE_PIN_THRESHOLDS in lib/workspace-layout.ts:
+   860 = rail 60 + list 240 + centre 560; 1232 = 860 + inspector 372. */
+@container workspace-shell (min-width: 860px) {
   .sidebar-overlay-backdrop {
     display: none !important;
   }
@@ -5671,19 +6404,18 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     inline-size: clamp(
       var(--workspace-min-navigator),
       var(--sidebar-width, 260px),
-      min(300px, calc(100cqi - var(--workspace-min-transcript) - 1px))
+      min(300px, calc(100cqi - var(--w-rail) - var(--workspace-min-transcript) - 1px))
     );
     min-inline-size: clamp(
       var(--workspace-min-navigator),
       var(--sidebar-width, 260px),
-      min(300px, calc(100cqi - var(--workspace-min-transcript) - 1px))
+      min(300px, calc(100cqi - var(--w-rail) - var(--workspace-min-transcript) - 1px))
     );
   }
 
   .sidebar-container.sidebar-closed {
     inline-size: 0;
     min-inline-size: 0;
-    border-inline-end: 0;
     overflow: hidden;
   }
 
@@ -5697,43 +6429,31 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   }
 }
 
-@container workspace-shell (min-width: 1176px) {
+@container workspace-shell (min-width: 1232px) {
   .workspace-shell[data-deck-visible="true"] .sidebar-container.sidebar-open {
     inline-size: clamp(
       var(--workspace-min-navigator),
       var(--sidebar-width, 260px),
-      min(300px, calc(50cqi - 348px))
+      min(300px, calc(100cqi - var(--w-rail) - var(--workspace-min-transcript) - var(--w-inspector) - 1px))
     );
     min-inline-size: clamp(
       var(--workspace-min-navigator),
       var(--sidebar-width, 260px),
-      min(300px, calc(50cqi - 348px))
+      min(300px, calc(100cqi - var(--w-rail) - var(--workspace-min-transcript) - var(--w-inspector) - 1px))
     );
   }
 
   .workspace-auxiliary-deck-slot {
     display: flex;
-    flex: 0 1 clamp(
-      var(--workspace-min-deck),
-      32cqi,
-      min(420px, calc(50cqi - 204px))
-    );
-    inline-size: clamp(
-      var(--workspace-min-deck),
-      32cqi,
-      min(420px, calc(50cqi - 204px))
-    );
-    min-inline-size: var(--workspace-min-deck);
+    flex: 0 0 var(--w-inspector);
+    inline-size: var(--w-inspector);
+    min-inline-size: var(--w-inspector);
   }
-  .workspace-auxiliary-deck-slot.is-pinned {
-    border-inline-start: 1px solid var(--seed-color-stroke-neutral-muted);
-  }
-
 }
 
 /* Content-derived media fallbacks for browsers without container queries. */
 @supports not (container-type: inline-size) {
-  @media (min-width: 791px) {
+  @media (min-width: 860px) {
     .sidebar-overlay-backdrop {
       display: none !important;
     }
@@ -5754,7 +6474,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     .sidebar-container.sidebar-closed {
       inline-size: 0;
       min-inline-size: 0;
-      border-inline-end: 0;
     }
 
     .sidebar-resize-handle {
@@ -5762,17 +6481,14 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     }
   }
 
-  @media (min-width: 1176px) {
+  @media (min-width: 1232px) {
     .workspace-auxiliary-deck-slot {
       display: flex;
-      flex: 0 0 var(--workspace-min-deck);
-      inline-size: var(--workspace-min-deck);
-      min-inline-size: var(--workspace-min-deck);
+      flex: 0 0 var(--w-inspector);
+      inline-size: var(--w-inspector);
+      min-inline-size: var(--w-inspector);
     }
-
   }
-
-
 }
 
 @media (max-width: 640px) {
@@ -5784,9 +6500,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     padding-inline: var(--seed-dimension-x1);
   }
 
-  /* Phone: the status line and the numeric readout yield to the controls, but
-     the meter and its accessible name stay. The project name went first and
-     left only "C…" beside a cut title; the drawer and window title still name it. */
+  /* Phone: the status chip and the numeric readout yield to the controls, but
+     the meter and its accessible name stay. The running count stays in the top
+     bar; the project name went first (the drawer and window title still name it). */
   .workspace-session-status,
   .workspace-context-readout,
   .workspace-session-project {
@@ -5903,9 +6619,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     background: rgba(0, 0, 0, 0.78);
   }
 
-  /* 드로어를 조금 넓혀 뒤 레이어가 남기는 띠를 줄인다. 닫기용 여백은 남긴다. */
+  /* 드로어는 장소 레일과 목록을 함께 담는다. 닫기용 여백은 남긴다. */
   .sidebar-container {
-    inline-size: min(320px, calc(100vw - 44px));
+    inline-size: min(340px, calc(100vw - 44px));
   }
 
   /* 드로어는 화면 높이를 다 쓴다. 열린 동안 대화 칸은 inert라 입력란을 아래에 남겨 둘 이유가 없고,
@@ -6012,15 +6728,15 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   text-align: center;
 }
 .server-restart-card span { color: var(--text-muted); font-size: 13px; }
+/* Waiting for the server: the brand lamp breathes; no ring spinner. */
 .server-restart-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid var(--border);
-  border-top-color: var(--text);
-  border-radius: 50%;
-  animation: server-restart-spin 0.9s linear infinite;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--brand-lamp);
+  animation: lamp-breathe 1.2s ease-in-out infinite;
 }
-@keyframes server-restart-spin { to { transform: rotate(360deg); } }
+@keyframes lamp-breathe { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .server-restart-spinner { animation: none; } }
 
 /* ---------------------------------------------------------------------------
@@ -7395,7 +8111,8 @@ html.dark[data-cuelo-look="graphite"] {
   --gt-dim: brightness(0.62);
   --gt-wall: #1e1f21;
   --gt-wallpaper: none;
-  --gt-band-half: 458px;
+  /* half the reading measure plus the column padding and a little air */
+  --gt-band-half: calc(var(--reading-measure) / 2 + 28px);
   /* the backing fades out over this width so a character next to the column
      is not cut by a hard edge; the text area inside stays at full backing */
   --gt-band-feather: 48px;
@@ -7516,7 +8233,7 @@ html.dark[data-cuelo-look="graphite"] .chat-empty-start {
 }
 
 html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] .chat-composer-dock {
-  --gt-band-half: 446px;
+  --gt-band-half: calc(var(--reading-measure) / 2 + 16px);
   background: linear-gradient(
     to right,
     transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),

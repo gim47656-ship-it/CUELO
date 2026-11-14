@@ -19,7 +19,7 @@ const badgeStyle: CSSProperties = {
   flexShrink: 0,
   height: 32,
   padding: "0 10px",
-  border: "1px solid var(--accent-line)",
+  border: 0,
   borderRadius: "var(--radius-control)",
   background: "var(--accent-soft)",
   color: "var(--accent-hover)",

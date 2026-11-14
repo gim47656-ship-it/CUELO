@@ -3,16 +3,13 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import {
-  LEGACY_PRIORITY_MODE_STORAGE_KEY,
-  NAVIGATOR_MODES,
-  NAVIGATOR_MODE_STORAGE_KEY,
   PRIORITY_REFRESH_MS,
   buildPrioritySessionGroups,
   isTemporaryProjectPath,
-  parseStoredNavigatorMode,
   prioritySessionProjectName,
   prioritySessionTitle,
   type NavigatorMode,
+  type PrioritySessionGroup,
 } from "@/lib/navigator-modes";
 import {
   forgetSessions,
@@ -54,13 +51,21 @@ interface Props {
   onBackgroundTaskDone?: () => void;
   /** 「통역」 보기의 내용(안내 패널). 주어질 때만 보기 전환에 통역이 생긴다. */
   translatorPanel?: ReactNode;
-  /** 통역 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모가 들고 있다. */
+  /** 통역·루틴 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모(레일)가 들고 있다. */
   translatorActive?: boolean;
-  onTranslatorActiveChange?: (active: boolean) => void;
   /** 「루틴」 보기의 내용(루틴 목록). 주어질 때만 보기 전환에 루틴이 생긴다. 통역 보기와 같은 자리를 쓴다. */
   routinePanel?: ReactNode;
   routineActive?: boolean;
-  onRoutineActiveChange?: (active: boolean) => void;
+  /** The list's place (프로젝트 or 우선순위), chosen in the shell's rail. */
+  navigatorMode?: NavigatorMode;
+  /** Running and answer-waiting sessions, for the rail badge, the phone top bar and the palette. */
+  onActivityChange?: (activity: SessionActivity) => void;
+}
+
+export interface SessionActivity {
+  running: number;
+  /** Sessions whose run waits for the user's answer or approval (입력 필요). */
+  waiting: readonly SessionInfo[];
 }
 
 interface WorktreeEntry {
@@ -99,9 +104,9 @@ function bulkClearButtonStyle(disabled: boolean, isMobile: boolean): CSSProperti
   return {
     minHeight: isMobile ? 36 : 30,
     padding: "3px 10px",
-    border: "1px solid var(--border)",
+    border: 0,
     borderRadius: "var(--radius-control)",
-    background: "transparent",
+    background: "var(--bg-hover)",
     color: disabled ? "var(--text-dim)" : "var(--text-muted)",
     cursor: disabled ? "default" : "pointer",
     fontSize: "var(--seed-font-size-t2-static)",
@@ -395,7 +400,7 @@ async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): 
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, onTranslatorActiveChange, routinePanel, routineActive = false, onRoutineActiveChange }: Props) {
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, routinePanel, routineActive = false, navigatorMode = "projects", onActivityChange }: Props) {
   const { tt } = useTranslatorText();
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
@@ -412,7 +417,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   const [homeDir, setHomeDir] = useState<string>("");
   const [cloudProjects, setCloudProjects] = useState(false);
   const [projectFilter, setProjectFilter] = useState("");
-  const [navigatorMode, setNavigatorMode] = useState<NavigatorMode>("projects");
+  // navigatorMode comes from the rail (AppShell owns it and its stored value).
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
   // Every project starts collapsed on each load: only a click in this view opens one, and nothing
   // - selecting a session, a finished answer, a refresh - opens one on the user's behalf.
@@ -701,31 +706,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     loadSessions(isFirst, !isFirst);
   }, [loadSessions, refreshKey]);
 
-  // Browser storage is unavailable during server rendering. Restore the native
-  // navigator mode after hydration and migrate the former priority toggle.
-  useEffect(() => {
-    try {
-      setNavigatorMode(parseStoredNavigatorMode(
-        window.localStorage.getItem(NAVIGATOR_MODE_STORAGE_KEY),
-        window.localStorage.getItem(LEGACY_PRIORITY_MODE_STORAGE_KEY),
-      ));
-    } catch {
-      // Keep the projects mode when browser storage is unavailable.
-    }
-  }, []);
-
-  const selectNavigatorMode = useCallback((mode: NavigatorMode) => {
-    setNavigatorMode(mode);
-    try {
-      window.localStorage.setItem(NAVIGATOR_MODE_STORAGE_KEY, mode);
-      window.localStorage.setItem(
-        LEGACY_PRIORITY_MODE_STORAGE_KEY,
-        mode === "priority" ? "1" : "0",
-      );
-    } catch {
-      // Keep the current-tab mode when browser storage is unavailable.
-    }
-  }, []);
 
   useEffect(() => {
     if (navigatorMode !== "priority") return;
@@ -736,6 +716,13 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     const timer = window.setInterval(refreshPriority, PRIORITY_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [loadSessions, navigatorMode]);
+
+  useEffect(() => {
+    onActivityChange?.({
+      running: runningSessionIds.size,
+      waiting: allSessions.filter((session) => waitingSessionIds.has(session.id)),
+    });
+  }, [allSessions, onActivityChange, runningSessionIds, waitingSessionIds]);
 
   // Persist unread markers so they survive a browser refresh before the user
   // has actually opened the completed session.
@@ -1407,6 +1394,53 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     ),
     [keptReviewId, locale, pinnedSessionIds, resultsToCheck, reviewFilterActive, runningSessionIds, sessionsForDisplay, t],
   );
+  // The 우선순위 place groups by state, most urgent first: 입력 필요 (the run waits for the user's answer),
+  // 실행 중, 확인할 결과, 고정, then 끝남 split by day. The data is the same running/waiting snapshot and
+  // result-review state as before; only the grouping is drawn from it here.
+  const priorityStateGroups = useMemo(() => {
+    const reviewIds = new Set(resultsToCheck.map((session) => session.id));
+    const input: SessionInfo[] = [];
+    const running: SessionInfo[] = [];
+    const review: SessionInfo[] = [];
+    let pinned: PrioritySessionGroup | null = null;
+    const days: PrioritySessionGroup[] = [];
+    for (const group of priorityGroups) {
+      if (group.key === "pinned") {
+        // State outranks the pin: a pinned session that waits, runs or has a
+        // result to check sits in that state group; only idle pins stay here.
+        const idle = group.sessions.filter((session) => {
+          if (waitingSessionIds.has(session.id)) input.push(session);
+          else if (runningSessionIds.has(session.id)) running.push(session);
+          else if (reviewIds.has(session.id)) review.push(session);
+          else return true;
+          return false;
+        });
+        if (idle.length > 0) pinned = { ...group, sessions: idle };
+      } else if (group.running) {
+        for (const session of group.sessions) (waitingSessionIds.has(session.id) ? input : running).push(session);
+      } else {
+        const rest = group.sessions.filter((session) => {
+          if (!reviewIds.has(session.id)) return true;
+          review.push(session);
+          return false;
+        });
+        if (rest.length > 0) days.push({ ...group, sessions: rest });
+      }
+    }
+    const groups: { key: string; kind: string; label: string; heading?: string; sessions: SessionInfo[] }[] = [];
+    if (input.length > 0) groups.push({ key: "input", kind: "input", label: t("navigator.group.input"), sessions: input });
+    if (running.length > 0) groups.push({ key: "running", kind: "running", label: t("navigator.group.running"), sessions: running });
+    if (review.length > 0) groups.push({ key: "review", kind: "review", label: t("navigator.resultsToCheck"), sessions: review });
+    if (pinned) groups.push({ key: "pinned", kind: "pinned", label: pinned.label, sessions: pinned.sessions });
+    days.forEach((group, index) => groups.push({
+      key: group.key,
+      kind: "done",
+      label: group.label,
+      heading: index === 0 ? t("navigator.group.done") : undefined,
+      sessions: group.sessions,
+    }));
+    return groups;
+  }, [priorityGroups, resultsToCheck, runningSessionIds, t, waitingSessionIds]);
   const selectSessionFromReview = useCallback((session: SessionInfo) => {
     setKeptReviewId(session.id);
     handleSelectSessionFromList(session);
@@ -1491,7 +1525,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         className="session-navigator-header"
         style={{
           padding: "4px 10px",
-          borderBottom: "1px solid var(--border)",
           flexShrink: 0,
         }}
       >
@@ -1508,7 +1541,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
                 background: "var(--bg-hover)",
-                border: "1px solid var(--border)",
+                border: 0,
                 color: selectedCwd ? "var(--text-muted)" : "var(--text-dim)",
                 cursor: selectedCwd ? "pointer" : "not-allowed",
                 width: 32, height: 32,
@@ -1516,7 +1549,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 borderRadius: "var(--radius-control)",
                 fontSize: 12,
                 flexShrink: 0,
-                transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                transition: "background 0.12s, color 0.12s",
               }}
               title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
               aria-label={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
@@ -1528,7 +1561,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               onMouseLeave={(event) => {
                 event.currentTarget.style.background = "var(--bg-hover)";
                 event.currentTarget.style.color = selectedCwd ? "var(--text-muted)" : "var(--text-dim)";
-                event.currentTarget.style.borderColor = "var(--border)";
               }}
             >
               <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
@@ -1541,15 +1573,15 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               onClick={() => loadSessions(false, true)}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
-                border: `1px solid ${sessionRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
-                color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)",
+                background: sessionRefreshDone ? "var(--success-soft)" : "var(--bg-hover)",
+                border: 0,
+                color: sessionRefreshDone ? "var(--success)" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32, height: 32,
                 borderRadius: "var(--radius-control)",
                 padding: 0,
                 flexShrink: 0,
-                transition: "background 0.3s, color 0.3s, border-color 0.3s",
+                transition: "background 0.3s, color 0.3s",
               }}
               onMouseEnter={(event) => {
                 if (sessionRefreshDone) return;
@@ -1560,7 +1592,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 if (sessionRefreshDone) return;
                 event.currentTarget.style.background = "var(--bg-hover)";
                 event.currentTarget.style.color = "var(--text-muted)";
-                event.currentTarget.style.borderColor = "var(--border)";
               }}
               title={t("sidebar.refresh")}
             >
@@ -1585,9 +1616,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                 onChange={(event) => { setIssueReference(event.target.value); setIssueError(null); }}
                 placeholder={issueText.issuePlaceholder} aria-describedby={issueError ? "session-issue-error" : undefined}
                 aria-invalid={Boolean(issueError)}
-                style={{ minWidth: 0, flex: 1, padding: "6px 8px", fontSize: 12, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }} />
+                style={{ minWidth: 0, flex: 1, padding: "6px 8px", fontSize: 12, background: "var(--bg)", color: "var(--text)", border: 0, borderRadius: "var(--radius-control)" }} />
               <button type="submit" disabled={issueBusy || !issueReference.trim()} title={issueText.issueStart} aria-label={issueText.issueStart}
-                style={{ minWidth: 32, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", cursor: issueBusy ? "wait" : "pointer" }}>
+                style={{ minWidth: 32, padding: "4px 8px", border: 0, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", cursor: issueBusy ? "wait" : "pointer" }}>
                 {issueBusy ? "…" : "↵"}
               </button>
             </div>
@@ -1606,129 +1637,18 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       {cloudProjects && !sideViewOn && (
         <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
-          style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: 0, borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           {t("cloudProjects.launch")}
         </button>
       )}
 
 
-      <div
-        className="navigator-mode-bar"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          minHeight: 42,
-          padding: "6px 8px 4px",
-          flexShrink: 0,
-        }}
-      >
-        <div
-          className="navigator-mode-switcher"
-          role="toolbar"
-          aria-label={t("navigator.toolbar")}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 2,
-            flex: 1,
-            minWidth: 0,
-            padding: 2,
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-control)",
-            background: "var(--bg-panel)",
-          }}
-        >
-          {NAVIGATOR_MODES.map((mode) => {
-            const label = mode === "projects"
-              ? t("sidebar.projects")
-              : t("navigator.priority");
-            const active = !sideViewOn && navigatorMode === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                aria-label={t("navigator.view", { label })}
-                aria-pressed={active}
-                aria-controls={`navigator-${mode}-panel`}
-                data-navigator-mode={mode}
-                onClick={() => {
-                  selectNavigatorMode(mode);
-                  if (translatorOn) onTranslatorActiveChange?.(false);
-                  if (routineOn) onRoutineActiveChange?.(false);
-                }}
-                style={{
-                  minWidth: 0,
-                  minHeight: 26,
-                  flex: 1,
-                  padding: "3px 4px",
-                  border: "none",
-                  borderRadius: "var(--radius-control)",
-                  background: active ? "var(--bg-selected)" : "transparent",
-                  color: active ? "var(--text)" : "var(--text-dim)",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: active ? 600 : 500,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {label}
-              </button>
-            );
-          })}
-          {translatorPanel !== undefined && (
-            <button
-              type="button"
-              aria-label={t("navigator.view", { label: tt("translator.tab") })}
-              aria-pressed={translatorOn}
-              aria-controls="navigator-translator-panel"
-              data-navigator-mode="translator"
-              onClick={() => onTranslatorActiveChange?.(!translatorOn)}
-              style={{
-                minWidth: 0,
-                minHeight: 26,
-                flex: 1,
-                padding: "3px 4px",
-                border: "none",
-                borderRadius: "var(--radius-control)",
-                background: translatorOn ? "var(--bg-selected)" : "transparent",
-                color: translatorOn ? "var(--text)" : "var(--text-dim)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: translatorOn ? 600 : 500,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {tt("translator.tab")}
-            </button>
-          )}
-          {routinePanel !== undefined && (
-            <button
-              type="button"
-              aria-label={t("navigator.view", { label: t("routines.tab") })}
-              aria-pressed={routineOn}
-              aria-controls="navigator-routine-panel"
-              data-navigator-mode="routine"
-              onClick={() => onRoutineActiveChange?.(!routineOn)}
-              style={{
-                minWidth: 0,
-                minHeight: 26,
-                flex: 1,
-                padding: "3px 4px",
-                border: "none",
-                borderRadius: "var(--radius-control)",
-                background: routineOn ? "var(--bg-selected)" : "transparent",
-                color: routineOn ? "var(--text)" : "var(--text-dim)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: routineOn ? 600 : 500,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {t("routines.tab")}
-            </button>
-          )}
-        </div>
+      {/* The place itself is chosen in the shell's rail; the list only names it and carries its tools. */}
+      <div className="navigator-mode-bar">
+        <h2 className="navigator-place-title">
+          {translatorOn ? tt("translator.tab") : routineOn ? t("routines.tab") : navigatorMode === "projects" ? t("sidebar.projects") : t("navigator.priority")}
+        </h2>
+        <span className="navigator-mode-spacer" />
         {!sideViewOn && navigatorMode === "projects" && (
           <button
             type="button"
@@ -1833,7 +1753,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               width: "100%",
               height: 34,
               padding: "0 10px 0 32px",
-              border: "1px solid var(--border)",
+              border: 0,
               borderRadius: "var(--radius-control)",
               outline: "none",
               background: "var(--bg-hover)",
@@ -2046,7 +1966,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         minWidth: 0,
                         height: 24,
                         padding: "2px 6px",
-                        border: "1px solid var(--accent)",
+                        border: 0,
                         borderRadius: "var(--radius-control)",
                         outline: "none",
                         background: "var(--bg)",
@@ -2194,8 +2114,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         right: 3,
                         width: "min(260px, calc(100vw - 24px))",
                         zIndex: 110,
-                        background: "var(--bg)",
-                        border: "1px solid var(--border)",
+                        background: "var(--bg-raised)",
+                        border: 0,
                         borderRadius: "var(--radius-surface)",
                         boxShadow: "var(--shadow-float)",
                         boxSizing: "border-box",
@@ -2218,7 +2138,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                               minHeight: 34,
                               padding: "0 10px",
                               border: "none",
-                              borderBottom: wtDropdownOpen ? "1px solid var(--border)" : "none",
                               background: wtDropdownOpen ? "var(--bg-selected)" : "transparent",
                               color: "var(--text-muted)",
                               cursor: "pointer",
@@ -2245,7 +2164,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                               zIndex: 100,
                               background: "var(--bg)",
                               border: "none",
-                              borderTop: "1px solid var(--border)",
                               borderRadius: 0,
                               boxShadow: "none",
                               boxSizing: "border-box",
@@ -2253,7 +2171,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             }}
               >
                   {showWtFilter && (
-                    <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ padding: "6px 8px" }}>
                       <input
                         value={wtFilter}
                         onChange={(e) => setWtFilter(e.target.value)}
@@ -2270,10 +2188,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                           fontSize: 11,
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
-                          border: "1px solid var(--border)",
+                          border: 0,
                           borderRadius: "var(--radius-control)",
                           outline: "none",
-                          background: "var(--bg)",
+                          background: "var(--bg-subtle)",
                           color: "var(--text)",
                           boxSizing: "border-box",
                         }}
@@ -2285,7 +2203,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                       const isCurrent = wt.path === selectedCwd || (wt.isMain && !worktreeState.worktrees.some((w) => w.path === selectedCwd));
                       if (wtConfirmRemove === wt.path) {
                         return (
-                          <div key={wt.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--border)", background: "rgba(239,68,68,0.06)" }}>
+                          <div key={wt.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", background: "var(--danger-soft)" }}>
                             <span style={{ flex: 1, fontSize: 11, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {t("sidebar.forceRemoveCheckout")}
                             </span>
@@ -2298,7 +2216,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             </button>
                             <button
                               onClick={() => setWtConfirmRemove(null)}
-                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: 0, borderRadius: "var(--radius-control)", color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
                             >
                               {t("sidebar.cancel")}
                             </button>
@@ -2309,7 +2227,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         <div
                           key={wt.path}
                           className="wt-row"
-                          style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)" }}
+                          style={{ display: "flex", alignItems: "center" }}
                         >
                           <button
                             onClick={() => {
@@ -2358,7 +2276,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                                 borderRadius: "var(--radius-control)", flexShrink: 0,
                                 transition: "color 0.12s, background 0.12s",
                               }}
-                              onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
+                              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--danger)"; e.currentTarget.style.background = "var(--danger-soft)"; }}
                               onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
                             >
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2432,10 +2350,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                           fontSize: 11,
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
-                          border: "1px solid var(--accent)",
+                          border: 0,
                           borderRadius: "var(--radius-control)",
                           outline: "none",
-                          background: "var(--bg)",
+                          background: "var(--bg-subtle)",
                           color: "var(--text)",
                           boxSizing: "border-box",
                         }}
@@ -2465,7 +2383,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             flex: 1,
                             padding: "4px 0",
                             background: "var(--bg-hover)",
-                            border: "1px solid var(--border)",
+                            border: 0,
                             borderRadius: "var(--radius-control)",
                             color: "var(--text-muted)",
                             fontSize: 11,
@@ -2503,7 +2421,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                             minHeight: 34,
                             padding: "0 10px",
                             border: "none",
-                            borderTop: "1px solid var(--border)",
                             background: "transparent",
                             color: "var(--text-muted)",
                             cursor: projectMutationBusy ? "default" : "pointer",
@@ -2618,7 +2535,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                                 minHeight: 34,
                                 padding: "0 10px",
                                 border: "none",
-                                borderTop: "1px solid var(--border)",
                                 background: "transparent",
                                 color: "var(--text-muted)",
                                 cursor: disabled ? "default" : "pointer",
@@ -2765,8 +2681,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 6,
-                  borderColor: reviewFilterActive ? "var(--border-strong)" : "var(--border)",
-                  background: reviewFilterActive ? "var(--bg-selected)" : "transparent",
+                  background: reviewFilterActive ? "var(--bg-selected)" : "var(--bg-hover)",
                   color: reviewFilterActive || resultsToCheck.length > 0 ? "var(--text)" : "var(--text-muted)",
                   fontWeight: reviewFilterActive ? 600 : 500,
                   whiteSpace: "nowrap",
@@ -2815,20 +2730,21 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
               {reviewFilterActive ? t("navigator.resultsToCheckEmpty") : t("sidebar.noSessions")}
             </div>
           )}
-          {!loading && !error && priorityGroups.map((group, index) => (
-            <section key={group.key} aria-labelledby={`priority-group-${group.key}`}>
-              <h2
+          {!loading && !error && priorityStateGroups.map((group, index) => (
+            <section key={group.key} aria-labelledby={`priority-group-${group.key}`} className="priority-group" data-group={group.kind}>
+              {group.heading && (
+                <h2 className="priority-group-heading" data-first={index === 0 ? "" : undefined}>{group.heading}</h2>
+              )}
+              <h3
                 id={`priority-group-${group.key}`}
-                style={{
-                  margin: 0,
-                  padding: index === 0 ? "2px 8px 4px" : "14px 8px 4px",
-                  color: "var(--text-muted)",
-                  fontSize: "var(--seed-font-size-t2-static)",
-                  fontWeight: 600,
-                }}
+                className={group.heading ? "priority-group-day" : "priority-group-heading"}
+                data-first={index === 0 && !group.heading ? "" : undefined}
               >
+                {group.kind === "input" && <span className="workbench-lamp" data-kind="input" aria-hidden="true" />}
+                {group.kind === "running" && <span className="workbench-lamp" aria-hidden="true" />}
                 {group.label}
-              </h2>
+                <span className="priority-group-count">{group.sessions.length}</span>
+              </h3>
               {group.sessions.map((session) => (
                 <PrioritySessionRow
                   key={session.id}
@@ -2960,9 +2876,9 @@ function BulkClearDialog({
         style={{
           width: 420,
           maxWidth: "100%",
-          border: "1px solid var(--border)",
+          border: 0,
           borderRadius: "var(--radius-surface)",
-          background: "var(--bg-panel)",
+          background: "var(--bg-raised)",
           boxShadow: "var(--shadow-float)",
           overflow: "hidden",
         }}
@@ -2988,7 +2904,7 @@ function BulkClearDialog({
             </div>
           )}
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, padding: "12px 18px" }}>
           <button
             ref={cancelRef}
             type="button"
@@ -2997,9 +2913,9 @@ function BulkClearDialog({
             style={{
               minHeight: 36,
               padding: "0 12px",
-              border: "1px solid var(--border)",
+              border: 0,
               borderRadius: "var(--radius-control)",
-              background: "transparent",
+              background: "var(--bg-hover)",
               color: "var(--text-muted)",
               cursor: busy ? "default" : "pointer",
               fontSize: "var(--seed-font-size-t3-static)",
@@ -3015,9 +2931,9 @@ function BulkClearDialog({
             style={{
               minHeight: 36,
               padding: "0 14px",
-              border: "1px solid var(--danger)",
+              border: 0,
               borderRadius: "var(--radius-control)",
-              background: "transparent",
+              background: confirmDisabled ? "var(--bg-hover)" : "var(--danger-soft)",
               color: confirmDisabled ? "var(--text-dim)" : "var(--danger)",
               cursor: confirmDisabled ? "default" : "pointer",
               fontSize: "var(--seed-font-size-t3-static)",
@@ -3205,7 +3121,7 @@ function ArchivedSessionsSection({
   if (sessions.length === 0 && !open) return null;
 
   return (
-    <section style={{ borderTop: "1px solid var(--border)", marginTop: 4 }}>
+    <section style={{ marginTop: 8 }}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -3244,7 +3160,6 @@ function ArchivedSessionsSection({
                   height: 40, display: "flex", alignItems: "center",
                   paddingLeft: 20, paddingRight: 4, gap: 4,
                   cursor: "pointer", overflow: "hidden",
-                  borderLeft: s.id === selectedSessionId ? "2px solid var(--accent)" : "2px solid transparent",
                   background: s.id === selectedSessionId ? "var(--bg-selected)" : "transparent",
                 }}
               >
@@ -3257,7 +3172,7 @@ function ArchivedSessionsSection({
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
                     height: 24, padding: "0 8px", flexShrink: 0,
-                    background: "var(--bg)", border: "1px solid var(--border)",
+                    background: "var(--bg-hover)", border: 0,
                     borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                     cursor: "pointer", fontSize: 11, fontWeight: 500,
                   }}
@@ -3356,62 +3271,28 @@ function SessionTreeItem({
   );
 }
 
-/** 사람 답(ask·승인)을 기다리며 멈춘 세션. 돌아가는 스피너 대신 글자로 알려, 답할 세션을 한눈에 고르게 한다. */
+/** 사람 답(ask·승인)을 기다리며 멈춘 세션. 속이 빈 램프와 글자로 알려, 실행 중(채운 램프)과 색 없이도 구분된다. */
 function WaitingSessionIndicator() {
   const { t } = useI18n();
   return (
-    <span
-      title={t("sidebar.waitingForAnswerHint")}
-      style={{
-        flexShrink: 0,
-        padding: "0 6px",
-        borderRadius: "var(--radius-surface)",
-        border: "1px solid var(--warning-line)",
-        background: "var(--warning-soft)",
-        color: "var(--warning)",
-        fontSize: 10.5,
-        fontWeight: 600,
-        lineHeight: "16px",
-        whiteSpace: "nowrap",
-      }}
-    >
+    <span className="session-waiting-indicator" title={t("sidebar.waitingForAnswerHint")}>
+      <span className="workbench-lamp" data-kind="input" aria-hidden="true" />
       {t("sidebar.waitingForAnswer")}
     </span>
   );
 }
 
+/** The brand lamp: a live process is here. A solid square, never animated. */
 function RunningSessionIndicator() {
   const { t } = useI18n();
   return (
     <span
+      className="session-running-indicator"
       title={t("sidebar.agentRunning")}
       aria-label={t("sidebar.agentRunning")}
-      style={{
-        width: 14,
-        height: 14,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-        color: "var(--accent)",
-      }}
+      role="img"
     >
-      <svg
-        className="session-running-spinner"
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        aria-hidden="true"
-        style={{ display: "block" }}
-      >
-        <path
-          d="M21 12a9 9 0 1 1-3.8-7.4"
-          stroke="currentColor"
-          strokeWidth="2.8"
-          strokeLinecap="round"
-        />
-      </svg>
+      <span className="workbench-lamp" aria-hidden="true" />
     </span>
   );
 }
@@ -3429,29 +3310,19 @@ function UnreadSessionIndicator() {
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
-        color: "var(--accent)",
+        color: "var(--text)",
       }}
     >
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ display: "block" }}>
-        <circle cx="7" cy="7" r="2.5" fill="currentColor" />
-        <circle
-          className="session-unread-ring"
-          cx="7"
-          cy="7"
-          r="3"
-          stroke="currentColor"
-          strokeWidth="1.4"
-        />
-      </svg>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: "currentColor" }} />
     </span>
   );
 }
 
 /**
  * Compact per-project activity badges for the workspace selector dropdown items:
- * a spinning running icon + count and an unread dot + count. Renders nothing
- * when the project has no activity. Counts share the accent / unread colors of
- * the per-session indicators so the two stay visually consistent.
+ * the brand lamp + running count and an unread dot + count. Renders nothing
+ * when the project has no activity. They match the per-session indicators so
+ * the two stay visually consistent.
  */
 function showProjectActivity(
   activity: { running: number; unread: number } | undefined,
@@ -3464,19 +3335,9 @@ function showProjectActivity(
         <span
           title={t("sidebar.agentRunning")}
           aria-label={`${t("sidebar.agentRunning")} (${activity.running})`}
-          style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+          style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}
         >
-          <svg
-            className="session-running-spinner"
-            width="10"
-            height="10"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-            style={{ display: "block" }}
-          >
-            <path d="M21 12a9 9 0 1 1-3.8-7.4" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
-          </svg>
+          <span className="workbench-lamp" aria-hidden="true" />
           {activity.running}
         </span>
       )}
@@ -3484,9 +3345,9 @@ function showProjectActivity(
         <span
           title={t("sidebar.newSessionActivity")}
           aria-label={`${t("sidebar.newSessionActivity")} (${activity.unread})`}
-          style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent)", fontSize: 10, fontFamily: "var(--font-mono)" }}
+          style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}
         >
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block" }} />
+          <span style={{ width: 6, height: 6, borderRadius: 3, background: "var(--text)", display: "inline-block" }} />
           {activity.unread}
         </span>
       )}
@@ -3655,7 +3516,6 @@ function SessionItem({
         paddingRight: 4,
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
-        borderLeft: "2px solid transparent",
         transition: "background 0.1s",
         opacity: deleting ? 0.5 : 1,
         gap: 4,
@@ -3693,7 +3553,7 @@ function SessionItem({
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
                 height: 30, padding: "0 11px",
-                background: "var(--bg)", border: "1px solid var(--border)",
+                background: "var(--bg-hover)", border: 0,
                 borderRadius: "var(--radius-control)", color: "var(--text-muted)",
                 cursor: "pointer", fontSize: 12, fontWeight: 500,
                 whiteSpace: "nowrap",
@@ -3719,7 +3579,7 @@ function SessionItem({
             flex: 1,
             fontSize: 12,
             padding: "5px 8px",
-            border: "1px solid var(--accent)",
+            border: 0,
             borderRadius: "var(--radius-control)",
             outline: "none",
             background: "var(--bg)",
@@ -3849,7 +3709,6 @@ function SessionItem({
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "transparent";
                   e.currentTarget.style.color = "var(--text-muted)";
-                  e.currentTarget.style.borderColor = "transparent";
                 }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3899,14 +3758,12 @@ function SessionItem({
                 }}
                 onFocus={() => setHovered(true)}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(239,68,68,0.08)";
-                  e.currentTarget.style.color = "#ef4444";
-                  e.currentTarget.style.borderColor = "rgba(239,68,68,0.35)";
+                  e.currentTarget.style.background = "var(--danger-soft)";
+                  e.currentTarget.style.color = "var(--danger)";
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "transparent";
                   e.currentTarget.style.color = "var(--text-muted)";
-                  e.currentTarget.style.borderColor = "transparent";
                 }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

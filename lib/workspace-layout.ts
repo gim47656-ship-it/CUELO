@@ -28,18 +28,22 @@ export const WORKSPACE_TRANSIENT_LAYERS = [
 export type WorkspaceTransientLayer = (typeof WORKSPACE_TRANSIENT_LAYERS)[number];
 
 export const WORKSPACE_CONTENT_MINIMUMS = Object.freeze({
-  transcript: 550,
+  rail: 60,
+  transcript: 560,
   composer: 384,
   navigator: 240,
-  deck: 384,
+  deck: 372,
 });
 
-// Navigator/deck floors are cumulative content sums. Usage and models live in
-// the same deck as the other panel views, so there is no separate rail floor
-// and no width at which two auxiliary surfaces are open at once.
+// Navigator/deck floors are cumulative content sums. The icon rail is always
+// laid out on a pinned desktop, and zones meet on a background step with no
+// seam, so nothing is added for separators. Usage and models live in the same
+// deck as the other panel views, so there is no width at which two auxiliary
+// surfaces are open at once. The shell CSS clamps the list width so the
+// transcript keeps its floor above each threshold.
 export const WORKSPACE_PIN_THRESHOLDS = Object.freeze({
-  navigator: 791, // 240 + 1 + 550
-  deck: 1176, // 240 + 1 + 550 + 1 + 384
+  navigator: 860, // 60 + 240 + 560
+  deck: 1232, // 60 + 240 + 560 + 372
 });
 
 export interface WorkspaceLayoutState {
@@ -154,7 +158,7 @@ export interface WorkspacePinDecision {
 /**
  * Resolves region presentation in priority order. Width is the shell's
  * available inline size, not a device classification or user-agent signal.
- * The 860px transcript measure is normative; 550px is only its descriptive
+ * The 720px reading measure is normative; 560px is only the centre zone's
  * content floor for pin priority.
  */
 export function getWorkspacePinDecision(availableWidth: number): WorkspacePinDecision {

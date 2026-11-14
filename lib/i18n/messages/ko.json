@@ -1399,5 +1399,20 @@
  "routines.form.when": "언제",
  "routines.form.date": "날짜",
  "routines.form.onceHint": "그 시각에 한 번 돌고 나면 저절로 꺼집니다.",
- "routines.form.quietHint": "알릴 것이 없는 회차는 세션이 답을 [알림 없음]으로 시작하고, 글을 올리지 않습니다."
+ "routines.form.quietHint": "알릴 것이 없는 회차는 세션이 답을 [알림 없음]으로 시작하고, 글을 올리지 않습니다.",
+ "inspector.label": "인스펙터",
+ "inspector.views": "인스펙터 보기",
+ "inspector.more": "다른 보기",
+ "inspector.hide": "인스펙터 닫기",
+ "inspector.show": "인스펙터 열기",
+ "inspector.turn": "이번 턴",
+ "inspector.noTurn": "아직 턴이 없습니다.",
+ "inspector.backToChat": "대화로 돌아가기",
+ "workbench.places": "장소",
+ "workbench.runningCount": "실행 중 {count}",
+ "workbench.needsInput": "입력 필요",
+ "workbench.needsInputCount": "입력 필요 {count}",
+ "navigator.group.input": "입력 필요",
+ "navigator.group.running": "실행 중",
+ "navigator.group.done": "끝남"
 }

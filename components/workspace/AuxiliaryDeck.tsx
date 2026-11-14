@@ -1,15 +1,25 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ActionButton, Badge, Icon, Tabs } from "@seed-design/react";
+import { ActionButton, Badge, Icon, Menu, Tabs } from "@seed-design/react";
 import type { SubagentSnapshot } from "@/lib/types";
 import type { HanseSubagentClient } from "@/lib/hanse-subagent-client";
-import { WORKSPACE_PANEL_VIEW_IDS, type WorkspacePanelViewId } from "@/lib/workspace-layout";
+import type { WorkspacePanelViewId } from "@/lib/workspace-layout";
 import type { MakerSelection } from "@/components/answer-status/AnswerStatusContext";
+import { useI18n } from "@/hooks/useI18n";
 import { SubagentArchivePanel } from "./SubagentArchivePanel";
 import { PanelExpandContext, PanelExpandToggle, type PanelExpandState } from "./PanelHeader";
 
-export type AuxiliaryDeckView = WorkspacePanelViewId;
+/**
+ * The inspector's views. `turn` (이번 턴) is the inspector's own view of the selected turn; it is not a
+ * workspace view id, so it never takes a Ctrl+number alias. The shell shows it while the workspace view
+ * is the conversation.
+ */
+export type AuxiliaryDeckView = WorkspacePanelViewId | "turn";
+
+/** The segmented control's views, in order; the rest open from the overflow menu. */
+const PRIMARY_VIEWS: ReadonlyArray<AuxiliaryDeckView> = ["turn", "process", "subagents", "files"];
+const OVERFLOW_VIEWS: ReadonlyArray<AuxiliaryDeckView> = ["efficiency", "resource", "sidechat", "plugins", "memory"];
 
 /** 자기 머리줄(PanelHeader)이 없는 보기. 이 보기에서만 넓게 보기 토글을 탭 줄에 둔다. */
 const HEADERLESS_VIEWS: ReadonlySet<AuxiliaryDeckView> = new Set<AuxiliaryDeckView>(["efficiency", "sidechat", "resource"]);
@@ -25,6 +35,8 @@ export interface AuxiliaryDeckProps {
   sessionCwd?: string;
   liveSubagents: readonly SubagentSnapshot[];
   subagentClient?: HanseSubagentClient;
+  /** 이번 턴: the selected turn's summary, flow, dispatches and changes (ChatWindow portals into it). */
+  turnSlot: ReactNode;
   /** The work log behind the transcript: thinking, tool calls, process notices. */
   processSlot: ReactNode;
   fileSlot: ReactNode;
@@ -40,6 +52,8 @@ export interface AuxiliaryDeckProps {
   memorySlot: ReactNode;
   visible?: boolean;
   onClose?: () => void;
+  /** Accessible name of the close button: the pinned inspector hides, a stacked one returns to the conversation. */
+  closeLabel?: string;
   onReturnFocus?: () => void;
   /** 고정 자리에 있을 때만 준다. 없으면 넓게 보기 토글을 그리지 않는다. */
   expand?: PanelExpandState | null;
@@ -52,8 +66,6 @@ export interface AuxiliaryDeckProps {
   fileOpen?: boolean;
 }
 
-const VIEW_ORDER: ReadonlyArray<AuxiliaryDeckView> = WORKSPACE_PANEL_VIEW_IDS;
-
 export function AuxiliaryDeck({
   activeView,
   onViewChange,
@@ -64,6 +76,7 @@ export function AuxiliaryDeck({
   sessionCwd,
   liveSubagents,
   subagentClient,
+  turnSlot,
   processSlot,
   fileSlot,
   sideChatSlot,
@@ -73,6 +86,7 @@ export function AuxiliaryDeck({
   memorySlot,
   visible = true,
   onClose,
+  closeLabel,
   onReturnFocus,
   expand = null,
   selectedMaker,
@@ -81,16 +95,19 @@ export function AuxiliaryDeck({
   onOpenFile,
   fileOpen = false,
 }: AuxiliaryDeckProps) {
+  const { t } = useI18n();
   const closeDeck = () => {
     onClose?.();
     onReturnFocus?.();
   };
+  // An overflow view that is open joins the segmented control, so the selected view is always named there.
+  const listedViews = OVERFLOW_VIEWS.includes(activeView) ? [...PRIMARY_VIEWS, activeView] : PRIMARY_VIEWS;
 
   return (
     <PanelExpandContext.Provider value={expand}>
     <aside
       className="auxiliary-deck"
-      aria-label="보조 패널"
+      aria-label={t("inspector.label")}
       data-auxiliary-view={activeView}
       data-expanded={expand?.expanded ? "true" : undefined}
     >
@@ -103,8 +120,8 @@ export function AuxiliaryDeck({
         onValueChange={(value) => onViewChange(value as AuxiliaryDeckView)}
       >
         <div className="auxiliary-deck-tabbar">
-          <Tabs.List aria-label="보조 패널 보기">
-            {VIEW_ORDER.map((view) => {
+          <Tabs.List aria-label={t("inspector.views")}>
+            {listedViews.map((view) => {
               // 진행 중(pending|running)인 SubAgent만 센다. 완료/실패는 아카이브 패널의 몫이다.
               const liveCount = view === "subagents"
                 ? liveSubagents.filter((snapshot) => snapshot.status === "pending" || snapshot.status === "running").length
@@ -113,19 +130,48 @@ export function AuxiliaryDeck({
                 <Tabs.Trigger
                   key={view}
                   value={view}
-                  aria-label={liveCount > 0 ? `${viewLabels[view]} (실행 중 ${liveCount})` : undefined}
+                  aria-label={liveCount > 0 ? `${viewLabels[view]} (${t("workbench.runningCount", { count: liveCount })})` : undefined}
                 >
                   <span className="auxiliary-deck-tab-label">{viewLabels[view]}</span>
                   {liveCount > 0 && (
-                    <Badge size="medium" variant="weak" tone="informative" aria-hidden="true">
+                    <Badge size="medium" variant="weak" tone="neutral" aria-hidden="true">
                       {liveCount}
                     </Badge>
                   )}
                 </Tabs.Trigger>
               );
             })}
-            <Tabs.Indicator />
           </Tabs.List>
+          <Menu.Root placement="bottom-end" strategy="fixed">
+            <Menu.Trigger asChild>
+              <ActionButton
+                className="auxiliary-deck-more"
+                variant="ghost"
+                size="small"
+                layout="iconOnly"
+                aria-label={t("inspector.more")}
+                title={t("inspector.more")}
+              >
+                <Icon size="16px" svg={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg>} />
+              </ActionButton>
+            </Menu.Trigger>
+            <Menu.Positioner>
+              <Menu.Content aria-label={t("inspector.more")}>
+                <Menu.Group>
+                  {OVERFLOW_VIEWS.map((view) => (
+                    <Menu.Item
+                      key={view}
+                      role="menuitemradio"
+                      aria-checked={activeView === view}
+                      onClick={() => onViewChange(view)}
+                    >
+                      <Menu.ItemBody><Menu.ItemLabel>{viewLabels[view]}</Menu.ItemLabel></Menu.ItemBody>
+                    </Menu.Item>
+                  ))}
+                </Menu.Group>
+              </Menu.Content>
+            </Menu.Positioner>
+          </Menu.Root>
           {(HEADERLESS_VIEWS.has(activeView) || (activeView === "files" && !fileOpen)) && <PanelExpandToggle className="auxiliary-deck-expand" />}
           {onClose && (
             <ActionButton
@@ -134,12 +180,17 @@ export function AuxiliaryDeck({
               size="small"
               layout="iconOnly"
               onClick={closeDeck}
-              aria-label="보조 패널 닫기"
+              aria-label={closeLabel ?? t("inspector.hide")}
+              title={closeLabel ?? t("inspector.hide")}
             >
               <Icon size="16px" svg={<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>} />
             </ActionButton>
           )}
         </div>
+
+        <Tabs.Content value="turn" className="auxiliary-deck-panel">
+          {turnSlot}
+        </Tabs.Content>
 
         <Tabs.Content value="process" className="auxiliary-deck-panel">
           {processSlot}
