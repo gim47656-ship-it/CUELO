@@ -390,4 +390,4 @@ jobs:
         working-directory: Tools/CUELO_Setup
         run: |
           sudo ln -sf "$(command -v node)" /usr/bin/node
-          bun test ./wsl/migrate-profile.test.mjs ./wsl/run-service.test.mjs ./wsl/update-state.test.mjs ./wsl/update.test.mjs ./wsl/windows-bridge/bridge.test.mjs ./wsl/windows-bridge/profile.test.mjs
+          bun test ./wsl/migrate-profile.test.mjs ./wsl/run-service.test.mjs ./wsl/update-state.test.mjs ./wsl/update.test.mjs ./wsl/windows-bridge/bridge.test.mjs ./wsl/windows-bridge/profile.test.mjs ./cloud/update.test.mjs
