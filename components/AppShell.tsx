@@ -217,6 +217,7 @@ export function AppShell({
   }, []);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
+  const [newSessionAutoWorktree, setNewSessionAutoWorktree] = useState<boolean | undefined>();
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
     () => initialNavigation.requestedCwd ? "validating" : "idle",
   );
@@ -1121,6 +1122,7 @@ export function AppShell({
         // the just-created empty chat during that initial synchronization.
         suppressCwdBumpRef.current = true;
         setNewSessionCwd(data.cwd);
+        setNewSessionAutoWorktree(undefined);
         setInitialCwdStatus("ready");
       })
       .catch((error: unknown) => {
@@ -1206,6 +1208,7 @@ export function AppShell({
     // Close any session that belongs to a different project — it no longer
     // matches the selected project directory.
     setSelectedSession(null);
+    setNewSessionAutoWorktree(undefined);
     setNewSessionCwd((prev) => {
       if (prev && prev !== cwd) return null;
       return prev;
@@ -1229,6 +1232,7 @@ export function AppShell({
 
   const commitSessionSelection = useCallback((session: SessionInfo, isRestore: boolean, initialData: SessionData | null) => {
     setNewSessionCwd(null);
+    setNewSessionAutoWorktree(undefined);
     setPreloadedSessionData(initialData);
     setSelectedSession(session);
     // The selection owns its branch identity: the previous session's tree and
@@ -1317,7 +1321,7 @@ export function AppShell({
       });
   }, [commitSessionSelection, invalidateWorkspaceRestore, isCompactWorkspace, pendingSession?.id, selectedSession, setCompactDrawerOpen]);
 
-  const handleNewSession = useCallback((_sessionId: string, cwd: string) => {
+  const handleNewSession = useCallback((_sessionId: string, cwd: string, autoWorktree?: boolean) => {
     sessionPreloadRequestRef.current += 1;
     sessionPreloadAbortRef.current?.abort();
     sessionPreloadAbortRef.current = null;
@@ -1326,6 +1330,7 @@ export function AppShell({
     invalidateWorkspaceRestore();
     setSelectedSession(null);
     setNewSessionCwd(cwd);
+    setNewSessionAutoWorktree(autoWorktree);
     setSessionKey((k) => k + 1);
     setBranchState({ sessionId: null, tree: [], leafId: null, navigation: 0 });
     setSystemPrompt(null);
@@ -1355,7 +1360,7 @@ export function AppShell({
       images: existing?.images ?? [],
       documents: existing?.documents ?? [],
     });
-    handleNewSession(`upkeep-${Date.now()}`, cwd);
+    handleNewSession(`upkeep-${Date.now()}`, cwd, true);
     requestComposerFocus();
     setUpkeepNotice(UPKEEP_TEXT.noticeDraft);
   }, [handleNewSession, isCompactWorkspace, requestComposerFocus, setCompactDrawerOpen]);
@@ -1424,6 +1429,7 @@ export function AppShell({
   const handleSessionCreated = useCallback((session: SessionInfo) => {
     invalidateWorkspaceRestore();
     setNewSessionCwd(null);
+    setNewSessionAutoWorktree(undefined);
     setSelectedSession(session);
     setRefreshKey((k) => k + 1);
     hydrateSelectedSession(session.id);
@@ -1534,6 +1540,7 @@ export function AppShell({
     setRefreshKey((k) => k + 1);
     setSessionKey((k) => k + 1);
     setNewSessionCwd(null);
+    setNewSessionAutoWorktree(undefined);
     setSelectedSession((prev) => ({
       ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
       id: newSessionId,
@@ -1554,6 +1561,7 @@ export function AppShell({
       const cwd = selectedSession.cwd;
       setSelectedSession(null);
       setNewSessionCwd(cwd ?? null);
+      setNewSessionAutoWorktree(undefined);
       setSessionKey((k) => k + 1);
       setBranchState({ sessionId: null, tree: [], leafId: null, navigation: 0 });
       setSystemPrompt(null);
@@ -2580,6 +2588,7 @@ export function AppShell({
               key={sessionKey}
               session={selectedSession}
               newSessionCwd={effectiveNewSessionCwd}
+              newSessionAutoWorktree={newSessionAutoWorktree}
               initialSessionData={preloadedSessionData}
               transitioning={pendingSession !== null}
               onAgentEnd={handleAgentEnd}

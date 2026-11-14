@@ -73,4 +73,11 @@ export const UPKEEP_TEXT = {
   noticeNoRepo: "CUELO 저장소를 찾지 못해 프롬프트를 복사했습니다. 사이드바에서 폴더를 고른 뒤 새 세션 입력창에 붙여 넣으세요.",
   noticeNoRepoCopyFailed: "CUELO 저장소를 찾지 못했고 프롬프트 복사도 실패했습니다. 보수 화면의 「복사」를 다시 눌러 보세요.",
   dismiss: "알림 닫기",
+  staleWorktrees: {
+    label: "오래된 자동 워크트리",
+    criterion: "활성 세션이 쓰지 않는 CUELO 자동 생성 워크트리 중 커밋되지 않은 변경 파일이나 미병합 커밋이 있고 마지막 활동이 3일을 넘긴 항목",
+    note: "최신 세션 활동, 파일 수정 시각, Git HEAD/index/reflog, 변경 파일 수정 시각을 기준으로 봅니다. 읽기 전용 안내이므로 자동으로 삭제하거나 병합하지 않습니다.",
+    evidence: (branch: string, days: number, changed: number, commits: number, files: string) =>
+      `${branch}: ${days}일 전 활동, 변경 파일 ${changed}개(${files}), 미병합 커밋 ${commits}개`,
+  },
 } as const;

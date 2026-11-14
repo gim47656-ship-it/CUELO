@@ -4,6 +4,8 @@ import { join, sep } from "node:path";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { getLiveSessionWorktreeUses, reserveWorktreeRemoval, startNewRpcSession, type AgentSessionWrapper, type RpcSessionStartOptions } from "../rpc-manager";
 import { removedAutoWorktreeRoot, rollbackUnstartedWorktree, selectSessionWorktree, sweepSessionWorktrees, withRepositoryLock, type LiveUse, type Selection } from "./index";
+import { findStaleAutoWorktrees, runWorktreeMaintenance, sessionWorktreeRoots } from "./maintenance";
+import { listAllSessions } from "../session-reader";
 
 type Started = { session: AgentSessionWrapper; realSessionId: string } & Selection;
 const globals = globalThis as typeof globalThis & {
@@ -78,4 +80,17 @@ export async function notifySessionWorktreeClosed(cwd: string): Promise<void> {
 }
 export function sweepUnusedSessionWorktrees(cwd: string) {
   return sweepSessionWorktrees(cwd, host);
+}
+
+export async function maintainRecordedSessionWorktrees(trigger: "startup" | "morning", dryRun = false): Promise<void> {
+  if (dryRun) return;
+  try {
+    await runWorktreeMaintenance(trigger, host, await listAllSessions());
+  } catch (error) { console.error("[session-worktree] maintenance failed:", error); }
+}
+
+export async function inspectRecordedStaleWorktrees() {
+  const sessions = await listAllSessions();
+  const roots = sessionWorktreeRoots([...sessions.map((s) => s.cwd), ...host.live().map((s) => s.cwd)]);
+  return findStaleAutoWorktrees(roots, host, sessions);
 }

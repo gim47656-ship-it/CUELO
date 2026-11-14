@@ -57,6 +57,17 @@ describe("session worktree selection", () => {
     expect((await selectSessionWorktree(work.cwd, f.host)).cwd).toBe(work.cwd);
     expect(git(f.main, "branch", "--show-current")).toBe("main");
   });
+  test("explicit true creates fresh automatic checkouts on an idle main", async () => {
+    const f = fixture();
+    expect((await selectSessionWorktree(f.main, f.host)).cwd).toBe(f.main);
+    expect((await selectSessionWorktree(f.main, f.host, { autoWorktree: false })).cwd).toBe(f.main);
+    const first = await selectSessionWorktree(f.main, f.host, { autoWorktree: true });
+    const second = await selectSessionWorktree(f.main, f.host, { autoWorktree: true });
+    expect(first.worktree?.branch).toMatch(/^wt\/s-\d{8}-[a-f0-9]{8}$/);
+    expect(second.cwd).not.toBe(first.cwd);
+    expect((await selectSessionWorktree(first.cwd, f.host, { autoWorktree: true })).cwd).toBe(first.cwd);
+    expect((await selectSessionWorktree(f.root, f.host, { autoWorktree: true })).cwd).toBe(f.root);
+  });
   test("isolates second checkout starts, including a nested requested cwd", async () => {
     const f = fixture(); f.uses.push({ id: "A", cwd: f.main });
     mkdirSync(join(f.main, "src"));

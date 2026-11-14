@@ -28,6 +28,9 @@ import { kstDateTime } from "./prompt";
 import { buildSkillUsage, installedSkills, type InstalledSkill, type SkillUsageRow } from "./skill-usage";
 import { inspectWorkspace, type WorkspaceLeftovers } from "./workspace";
 import type { UpkeepDueItem, UpkeepEvidence, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "./types";
+import { inspectRecordedStaleWorktrees } from "../session-worktree/runtime";
+import type { StaleAutoWorktree } from "../session-worktree/maintenance";
+import { UPKEEP_TEXT } from "../../components/upkeep/text";
 
 const DAY_MS = 86_400_000;
 const CACHE_TTL_MS = 300_000;
@@ -625,6 +628,19 @@ export function workspaceMetric(w: WorkspaceLeftovers): UpkeepMetric {
   return m;
 }
 
+export function staleWorktreeMetric(trees: readonly StaleAutoWorktree[], warnings: readonly string[], now: number): UpkeepMetric {
+  const text = UPKEEP_TEXT.staleWorktrees;
+  const row = metric("stale-auto-worktrees", text.label, "count", warnings.length && !trees.length ? null : trees.length, null,
+    trees.length ? "watch" : warnings.length ? "unknown" : "ok", text.criterion);
+  row.note = text.note;
+  row.evidence = trees.map((tree) => ({
+    label: text.evidence(tree.branch, Math.floor((now - tree.lastActive) / DAY_MS), tree.changedCount, tree.unmergedCommits, tree.changedFiles.join(", ")),
+    detail: tree.path,
+    timestamp: new Date(tree.lastActive).toISOString(),
+  }));
+  return row;
+}
+
 /** 운영(2026-10-31 사용자 결정): 점검 기한·배포·CI·남은 작업 공간. 모두 지금 상태를 보는 값이다. */
 export function opsSection(items: UpkeepDueItem[], dueWarnings: string[], deploy: DeployState, workspace: WorkspaceLeftovers, now: number): UpkeepSection {
   return section("ops", "운영", [overdueMetric(items, dueWarnings), ...deployMetrics(deploy, now), workspaceMetric(workspace)],
@@ -825,9 +841,10 @@ async function buildReport(): Promise<UpkeepReport> {
     installedSkills(agentDir),
   ]);
   // Maker 결과(partial)와 세션 cwd별 마지막 기록은 세션 스캔에서 나오므로 스캔 뒤에 센다.
-  const [maker, workspace] = await Promise.all([
+  const [maker, workspace, stale] = await Promise.all([
     makerMetrics(agentDir, start, handoffs.items, scan.makerResults),
     inspectWorkspace(repo, agentDir, scan.warnings.length ? null : scan.cwdActivity, start),
+    inspectRecordedStaleWorktrees().catch((error) => ({ worktrees: [], warnings: [String(error)] })),
   ]);
   const sections = [
     bottleneckSection(scan, maker, [...scan.warnings, ...(maker.warning ? [maker.warning] : [])]),
@@ -837,6 +854,10 @@ async function buildReport(): Promise<UpkeepReport> {
     skillSection(scan, skills.skills, start, skills.warnings),
     opsSection(handoffs.items, handoffs.warnings, deploy, workspace, start),
   ];
+  const ops = sections.find((s) => s.id === "ops")!;
+  ops.metrics.push(staleWorktreeMetric(stale.worktrees, stale.warnings, start));
+  ops.warnings.push(...stale.warnings);
+  ops.status = worst(ops.metrics.map((m) => m.status));
   await applyFixMarks(sections, scan, marks, { agentDir, now: start, handoffs: handoffs.items });
   const precision = applyCheckMarks(sections, checks);
   for (const s of sections) s.summary = summarize(s);

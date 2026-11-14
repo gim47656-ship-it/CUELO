@@ -143,7 +143,7 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
   }
   const origin = await optionalGit(cwd, ["remote", "get-url", "origin"]) ?? "";
   const issue = parseIssue(options.issue, origin);
-  if (!issue && !checkoutIsBusy(repo.top, host.live())) return { cwd };
+  if (!issue && options.autoWorktree !== true && !checkoutIsBusy(repo.top, host.live())) return { cwd };
   const subdirectory = relative(repo.top, canonical(cwd));
   const inRequestedDirectory = (selected: Selection): Selection => {
     if (!subdirectory) return selected;

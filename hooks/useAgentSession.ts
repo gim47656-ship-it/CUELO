@@ -280,6 +280,7 @@ export interface AgentCompletionResult {
 export interface UseAgentSessionOptions {
   session: SessionInfo | null;
   newSessionCwd: string | null;
+  newSessionAutoWorktree?: boolean;
   initialData?: SessionData | null;
   transitioning?: boolean;
   onAgentEnd?: (completion: AgentCompletionResult) => void;
@@ -1071,6 +1072,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           cwd: newSessionCwd,
           type: "ensure_session",
           toolNames,
+          ...(opts.newSessionAutoWorktree !== undefined ? { autoWorktree: opts.newSessionAutoWorktree } : {}),
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(selectedThinkingLevel
             ? { thinkingLevel: selectedThinkingLevel }
@@ -1135,7 +1137,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, toolPreset]);
+  }, [isNew, newSessionCwd, toolPreset, opts.newSessionAutoWorktree]);
 
   const loadSlashCommands = useCallback(async () => {
     const sid = sessionIdRef.current ?? await ensureNewSession();

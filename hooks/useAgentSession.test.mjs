@@ -1287,7 +1287,7 @@ test("message_end를 놓친 턴은 재로드된 이 run의 응답으로 한 번�
 
 // 새 세션(session=null)에서 실제 훅을 렌더하고 fetch/EventSource만 대역으로 쓴다. provider·서버 호출 없음.
 // `ceilingHook`으로 set_thinking_ceiling 응답을 지연/실패시키고, console.error는 모아 두었다가 단언한다.
-function createNewSessionFixture(t) {
+function createNewSessionFixture(t, options = {}) {
   const originalEventSource = globalThis.EventSource;
   const originalFetch = globalThis.fetch;
   const originalConsoleError = console.error;
@@ -1337,6 +1337,7 @@ function createNewSessionFixture(t) {
     fixture.hook = useAgentSession({
       session: null,
       newSessionCwd: "/tmp/new-project",
+      ...options,
       chatInputRef: { current: { restoreSubmission: () => { fixture.restores += 1; } } },
     });
     return null;
@@ -1376,6 +1377,22 @@ test("새 세션의 첫 추론 상한 적용이 실패하면 prompt 없이 멈�
   const before = f.calls.length;
   assert.equal(await f.hook.ensureNewSession(), "made");
   assert.equal(f.calls.length, before, "적용이 끝난 세션에는 상한을 다시 걸지 않는다");
+});
+
+test("upkeep creation forces a worktree only on its creating POST", async (t) => {
+  const upkeep = createNewSessionFixture(t, { newSessionAutoWorktree: true });
+  await upkeep.hook.ensureNewSession();
+  await upkeep.hook.ensureNewSession();
+  assert.equal(upkeep.created, 1);
+  assert.equal(upkeep.calls[0].autoWorktree, true);
+  assert.equal(upkeep.calls[0].cwd, "/tmp/new-project");
+});
+
+test("a later ordinary draft at the same cwd does not inherit upkeep worktree selection", async (t) => {
+  const ordinary = createNewSessionFixture(t);
+  await ordinary.hook.ensureNewSession();
+  assert.equal(ordinary.calls[0].cwd, "/tmp/new-project");
+  assert.equal(Object.hasOwn(ordinary.calls[0], "autoWorktree"), false);
 });
 
 test("진행 중인 상한 적용을 동시 호출이 앞질러 세션 ID를 받지 못한다", async (t) => {

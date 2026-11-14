@@ -4,7 +4,7 @@ import { getCueloUpdateStatus } from "@/lib/omp-updates";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { allowFileRoot } from "@/lib/file-access";
 import { type AgentSessionWrapper, getRunningRpcSessionIds } from "@/lib/rpc-manager";
-import { startSessionWithWorktree } from "@/lib/session-worktree/runtime";
+import { maintainRecordedSessionWorktrees, startSessionWithWorktree } from "@/lib/session-worktree/runtime";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { inspectDeploy } from "@/lib/upkeep/deploy";
@@ -55,6 +55,7 @@ export async function POST(req: Request) {
   try {
     return await planAndRun(false, skills, nightlyResult, nightlyInvalid);
   } finally {
+    await maintainRecordedSessionWorktrees("morning");
     globalThis.__cueloMorningInFlight = false;
   }
 }

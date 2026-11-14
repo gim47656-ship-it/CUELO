@@ -19,6 +19,10 @@ export async function register() {
       .then(({ queued }) => {
         if (queued.length > 0) console.log(`[update-interrupt] abrupt-stop recovery queued ${queued.length} session(s)`);
       })
-      .catch((error) => console.error("[update-interrupt] abrupt-stop recovery failed:", error));
+      .then(async () => {
+        const { maintainRecordedSessionWorktrees } = await import("./lib/session-worktree/runtime");
+        await maintainRecordedSessionWorktrees("startup");
+      })
+      .catch((error) => console.error("[startup] recovery or worktree cleanup failed:", error));
   }
 }
