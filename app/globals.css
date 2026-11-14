@@ -3541,8 +3541,20 @@ label:has(input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visi
   box-shadow: none;
 }
 
+/* Place title and its tools share one row. The 11-14 redesign dropped the inline flex with the
+   mode switcher, so the hidden-projects and add-project buttons stacked on rows of their own. */
+.navigator-mode-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  min-block-size: 42px;
+  padding: 6px 8px 4px;
+}
+
 /* The place name heads the list column in the UI face; no mode switcher here any more. */
 .navigator-place-title {
+  min-inline-size: 0;
   margin: 0;
   padding-inline: 4px;
   overflow: hidden;
@@ -6643,9 +6655,10 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     background: rgba(0, 0, 0, 0.78);
   }
 
-  /* 드로어는 장소 레일과 목록을 함께 담는다. 닫기용 여백은 남긴다. */
+  /* 드로어는 장소 레일과 목록을 함께 담는다. 닫기용 여백(44px 이상)은 남긴다. 412px 폰에서 340px 상한이면
+     프로젝트 이름 칸이 127px뿐이라 비슷한 이름끼리 구별되지 않았다 — 상한을 360px로 올린다. */
   .sidebar-container {
-    inline-size: min(340px, calc(100vw - 44px));
+    inline-size: min(360px, calc(100vw - 44px));
   }
 
   /* 드로어는 화면 높이를 다 쓴다. 열린 동안 대화 칸은 inert라 입력란을 아래에 남겨 둘 이유가 없고,
@@ -6712,6 +6725,77 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
      아래 숨어 입력란 뒤에 있는 것처럼 보였다 — 화면 높이까지 펼친다(남는 높이는 Seed가 다시 줄인다). */
   .seed-menu__positioner {
     --seed-menu-max-height: calc(var(--app-viewport-height, 100dvh) - 16px);
+  }
+
+  /* 보조 패널 시트의 탭은 360px 폭에서 넷째 탭이 혼자 둘째 줄로 내려갔다. 한 줄로 두고 가로로 밀게 하며,
+     넘친다는 것은 오른쪽 끝을 흐리게 해 알린다(설정 창 메뉴와 같은 방식). 탭과 아이콘 표적은 44px. */
+  .auxiliary-deck-tabbar .seed-tabs__list {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+
+  .auxiliary-deck-tabbar .seed-tabs__trigger {
+    flex: 1 0 auto;
+    min-block-size: 44px;
+  }
+
+  .auxiliary-deck-tabbar .seed-tabs__trigger:last-child {
+    margin-inline-end: 16px;
+  }
+
+  .auxiliary-deck-tabbar .auxiliary-deck-more,
+  .auxiliary-deck-tabbar .auxiliary-deck-close,
+  .auxiliary-deck-tabbar .auxiliary-deck-expand {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+  }
+
+  /* 실행 옵션 격자 칸이 화면 폭에 맞춰 줄면 칩도 따라 줄고 이름은 말줄임된다(전체 이름은 title과 aria-label). */
+  .composer-run-options > * {
+    min-inline-size: 0;
+  }
+
+  .composer-run-options .composer-chip {
+    min-inline-size: 0;
+    max-inline-size: 100%;
+  }
+
+  .composer-run-options .composer-chip > svg {
+    flex: none;
+  }
+
+  .composer-run-options .composer-chip > span {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 대화 안의 작은 글자 단추는 모양을 두고 표적만 넓힌다. 위아래로 다른 단추와 붙지 않는 것만 고른다. */
+  .todo-strip-flow-toggle,
+  .interrupted-run-notice button,
+  .message-user-translation-toggle {
+    position: relative;
+  }
+
+  .todo-strip-flow-toggle::before,
+  .interrupted-run-notice button::before,
+  .message-user-translation-toggle::before {
+    content: "";
+    position: absolute;
+    inset: -7px -6px;
+  }
+
+  .message-user-translation-toggle::before {
+    inset: -10px -4px;
+  }
+
+  /* 바꾼 파일 칩은 여러 줄로 감기므로 넓히면 윗줄과 겹친다 — 칩 자체를 손가락 높이로 키운다. */
+  .turn-written-file {
+    min-block-size: 40px;
   }
 
   textarea,

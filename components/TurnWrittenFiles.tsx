@@ -23,6 +23,7 @@ export function TurnWrittenFiles({ files, onOpenFile }: {
         const name = getFileName(filePath);
         return (
           <button
+            className="turn-written-file"
             key={filePath}
             type="button"
             title={filePath}

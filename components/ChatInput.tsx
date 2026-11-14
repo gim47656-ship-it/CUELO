@@ -3921,10 +3921,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </ActionButton>
             )}
             <div
+              className="composer-run-options"
               role="group"
               aria-label={t("chat.moreControls")}
               style={{
-                display: controlsMenuOpen ? "flex" : "none",
+                // 휴대폰에서는 세 칸 격자로 둔다. 줄바꿈 flex는 360px 폭에서 마지막 단추 하나만 둘째 줄로 내려 보냈다.
+                // 칸은 0까지 줄 수 있어 글자를 키운 폰에서도 화면 폭(maxWidth)을 넘지 않고 칩 글자가 말줄임된다.
+                display: controlsMenuOpen ? (isMobile ? "grid" : "flex") : "none",
+                gridTemplateColumns: isMobile ? "repeat(3, minmax(0, max-content))" : undefined,
                 alignItems: "center",
                 gap: 1,
                 position: "absolute",
@@ -3936,9 +3940,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 width: "max-content",
                 maxWidth: "calc(100vw - 32px)",
                 flexWrap: "wrap",
-                // 휴대폰에서는 줄이 바뀌므로 왼쪽부터 채운다. 오른쪽 정렬이면 첫 줄 왼쪽이 비고
-                // 둘째 줄 단추만 오른쪽 끝에 붙어 어긋나 보였다.
-                justifyContent: isMobile ? "flex-start" : "flex-end",
+                justifyContent: "flex-end",
                 border: 0,
                 borderRadius: "var(--seed-radius-r2)",
                 background: "var(--bg-raised)",
@@ -4079,7 +4081,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             )}
             {isMobile && soundControl}
-            {controlsMenuOpen && (
+            {/* 휴대폰에서는 바로 아래 실행 옵션 단추가 같은 일을 한다. 여기 두면 폭이 모자라 이 단추만 둘째 줄로 내려갔다. */}
+            {controlsMenuOpen && !isMobile && (
               <button
                 className="composer-icon-button is-active"
                 type="button"

@@ -531,6 +531,7 @@ function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?:
   return (
     <div className="message-user-translation" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, maxWidth: "85%", marginTop: 3 }}>
       <button
+        className="message-user-translation-toggle"
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}

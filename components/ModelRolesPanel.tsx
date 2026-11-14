@@ -10,6 +10,7 @@ import {
   type ModelRoleThinkingLevel,
 } from "@/lib/model-role-selection";
 import { useI18n } from "@/hooks/useI18n";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { SearchableSelect } from "./SearchableSelect";
 import shared from "./SettingsConfig.module.css";
 
@@ -49,6 +50,7 @@ function selectorFor(model: ModelEntry): string {
  */
 export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
   const { t } = useI18n();
+  const isMobile = useIsMobile();
   const [roles, setRoles] = useState<ModelRoleAssignment[]>([]);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<Record<string, string[]>>({});
@@ -282,7 +284,8 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                               void assign(role.role, formatModelRoleSelector(current, level));
                             }}
                             style={{
-                              minHeight: 24,
+                              // 휴대폰에서는 손가락 표적(44px). 인라인 값이라 설정 창의 44px 규칙이 닿지 않았다.
+                              minHeight: isMobile ? 44 : 24,
                               padding: "0 7px",
                               fontFamily: "var(--font-mono)",
                               fontSize: 10,

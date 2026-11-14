@@ -790,6 +790,7 @@ export const enLocale = {
     "models.navGroupRoles": "Role assignments",
     "models.navGroupAccounts": "Connected accounts",
     "models.navGroupCustom": "Custom providers",
+    "models.backToList": "Back to list",
     "i18n.testingModel": "Testing model connection...",
     "i18n.connected": "Connected",
     "i18n.failed": "Failed",

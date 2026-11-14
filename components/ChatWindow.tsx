@@ -1756,7 +1756,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             {(todoPhases || stripFlow.steps.length > 0) && !keyboardCompact && <TodoStrip phases={todoPhases} flow={stripFlow} busy={sessionBusy} />}
           </div>
         </div>
-        {turnInspectorFolded && !turnInspectorTarget && shownSummary && shownTurn !== null && (
+        {/* 휴대폰 키보드가 열린 동안은 할 일 줄처럼 접어 입력 중인 대화 칸을 넓힌다. */}
+        {turnInspectorFolded && !turnInspectorTarget && shownSummary && shownTurn !== null && !keyboardCompact && (
           <div className="turn-peek-dock" style={{ padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div className="chat-column-cap">
               <AnswerStatusContext.Provider value={answerStatus}>

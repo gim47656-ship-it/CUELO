@@ -838,6 +838,7 @@
  "models.navGroupRoles": "역할 배정",
  "models.navGroupAccounts": "연결된 계정",
  "models.navGroupCustom": "직접 추가한 제공자",
+ "models.backToList": "목록으로",
  "i18n.testingModel": "모델 연결 테스트 중...",
  "i18n.connected": "연결됨",
  "i18n.failed": "실패",

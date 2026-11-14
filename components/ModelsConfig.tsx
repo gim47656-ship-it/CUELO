@@ -1801,6 +1801,30 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
   const [selection, setSelection] = useState<Selection | null>(
     relogin ? { type: "oauth", providerId: relogin.target.provider } : { type: "roles" },
   );
+  // 휴대폰: 목록과 상세를 한 화면씩 보여 준다(사용자 결정 2026-11-15). 두 칸을 위아래로 쌓으면 각자 스크롤하는
+  // 좁은 칸 둘이 되어 상세가 368px만 남았다. 데스크톱은 두 칸 그대로다.
+  const [mobileView, setMobileView] = useState<"list" | "detail">(relogin ? "detail" : "list");
+  const navTriggerRef = useRef<HTMLElement | null>(null);
+  const navListRef = useRef<HTMLDivElement>(null);
+  const detailHeadingRef = useRef<HTMLHeadingElement>(null);
+  const pendingFocusRef = useRef<"heading" | "trigger" | null>(null);
+  const select = useCallback((next: Selection | null) => {
+    setSelection(next);
+    setMobileView(next ? "detail" : "list");
+    pendingFocusRef.current = next ? "heading" : null;
+  }, []);
+  const backToList = useCallback(() => {
+    setMobileView("list");
+    pendingFocusRef.current = "trigger";
+  }, []);
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    if (!isMobile || !pending) return;
+    if (pending === "heading") detailHeadingRef.current?.focus();
+    // 누른 줄이 사라졌으면(제공자 이름을 바꾸면 줄이 새로 그려진다) 지금 고른 줄로 초점을 둔다.
+    else (navTriggerRef.current?.isConnected ? navTriggerRef.current : navListRef.current?.querySelector<HTMLElement>('[aria-current="true"]'))?.focus();
+  }, [isMobile, mobileView, selection]);
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [apiKeyProviders, setApiKeyProviders] = useState<ApiKeyProvider[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1847,8 +1871,8 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
     let n = 1;
     while (config.providers?.[finalName]) finalName = `new-provider-${n++}`;
     setConfig((prev) => ({ ...prev, providers: { ...(prev.providers ?? {}), [finalName]: { api: "openai-completions" } } }));
-    setSelection({ type: "provider", name: finalName });
-  }, [config.providers]);
+    select({ type: "provider", name: finalName });
+  }, [config.providers, select]);
 
   const updateProvider = useCallback((name: string, p: ProviderEntry) => {
     setConfig((prev) => ({ ...prev, providers: { ...(prev.providers ?? {}), [name]: p } }));
@@ -1878,10 +1902,10 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
     });
     setConfig((prev) => {
       const remaining = Object.keys(prev.providers ?? {});
-      setSelection(remaining.length > 0 ? { type: "provider", name: remaining[0] } : null);
+      select(remaining.length > 0 ? { type: "provider", name: remaining[0] } : null);
       return prev;
     });
-  }, []);
+  }, [select]);
 
   const addModel = useCallback((providerName: string) => {
     setConfig((prev) => {
@@ -1891,10 +1915,10 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
     });
     setConfig((prev) => {
       const idx = (prev.providers?.[providerName]?.models?.length ?? 1) - 1;
-      setSelection({ type: "model", providerName, index: idx });
+      select({ type: "model", providerName, index: idx });
       return prev;
     });
-  }, []);
+  }, [select]);
 
   const addDiscoveredModels = useCallback((providerName: string, discovered: DiscoveredModel[]) => {
     setConfig((prev) => {
@@ -1926,8 +1950,8 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
       models.splice(index, 1);
       return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models: models.length ? models : undefined } } };
     });
-    setSelection({ type: "provider", name: providerName });
-  }, []);
+    select({ type: "provider", name: providerName });
+  }, [select]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -2010,6 +2034,16 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
       />
     );
   })();
+  // 휴대폰 상세 머리줄에 보이는 이름. 목록에서 누른 줄의 이름과 같다.
+  const selectionLabel = (() => {
+    if (!selection) return "";
+    if (selection.type === "roles") return t("roles.title");
+    if (selection.type === "oauth") return oauthProviders.find((p) => p.id === selection.providerId)?.name ?? selection.providerId;
+    if (selection.type === "apikey") return apiKeyProviders.find((p) => p.id === selection.providerId)?.displayName ?? selection.providerId;
+    if (selection.type === "provider") return selection.name;
+    return config.providers?.[selection.providerName]?.models?.[selection.index]?.id || t("i18n.newModel");
+  })();
+
 
   return (
     <>
@@ -2037,10 +2071,14 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
         <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden" }}>
 
           {/* Left: tree */}
-          <div style={{
+          <div ref={navListRef} onClickCapture={(event) => {
+            // 상세에서 목록으로 돌아올 때 누른 줄(또는 Provider 추가)로 초점을 되돌린다.
+            const trigger = (event.target as Element).closest("button");
+            if (trigger) navTriggerRef.current = trigger;
+          }} style={{
             width: isMobile ? "100%" : 210,
-            maxHeight: isMobile ? "28vh" : undefined,
-            display: "flex", flexDirection: "column", flexShrink: 0, borderRadius: 0,
+            display: isMobile && mobileView === "detail" ? "none" : "flex",
+            flexDirection: "column", flex: isMobile ? "1 1 auto" : "0 0 auto", minHeight: 0, borderRadius: 0,
           }} className={shared.panel}>
             <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px 16px" }}>
               {/* omp routes work by role; keep that the first thing in the panel. */}
@@ -2050,7 +2088,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 type="button"
                 className={`models-nav-row ${shared.navRow}`}
                 aria-current={selection?.type === "roles" ? "true" : undefined}
-                onClick={() => setSelection({ type: "roles" })}
+                onClick={() => select({ type: "roles" })}
                 style={{ gap: 7, padding: "5px 8px" }}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
@@ -2075,7 +2113,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                     className={`models-nav-row ${shared.navRow}`}
                     key={p.id}
                     aria-current={isSelected ? "true" : undefined}
-                    onClick={() => setSelection({ type: "oauth", providerId: p.id })}
+                    onClick={() => select({ type: "oauth", providerId: p.id })}
                     style={{ gap: 7, padding: "5px 8px" }}
                   >
                     <ProviderIcon id={p.id} size={16} />
@@ -2093,7 +2131,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                     className={`models-nav-row ${shared.navRow}`}
                     key={p.id}
                     aria-current={isSelected ? "true" : undefined}
-                    onClick={() => setSelection({ type: "apikey", providerId: p.id })}
+                    onClick={() => select({ type: "apikey", providerId: p.id })}
                     style={{ gap: 7, padding: "5px 8px" }}
                   >
                     <ProviderIcon id={p.id} size={16} />
@@ -2123,7 +2161,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                       type="button"
                       className={`models-nav-row ${shared.navRow}`}
                       aria-current={isProviderSelected ? "true" : undefined}
-                      onClick={() => setSelection({ type: "provider", name: pName })}
+                      onClick={() => select({ type: "provider", name: pName })}
                       style={{ gap: 6, padding: "7px 8px" }}
                     >
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }}>
@@ -2147,7 +2185,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                           className={`models-nav-row ${shared.navRow}`}
                           key={i}
                           aria-current={isModelSelected ? "true" : undefined}
-                          onClick={() => setSelection({ type: "model", providerName: pName, index: i })}
+                          onClick={() => select({ type: "model", providerName: pName, index: i })}
                           style={{ gap: 6, padding: "5px 8px 5px 26px" }}
                         >
                           <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: m.id ? "var(--text-muted)" : "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2182,8 +2220,25 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
             </div>
           </div>
 
+          {/* 휴대폰 상세: 목록으로 돌아가는 단추와 지금 보는 항목 이름. 열리면 이 제목으로 초점이 온다. */}
+          {isMobile && mobileView === "detail" && (
+            <div className="models-detail-bar" style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", flexShrink: 0 }}>
+              <button type="button" onClick={backToList} className={shared.btnQuiet}
+                style={{ minHeight: 44, minWidth: 44, gap: 4, fontSize: 13, color: "var(--text-muted)" }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+                {t("models.backToList")}
+              </button>
+              {/* 초점은 화면 읽기 프로그램이 새 화면을 알도록 옮기는 것이다. 누를 수 없는 제목이라 테두리는 그리지 않는다. */}
+              <h3 ref={detailHeadingRef} tabIndex={-1} style={{ flex: 1, minWidth: 0, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 700, color: "var(--text)", outline: "none" }}>
+                {selectionLabel}
+              </h3>
+            </div>
+          )}
+
           {/* Right: detail */}
-          <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: 20, display: isMobile && mobileView === "list" ? "none" : undefined }}>
             {loading ? null : detailContent ?? (
               <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 13 }}>
                  {t("i18n.selectProviderModel")}
@@ -2222,8 +2277,8 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
       <AddProviderPicker
         oauthProviders={oauthProviders}
         apiKeyProviders={apiKeyProviders}
-        onSelectOAuth={(id) => setSelection({ type: "oauth", providerId: id })}
-        onSelectApiKey={(id) => setSelection({ type: "apikey", providerId: id })}
+        onSelectOAuth={(id) => select({ type: "oauth", providerId: id })}
+        onSelectApiKey={(id) => select({ type: "apikey", providerId: id })}
         onAddCustom={addCustomProvider}
         onClose={() => setPickerOpen(false)}
       />

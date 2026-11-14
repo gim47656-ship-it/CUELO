@@ -102,7 +102,7 @@ type BulkClearScope =
 
 function bulkClearButtonStyle(disabled: boolean, isMobile: boolean): CSSProperties {
   return {
-    minHeight: isMobile ? 36 : 30,
+    minHeight: isMobile ? 44 : 30,
     padding: "3px 10px",
     border: 0,
     borderRadius: "var(--radius-control)",
@@ -2026,7 +2026,8 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                   </button>
                 )}
 
-                <button
+                {/* 휴대폰에서는 + 를 따로 두지 않고 ⋯ 메뉴 첫 항목으로 옮긴다(사용자 결정 2026-11-15). 이름 칸이 44px 넓어진다. */}
+                {!isMobile && <button
                   type="button"
                   onClick={() => handleNewSession(project)}
                   title={t("sidebar.newSessionTitle", { path: project })}
@@ -2043,10 +2044,9 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                     background: "transparent",
                     color: "var(--text-dim)",
                     cursor: "pointer",
-                    // 터치 기기에는 hover가 없다. 바로 아래 프로젝트 동작 메뉴와 같은
-                    // 규약으로, 모바일에서는 이 새 세션 버튼도 항상 노출한다.
-                    opacity: isMobile || hoveredProject === project ? 1 : 0,
-                    pointerEvents: isMobile || hoveredProject === project ? "auto" : "none",
+                    // 휴대폰에서는 이 버튼 대신 ⋯ 메뉴의 「새 세션」을 쓴다. 여기서는 호버로 드러난다.
+                    opacity: hoveredProject === project ? 1 : 0,
+                    pointerEvents: hoveredProject === project ? "auto" : "none",
                     transition: "opacity 0.12s, background 0.12s, color 0.12s",
                     flexShrink: 0,
                   }}
@@ -2064,7 +2064,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                     <line x1="6" y1="1.5" x2="6" y2="10.5" />
                     <line x1="1.5" y1="6" x2="10.5" y2="6" />
                   </svg>
-                </button>
+                </button>}
                 {(
                   <div style={{ position: "static", flexShrink: 0 }}>
                     <button
@@ -2122,6 +2122,37 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
                         overflow: "hidden",
                       }}
                     >
+                      {isMobile && (
+                        <button
+                          type="button"
+                          className="navigator-project-menu-new-session"
+                          onClick={() => {
+                            setProjectMenuOpen(null);
+                            handleNewSession(project);
+                          }}
+                          title={t("sidebar.newSessionTitle", { path: project })}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            width: "100%",
+                            minHeight: 44,
+                            padding: "0 10px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text)",
+                            cursor: "pointer",
+                            textAlign: "left",
+                            fontSize: 13,
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                            <line x1="6" y1="1.5" x2="6" y2="10.5" />
+                            <line x1="1.5" y1="6" x2="10.5" y2="6" />
+                          </svg>
+                          {t("i18n.newSession")}
+                        </button>
+                      )}
                       {showWorktreeSwitcher && worktreeState && (
                         <>
                           <button

@@ -1125,6 +1125,10 @@ details[open] > summary .flow-chevron,
   .turn-inline-show {
     min-block-size: 44px;
   }
+
+  .flow-graph-replay {
+    min-block-size: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
