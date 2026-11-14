@@ -69,12 +69,11 @@ export function parseRoutinePost(text: string): RoutinePost | null {
 }
 
 /**
- * markdown의 첫 `# ` 제목 줄(코드 블록 밖)의 위치와 글. 코드 블록은 CommonMark처럼 여는 표시와 같은 문자로,
- * 같거나 더 긴 표시가 와야 닫힌다(```` 블록 안의 ``` 줄은 닫지 않는다).
+ * 코드 블록 밖의 줄마다 `visit(index, line)`을 부르고, 처음으로 값을 돌려준 줄에서 멈춘다. 코드 블록은 CommonMark처럼
+ * 여는 표시와 같은 문자로, 같거나 더 긴 표시가 와야 닫힌다(```` 블록 안의 ``` 줄은 닫지 않는다).
  */
-export function findTitleHeading(markdown: string): { index: number; text: string } | null {
+function findOutsideFences<R>(lines: string[], visit: (index: number, line: string) => R | null): R | null {
   let fence: { char: string; length: number } | null = null;
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const marker = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(lines[index]);
     if (marker) {
@@ -84,10 +83,30 @@ export function findTitleHeading(markdown: string): { index: number; text: strin
       continue;
     }
     if (fence) continue;
-    const heading = /^\s{0,3}# +(.+?)\s*#*\s*$/.exec(lines[index]);
-    if (heading?.[1].trim()) return { index, text: heading[1].trim() };
+    const found = visit(index, lines[index]);
+    if (found !== null) return found;
   }
   return null;
+}
+
+/** markdown의 첫 `# ` 제목 줄(코드 블록 밖)의 위치와 글. */
+export function findTitleHeading(markdown: string): { index: number; text: string } | null {
+  return findOutsideFences(markdown.replace(/\r\n/g, "\n").split("\n"), (index, line) => {
+    const heading = /^\s{0,3}# +(.+?)\s*#*\s*$/.exec(line);
+    return heading?.[1].trim() ? { index, text: heading[1].trim() } : null;
+  });
+}
+
+/**
+ * 글을 처음 보이는 짧은 본문과 `## 자세히` 제목(코드 블록 밖, 첫 번째; `## 자세히 보기`처럼 뒤에 말이 붙어도 된다)
+ * 아래의 상세로 나눈다. 루틴 공통 안내(GUIDE.md)가 이 제목을 쓰게 한다. 제목이 없거나 그 아래가 비었으면 `details`는 null.
+ */
+export function splitPostDetails(markdown: string): { summary: string; details: string | null } {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const at = findOutsideFences(lines, (index, line) => (/^\s{0,3}## +자세히(?![\p{L}\p{N}]).*$/u.test(line) ? index : null));
+  if (at === null) return { summary: markdown, details: null };
+  const details = lines.slice(at + 1).join("\n").trim();
+  return { summary: lines.slice(0, at).join("\n").trimEnd(), details: details || null };
 }
 
 /**

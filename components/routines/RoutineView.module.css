@@ -252,6 +252,24 @@
   color: var(--text);
 }
 
+/* 마지막 실행 결과. 실패·시간 초과는 위의 failed·timeout 색을 같이 쓴다. */
+.badge[data-status="ok"] {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.badge[data-status="quiet"] {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+/* 아직 열어 보지 않은 최근 글(디시의 N 표시). */
+.badge[data-status="new"] {
+  border-color: var(--danger-line);
+  background: var(--danger);
+  color: var(--bg);
+}
+
 .tabs {
   display: flex;
   margin-block-start: 12px;
@@ -438,6 +456,79 @@
   border-block-start: 1px solid var(--border);
 }
 
+/* 짧은 본문은 이 높이까지만 보이고, 넘치면 아래를 흐리게 끊고 「글 전체 보기」를 둔다. */
+.clamp[data-clamped="true"] {
+  max-block-size: 26em;
+  overflow: hidden;
+}
+
+.clamp[data-overflow="true"] {
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+.expand,
+.details > summary {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 32px;
+  margin-block-start: 12px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.expand:hover,
+.details > summary:hover {
+  background: var(--bg-hover);
+}
+
+.expand:focus-visible,
+.details > summary:focus-visible {
+  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
+  outline-offset: 1px;
+}
+
+.details {
+  margin-block-start: 8px;
+}
+
+.details[open] > summary {
+  margin-block-end: 12px;
+}
+
+/* 갤러리 목록 한 줄 아래: 윗줄은 마지막 실행 결과와 시각, 아랫줄은 최근 글 제목(한 줄, 넘치면 말줄임). */
+.latest {
+  display: grid;
+  gap: 2px;
+  margin-block-start: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.latestMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+/* 폭 0에서 남은 칸만큼 늘린다: 긴 제목이 표의 최소 폭을 늘리지 않고 칸 끝에서 말줄임된다. */
+.latestTitle {
+  flex: 1 1 0;
+  inline-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .form {
   border-block-start: 2px solid var(--text);
 }
@@ -590,6 +681,13 @@
   list-style: none;
 }
 
+/* 이름은 띄어쓰기 단위로만 접는다(배지 두 개 옆에서 「판/단」처럼 글자 중간이 끊기지 않게). */
+.panelList button > span:first-child {
+  min-inline-size: 0;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
 .panelList button {
   display: flex;
   justify-content: space-between;
@@ -619,6 +717,14 @@
 .panelList button:focus-visible {
   outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
   outline-offset: -2px;
+}
+
+.panelBadges {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
 }
 
 .count {

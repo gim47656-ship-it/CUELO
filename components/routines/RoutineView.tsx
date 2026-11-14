@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TranslationParams } from "@/lib/i18n/types";
-import { type RoutinePost, findTitleHeading } from "@/lib/routines/post";
+import { type RoutinePost, findTitleHeading, splitPostDetails } from "@/lib/routines/post";
 import type { RoutineSchedule } from "@/lib/routines/schedule";
 import type { RoutinePostSummary } from "@/lib/routines/store";
 import {
-  type BoardData, type BoardRoutine, type BoardScreen, readApiError, refreshRoutineBoard, showRoutineScreen, useRoutineBoard,
+  type BoardData, type BoardRoutine, type BoardScreen, isNewRoutinePost, markRoutinePostRead, readApiError, refreshRoutineBoard,
+  showRoutineScreen, useReadRoutinePosts, useRoutineBoard,
 } from "./board-store";
 import styles from "./RoutineView.module.css";
 
@@ -70,9 +71,47 @@ function scheduleLabel(schedule: RoutineSchedule, t: T): string {
   return schedule.days ? t("routines.sched.withDays", { days: daysLabel(schedule.days, t), rest }) : rest;
 }
 
+/**
+ * 마지막으로 끝난 회차. 글이 남는 회차(글 올림, 실패, 시간 초과)는 어느 PC든 최신 글로 보고, 글 없이 끝난 「알릴 것 없음」은
+ * 이 PC의 실행 기록이 그 글보다 나중일 때만 쓴다. 다른 PC에서 글 없이 끝난 회차는 그 PC의 기록이라 여기서는 보이지 않는다.
+ */
+function lastResult(routine: BoardRoutine): { status: "ok" | "failed" | "timeout" | "quiet"; at: string; fromPost: boolean } | null {
+  const post = routine.posts[0];
+  const fromPost = post ? { status: post.status, at: post.finishedAt || post.startedAt, fromPost: true } : null;
+  const run = routine.lastRun ? { status: routine.lastRun.status, at: routine.lastRun.finishedAt, fromPost: false } : null;
+  if (run?.status === "quiet" && (!fromPost || Date.parse(run.at) > Date.parse(fromPost.at))) return run;
+  return fromPost ?? run;
+}
+
 function lastRunLabel(routine: BoardRoutine, t: T): string | null {
-  if (!routine.lastRun) return null;
-  return t("routines.lastRun", { time: shortDateTime(routine.lastRun.finishedAt), result: t(`routines.lastRun.${routine.lastRun.status}`) });
+  const result = lastResult(routine);
+  return result ? t("routines.lastRun", { time: shortDateTime(result.at), result: t(`routines.lastRun.${result.status}`) }) : null;
+}
+
+function NewMark({ t }: { t: T }) {
+  return <span className={styles.badge} data-status="new" title={t("routines.newMarkLabel")} aria-label={t("routines.newMarkLabel")}>{t("routines.newMark")}</span>;
+}
+
+/** 갤러리 목록 한 줄 아래: 마지막 실행 결과와 시각, 그 아랫줄에 최근 글 제목(누르면 그 글). */
+function LatestLine({ routine, read, t }: { routine: BoardRoutine; read: ReadonlySet<string>; t: T }) {
+  const result = lastResult(routine);
+  const post = routine.posts[0];
+  if (!result) return <span className={styles.latest}><span className={styles.latestMeta}>{t("routines.noRunYet")}</span></span>;
+  return (
+    <span className={styles.latest}>
+      <span className={styles.latestMeta}>
+        <span className={styles.badge} data-status={result.status}>{t(`routines.lastRun.${result.status}`)}</span>
+        <span className={styles.mono}>{shortDateTime(result.at)}</span>
+        {post && !result.fromPost ? <span>· {t("routines.col.latest")} {shortDateTime(post.startedAt)}</span> : null}
+      </span>
+      {post ? (
+        <span className={styles.latestMeta}>
+          {isNewRoutinePost(routine.id, post, read) ? <NewMark t={t} /> : null}
+          <button type="button" className={`${styles.link} ${styles.latestTitle}`} onClick={() => showRoutineScreen({ kind: "post", id: routine.id, file: post.file })}>{post.title}</button>
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 /** 글 화면은 제목을 머리에 따로 보이므로, 본문에서 그 제목과 같은 첫 `# ` 제목(코드 블록 밖)을 뺀다. */
@@ -193,6 +232,7 @@ function BoardHead({ routine, data, t, onMessage }: { routine: BoardRoutine; dat
 }
 
 function PostTable({ routine, current, t }: { routine: BoardRoutine; current?: string; t: T }) {
+  const read = useReadRoutinePosts();
   const [onlyFailed, setOnlyFailed] = useState(false);
   const failed = routine.posts.filter((post) => post.status !== "ok");
   const shown = onlyFailed ? failed : routine.posts;
@@ -229,6 +269,7 @@ function PostTable({ routine, current, t }: { routine: BoardRoutine; current?: s
               <td className={`${styles.no} ${styles.mono}`}>{total - routine.posts.indexOf(post)}</td>
               <td className={styles.title}>
                 <StatusBadge status={post.status} t={t} />{post.status === "ok" ? null : " "}
+                {isNewRoutinePost(routine.id, post, read) ? <><NewMark t={t} /> </> : null}
                 <button type="button" className={styles.link} onClick={() => showRoutineScreen({ kind: "post", id: routine.id, file: post.file })}>{post.title}</button>
               </td>
               <td className={`${styles.host} ${styles.mono}`}>{post.host}</td>
@@ -246,6 +287,7 @@ type Filter = "all" | "on" | "off";
 function Gallery({ data, t }: { data: BoardData; t: T }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [message, setMessage] = useState<string | null>(null);
+  const read = useReadRoutinePosts();
   const newButton = <button type="button" className={styles.button} data-variant="primary" onClick={() => showRoutineScreen({ kind: "form", id: null })}>{t("routines.new")}</button>;
   if (data.routines.length === 0) {
     return (
@@ -288,21 +330,26 @@ function Gallery({ data, t }: { data: BoardData; t: T }) {
           </tr>
         </thead>
         <tbody>
-          {shown.map((routine) => (
-            <tr key={routine.id} data-enabled={routine.enabled ? "true" : "false"}>
-              <td><EnabledBadge routine={routine} t={t} /></td>
-              <td className={styles.title}>
-                <button type="button" className={styles.link} onClick={() => showRoutineScreen({ kind: "board", id: routine.id })}><strong>{routine.name}</strong></button>
-                {routine.running ? <> <span className={styles.badge} data-status="running">{t("routines.running")}</span></> : null}
-                <span className={styles.rowSchedule}>{scheduleLabel(routine.schedule, t)}</span>
-              </td>
-              <td className={styles.wide}>{scheduleLabel(routine.schedule, t)}</td>
-              <td className={`${styles.host} ${styles.mono}`}>{routine.host}</td>
-              <td className={styles.mono}>{routine.enabled ? shortDateTime(routine.nextRunAt) : "-"}</td>
-              <td className={`${styles.wide} ${styles.mono}`}>{routine.posts.length}</td>
-              <td><ToggleButton routine={routine} t={t} onMessage={setMessage} /></td>
-            </tr>
-          ))}
+          {shown.map((routine) => {
+            const fresh = routine.posts.filter((post) => isNewRoutinePost(routine.id, post, read)).length;
+            return (
+              <tr key={routine.id} data-enabled={routine.enabled ? "true" : "false"}>
+                <td><EnabledBadge routine={routine} t={t} /></td>
+                <td className={styles.title}>
+                  <button type="button" className={styles.link} onClick={() => showRoutineScreen({ kind: "board", id: routine.id })}><strong>{routine.name}</strong></button>
+                  {fresh > 0 ? <> <span className={styles.badge} data-status="new">{t("routines.newPosts", { count: fresh })}</span></> : null}
+                  {routine.running ? <> <span className={styles.badge} data-status="running">{t("routines.running")}</span></> : null}
+                  <LatestLine routine={routine} read={read} t={t} />
+                  <span className={styles.rowSchedule}>{scheduleLabel(routine.schedule, t)}</span>
+                </td>
+                <td className={styles.wide}>{scheduleLabel(routine.schedule, t)}</td>
+                <td className={`${styles.host} ${styles.mono}`}>{routine.host}</td>
+                <td className={styles.mono}>{routine.enabled ? shortDateTime(routine.nextRunAt) : "-"}</td>
+                <td className={`${styles.wide} ${styles.mono}`}>{routine.posts.length}</td>
+                <td><ToggleButton routine={routine} t={t} onMessage={setMessage} /></td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <div className={styles.foot}><SyncLine data={data} t={t} /></div>
@@ -326,6 +373,47 @@ function Board({ routine, data, t }: { routine: BoardRoutine; data: BoardData; t
   );
 }
 
+/**
+ * 글 본문. 처음엔 짧은 본문만 일정 높이까지 보이고(넘치면 「글 전체 보기」), `## 자세히` 아래 상세는 접어 둔다.
+ * `## 자세히`가 없는 예전 긴 글도 같은 높이에서 잘려 보인다.
+ */
+function PostBody({ body, t }: { body: string; t: T }) {
+  const { summary, details } = splitPostDetails(body);
+  const frame = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [overflow, setOverflow] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  useLayoutEffect(() => {
+    const outer = frame.current;
+    const inner = content.current;
+    if (open || !outer || !inner) return;
+    const measure = () => setOverflow(inner.offsetHeight > outer.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, [open, summary]);
+  return (
+    <div className={styles.postBody}>
+      {summary.trim() ? (
+        <>
+          <div ref={frame} className={styles.clamp} data-clamped={open ? undefined : "true"} data-overflow={!open && overflow ? "true" : undefined}>
+            <div ref={content}><MarkdownBody>{summary}</MarkdownBody></div>
+          </div>
+          {!open && overflow ? <button type="button" className={styles.expand} onClick={() => setOpen(true)}>{t("routines.expandPost")}</button> : null}
+        </>
+      ) : null}
+      {details ? (
+        <details className={styles.details} onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
+          <summary>{t(detailsOpen ? "routines.detailsHide" : "routines.details")}</summary>
+          <MarkdownBody>{details}</MarkdownBody>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: string; data: BoardData; t: T }) {
   const [post, setPost] = useState<RoutinePost | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -336,8 +424,10 @@ function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: str
     void request<{ post: RoutinePost }>(`/api/routines/${encodeURIComponent(routine.id)}/posts/${encodeURIComponent(file)}`, { cache: "no-store" }, t)
       .then((result) => {
         if (cancelled) return;
-        if (result.ok) setPost(result.body.post);
-        else setError(t("routines.loadFailed", { error: result.error }));
+        if (result.ok) {
+          setPost(result.body.post);
+          markRoutinePostRead(routine.id, file);
+        } else setError(t("routines.loadFailed", { error: result.error }));
       });
     return () => {
       cancelled = true;
@@ -359,7 +449,7 @@ function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: str
               {post.sessionId && post.host === data.thisHost ? <a href={`/?session=${encodeURIComponent(post.sessionId)}`}>{t("routines.openSession")}</a> : null}
             </div>
           </header>
-          <MarkdownBody className={styles.postBody}>{bodyWithoutTitle(post.body, post.title)}</MarkdownBody>
+          <PostBody key={file} body={bodyWithoutTitle(post.body, post.title)} t={t} />
         </article>
       ) : null}
       <PostTable routine={routine} current={file} t={t} />
@@ -660,6 +750,7 @@ export function RoutineView({ visible = true, onBack }: { visible?: boolean; onB
 export function RoutinePanel({ onOpen }: { onOpen?: () => void }) {
   const { t } = useI18n();
   const { data, screen } = useRoutineBoard();
+  const read = useReadRoutinePosts();
   const current = "id" in screen ? screen.id : null;
   const open = (next: BoardScreen) => {
     showRoutineScreen(next);
@@ -674,14 +765,20 @@ export function RoutinePanel({ onOpen }: { onOpen?: () => void }) {
         <>
           <p className={styles.strong}>{t("routines.enabledCount", { on, total: routines.length })}</p>
           <ul className={styles.panelList}>
-            {routines.map((routine) => (
-              <li key={routine.id}>
-                <button type="button" aria-current={routine.id === current ? "true" : undefined} onClick={() => open({ kind: "board", id: routine.id })}>
-                  <span>{routine.name}</span>
-                  <span className={styles.badge} data-status={routine.enabled ? "on" : "off"}>{routine.enabled ? t("routines.on") : t("routines.off")}</span>
-                </button>
-              </li>
-            ))}
+            {routines.map((routine) => {
+              const fresh = routine.posts.filter((post) => isNewRoutinePost(routine.id, post, read)).length;
+              return (
+                <li key={routine.id}>
+                  <button type="button" aria-current={routine.id === current ? "true" : undefined} onClick={() => open({ kind: "board", id: routine.id })}>
+                    <span>{routine.name}</span>
+                    <span className={styles.panelBadges}>
+                      {fresh > 0 ? <span className={styles.badge} data-status="new">{t("routines.newPosts", { count: fresh })}</span> : null}
+                      <span className={styles.badge} data-status={routine.enabled ? "on" : "off"}>{routine.enabled ? t("routines.on") : t("routines.off")}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </>
       ) : null}
