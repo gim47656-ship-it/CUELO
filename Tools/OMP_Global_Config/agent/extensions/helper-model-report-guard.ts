@@ -190,19 +190,27 @@ const KNOWN_NAMES = Object.entries(KOREAN_NAMES).map(([latin, korean]) => [latin
 
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
 const INDENTED = /^\s+\S/;
+// 명단 줄로 보는 길이. 이보다 긴 들여쓰지 않은 문단은 설명 글이라 이름이 여러 맥락으로 섞인다.
+export const ROSTER_LINE_MAX = 80;
+// 인용한 말은 보고한 명단이 아니다(「"GPT 쪽"처럼 계열만 적은 경우」 같은 예시). 작은따옴표는 영어 축약과 겹쳐 빼지 않는다.
+const QUOTED = /「[^」\n]*」|"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g;
 
 /**
- * 줄마다 그 줄이 판정 대상으로 말하는 역할. 역할 말이 있는 줄은 그 역할이다. 역할 말이 없는 목록 항목과 들여쓴 줄은 앞 역할을
- * 물려받고(「reviewer:」 아래 「- Astra」, 교차검토 R2-OAI-1·R3-OAI-2), 제목과 목록 사이의 빈 줄은 건너뛴다. 들여쓰지 않은 일반
- * 문장에서 끊긴다. 실제 모델을 모르는 역할(Maker 기록이 없을 때의 「- Maker: …」)의 줄도 거기서 끊어, 그 줄과 아래 항목을
- * 판정하지 않는다(R3-OAI-1).
+ * 줄마다 그 줄이 판정 대상으로 말하는 역할과, 명단으로 판정할 글. 역할 말이 있는 줄은 그 역할이다. 역할 말이 없는 목록 항목과
+ * 들여쓴 줄은 앞 역할을 물려받고(「reviewer:」 아래 「- Astra」, 교차검토 R2-OAI-1·R3-OAI-2), 제목과 목록 사이의 빈 줄은 건너뛴다.
+ * 들여쓰지 않은 일반 문장에서 끊긴다. 실제 모델을 모르는 역할(Maker 기록이 없을 때의 「- Maker: …」)의 줄도 거기서 끊어, 그 줄과
+ * 아래 항목을 판정하지 않는다(R3-OAI-1).
+ * 판정할 글은 인용을 뺀 줄이며, 목록 항목도 들여쓴 줄도 아닌 긴 문단은 비운다. 2026-11-14 배포 직후 이 장치를 설명한 Main의
+ * 완료 보고(따옴표 안 예시 「"GPT 쪽"」, 실제 명단과 오염 사례를 늘어놓은 문단)에 계열만 적음과 다른 모델 다섯 건을 잘못 냈다.
  */
 function lineRoles(text: string, roles: readonly Role[]): { line: string; roles: Role[] }[] {
   let inherited: Role[] = [];
-  return text.split("\n").map((line) => {
-    const cued = (Object.keys(ROLE_CUE) as Role[]).filter((role) => ROLE_CUE[role].test(line));
+  return text.split("\n").map((raw) => {
+    const cued = (Object.keys(ROLE_CUE) as Role[]).filter((role) => ROLE_CUE[role].test(raw));
+    const listed = LIST_ITEM.test(raw) || INDENTED.test(raw);
     if (cued.length > 0) inherited = cued.filter((role) => roles.includes(role));
-    else if (line.trim() !== "" && !LIST_ITEM.test(line) && !INDENTED.test(line)) inherited = [];
+    else if (raw.trim() !== "" && !listed) inherited = [];
+    const line = listed || raw.trim().length <= ROSTER_LINE_MAX ? raw.replace(QUOTED, " ") : "";
     return { line, roles: inherited };
   });
 }
