@@ -284,6 +284,94 @@ test("rules.lines.mjs flags tab underlines, click focus lines and bordered boxes
   });
 });
 
+test("rules.defaults.mjs flags unchosen default values and shapes, not chosen ones", () => {
+  withTempProject((project) => {
+    writeFileSync(
+      join(project, "bad.css"),
+      [
+        `.muted { color: #6B7280; }`,
+        `.tag { background: var(--primary, #4f46e5); }`,
+        `.bar { background: #d97757; }`,
+        `body { background: #faf8f5; }`,
+        `:root { --paper: hsl(38, 40%, 96%); }`,
+        `h1 { font-family: "Instrument Serif", serif; }`,
+        `h2 em { font-style: italic; }`,
+        `.card:hover { transform: translateY(-2px); }`,
+        `.hero { background: linear-gradient(135deg, #123456, #654321); }`,
+        `:root { --primary: #8b5cf6; }`,
+        `ol { list-style: decimal-leading-zero; }`,
+        `.warn { color: #facc15; border: 1px solid #0284c7; background: #f8fafc; }`,
+        `:root { --primary: var(--chosen, #7e22ce); }`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "Bad.tsx"),
+      [
+        `export const A = () => <h1>Build <em>faster</em></h1>;`,
+        `export const B = () => <span>01 · 시작하기</span>;`,
+        `export const C = () => <button className="bg-indigo-600 text-white">Go</button>;`,
+        `export const D = () => <div onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; }} />;`,
+        `export const E = () => <motion.div whileHover={{ scale: 1.05 }} />;`,
+        `export const F = () => <h1><span>Build <em>faster</em></span></h1>;`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "good.css"),
+      [
+        `:root { --accent: #2f6f5e; --bg: #f7f7f5; --brand: #635bff; }`,
+        `.tab:hover { background: var(--surface-2); }`,
+        `.btn:active { transform: scale(0.98); }`,
+        `.page { background: linear-gradient(to bottom, #fff, #f6f6f6); }`,
+        `.heat i { background: hsl(28, 80%, 95%); }`,
+        `/* id #6b7280a in a comment-like token */ .x { content: "#6b7280a"; }`,
+        `.v { background: linear-gradient(180deg, #fff, #eee); background: linear-gradient(0deg, #fff, #eee); background: linear-gradient(720deg, #fff, #eee); }`,
+        `.plain { color: #f5f5f5; background: #e5e5e5; }`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "Good.tsx"),
+      [
+        `export const P = () => <p className="pg">02 / 21</p>;`,
+        `export const Q = () => <h1>제품 이름</h1>;`,
+        `export const R = () => <button className="bg-[var(--accent)]">저장</button>;`,
+        `export const S = () => <motion.div whileHover={{ scale: 0.98, y: 2 }} />;`,
+        `export const T = () => <h2>목록</h2>;`,
+        `export const U = () => <p><em>참고</em></p>;`,
+      ].join("\n"),
+    );
+
+    const rulesPath = join(dirname(scriptPath), "rules.defaults.mjs");
+    const ids = ["df-01", "df-02", "df-03", "df-04", "df-05", "df-06", "df-07", "df-08", "df-09"];
+    const result = scan(project, "--json", `--rules=${rulesPath}`, `--only=${ids.join(",")}`);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    const files = (id) => (finding(report, id)?.hits ?? []).map((hit) => `${hit.file}:${hit.line}`).sort();
+
+    assert.deepEqual(files("df-01"), ["Bad.tsx:4", "bad.css:1", "bad.css:10", "bad.css:12", "bad.css:13", "bad.css:2"]);
+    assert.deepEqual(files("df-02"), ["bad.css:3"]);
+    assert.deepEqual(files("df-03"), ["bad.css:4", "bad.css:5"]);
+    assert.deepEqual(files("df-04"), ["bad.css:6"]);
+    assert.deepEqual(files("df-05"), ["Bad.tsx:1", "Bad.tsx:6", "bad.css:7"]);
+    assert.deepEqual(files("df-06"), ["Bad.tsx:2", "bad.css:11"]);
+    assert.deepEqual(files("df-07"), ["Bad.tsx:5", "bad.css:8"]);
+    assert.deepEqual(files("df-08"), ["bad.css:9"]);
+    assert.deepEqual(files("df-09"), ["Bad.tsx:3", "bad.css:10", "bad.css:13", "bad.css:2"]);
+  });
+});
+
+test("rules.defaults.mjs stays linear on a long run of word characters", () => {
+  withTempProject((project) => {
+    writeFileSync(join(project, "long.css"), `${"a".repeat(512_000)}\n`);
+    const rulesPath = join(dirname(scriptPath), "rules.defaults.mjs");
+    const result = spawnSync(process.execPath, [scriptPath, project, "--json", `--rules=${rulesPath}`], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.error, undefined, "scan timed out");
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
 test("escapes control characters in human output", () => {
   withTempProject((project) => {
     const control = "\u001b]52;c;not-a-clipboard\u0007";

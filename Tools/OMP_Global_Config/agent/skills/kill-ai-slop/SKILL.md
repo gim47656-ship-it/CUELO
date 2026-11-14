@@ -27,6 +27,11 @@ description: >-
   `--rules=scripts/rules.lines.mjs` (path relative to this skill) as well. Its `ln-` tells flag selected-tab
   underlines, focus lines shown on mouse click, bordered boxes, per-row divider lines and one-side colour
   stripes; `rule://frontend` 「선과 테두리를 긋지 않는다」 decides which lines may stay.
+- **Unchosen defaults (user request 2026-11-14).** Also scan with `--rules=scripts/rules.defaults.mjs`.
+  Its `df-` tells flag Tailwind palette values used verbatim, Claude brand orange, cream page backgrounds,
+  the "tasteful" serif display faces, italic accent words in headings, decorative 01/02 labels, hover
+  lift or grow, decorative diagonal gradients and AI purple as the primary colour. Judge them as a bundle
+  under `rule://frontend` 「양산형 기본값을 고르지 않는다」: a value the design contract chose stays.
 
 AI slop is **ugly** in a specific way: it piles on every possible style and
 detail without settling on a focus. A gradient, a glow, a mascot, emoji, a wall

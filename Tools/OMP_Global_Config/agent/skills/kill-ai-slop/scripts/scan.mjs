@@ -98,7 +98,7 @@ const TELLS = [
       /bg-(?:red|amber|yellow|green)-\d+\/(?:5|10|15|20)\b/i,
       /(?:error|warning|success)[^\n]{0,40}(?:red|amber|yellow|green)-\d+/i,
     ] },
-  { id: "06", group: "color", name: "gradients as atmosphere", fix: "one flat bg; depth from a hairline",
+  { id: "06", group: "color", name: "gradients as atmosphere", fix: "one flat bg; depth from a one-step tone shift",
     patterns: [
       /radial-gradient/i,
       /linear-gradient[^;)]*(?:to bottom|180deg|to top)/i,
@@ -253,7 +253,7 @@ const TELLS = [
       /text-[789]xl[\s\S]{0,50}?(?:text-(?:gray|slate|zinc|neutral)-(?:100|200)|opacity-(?:5|10|20))/i,
       /\bstep[- ](?:one|two|three)\b/i,
     ] },
-  { id: "31", group: "layout", name: "cards inside cards", fix: "one surface per region; hairlines inside",
+  { id: "31", group: "layout", name: "cards inside cards", fix: "one surface per region; spacing inside",
     patterns: [
       /<(Card|Panel|Box)[^>]*>\s*<\1\b/,
     ] },
