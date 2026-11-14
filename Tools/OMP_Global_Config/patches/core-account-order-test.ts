@@ -1,5 +1,6 @@
-// Anthropic account selection regression (2026-11-12): fresh sessions prefer the lowest measured weekly usage,
-// skip 5h-hot accounts when a cooler account exists, and keep the serving account until real unavailability.
+// Anthropic account selection regression (2026-11-15): fresh sessions follow the configured account priority
+// (auth.accountPolicies), then storage order; the next account is used only when an earlier one cannot serve
+// (limit reached, blocked, reserve), and keep the serving account until real unavailability.
 // Login, pool reordering, restart and idle time must not change a working session's credential identity.
 // [상속] summon marker 없는 일반 maker child는 부모 세션의 Anthropic pin(warm·exact)을 물려받지 않는다.
 //        summon child는 지정 위치 exact pin, 다른 provider 상속과 maker 아닌 child 상속은 그대로다.
@@ -170,6 +171,8 @@ async function selected(tag: string, opts: {
 	pin?: "warm" | "cold" | "exact";
 	block?: boolean;
 	rinReservePct?: number;
+	/** auth.accountPolicies priority per fixture account (reservePct 0, as in the profile config). */
+	priority?: Partial<Record<"rin" | "mio" | "third", number>>;
 	pinBlock?: boolean;
 }) {
 	const provider = opts.provider ?? "anthropic";
@@ -204,7 +207,13 @@ async function selected(tag: string, opts: {
 			? (provider === "anthropic" ? claudeRankingStrategy : { ...claudeRankingStrategy, stickyWarmMs: 60 * 60_000 })
 			: undefined,
 		...(opts.rinReservePct === undefined
-			? {}
+			? opts.priority === undefined
+				? {}
+				: {
+						accountPolicies: Object.entries(opts.priority).map(([identity, priority]) => ({
+							provider, account: { accountId: `${identity}-${tag}` }, priority, reservePct: 0,
+						})),
+					}
 			: { defaultReservePct: opts.pin ? 25 : 0, accountPolicies: [{ provider, account: { accountId: `rin-${tag}` }, reservePct: opts.rinReservePct }] }),
 	});
 	try {
@@ -235,39 +244,42 @@ async function selected(tag: string, opts: {
 	}
 }
 
-console.log("[Selection] Measured weekly usage ascending; 5h-hot accounts after cool accounts.");
+console.log("[Selection] Configured priority, then storage order; only unusable accounts move behind.");
+const RIN3_FIRST = { third: 30, rin: 20, mio: 10 } as const;
 const cases = [
-	["lowest weekly beats highest drain", "rin", { rin: { weekly: 0.1, weeklyReset: 150 }, mio: { weekly: 0.5, weeklyReset: 20 } }],
-	["lowest weekly can be second in storage", "mio", {}],
-	["weekly tie uses storage order, not 5h usage or reset time", "rin", { rin: { five: 0.3, weekly: 0.2, weeklyReset: 150 }, mio: { five: 0.1, weekly: 0.2, weeklyReset: 20 } }],
-	["daily slice no longer overrides lowest weekly", "rin", { rin: { weekly: 0.2, weeklyReset: 145 }, mio: { weekly: 0.8, weeklyReset: 46 } }],
+	["no policy: storage order, not lowest weekly", "rin", { rin: { weekly: 0.81 }, mio: { weekly: 0.03 } }],
+	["no policy: higher weekly first account still first", "rin", { rin: { weekly: 0.9, weeklyReset: 20 }, mio: { weekly: 0.1, weeklyReset: 150 } }],
+	["priority: top account wins over lower usage elsewhere", "third", { priority: RIN3_FIRST, third: { five: 0.2, weekly: 0.7 }, rin: { weekly: 0.01 }, mio: { weekly: 0.01 } }],
+	["priority beats storage order", "mio", { priority: { mio: 30, rin: 10 }, rin: { weekly: 0.01 }, mio: { weekly: 0.6 } }],
+	["priority: 5h-hot top account stays first", "third", { priority: RIN3_FIRST, third: { five: 0.95, weekly: 0.2 }, rin: { weekly: 0.01 } }],
+	["priority: reservePct 0 keeps 95% weekly account first", "third", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 0.95 }, rin: { weekly: 0.01 } }],
+	["priority: top 5h exhausted falls to second", "rin", { priority: RIN3_FIRST, third: { five: 1, weekly: 0.2 }, mio: { weekly: 0.01 } }],
+	["priority: top weekly exhausted falls to second", "rin", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, mio: { weekly: 0.01 } }],
+	["priority: top two exhausted falls to third", "mio", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, rin: { five: 1 }, mio: { weekly: 0.9 } }],
+	["priority: recovered top account is first again", "third", { priority: RIN3_FIRST, third: { five: 0, weekly: 0.4 }, rin: { weekly: 0.01 } }],
+	["priority: blocked top account skipped", "mio", { priority: { rin: 30, mio: 20 }, block: true, rin: { weekly: 0.01 } }],
+	["priority: unmeasured top account keeps its place", "third", { priority: RIN3_FIRST, third: { report: false }, rin: { weekly: 0.01 } }],
 	["clockless measured 0% 5h remains eligible", "rin", { rin: { fiveReset: null, weekly: 0.2 }, mio: { weekly: 0.85 } }],
 	["clockless measured weekly remains eligible", "rin", { rin: { weekly: 0.02, weeklyReset: null } }],
 	["exhausted weekly excluded", "mio", { rin: { weekly: 1 } }],
 	["exhausted 5h excluded", "mio", { rin: { five: 1 } }],
-	["exactly 85% 5h skips lowest weekly", "mio", { rin: { five: 0.85, weekly: 0.01 } }],
-	["both 5h-hot still choose lowest weekly", "rin", { rin: { five: 0.95, weekly: 0.01 }, mio: { five: 0.86, weekly: 0.6 } }],
+	["5h-hot first account stays first", "rin", { rin: { five: 0.85, weekly: 0.01 } }],
 	["blocked account excluded", "mio", { block: true, rin: { weekly: 0.01 } }],
 	["reserve policy still applies at start", "mio", { rinReservePct: 25, rin: { weekly: 0.8 }, mio: { weekly: 0.9 } }],
-	["unknown weekly never ranks as zero", "mio", { rin: { weekly: undefined } }],
-	["unknown 5h after measured", "mio", { rin: { five: undefined, weekly: 0.01 } }],
-	["failed measurement after measured", "mio", { rin: { report: false } }],
+	["unknown weekly keeps storage place", "rin", { rin: { weekly: undefined } }],
+	["unknown 5h keeps storage place", "rin", { rin: { five: undefined, weekly: 0.01 } }],
+	["failed measurement keeps storage place", "rin", { rin: { report: false } }],
 	["measured 5h-hot still before unmeasured", "rin", { rin: { five: 0.9 }, mio: { report: false } }],
-	["Fable unmeasured applicable tier after measured", "mio", { modelId: "claude-fable-5", rin: { tier: Number.NaN }, mio: { tier: 0.4 } }],
 	["Fable exhausted tier excluded", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
-	["Fable ignores irrelevant Sonnet tier", "rin", { modelId: "claude-fable-5", rin: { weekly: 0.01, tier: 0.99, tierKind: "sonnet" }, mio: { weekly: 0.4 } }],
-	...["opus", "sonnet", "fable"].map(kind => [
-		`${kind} uses max applicable weekly, not pressure-selected secondary`, "mio",
-		{ modelId: `claude-${kind}-5`, rin: { weekly: 0.7, weeklyReset: 20, tier: 0.1, tierKind: kind, tierReset: 167 }, mio: { weekly: 0.5, weeklyReset: 20, tier: 0.5, tierKind: kind, tierReset: 167 } },
-	] as const),
+	["Fable ignores irrelevant exhausted Sonnet tier", "rin", { modelId: "claude-fable-5", rin: { weekly: 0.01, tier: 1, tierKind: "sonnet" }, mio: { weekly: 0.4 } }],
 	["idle >1h keeps original account", "mio", { pin: "cold", rin: { weekly: 0.01 }, mio: { weekly: 0.9 } }],
 	["idle >1h near 5h limit keeps original account", "mio", { pin: "cold", rin: { weekly: 0.01 }, mio: { five: 0.99, weekly: 0.9 } }],
 	["reserve does not evict idle serving account", "mio", { pin: "cold", rinReservePct: 0, rin: { weekly: 0.01 }, mio: { weekly: 0.99 } }],
 	["idle >1h real 5h exhaustion switches", "rin", { pin: "cold", mio: { five: 1 } }],
 	["idle >1h real weekly exhaustion switches", "rin", { pin: "cold", mio: { weekly: 1 } }],
 	["idle >1h real block switches", "rin", { pin: "cold", pinBlock: true, mio: { report: false } }],
-	["R1-ANT-1: three accounts, exhausted pin skips hot higher-weekly sibling", "mio", { pin: "cold", pinAccount: 2, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 1, weekly: 0.2 } }],
-	["R1-ANT-1: three accounts, blocked pin reranks siblings", "mio", { pin: "cold", pinAccount: 2, pinBlock: true, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { report: false } }],
+	["R1-ANT-1: three accounts, exhausted pin falls to first usable by storage", "rin", { pin: "cold", pinAccount: 2, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 1, weekly: 0.2 } }],
+	["R1-ANT-1: three accounts, blocked pin follows priority", "mio", { pin: "cold", pinAccount: 2, pinBlock: true, priority: { mio: 30, rin: 20, third: 10 }, rin: { weekly: 0.1 }, mio: { five: 0.1, weekly: 0.9 }, third: { report: false } }],
 	["warm pin remains", "mio", { pin: "warm", rin: { weekly: 0.01 } }],
 	["exact summon remains", "mio", { pin: "exact", rin: { weekly: 0.01 } }],
 	["other provider still reranks idle pin", "rin", { provider: "openai-codex", pin: "cold", rin: { weekly: 0.2, weeklyReset: 20 }, mio: { weekly: 0.85, weeklyReset: 150 } }],
@@ -276,6 +288,43 @@ for (let index = 0; index < cases.length; index++) {
 	const [label, expected, options] = cases[index]!;
 	const actual = await selected(`case-${index}`, options);
 	check(label, actual === `${expected}-case-${index}`, `expected=${expected}-case-${index} actual=${actual}`);
+}
+
+console.log("[Recovery] One auth store: top priority serves, falls through while blocked, serves new sessions again once unblocked.");
+{
+	const provider = "anthropic";
+	const tag = "recovery";
+	const auth = await AuthStorage.create(join(temp, `${tag}.db`), {
+		usageProviderResolver: (current: string) => current === provider ? {
+			id: current,
+			fetchUsage: async () => makeReport(provider, { five: 0.1, weekly: 0.2 }),
+		} : undefined,
+		rankingStrategyResolver: (current: string) => current === provider ? claudeRankingStrategy : undefined,
+		accountPolicies: Object.entries(RIN3_FIRST).map(([identity, priority]) => ({
+			provider, account: { accountId: `${identity}-${tag}` }, priority, reservePct: 0,
+		})),
+	});
+	try {
+		for (const identity of ["rin", "mio", "third"]) await auth.credentials.upsert(provider, {
+			type: "oauth",
+			access: `${identity}-${tag}`,
+			refresh: `refresh-${identity}-${tag}`,
+			expires: Date.now() + 86_400_000,
+			accountId: `${identity}-${tag}`,
+		});
+		const top = auth.oauth.accounts(provider)[2]!;
+		const pick = (session: string) => auth.keys.get(provider, session, { modelId: "claude-opus-5" });
+		const first = await pick("recovery-a");
+		check("recovery: top priority serves first", first === `third-${tag}`, `actual=${first}`);
+		await auth.limits.markReached(provider, "recovery-a", { credentialId: top.credentialId, retryAfterMs: 500 });
+		const blocked = await pick("recovery-b");
+		check("recovery: blocked top falls through to second", blocked === `rin-${tag}`, `actual=${blocked}`);
+		await Bun.sleep(800);
+		const recovered = await pick("recovery-c");
+		check("recovery: new session returns to top once its block ended", recovered === `third-${tag}`, `actual=${recovered}`);
+	} finally {
+		auth.close();
+	}
 }
 
 console.log("[Lifecycle] Login, durable resume, removal, disable and auth failure.");
@@ -455,7 +504,7 @@ const show = (value: unknown) => JSON.stringify(value);
 	check("부모 warm MIO pin: 일반 maker child는 Anthropic pin 없이 시작", start !== undefined && start.anthropic === null, show(start));
 	check("부모 warm openai-codex pin(위치 1)은 일반 maker child에 그대로 상속", start?.codex === 1, show(start));
 	check("일반 maker child의 첫 요청은 exact 아님(새 선택)", request !== undefined && request.exact === null, show(request));
-	check("maker picks lowest weekly, not parent's account", request?.anthropic === 0, show(request));
+	check("maker selects fresh by priority/storage (position 0), not parent's account", request?.anthropic === 0, show(request));
 }
 {
 	const { start, request } = await childAccounts("exact-maker", { parent: "exact" });

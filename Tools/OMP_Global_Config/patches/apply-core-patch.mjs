@@ -1529,6 +1529,35 @@ const ANTHROPIC_LOWEST_WEEKLY_SELECTION = `		// CUELO: fresh Anthropic sessions 
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`;
 
+// 2026-11-15 user decision: fresh Anthropic sessions follow the configured account priority
+// (`auth.accountPolicies[].priority`, emails only in the private profile config), then storage order.
+// The next account is used only when the earlier one cannot serve: blocked, expired without refresh,
+// plan-ineligible, in its reserve, or at a usage limit. 5h heat and weekly usage no longer reorder.
+const ANTHROPIC_PRIORITY_SELECTION = `		// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.
+		// Accounts that cannot serve (blocked, expired, ineligible, reserve, limit reached) keep upstream slots.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const usable = candidates.map(candidate => {
+				const credential = candidate.selection.credential;
+				if (
+					candidate.inReserve === true ||
+					(credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) ||
+					this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes) ||
+					(planGate && planGate(candidate.usage) === false)
+				) return false;
+				const usage = candidate.usage;
+				return !(usage && isUsageLimitReached(reserveUsageLimits(strategy, usage, rankingContext)));
+			});
+			const slots = candidates.flatMap((_candidate, pos) => usable[pos] ? [pos] : []);
+			const preferred = [...slots].sort((left, right) => {
+				const a = candidates[left]!;
+				const b = candidates[right]!;
+				return (b.accountPriority ?? 0) - (a.accountPriority ?? 0) || a.selection.index - b.selection.index;
+			}).map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => { candidates[pos] = preferred[order]!; });
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`;
+
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
 	// Claude 18.20.0 Cedar grants: next_grant_id is a suggestion, not a redemption restriction.
@@ -6505,14 +6534,14 @@ import { resolveUsedFraction } from "../usage";`,
 		patched: "import {\n\torderUsageRankedCandidates,\n\tPRIMARY_WINDOW_HOT_FRACTION,\n\tplanPriority,\n",
 	},
 	{
-		// 2026-11-12 사용자 정책: 새 세션은 측정된 주간 사용률이 가장 낮은 계정부터 고른다.
-		// 해당 모델에 적용되는 shared/tier 7d 중 큰 사용률, 동률은 저장 순서. 5h 85% 이상은
-		// 측정된 비-hot 뒤, 미측정은 모든 측정 후보 뒤다. exact summon 앞 return, warm/explicit
-		// pin 뒤 재승격은 보존한다. 2026-10-02 drain/day-share 및 09-29 저장 순서 패치는 legacy로 이관.
+		// 2026-11-15 사용자 정책: 새 세션은 설정한 계정 우선순위(auth.accountPolicies priority) → 저장 순서로 고르고,
+		// 앞 계정이 막힘·만료·자격 없음·예비분·한도 도달일 때만 다음 계정을 쓴다. exact summon 앞 return,
+		// warm/explicit pin 뒤 재승격은 보존한다. 11-12 주간 최저 사용률 본문, 10-02 drain/day-share,
+		// 09-29 저장 순서 패치는 legacy로 이관.
 		file: "../pi-ai/src/auth/select.ts",
-		marker: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
+		marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
 		anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-		excludes: "// Prefer RIN (first Anthropic account)",
+		excludes: ["// Prefer RIN (first Anthropic account)", "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage."],
 		legacyPatched: `		// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
@@ -6582,13 +6611,20 @@ import { resolveUsedFraction } from "../usage";`,
 			});
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`,
-		patched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
+		patched: ANTHROPIC_PRIORITY_SELECTION,
 		alternates: [{
 			file: "../pi-ai/src/auth/select.ts",
-			marker: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
+			marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
+			requires: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
+			anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
+			patched: ANTHROPIC_PRIORITY_SELECTION,
+			legacyPatched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
+		}, {
+			file: "../pi-ai/src/auth/select.ts",
+			marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
 			requires: "// Prefer RIN (first Anthropic account)",
 			anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-			patched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
+			patched: ANTHROPIC_PRIORITY_SELECTION,
 			legacyPatched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
 		// Only candidates with a complete, healthy usage picture move, and only among the slots they
 		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
