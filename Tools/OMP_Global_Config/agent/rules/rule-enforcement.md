@@ -119,7 +119,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A29 | 별칭 호출·교체, SHION은 상담만 | 차단 | `extensions/command-guard/index.ts` CharacterSummonGuard, `extensions/character-voice.ts`, `patches/validate-harness-policy.mjs`(`mainLane.characterRouting`) | |
 | A30 | 레거시 인코딩 판별·보존 | eval | `evals/cases/industrial/cp949-preservation*.json` | `rule://legacy-encoding`은 glob으로 목록에 뜬다 |
 | A31 | 문서 지도·기록 소유권·검색 순서 | 안내 | `extensions/docmap-route.ts`, `extensions/lib/turn-documents.ts`, `tools/git-finalizer/index.ts` `missingHandoffNote` | |
-| A32 | child·다른 모델을 쓴 턴은 역할·개수·이유 고지 | 문서 | — | |
+| A32 | child·다른 모델을 쓴 턴은 역할·개수·이유 고지 | 안내(부분) | `extensions/helper-model-report-guard.ts`, `extensions/tests/helper-model-report-guard.test.ts` | 2026-11-14 「GPT 쪽 검토자」 오보(실제 아스트라) 지적과 「장치로만들자」 뒤 승격. 완료 보고의 교차 검토·문구 점검·Maker 명단만 원장과 도구 결과의 실제 응답 모델과 대 본다. 개수·이유 고지는 문서 |
 | A33 | 결론 먼저·문단 중심·상투어 금지 | 문서 | — | |
 | A34 | 사용자 보고는 전문용어를 줄이고 효과부터 | 문서 | — | 2026-11-02 사용자 결정 |
 | A35 | 수치 셋 이상이면 Mermaid 차트 | 안내 | `extensions/report-chart-guard.ts`, `extensions/tests/report-chart-guard.test.ts` | 2026-10-19 누락 뒤 승격됨 |
@@ -144,4 +144,4 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | typed judgment routing·검수·검증 소유권 세부(A16·A18) | `rule://subagent`, `harness-policy.json` |
 | `goal` `token_budget`(A25) | `cuelo-plugins/goal-budget-hint/index.ts` |
 
-아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, A32 child·다른 모델 사용 고지, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.
+아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.
