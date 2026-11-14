@@ -25073,6 +25073,20 @@ function planSpawns(
 	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&UHe(c))continue';
 	const advisor = one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'), "advisor filter");
 	alternate(advisor, { marker: skip, anchor: skip, patched: skip }, skip);
+	// Selective commit (eval `commit`, `/commit`) is on by default upstream. A local commit made that way is later pushed
+	// by git_finalize's resume path without the cross-review gate, and the harness config.yml that turns it off is not
+	// installed on cloud or npm profiles. Default it off; an explicit `commit.enabled: true` still turns it on.
+	const commitSetting = 'export const cfgCommitEnabled = register({\n\tid: "commit.enabled",\n\ttype: "boolean",\n\tdefault: ';
+	const commitMarker = "// CUELO: selective commit stays off unless config turns it on";
+	EDITS.push({
+		file: "src/tools/settings.ts",
+		requires: 'id: "commit.enabled",',
+		marker: commitMarker,
+		anchor: `${commitSetting}true,\n`,
+		patched: `${commitMarker}; commits go through git_finalize.\n${commitSetting}false,\n`,
+		// 18.20.0 has no selective commit: nothing to do there.
+		alternates: [{ file: "src/tools/settings.ts", marker: 'id: "archive.enabled",', anchor: 'id: "archive.enabled",', patched: 'id: "archive.enabled",', excludes: 'id: "commit.enabled",' }],
+	});
 }
 
 /**
