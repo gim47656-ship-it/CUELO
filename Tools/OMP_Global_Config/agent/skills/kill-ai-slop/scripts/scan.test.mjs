@@ -182,6 +182,108 @@ test("--rules loads extra tells (Russian example rules)", () => {
   });
 });
 
+test("rules.lines.mjs flags tab underlines, click focus lines and bordered boxes, not their replacements", () => {
+  withTempProject((project) => {
+    writeFileSync(
+      join(project, "bad.css"),
+      [
+        `.tab.active { border-bottom: 2px solid var(--accent); }`,
+        `.btn:focus { outline: 2px solid blue; }`,
+        `.card { border: 1.5px solid #e5e7eb; }`,
+        `.row { border-bottom: 1px solid #eee; }`,
+        `.note { border-left: 2.5px solid teal; }`,
+        `.tabs .item::after { content: ""; height: 2px; }`,
+        `.chip:focus { box-shadow: 0 0 0 2px blue; }`,
+        `.tab.selected`,
+        `{ border-bottom: 2px solid blue; }`,
+        `/* use :focus-visible */`,
+        `.panel { border: 1px solid #ddd; }`,
+        `.tab /* selection */ {border-bottom:2px solid blue;}`,
+        `.btn:focus /* mouse */ {outline:2px solid blue;}`,
+        `.inp:focus { border: 2px solid blue; }`,
+        `${".scope ".repeat(25)}.tab {border-bottom:2px solid blue}`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "Bad.tsx"),
+      [
+        `export const A = () => <div className="data-[state=active]:border-b-2 focus:ring-2" />;`,
+        `export const B = () => <div className="rounded-lg border p-4 divide-y" />;`,
+        `export const C = () => <div className="border-t border-l-4" />;`,
+        `export const D = () => <hr />;`,
+        `export const E = () => <div className="focus:outline-2" />;`,
+        `export const F = () => <div className="focus:border-2" />;`,
+        `export const R = () => <div className="rounded-lg md:border md:divide-y md:border-b md:border-l-4" />;`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "slides.js"),
+      [
+        `slide.addShape("rect", { x: 1, line: { color: "CCCCCC" } });`,
+        `slide.addTable(rows, { border: { type: "solid", pt: 1 } });`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "page.html"),
+      [
+        `<html><head><meta charset="utf-8"/><style>`,
+        `.btn:focus {outline:2px solid blue}`,
+        `.tab.active{border-bottom:2px solid blue;}`,
+        `</style></head></html>`,
+      ].join("\n"),
+    );
+    writeFileSync(join(project, "styles.scss"), `// note\n.tab.active { border-bottom: 2px solid blue; }\n`);
+    writeFileSync(
+      join(project, "good.css"),
+      [
+        `.tab[aria-selected="true"] { background: var(--surface-2); font-weight: 600; }`,
+        `.btn:focus:not(:focus-visible) { outline: none; }`,
+        `.btn:focus-visible { border: 2px solid blue; }`,
+        `.card { background: var(--surface-1); border: none; }`,
+        `.tabs .active { border-bottom: 0px; }`,
+        `.tab::after { border-bottom: 0; }`,
+        `.btn:focus { outline: 0; }`,
+        `.tab:focus-visible { border-bottom: 2px solid blue; }`,
+        `.tab.active:focus-visible { text-decoration: underline; }`,
+        `.tab:focus-visible.active { border-bottom: 2px solid blue; }`,
+        `[role="tab"]:focus-visible[aria-selected="true"] { border-bottom: 2px solid blue; }`,
+        `.tab:focus-visible.active { text-decoration: underline; }`,
+        `.btn:focus-visible /* kb */ { border: 2px solid blue; }`,
+        `.form:focus-within { outline: 2px solid blue; }`,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(project, "Good.tsx"),
+      [
+        `export const G = () => <button className="rounded-md bg-neutral-100 focus-visible:bg-neutral-200 focus-visible:border-b-2 border-gray-200">탭</button>;`,
+        `export const H = () => <div className="rounded-lg focus-visible:md:border focus-visible:md:border-b focus-visible:md:border-l-4 md:focus-visible:divide-y" />;`,
+        `export const I = () => <div className="focus-visible:data-[state=active]:border-b-2 focus-visible:focus:ring-2" />;`,
+      ].join("\n"),
+    );
+
+    const rulesPath = join(dirname(scriptPath), "rules.lines.mjs");
+    const result = scan(project, "--json", `--rules=${rulesPath}`, "--only=ln-01,ln-02,ln-03,ln-04,ln-05");
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    const files = (id) => (finding(report, id)?.hits ?? []).map((hit) => `${hit.file}:${hit.line}`).sort();
+
+    assert.deepEqual(files("ln-01"), [
+      "Bad.tsx:1", "bad.css:1", "bad.css:12", "bad.css:15", "bad.css:6", "bad.css:8", "page.html:3", "styles.scss:2",
+    ]);
+    assert.deepEqual(files("ln-02"), [
+      "Bad.tsx:1", "Bad.tsx:5", "Bad.tsx:6", "bad.css:13", "bad.css:14", "bad.css:2", "bad.css:7", "page.html:2",
+    ]);
+    assert.deepEqual(files("ln-03"), [
+      "Bad.tsx:2", "Bad.tsx:7", "bad.css:11", "bad.css:14", "bad.css:3", "slides.js:1", "slides.js:2",
+    ]);
+    assert.deepEqual(files("ln-04"), [
+      "Bad.tsx:1", "Bad.tsx:2", "Bad.tsx:3", "Bad.tsx:4", "Bad.tsx:7",
+      "bad.css:1", "bad.css:12", "bad.css:15", "bad.css:4", "bad.css:9", "page.html:3", "styles.scss:2",
+    ]);
+    assert.deepEqual(files("ln-05"), ["Bad.tsx:3", "Bad.tsx:7", "bad.css:5"]);
+  });
+});
+
 test("escapes control characters in human output", () => {
   withTempProject((project) => {
     const control = "\u001b]52;c;not-a-clipboard\u0007";

@@ -21,6 +21,13 @@ description: >-
 
 # Kill AI Slop
 
+## OMP local contract
+
+- **Lines and borders (user decision 2026-11-14).** Scan with
+  `--rules=scripts/rules.lines.mjs` (path relative to this skill) as well. Its `ln-` tells flag selected-tab
+  underlines, focus lines shown on mouse click, bordered boxes, per-row divider lines and one-side colour
+  stripes; `rule://frontend` 「선과 테두리를 긋지 않는다」 decides which lines may stay.
+
 AI slop is **ugly** in a specific way: it piles on every possible style and
 detail without settling on a focus. A gradient, a glow, a mascot, emoji, a wall
 of glowing cards, every default switched on at once, until every product looks
