@@ -25023,6 +25023,58 @@ function planSpawns(
 	noop(advisor, skip);
 }
 
+// 18.20.1: retain older candidate bodies; port only changed upstream boundaries.
+{
+	const one = (predicate, label) => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.20.1 candidate: ${entries.length}/1 entries for ${label}`);
+		return entries[0];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const latest = entry => entry.alternates?.at(-1) ?? entry;
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.20.1 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	// The selective-commit change journal now sits between the agent id and display name. Keep it,
+	// and let it name the reserved top-level id like the rest of the session.
+	const journal = "\t/** This agent's identity in the session tree's change journal. */\n\tconst journalAgent = { agent: resolvedAgentId, parent: options.parentAgentId };\n\t/** The session tree's change journal; `null` while the session keeps no artifacts. */\n\tconst changeJournal = (): ChangeJournal | null => {\n\t\tconst dir = sessionManager.getArtifactsDir();\n\t\treturn dir ? ChangeJournal.at(dir) : null;\n\t};\n";
+	const reserve = one(entry => entry.file === "src/sdk.ts" && entry.marker === "const reserveTopLevelAgentId = (): string => {", "top-level agent id");
+	const reserveOld = latest(reserve);
+	alternate(reserve, {
+		marker: reserve.marker,
+		anchor: swap(reserveOld.anchor, "MAIN_AGENT_ID;\n", `MAIN_AGENT_ID;\n${journal}`),
+		patched: swap(reserveOld.patched, "\tconst resolvedAgentId = reserveTopLevelAgentId();\n", `\tconst resolvedAgentId = reserveTopLevelAgentId();\n${journal}`),
+	}, "const journalAgent = { agent: resolvedAgentId, parent: options.parentAgentId };");
+	// The commit eval prelude now follows archive; the MCP and skill-script preludes go after it.
+	const preludes = one(entry => entry.file === "src/sdk.ts" && entry.marker === "\t\t\t\tmcpPrelude ??= createMcpEvalPrelude(toolSession);", "eval preludes");
+	const preludesOld = latest(preludes);
+	const commitPrelude = "\t\t\t}\n\t\t\tif (cfgCommitEnabled.get(settings)) {\n\t\t\t\tcommitPrelude ??= createCommitPrelude(toolSession);\n\t\t\t\tbuiltins.push(commitPrelude);\n";
+	const afterArchive = "\t\t\t\tbuiltins.push(archivePrelude);\n";
+	alternate(preludes, {
+		marker: preludes.marker,
+		anchor: swap(preludesOld.anchor, afterArchive, afterArchive + commitPrelude),
+		patched: swap(preludesOld.patched, afterArchive, afterArchive + commitPrelude),
+	}, "commitPrelude ??= createCommitPrelude(toolSession);");
+	// The hard-error context-overflow veto gained a fit check; the Codex whitespace exemption is unchanged.
+	const overflowOld = "\t\tif (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) {\n";
+	const overflowNew = "\t\tif (\n\t\t\t!textAmbiguousOverflow &&\n\t\t\tAIError.isContextOverflow(message, contextWindow) &&\n\t\t\t!this.#overflowTextContradictedByFit(message, model, contextWindow)\n\t\t) {\n";
+	const whitespace = one(entry => entry.file === "src/session/turn-recovery.ts" && entry.marker === "!codexWhitespaceCommittedText && this.#hasReplayUnsafeOutput(message)", "codex whitespace fallback veto");
+	const whitespaceOld = latest(whitespace);
+	alternate(whitespace, {
+		marker: whitespace.marker,
+		anchor: swap(whitespaceOld.anchor, overflowOld, overflowNew),
+		patched: swap(whitespaceOld.patched, overflowOld, overflowNew),
+	}, "#overflowTextContradictedByFit(message: AssistantMessage");
+	// Advisor transcript skip: only the minified helper name changed (j$e -> UHe).
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&UHe(c))continue';
+	const advisor = one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'), "advisor filter");
+	alternate(advisor, { marker: skip, anchor: skip, patched: skip }, skip);
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

@@ -489,7 +489,13 @@ await section("[4] 공유 브라우저 타깃 소유권과 수확 경계", async
 			},
 			async detach(): Promise<void> {},
 		};
-		return { target: () => ({ createCDPSession: async () => session }) };
+		// Up to 18.20.0 the close ran on a fresh `browser.target().createCDPSession()`; 18.20.1 sends it on the browser's
+		// root connection (`browserConnection`, puppeteer's private `_connection`, which must also have `createSession`).
+		// The stub offers both shapes so the same cases check either core.
+		return {
+			_connection: { ...session, createSession: async () => session },
+			target: () => ({ createCDPSession: async () => session }),
+		};
 	}
 
 	try {

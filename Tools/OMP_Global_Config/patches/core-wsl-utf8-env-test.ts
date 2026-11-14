@@ -96,8 +96,25 @@ console.log("WSL 밖은 그대로다");
 		isDeepStrictEqual(linuxOverride, { ...BASE, PAGER: "less" }),
 		shown(linuxOverride),
 	);
+	// Up to 18.20.0 darwin got the same defaults as linux. 18.20.1 pins a macOS-specific locale set instead (macOS ships no
+	// `C.UTF-8`), so the expected value is either full set, written out here rather than read back from the core.
+	const DARWIN_BASE = {
+		...BASE,
+		LANG: "C",
+		LC_ALL: "",
+		LC_COLLATE: "C",
+		LC_CTYPE: "en_US.UTF-8",
+		LC_MESSAGES: "C",
+		LC_MONETARY: "C",
+		LC_NUMERIC: "C",
+		LC_TIME: "C",
+	};
 	const mac = buildNonInteractiveEnv(undefined, WSL, "darwin");
-	check("darwin 은 WSL_DISTRO_NAME 이 있어도 기본값 그대로다", isDeepStrictEqual(mac, BASE));
+	check(
+		"darwin 은 WSL_DISTRO_NAME 이 있어도 기본값 그대로다",
+		isDeepStrictEqual(mac, BASE) || isDeepStrictEqual(mac, DARWIN_BASE),
+		shown(mac),
+	);
 	const win = buildNonInteractiveEnv(undefined, WSL, "win32");
 	check(
 		"win32 는 기존 UTF-8 기본값만 넣는다",
