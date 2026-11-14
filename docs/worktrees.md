@@ -32,6 +32,8 @@ main checkout이 아닌 항목의 제거 버튼은 linked checkout을 제거하�
 
 CUELO가 자동 생성 표시를 남긴 `wt/s-*` 및 `wt/issue-*` worktree는 커밋하지 않은 수정과 무시 대상이 아닌 새 파일이 없고 활성 사용이 없을 때 다음 두 경우 중 하나에 해당하면 자동으로 정리됩니다(`.env`나 `node_modules` 같은 무시된 파일은 함께 지워집니다): (1) 자체 커밋이 1개 이상 존재하며 현재 `HEAD`가 최신 fetch된 `origin` 기본 branch에 병합(포함)되어 있는 경우, 또는 (2) 자체 커밋이나 통합할 내용이 전혀 없어 현재 `HEAD`가 기록된 시작 기반 커밋과 정확히 일치하는 경우(이 미변경 경로는 새로운 fetch나 통합 과정을 거치지 않고 기록된 기반 참조를 `git branch -d` 실행 시 임시 upstream 비교 기준으로 사용합니다). 정리는 런타임이 닫힐 때(유휴 종료 포함)와 `GET /api/worktrees` 요청 시점에 실행됩니다. 변경 사항이나 무시 대상이 아닌 새 파일이 남은 경우, 활성 작업이 있는 경우, 아직 병합되지 않은 자체 커밋이 있는 경우, 표시가 없거나 사용자가 직접 만든 worktree, main checkout, 또는 `~/cuelo-run`은 건드리지 않습니다. 두 정리 경로 모두 동일한 제거 예약과 최종 `HEAD`/상태 재확인을 거친 뒤 강제 옵션 없는 `git worktree remove`와 `git branch -d`만 사용하며, Git이 `git branch -d` 삭제를 거부하면 폴더만 제거하고 branch는 유지한 채 결과와 로그로 알립니다(수동 제거 버튼은 기존과 동일하게 branch를 삭제하지 않습니다). 자동 worktree가 삭제된 뒤에도 세션 기록은 남으며, 디렉터리가 사라진 세션을 재개하면 런타임 작업 디렉터리만 main checkout(사용 중이면 새 자동 worktree)으로 대체하여 열리고 디렉터리가 남아 있는 세션은 원래 경로에서 그대로 재개됩니다.
 
+`git_integrate`가 게시 뒤 로컬 branch를 지워 HEAD만 떼어 둔 자동 worktree도 같은 조건으로 정리됩니다. 폴더 이름에서 원래 branch 이름을 되짚고, 그 branch가 다시 생기지 않았으며 남아 있는 자동 생성 표시가 그 폴더를 가리킬 때만 대상으로 삼습니다. 폴더를 지운 뒤에는 그 branch 이름으로 남은 설정을 함께 걷어 냅니다.
+
 보수 탭(전체 점검 프롬프트, 섹션 프롬프트, 행 프롬프트, HANDOFF 기한 항목)에서 시작하는 세션은 다른 세션이 main checkout을 사용하지 않을 때도 항상 새 자동 worktree(`wt/s-*`)에서 열리며, 일반 새 세션은 기존처럼 main checkout이 사용 중일 때만 worktree를 사용합니다. 자동 worktree 정리는 세션 종료와 worktree 목록을 열 때뿐만 아니라 서버 시작 시와 각 PC의 2시간 주기 클라우드 동기화 확인 시에도 실행됩니다. 제거 조건은 기존과 동일하게 유지되며, 서버 시작 시 재개 예정인 세션의 worktree와 커밋되지 않은 변경 사항이나 병합되지 않은 커밋이 남아 있는 worktree는 삭제되지 않습니다. 또한 보수 탭에서는 3일 이상 사용되지 않았지만 커밋되지 않은 변경 사항이나 병합되지 않은 커밋이 남은 자동 worktree를 브랜치, 경과 시간, 변경 파일과 함께 표시해 사용자가 이어서 진행하거나 폐기할 수 있도록 안내하며, 이를 자동으로 삭제하지는 않습니다.
 
 기회적 정리(opportunistic sweep)에서는 CUELO가 자동 생성 표시를 남긴 `wt/s-*` 및 `wt/issue-*` worktree 중 경로가 누락된 등록만 정리하며, 통합 여부와 관계없이 로컬 branch와 커밋은 유지합니다. 이는 앞서 설명한 일반 깨끗한 checkout 및 branch 삭제와는 별개의 부재 경로 등록 복구로, 전역 prune 대신 런타임 사용 예약과 최종 부재 및 활성 여부 재확인을 거친 뒤 대상 한 건에만 강제 옵션 없는 `git worktree remove`를 실행합니다. 실제 디렉터리가 남아 있거나, 끊어진 심볼릭 링크이거나, 잠긴(locked) 등록이거나, 사용자가 직접 만들었거나 표시가 없는 worktree는 제거하지 않습니다.
@@ -40,7 +42,7 @@ CUELO가 자동 생성 표시를 남긴 `wt/s-*` 및 `wt/issue-*` worktree는 �
 
 worktree에서 열린 세션은 메인 checkout과 동일한 프로젝트 기억을 사용합니다. 패치된 내장 코어가 worktree의 `.git` 파일을 읽어 메인 checkout의 동일한 폴더에 있는 기억 은행을 선택하므로, worktree마다 별도의 은행이 생기지 않아 한쪽에서 남긴 교훈을 다른 쪽에서 회상할 수 있고 다른 PC로 내보낼 때도 worktree에서 작성된 기억이 함께 포함됩니다.
 
-작업 중 커밋은 해당 worktree에서 진행하고, `main`에 합치는 작업은 하네스의 `git_integrate` 도구를 사용합니다. 최신 `main` 위에 rebase하고 검사를 통과하면 fast-forward로 게시하며, 충돌이 나면 작업을 멈추고 세션이 직접 충돌을 해결해 이어갑니다. 게시에 성공하면 main checkout이 같은 대상 branch에 있을 때 뒤처진 만큼 fast-forward로 따라오게 합니다. main checkout의 커밋하지 않은 수정이 게시한 커밋과 충돌하거나 main checkout이 다른 branch에 있으면 건드리지 않고 그 이유를 결과에 남깁니다. 자세한 동작은 [OMP 하네스](./harness.md) 문서의 Git 마감 도구 절을 참고하세요.
+작업 중 커밋은 해당 worktree에서 진행하고, `main`에 합치는 작업은 하네스의 `git_integrate` 도구를 사용합니다. 최신 `main` 위에 rebase하고 검사를 통과하면 fast-forward로 게시하며, 충돌이 나면 작업을 멈추고 세션이 직접 충돌을 해결해 이어갑니다. 게시에 성공하면 세션 branch의 원격 사본과 로컬 branch를 지워 GitHub Desktop 같은 branch 목록에 끝난 세션 branch가 남지 않게 합니다. worktree 폴더와 작업 파일은 그대로 두고 HEAD만 게시한 커밋에 떼어 두며, 같은 세션이 다시 작업하면 `git_finalize`와 `git_integrate`가 같은 이름의 branch를 다시 만들어 이어 갑니다. main checkout이 같은 대상 branch에 있으면 뒤처진 만큼 fast-forward로 따라오게 합니다. main checkout의 커밋하지 않은 수정이 게시한 커밋과 충돌하거나 main checkout이 다른 branch에 있으면 건드리지 않고 그 이유를 결과에 남깁니다. 자세한 동작은 [OMP 하네스](./harness.md) 문서의 Git 마감 도구 절을 참고하세요.
 
 ## 문제 해결
 

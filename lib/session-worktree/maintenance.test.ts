@@ -95,6 +95,16 @@ test("R1-ANT-1/R1-ADV-1: unmarked auto-named worktrees are skipped, not unreadab
   expect(result).toEqual({ worktrees: [], warnings: [] });
 });
 
+test("a dirty idle auto tree whose branch git_integrate retired (detached HEAD) is listed under its original branch name", async () => {
+  const f = fixture(); const tree = await f.create();
+  const branch = git(tree, "branch", "--show-current");
+  git(tree, "checkout", "-q", "--detach"); git(tree, "update-ref", "-d", `refs/heads/${branch}`);
+  writeFileSync(join(tree, "left.txt"), "keep");
+  const result = await findStaleAutoWorktrees([f.main], f.host, f.sessions, Date.now() + 4 * 86_400_000);
+  expect(result.warnings).toEqual([]);
+  expect(result.worktrees).toMatchObject([{ path: tree, branch, changedFiles: ["left.txt"] }]);
+});
+
 test("R2-ANT-1: replacing a tracked directory with a file remains readable", async () => {
   const f = fixture(); const tree = await f.create();
   mkdirSync(join(tree, "dir")); writeFileSync(join(tree, "dir", "a"), "tracked");

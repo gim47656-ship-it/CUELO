@@ -205,6 +205,16 @@ export async function rollbackUnstartedWorktree(selection: Selection): Promise<v
     }
   } catch (error) { console.error("[session-worktree] failed-start allocation retained:", error); }
 }
+/**
+ * git_integrate가 게시 뒤 로컬 브랜치만 지우고 HEAD를 떼어 둔 자동 worktree(2026-11-14)의 원래 브랜치 이름. 폴더 이름 `wt-<나머지>`에서
+ * `wt/<나머지>`를 되짚고, 그 브랜치가 다시 생겼으면 없다고 본다. 호출자는 남은 소유 기록(`cuelo-path`)이 이 폴더인지 따로 확인한다.
+ */
+export async function retiredAutoBranch(main: string, tree: WorktreeInfo): Promise<string | undefined> {
+  const folder = basename(tree.path);
+  if (tree.isMain || tree.branch || dirname(tree.path) !== `${main}-worktrees` || !folder.startsWith("wt-")) return undefined;
+  const branch = `wt/${folder.slice(3)}`;
+  return await optionalGit(main, ["show-ref", "--verify", `refs/heads/${branch}`]) === undefined ? branch : undefined;
+}
 export interface SweepResult { path: string; branch: string; removed: boolean; branchKept?: boolean; reason?: string }
 export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Promise<SweepResult[]> {
   return withRepositoryLock(cwd, async () => {
@@ -213,8 +223,10 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
     const results: SweepResult[] = [];
     const fetched = new Map<string, boolean>();
     for (const tree of await listWorktrees(repo.main, { includeMissing: true })) {
-      const branch = tree.branch;
-      if (tree.isMain || !branch || !autoBranch.test(branch)) continue;
+      if (tree.isMain) continue;
+      const retired = await retiredAutoBranch(repo.main, tree);
+      const branch = tree.branch ?? retired;
+      if (!branch || !autoBranch.test(branch)) continue;
       const base = await optionalGit(repo.main, ["config", "--get", configKey(branch, "base")]);
       const ownedPath = await optionalGit(repo.main, ["config", "--get", configKey(branch, "path")]);
       const target = await optionalGit(repo.main, ["config", "--get", configKey(branch, "target")]);
@@ -256,7 +268,9 @@ export async function sweepSessionWorktrees(cwd: string, host: WorktreeHost): Pr
         await removeWorktree(repo.main, tree.path);
         result.removed = true;
         try {
-          await git(repo.main, ["-c", `branch.${branch}.remote=${untouched ? "." : "origin"}`,
+          // 지워진 브랜치에 남은 설정(upstream, cuelo-*)은 그 절째 걷어 낸다. 브랜치가 있으면 기존처럼 -d로 지운다(병합되지 않았으면 git이 거절).
+          if (retired) await git(repo.main, ["config", "--remove-section", `branch.${branch}`]);
+          else await git(repo.main, ["-c", `branch.${branch}.remote=${untouched ? "." : "origin"}`,
             "-c", `branch.${branch}.merge=${untouched ? baseRef : `refs/heads/${target}`}`, "branch", "-d", branch]);
         }
         catch (error) { result.branchKept = true; result.reason = String(error); }

@@ -32,9 +32,11 @@ CUELO 会把同一仓库的 main checkout 和 linked worktree 放在同一个项
 
 从 linked worktree 打开的会话与 main checkout 共享相同的项目记忆。内置核心会读取 worktree 的 `.git` 文件并定位到 main checkout 对应目录中的同一个记忆库，因此不会为每个 worktree 生成独立的记忆库；在一处记录的经验可以在另一处召回，导出到其他电脑时也会一并包含在 worktree 中编写的记忆。
 
-日常提交在各自的 worktree 中进行，向默认分支合并发布时则使用现有的 `git_integrate` 工具（在最新主分支上变基、通过检查后快进发布，遇到冲突时暂停并由会话自行解决）；调用 `git_integrate` 不会删除当前会话所在的 worktree。推送成功后，若 main checkout 位于同一目标分支且仅处于落后状态，会对其执行 fast-forward 同步，并在无冲突时通过 3-way 合并保留未提交更改。若 main checkout 位于其他分支、处于分离头指针状态、历史已分叉或未提交更改与推送的提交冲突，则保持 main checkout 不变并在结果的 `Main checkout:` 行中说明原因。
+日常提交在各自的 worktree 中进行，向默认分支合并发布时则使用现有的 `git_integrate` 工具（在最新主分支上变基、通过检查后快进发布，遇到冲突时暂停并由会话自行解决）；调用 `git_integrate` 不会删除当前会话所在的 worktree。推送成功后会删除会话分支的远程副本和本地分支，使 GitHub Desktop 等分支列表中不再残留已完成的会话分支；worktree 目录和工作文件保持不变，只将 HEAD 分离在已推送的提交上。同一会话继续工作时，`git_finalize` 和 `git_integrate` 会重新创建同名分支后继续。推送成功后，若 main checkout 位于同一目标分支且仅处于落后状态，会对其执行 fast-forward 同步，并在无冲突时通过 3-way 合并保留未提交更改。若 main checkout 位于其他分支、处于分离头指针状态、历史已分叉或未提交更改与推送的提交冲突，则保持 main checkout 不变并在结果的 `Main checkout:` 行中说明原因。
 
 带有 CUELO 自动创建标记的 `wt/s-*` 或 `wt/issue-*` worktree 在没有未提交更改和非忽略的未跟踪文件、且没有任何活跃占用时（`.env`、`node_modules` 等被忽略文件会一并删除），若满足以下任一条件即会被自动清理：(1) 在记录的基线之上拥有自己的提交，且当前 `HEAD` 已包含在最新 fetch 的 `origin` 默认分支中；或 (2) 没有任何自有提交及待合并内容，当前 `HEAD` 与记录的起始基线完全一致（此未改动路径无需重新 fetch 或集成，而是直接使用记录的基线引用作为单次 `git branch -d` 命令的临时上游基准）。清理会在运行时关闭（包括空闲关闭）以及调用 `GET /api/worktrees` 时触发。存在未提交更改或非忽略的未跟踪文件、仍在活跃使用、含有未合并的自有提交、无标记或用户手动创建的 worktree、main checkout 以及 `~/cuelo-run` 均不会被触碰。两条清理路径都会执行相同的移除预留、最终 `HEAD` 与状态复检，并仅使用非强制的 `git worktree remove` 和 `git branch -d`；若 Git 拒绝 `git branch -d` 删除分支，则会移除目录、保留分支并在结果与日志中报告该情况（手动移除操作依然不会删除分支）。清理后会话历史记录仍会保留：恢复已移除自动 worktree 的会话时，仅在运行时回退到 main checkout（若繁忙则新建自动 worktree），而原目录仍存在的会话则继续在原路径恢复。
+
+`git_integrate` 发布后会删除本地会话分支，使自动 worktree 处于分离 `HEAD` 状态；此类 worktree 的清理条件与其他自动 worktree 相同（无未提交更改、未被使用且 `HEAD` 已合并）。清理过程会从文件夹名称中恢复原分支名，仅在该分支尚未被重新创建且残留的自动创建标记仍指向该文件夹时才会进行处理。移除文件夹后，系统还会删除该分支名下残留的 git 配置。
 
 从维护选项卡（全面检查提示、分段提示、行提示、HANDOFF 到期项目）启动的会话，即使没有其他会话在使用 main checkout，也始终会在新的自动 worktree（`wt/s-*`）中打开，而普通新会话仍仅在 main checkout 被占用时才使用 worktree。自动 worktree 清理除了在会话关闭和打开 worktree 列表时执行外，现在还会在服务器启动时以及每台 PC 每 2 小时一次的云同步检查时运行。移除条件保持不变，服务器启动时即将恢复的会话所属的 worktree 以及仍包含未提交修改或未合并提交的 worktree 不会被删除。此外，维护选项卡还会列出超过 3 天无人使用但仍保留未提交修改或未合并提交的自动 worktree，并显示分支、经过时间和已更改文件，以便用户决定继续处理或放弃，且不会自动删除这些 worktree。
 

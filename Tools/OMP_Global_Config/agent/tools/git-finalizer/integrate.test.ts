@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
-import { integrateTool } from "./integrate";
+import { integrateTool, reattachRetiredBranch } from "./integrate";
 
 // 검증 범위: 실제 git(bare 원격 + main clone + linked worktree + 다른 세션 clone)과 실제 pwsh 잠금 보유자로 git_integrate의
 // 게시·충돌·되돌림·검사·대상 이동·manifest 재생성·거절과 git_finalize와 같은 잠금을 본다. 가짜 경계: 도구 API(pi)와 교차검증 reviewer 응답.
@@ -123,6 +123,7 @@ describe("git_integrate", () => {
     await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
     git(f.tree, ["push", "-q", "-u", "origin", "wt/x"]);
     const targetSha = await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
+    await writeFile(join(f.tree, "notes.txt"), "untracked session notes\n");
 
     const { output, error } = await integrate(f.tree, { checks: ["test \"$(cat a.txt)\" = target-a", "test \"$(cat b.txt)\" = session-b"] });
     expect(error).toBeUndefined();
@@ -136,14 +137,78 @@ describe("git_integrate", () => {
     // 대상에 들어간 세션 브랜치의 원격 사본은 지운다(병합된 원격 wt/*가 남지 않게).
     expect(output?.details.branchSync).toBe("deleted origin refs/heads/wt/x (its work is in main)");
     git(f.root, ["--git-dir", f.remote, "show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+    // 로컬 브랜치도 지워 GitHub Desktop 목록에 남지 않는다. worktree는 게시한 커밋에 분리된 HEAD로 남고 작업 파일은 그대로다.
+    expect(output?.details.localBranch).toContain("removed the local branch wt/x");
+    git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+    git(f.tree, ["symbolic-ref", "-q", "HEAD"], 1);
+    expect(existsSync(f.tree)).toBe(true);
+    expect(await readFile(join(f.tree, "b.txt"), "utf8")).toBe("session-b\n");
+    expect(await readFile(join(f.tree, "notes.txt"), "utf8")).toBe("untracked session notes\n");
+    expect(git(f.tree, ["status", "--porcelain"])).toBe("?? notes.txt");
     expect(existsSync(stateFile(f))).toBe(false);
     // 같은 대상 브랜치에 있는 메인 체크아웃은 게시한 커밋으로 따라온다(2026-11-14 사용자 목표).
     expect(git(f.work, ["rev-parse", "HEAD"])).toBe(pushed);
     expect(output?.details.mainCheckout).toContain(`fast-forwarded ${f.work} by 2 commit(s)`);
-    // 다시 부르면 올릴 것이 없다.
+    // 다시 부르면 올릴 것이 없고, 브랜치를 다시 만들지도 않는다.
     const again = await integrate(f.tree, { checks: [] });
-    expect(again.output?.details).toMatchObject({ ok: true, stage: "up-to-date" });
+    expect(again.output?.details).toMatchObject({ ok: true, stage: "up-to-date", branch: "wt/x", detached: true });
+    git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
     expect(remoteRef(f)).toBe(pushed);
+  }, TIMEOUT);
+
+  test("continuing in a retired worktree re-creates the same branch, keeps edits, publishes and retires it again", async () => {
+    const f = await fixture();
+    await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    // 늘 실패하는 post-checkout hook이 있어도 HEAD를 떼고 붙이는 일은 hook에 기대지 않는다.
+    await writeFile(join(git(f.work, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks", "post-checkout"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect((await integrate(f.tree, { checks: [] })).output?.details.localBranch).toContain("removed the local branch wt/x");
+    // HEAD를 붙이지 못하면(HEAD.lock) 만든 브랜치를 되돌려, 원인이 사라진 뒤 다시 부르면 이어진다.
+    const headLock = join(git(f.tree, ["rev-parse", "--absolute-git-dir"]), "HEAD.lock");
+    await writeFile(headLock, "");
+    expect(await reattachRetiredBranch(f.tree)).toMatchObject({ status: "blocked", branch: "wt/x" });
+    git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+    await rm(headLock);
+    // git_finalize 경로: 커밋하기 전에 같은 이름의 브랜치를 HEAD에 다시 붙이고 커밋 안 한 수정은 그대로 둔다.
+    await writeFile(join(f.tree, "a.txt"), "follow-up-a\n");
+    const attached = await reattachRetiredBranch(f.tree);
+    expect(attached).toMatchObject({ status: "attached", branch: "wt/x" });
+    expect(git(f.tree, ["symbolic-ref", "--short", "HEAD"])).toBe("wt/x");
+    expect(git(f.tree, ["status", "--porcelain"])).toBe("M a.txt");
+    expect(await reattachRetiredBranch(f.tree)).toEqual({ status: "none" });
+    git(f.tree, ["commit", "-q", "-am", "fix: follow-up a"]);
+    const again = await integrate(f.tree, { checks: [] });
+    expect(again.output?.details).toMatchObject({ ok: true, stage: "complete", branch: "wt/x" });
+    expect(remoteFile(f, "a.txt")).toBe("follow-up-a");
+    expect(again.output?.details.localBranch).toContain("removed the local branch wt/x");
+    // git_integrate 경로: 분리된 HEAD에 새 커밋이 있으면 start가 브랜치를 다시 붙여 게시한다.
+    await commitIn(f.tree, { "c.txt": "detached-c\n" }, "feat: detached c");
+    const third = await integrate(f.tree, { checks: [] });
+    expect(third.output?.details).toMatchObject({ ok: true, stage: "complete", branch: "wt/x" });
+    expect(remoteFile(f, "c.txt")).toBe("detached-c");
+    git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+  }, TIMEOUT);
+
+  test("keeps the local branch when it gained a commit the target did not receive", async () => {
+    const f = await fixture();
+    await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    git(f.tree, ["push", "-q", "-u", "origin", "wt/x"]);
+    // 게시 push 도중 세션이 커밋을 하나 더 만든 경우를 pre-push hook으로 만든다(한 번만).
+    const marker = join(f.root, "late.done");
+    const hook = join(git(f.work, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks", "pre-push");
+    await writeFile(hook, [
+      "#!/bin/sh",
+      `[ -f ${JSON.stringify(marker)} ] && exit 0`,
+      `touch ${JSON.stringify(marker)}`,
+      "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE",
+      `cd ${JSON.stringify(f.tree)} && echo late > late.txt && git add late.txt && git commit -q -m 'feat: late'`,
+    ].join("\n"), { mode: 0o755 });
+    const { output, error } = await integrate(f.tree, { checks: [] });
+    expect(error).toBeUndefined();
+    expect(output?.details).toMatchObject({ ok: true, stage: "complete" });
+    expect(output?.details.localBranch).toContain("has commits that are not in main");
+    expect(git(f.tree, ["symbolic-ref", "--short", "HEAD"])).toBe("wt/x");
+    expect(git(f.tree, ["log", "-1", "--format=%s", "wt/x"])).toBe("feat: late");
+    git(f.root, ["--git-dir", f.remote, "cat-file", "-e", `${remoteRef(f)}:late.txt`], 128);
   }, TIMEOUT);
 
   test("leaves the main checkout alone when its uncommitted edit conflicts with the published commit", async () => {
@@ -389,14 +454,17 @@ describe("git_integrate", () => {
 
   test("keeps wt/nightly-* (updated only) and a session copy that holds commits from elsewhere", async () => {
     const f = await fixture();
-    // 야간 브랜치는 아침 보고가 읽으므로 지우지 않고 rebase된 tip으로 맞춘다.
-    git(f.tree, ["checkout", "-q", "-b", "wt/nightly-20261106"]);
+    // 야간 브랜치는 아침 보고가 읽으므로 지우지 않고 rebase된 tip으로 맞춘다. 날짜 뒤에 접미사가 붙어도 같다.
+    git(f.tree, ["checkout", "-q", "-b", "wt/nightly-20261106-extra"]);
     await commitIn(f.tree, { "b.txt": "nightly-b\n" }, "feat: nightly b");
-    git(f.tree, ["push", "-q", "-u", "origin", "wt/nightly-20261106"]);
+    git(f.tree, ["push", "-q", "-u", "origin", "wt/nightly-20261106-extra"]);
     await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
     const nightly = await integrate(f.tree, { checks: [] });
     expect(nightly.output?.details).toMatchObject({ ok: true, stage: "complete" });
-    expect(remoteRef(f, "refs/heads/wt/nightly-20261106")).toBe(remoteRef(f));
+    expect(remoteRef(f, "refs/heads/wt/nightly-20261106-extra")).toBe(remoteRef(f));
+    // 야간 브랜치는 로컬도 그대로다.
+    expect(nightly.output?.details.localBranch).toContain("wt/nightly-* stays");
+    expect(git(f.tree, ["symbolic-ref", "--short", "HEAD"])).toBe("wt/nightly-20261106-extra");
     // 다른 곳에서 세션 원격 사본에 커밋을 올렸으면 그 사본을 지우지 않는다.
     git(f.tree, ["checkout", "-q", "wt/x"]);
     git(f.tree, ["reset", "-q", "--hard", remoteRef(f)]);
@@ -411,6 +479,20 @@ describe("git_integrate", () => {
     expect(kept.output?.details).toMatchObject({ ok: true, stage: "complete" });
     expect(kept.output?.details.branchSync).toContain("has commits this worktree did not start from");
     expect(remoteRef(f, "refs/heads/wt/x")).toBe(foreign);
+    // 원격 사본을 남긴 경우 로컬 브랜치도 남긴다.
+    expect(kept.output?.details.localBranch).toBe("the local branch was kept because its remote copy was kept");
+    expect(git(f.tree, ["symbolic-ref", "--short", "HEAD"])).toBe("wt/x");
+  }, TIMEOUT);
+
+  test("keeps the local branch attached when the re-attach record cannot be written", async () => {
+    const f = await fixture();
+    await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    await mkdir(git(f.tree, ["rev-parse", "--path-format=absolute", "--git-path", "git-integrate-retired.json"]), { recursive: true });
+    const { output, error } = await integrate(f.tree, { checks: [] });
+    expect(error).toBeUndefined();
+    expect(output?.details.localBranch).toContain("the local branch was kept: could not write");
+    expect(git(f.tree, ["symbolic-ref", "--short", "HEAD"])).toBe("wt/x");
+    expect(git(f.tree, ["rev-parse", "wt/x"])).toBe(remoteRef(f));
   }, TIMEOUT);
 
   test("abort after a conflict in a re-rebase returns to the head from before start", async () => {

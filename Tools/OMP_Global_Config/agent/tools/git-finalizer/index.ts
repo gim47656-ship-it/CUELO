@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { currentBlobs, type Exec, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
-import { integrateTool } from "./integrate";
+import { integrateTool, reattachRetiredBranch } from "./integrate";
 import { syncBehindUpstream } from "./sync-upstream";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo } from "./wsl-git";
 
@@ -316,6 +316,9 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     let upstreamNote = "";
     const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
     if (repo && !("failure" in repo)) {
+      // git_integrate가 게시 뒤 로컬 세션 브랜치를 지운 worktree(분리된 HEAD)에서 다시 커밋하면 같은 이름의 브랜치를 먼저 다시 붙인다.
+      const reattached = isWindowsDrivePath(repo.root) ? { status: "none" as const } : await reattachRetiredBranch(repo.root, { signal });
+      if (reattached.note) onUpdate?.({ content: [{ type: "text", text: reattached.note }], details: { phase: "branch-reattach" } });
       try {
         // 작업 사본을 바꾸는 단계는 취소 신호 없이 끝까지 돌려 반쯤 바뀐 채 남지 않게 한다(조회·fetch만 취소된다).
         upstreamNote = (await syncBehindUpstream(spawnExec(signal), (await selectGitExecutor(repo.root)).command, repo.root, spawnExec())).note ?? "";
@@ -323,6 +326,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         throw new Error(`git_finalize failed at upstream-sync: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (upstreamNote) onUpdate?.({ content: [{ type: "text", text: upstreamNote }], details: { phase: "upstream-sync" } });
+      if (reattached.note) upstreamNote = [reattached.note, upstreamNote].filter(Boolean).join(" ");
     }
     await checkSourceManifest(pi.cwd, requested, exec);
     // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.

@@ -4,7 +4,7 @@ import { lstat, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { checkoutIsBusy, sweepSessionWorktrees, type LiveUse, type WorktreeHost } from "./index";
+import { checkoutIsBusy, retiredAutoBranch, sweepSessionWorktrees, type LiveUse, type WorktreeHost } from "./index";
 import { listWorktrees } from "../worktree";
 
 const exec = promisify(execFile);
@@ -153,10 +153,13 @@ export async function findStaleAutoWorktrees(roots: readonly string[], host: Pic
   for (const root of roots) {
     try {
       for (const tree of await listWorktrees(root)) {
-        if (tree.isMain || !tree.branch || !autoName.test(tree.branch.replaceAll("/", "-")) || checkoutIsBusy(tree.path, host.live())) continue;
+        if (tree.isMain || checkoutIsBusy(tree.path, host.live())) continue;
+        // git_integrate가 로컬 브랜치를 지워 HEAD만 남은 자동 worktree도 원래 브랜치 이름으로 본다.
+        const branch = tree.branch ?? await retiredAutoBranch(root, tree);
+        if (!branch || !autoName.test(branch.replaceAll("/", "-"))) continue;
         try {
           const config = async (key: string) => {
-            try { return (await git(root, ["config", "--get", `branch.${tree.branch}.cuelo-${key}`])).trim(); }
+            try { return (await git(root, ["config", "--get", `branch.${branch}.cuelo-${key}`])).trim(); }
             catch (error) { if (error && typeof error === "object" && "code" in error && error.code === 1) return undefined; throw error; }
           };
           if (await config("path") !== tree.path) continue;
@@ -191,7 +194,7 @@ export async function findStaleAutoWorktrees(roots: readonly string[], host: Pic
             catch { unmergedCommits = own; }
           }
           if ((changed.length || unmergedCommits) && now - lastActive > STALE_AUTO_WORKTREE_MS) {
-            worktrees.push({ path: tree.path, branch: tree.branch, lastActive, changedFiles: changed.slice(0, 5), changedCount: changed.length, unmergedCommits });
+            worktrees.push({ path: tree.path, branch, lastActive, changedFiles: changed.slice(0, 5), changedCount: changed.length, unmergedCommits });
           }
         } catch (error) { warnings.push(`worktree ${tree.path}: ${String(error)}`); }
       }

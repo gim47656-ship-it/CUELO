@@ -192,6 +192,21 @@ describe("automatic cleanup", () => {
     expect((await sweepSessionWorktrees(f.main, f.host))[0].reason).toBe("live");
     expect(existsSync(selected.cwd)).toBe(true);
   });
+  test("removes a merged auto tree whose branch git_integrate retired (detached HEAD), keeps unmerged or dirty ones", async () => {
+    const f = fixture();
+    // git_integrate의 정리와 같게: HEAD를 떼고 브랜치 ref만 지운다(branch.<이름>.* 설정은 남는다).
+    const retire = (path: string, branch: string) => { git(path, "checkout", "-q", "--detach"); git(path, "update-ref", "-d", `refs/heads/${branch}`); };
+    const merged = await auto(f, "#2"); ownCommit(merged.cwd); land(merged.cwd); retire(merged.cwd, "wt/issue-2");
+    const unmerged = await auto(f, "#3"); ownCommit(unmerged.cwd); retire(unmerged.cwd, "wt/issue-3");
+    const dirty = await auto(f, "#4"); ownCommit(dirty.cwd); land(dirty.cwd); retire(dirty.cwd, "wt/issue-4"); writeFileSync(join(dirty.cwd, "untracked"), "keep");
+    const results = await sweepSessionWorktrees(f.main, f.host);
+    expect(results.find((item) => item.path === merged.cwd)).toEqual({ path: merged.cwd, branch: "wt/issue-2", removed: true });
+    expect(existsSync(merged.cwd)).toBe(false);
+    expect(Bun.spawnSync(["git", "config", "--get-regexp", "^branch\\.wt/issue-2\\."], { cwd: f.main }).exitCode).toBe(1);
+    expect(results.find((item) => item.path === unmerged.cwd)?.reason).toBe("unmerged");
+    expect(results.find((item) => item.path === dirty.cwd)?.reason).toBe("dirty");
+    for (const path of [unmerged.cwd, dirty.cwd]) expect(existsSync(path)).toBe(true);
+  });
   test("infers missing auto worktrees only", async () => {
     const f = fixture();
     expect(removedAutoWorktreeRoot(`${f.main}-worktrees/wt-s-20261113-1234abcd`)).toBe(f.main);

@@ -28,6 +28,8 @@ export const MANIFEST_PATH = "Tools/CUELO_Setup/files/source-integrity.json";
 const HELPER_PATH = "Tools/CUELO_Setup/files/source-build-helper.js";
 const RUNTIME_MANIFEST_PATH = "Tools/CUELO_Setup/files/runtime-integrity.json";
 const STATE_FILE = "git-integrate.json";
+/** 게시 뒤 로컬 세션 브랜치를 지운 worktree의 기록(그 git dir 안). 같은 세션이 다시 작업하면 이 이름으로 브랜치를 다시 붙인다. */
+const RETIRED_FILE = "git-integrate-retired.json";
 /** finalizer.ps1은 잠금을 120초 기다린다. 멈춘 호출이 그보다 오래 잡지 않도록 보유자가 100초 뒤 스스로 놓는다. */
 const LOCK_MAX_HOLD_SECONDS = 100;
 /** 잠금 안의 fetch·push는 보유자가 놓기 10초 전에 끊는다. 잠금이 풀린 뒤에 게시가 이어지지 않게 한다. */
@@ -467,25 +469,112 @@ async function syncSessionBranch(repo: Repo, state: State, tip: string): Promise
   return pushed.code === 0 ? `updated ${branchRemote} ${merge} to ${head}` : `could not update ${branchRemote} ${merge}: ${(pushed.stderr || pushed.stdout).trim()}`;
 }
 
+/** 게시 뒤 지우는 세션 브랜치: `wt/<topic>`이되 아침 보고가 읽는 야간 브랜치(`wt/nightly-*`, 보통 `wt/nightly-YYYYMMDD`)는 뺀다. */
+const retirableBranch = (branch: string) => branch.startsWith("wt/") && !branch.startsWith("wt/nightly-");
+
 /**
  * 대상에 게시를 마친 `wt/<topic>` 세션 브랜치의 원격 사본을 지운다(2026-11-06 사용자 결정: 병합된 원격 `wt/*`가 게시마다 하나씩
  * 남았다). `wt/nightly-YYYYMMDD`는 각 PC의 아침 보고가 읽으므로 야간 정리의 보존 기간에 맡기고 지금처럼 맞추기만 한다. 원격 tip이
  * 이 worktree가 시작한 HEAD나 게시한 커밋의 조상일 때만(=다른 곳에서 올린 커밋이 없을 때만) lease를 걸고 지운다.
+ * `gone`은 원격 사본이 이제 없는가(지웠거나 처음부터 없었다)다. 로컬 브랜치는 그때만 정리한다.
  */
-async function retireSessionBranch(repo: Repo, state: State, pushed: string): Promise<string> {
-  if (!state.branch.startsWith("wt/") || /^wt\/nightly-\d{8}$/.test(state.branch)) return syncSessionBranch(repo, state, pushed);
+async function retireSessionBranch(repo: Repo, state: State, pushed: string): Promise<{ note: string; gone: boolean }> {
+  if (!retirableBranch(state.branch)) return { note: await syncSessionBranch(repo, state, pushed), gone: false };
   const own = `refs/heads/${state.branch}`;
   const merge = (await git(repo, ["config", "--get", `branch.${state.branch}.merge`])).stdout.trim();
-  if (merge !== own) return merge ? `the session branch tracks ${merge}, not its own ${own}; left unchanged` : "the session branch has no upstream";
+  if (merge && merge !== own) return { note: `the session branch tracks ${merge}, not its own ${own}; left unchanged`, gone: false };
+  if (!merge) {
+    // upstream 없이 같은 이름으로 올려 둔 사본은 이 worktree의 것인지 모르므로 지우지 않는다(로컬도 남긴다).
+    const probe = await git(repo, ["ls-remote", "--refs", state.remote, own]);
+    const absent = probe.code === 0 && !probe.stdout.trim();
+    return { note: absent ? "the session branch has no upstream and no remote copy" : `the session branch has no upstream; ${state.remote} ${own} was left unchanged`, gone: absent };
+  }
   const branchRemote = (await git(repo, ["config", "--get", `branch.${state.branch}.remote`])).stdout.trim() || state.remote;
   const line = await git(repo, ["ls-remote", "--refs", branchRemote, merge]);
   const remoteSha = line.stdout.trim().split(/\s+/)[0] ?? "";
-  if (line.code !== 0 || !remoteSha) return `${branchRemote} ${merge} was not found`;
+  if (line.code !== 0) return { note: `could not read ${branchRemote} ${merge}: ${(line.stderr || line.stdout).trim()}`, gone: false };
+  if (!remoteSha) return { note: `${branchRemote} ${merge} was not found`, gone: true };
   if (!(await isAncestor(repo, remoteSha, pushed)) && !(await isAncestor(repo, remoteSha, state.origHead))) {
-    return `${branchRemote} ${merge} has commits this worktree did not start from; left unchanged`;
+    return { note: `${branchRemote} ${merge} has commits this worktree did not start from; left unchanged`, gone: false };
   }
   const deleted = await git(repo, ["push", `--force-with-lease=${merge}:${remoteSha}`, branchRemote, `:${merge}`]);
-  return deleted.code === 0 ? `deleted ${branchRemote} ${merge} (its work is in ${state.target})` : `could not delete ${branchRemote} ${merge}: ${(deleted.stderr || deleted.stdout).trim()}`;
+  return deleted.code === 0
+    ? { note: `deleted ${branchRemote} ${merge} (its work is in ${state.target})`, gone: true }
+    : { note: `could not delete ${branchRemote} ${merge}: ${(deleted.stderr || deleted.stdout).trim()}`, gone: false };
+}
+
+interface Retired { branch: string; tip: string }
+
+const retiredPath = async (cwd: string, signal?: AbortSignal) => {
+  const out = await run("git", ["rev-parse", "--path-format=absolute", "--git-path", RETIRED_FILE], cwd, { signal, timeoutMs: GIT_TIMEOUT_MS });
+  return out.code === 0 ? out.stdout.trim() : undefined;
+};
+
+/**
+ * 원격 사본이 없어진 세션 브랜치의 로컬 브랜치도 지운다(2026-11-14 사용자 요구 「메인에합치고 원격정리하면 로컬브랜치도같이안보이게」:
+ * GitHub Desktop이 로컬 브랜치를 모두 보여 줘 끝난 wt 브랜치가 남았다). 세션은 이 worktree에서 계속 돌 수 있으므로 폴더는 두고
+ * HEAD만 떼어 낸다. `git branch -d`는 쓰지 않는다: upstream이 지워진 뒤에는 HEAD를 기준으로 병합 여부를 보는데 떼어 낸 HEAD가 곧
+ * 그 tip이라 늘 통과하고, `branch.<이름>.*` 설정(CUELO 자동 worktree의 정리 소유 기록 포함)까지 지운다. 그래서 tip이 게시한 커밋의
+ * 조상인지 직접 보고, 그 tip일 때만 ref를 지운다(`update-ref -d <ref> <tip>`). 설정은 남아 다시 붙일 때와 CUELO 정리가 쓴다.
+ */
+async function retireLocalBranch(repo: Repo, state: State, pushed: string): Promise<string> {
+  const ref = `refs/heads/${state.branch}`;
+  if ((await git(repo, ["symbolic-ref", "-q", "HEAD"])).stdout.trim() !== ref) return `the local branch was kept: HEAD is not on ${state.branch}`;
+  const tip = await gitOk(repo, "branch-retire", ["rev-parse", ref]);
+  if (!(await isAncestor(repo, tip, pushed))) return `the local branch was kept: ${state.branch} (${tip}) has commits that are not in ${state.target}`;
+  const marker = await retiredPath(repo.root, repo.signal);
+  if (!marker) return "the local branch was kept: the worktree's git path could not be resolved";
+  // 다시 붙일 단서를 먼저 남긴다. 그 뒤 단계가 실패하면 브랜치로 되돌리고 기록을 지운다.
+  try {
+    await writeFile(marker, `${JSON.stringify({ branch: state.branch, tip } satisfies Retired)}\n`, "utf8");
+  } catch (error) {
+    return `the local branch was kept: could not write ${marker}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  // 같은 커밋에서 HEAD만 떼고 붙이므로 작업 트리·index는 그대로다. checkout 대신 hook을 돌리지 않는 plumbing을 써서, hook 실패가
+  // "HEAD가 바뀌었는데 실패로 보이는" 상태를 만들지 않게 한다(종료 코드가 곧 HEAD·ref의 상태다).
+  const detached = await git(repo, ["update-ref", "--no-deref", "-m", "git_integrate: detach after publishing", "HEAD", tip]);
+  if (detached.code !== 0) {
+    await rm(marker, { force: true });
+    return `the local branch was kept: git update-ref --no-deref HEAD exited ${detached.code}: ${(detached.stderr || detached.stdout).trim()}`;
+  }
+  const deleted = await git(repo, ["update-ref", "-d", ref, tip]);
+  if (deleted.code !== 0) {
+    const back = await git(repo, ["symbolic-ref", "-m", "git_integrate: keep the session branch", "HEAD", ref]);
+    if (back.code === 0) await rm(marker, { force: true });
+    return `the local branch was kept: git update-ref -d exited ${deleted.code}: ${(deleted.stderr || deleted.stdout).trim()}`
+      + (back.code === 0 ? "" : `; HEAD stays detached at ${tip} and git_finalize or git_integrate re-attaches ${state.branch}`);
+  }
+  return `removed the local branch ${state.branch}; this worktree stays at ${tip} with a detached HEAD (git_finalize and git_integrate re-create the branch here when you continue)`;
+}
+
+/**
+ * git_integrate가 로컬 세션 브랜치를 지운 worktree에서 다시 작업하면 같은 이름의 브랜치를 HEAD에 다시 만든다(작업 파일은 그대로).
+ * HEAD가 떼어 낸 tip에서 이어진 경우만이다. 브랜치에 있거나 기록이 없으면 아무것도 하지 않는다(`none`). `unchanged`는 HEAD가 그
+ * tip 그대로여서(=게시할 새 커밋이 없다) `keepWhenUnchanged`로 다시 만들지 않은 경우다.
+ */
+export async function reattachRetiredBranch(cwd: string, options: { signal?: AbortSignal; keepWhenUnchanged?: boolean } = {}): Promise<{ status: "none" | "attached" | "unchanged" | "blocked"; note?: string; branch?: string }> {
+  const probe = (args: string[]) => run("git", args, cwd, { signal: options.signal, timeoutMs: GIT_TIMEOUT_MS });
+  if ((await probe(["symbolic-ref", "-q", "HEAD"])).code === 0) return { status: "none" };
+  const marker = await retiredPath(cwd, options.signal);
+  const recorded = marker ? await readFile(marker, "utf8").then((text) => JSON.parse(text) as Retired, () => undefined) : undefined;
+  if (!marker || !recorded || typeof recorded.branch !== "string" || typeof recorded.tip !== "string") return { status: "none" };
+  const { branch, tip } = recorded;
+  if (!branch.startsWith("wt/") || (await probe(["check-ref-format", "--branch", branch])).code !== 0) return { status: "blocked", note: `the retired branch record names ${JSON.stringify(branch)}; HEAD was left detached` };
+  const head = (await probe(["rev-parse", "HEAD"])).stdout.trim();
+  if (head === tip && options.keepWhenUnchanged) return { status: "unchanged", branch, note: `HEAD is still the retired ${branch} tip ${tip}, which is already published` };
+  if ((await probe(["merge-base", "--is-ancestor", tip, head])).code !== 0) return { status: "blocked", branch, note: `HEAD ${head} does not continue the retired ${branch} tip ${tip}; check out a branch first` };
+  // 작업 파일과 index는 그대로 두고 ref만 만든다. 빈 옛 값은 "아직 없을 때만 만든다"이고, HEAD 붙이기도 hook을 돌리지 않는다.
+  const created = await probe(["update-ref", "-m", "git_integrate: re-create the retired session branch", `refs/heads/${branch}`, head, ""]);
+  if (created.code !== 0) return { status: "blocked", branch, note: `could not re-create ${branch} (it may exist again elsewhere): ${(created.stderr || created.stdout).trim()}; check out a branch first` };
+  const attached = await probe(["symbolic-ref", "-m", "git_integrate: re-attach the session branch", "HEAD", `refs/heads/${branch}`]);
+  if (attached.code !== 0) {
+    // 만든 브랜치를 그대로 두면 다음 호출이 "이미 있다"로 막힌다. 아직 이 커밋일 때만 지워 기록만 남은 처음 상태로 돌린다.
+    const undone = await probe(["update-ref", "-d", `refs/heads/${branch}`, head]);
+    return { status: "blocked", branch, note: `could not attach HEAD to ${branch}: ${(attached.stderr || attached.stdout).trim()}`
+      + (undone.code === 0 ? "; nothing changed, call again once that is fixed" : `; ${branch} now exists at ${head}, check it out first`) };
+  }
+  await rm(marker, { force: true });
+  return { status: "attached", branch, note: `re-created ${branch} at ${head} (git_integrate had removed it after publishing)` };
 }
 
 /**
@@ -556,7 +645,13 @@ async function checkAndPublish(repo: Repo, state: State) {
       if (!replay.done) return conflictResult(repo, state, replay.conflicts);
       continue;
     }
-    const branchNote = await retireSessionBranch(repo, state, outcome.pushed).catch((syncError) => `branch cleanup failed: ${String(syncError)}`);
+    const retired = await retireSessionBranch(repo, state, outcome.pushed).catch((syncError) => ({ note: `branch cleanup failed: ${String(syncError)}`, gone: false }));
+    const branchNote = retired.note;
+    const localNote = !retirableBranch(state.branch)
+      ? "the local branch was kept (only wt/<topic> session branches are removed; wt/nightly-* stays)"
+      : retired.gone
+        ? await retireLocalBranch(repo, state, outcome.pushed).catch((retireError) => `local branch cleanup failed: ${String(retireError)}`)
+        : "the local branch was kept because its remote copy was kept";
     const mainNote = await followMainCheckout(repo, state).catch((syncError) => `main checkout follow failed: ${String(syncError)}`);
     const files = (await gitOk(repo, "complete", ["diff", "--name-only", "-z", "--no-renames", state.previousTarget, outcome.pushed])).split("\0").filter(Boolean);
     await clearState(repo);
@@ -567,11 +662,11 @@ async function checkAndPublish(repo: Repo, state: State) {
         type: "text" as const,
         text: `Integrated ${state.branch} and pushed ${outcome.pushed} to ${state.remote} ${upstreamRef}.`
           + (state.moves > 0 ? ` The target moved ${state.moves} time(s) before the push; the branch was rebased and checked again.` : "")
-          + ` Session branch: ${branchNote}.` + ` Main checkout: ${mainNote}.` + syncHint,
+          + ` Session branch: ${branchNote}.` + ` Local branch: ${localNote}.` + ` Main checkout: ${mainNote}.` + syncHint,
       }],
       details: {
         ok: true, stage: "complete", commitSha: outcome.pushed, remote: state.remote, upstreamRef, branch: state.branch,
-        previousTarget: state.previousTarget, moves: state.moves, checks: ran, branchSync: branchNote, mainCheckout: mainNote,
+        previousTarget: state.previousTarget, moves: state.moves, checks: ran, branchSync: branchNote, localBranch: localNote, mainCheckout: mainNote,
         ...(files.length <= 1000 ? { files } : { filesTruncated: true }),
       },
     };
@@ -580,8 +675,19 @@ async function checkAndPublish(repo: Repo, state: State) {
 
 async function start(repo: Repo, params: { target?: string; checks?: string[] }) {
   if (await rebaseInProgress(repo)) throw new IntegrateFailure("preflight", "a rebase is already in progress in this worktree; call git_integrate with action continue or abort.");
-  const branch = (await git(repo, ["symbolic-ref", "--short", "-q", "HEAD"])).stdout.trim();
-  if (!branch) throw new IntegrateFailure("preflight", "HEAD is detached; check out the session branch first.");
+  let branch = (await git(repo, ["symbolic-ref", "--short", "-q", "HEAD"])).stdout.trim();
+  if (!branch) {
+    // 앞선 git_integrate가 로컬 세션 브랜치를 지운 worktree다. 새 커밋이 있으면 같은 이름으로 다시 붙이고, 없으면 올릴 것이 없다.
+    const reattached = await reattachRetiredBranch(repo.root, { signal: repo.signal, keepWhenUnchanged: true });
+    if (reattached.status === "unchanged") {
+      return {
+        content: [{ type: "text" as const, text: `${reattached.note}; nothing was pushed and the branch was not re-created.` }],
+        details: { ok: true, stage: "up-to-date", branch: reattached.branch, detached: true },
+      };
+    }
+    if (reattached.status !== "attached" || !reattached.branch) throw new IntegrateFailure("preflight", `HEAD is detached; ${reattached.note ?? "check out the session branch first"}.`);
+    branch = reattached.branch;
+  }
   const target = (params.target ?? "main").trim();
   if ((await git(repo, ["check-ref-format", "--branch", target])).code !== 0 || target.startsWith("-")) throw new IntegrateFailure("preflight", `invalid target branch ${JSON.stringify(target)}.`);
   if (branch === target) throw new IntegrateFailure("preflight", `the worktree is on the target branch ${target}; git_integrate publishes a separate session branch. Use git_finalize on ${target}.`);
@@ -700,7 +806,7 @@ export const integrateTool = (pi: ToolApi): CustomTool<any, any> => ({
   name: "git_integrate",
   label: "Git Integrate",
   description:
-    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, detached HEAD and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. After a successful push it deletes the session branch's own remote copy (wt/<topic>; wt/nightly-* is only updated) when that copy holds nothing beyond this worktree's work. On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself.",
+    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, a detached HEAD it cannot re-attach and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. After a successful push it deletes the session branch's own remote copy (wt/<topic>; wt/nightly-* is only updated) when that copy holds nothing beyond this worktree's work; once that copy is gone and the local branch tip is in the pushed commit, it also removes the local branch so finished wt branches leave branch lists (GitHub Desktop), detaching HEAD at the pushed commit and keeping the worktree folder and files (wt/nightly-* and non-wt branches stay). Continuing in that worktree needs no git command: git_finalize and git_integrate re-create the same branch at HEAD first (start returns up-to-date without re-creating it when HEAD has no new commit). On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself.",
   parameters: pi.zod.object({
     action: pi.zod.enum(["start", "continue", "abort"]).optional(),
     target: pi.zod.string().optional(),
