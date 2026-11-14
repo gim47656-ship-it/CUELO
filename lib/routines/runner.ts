@@ -14,7 +14,8 @@ import { checkRoutineAnswer, parseRoutineModel } from "../../Tools/OMP_Global_Co
 /**
  * 루틴 한 회차: 새 세션을 열어 지시문을 보내고, 세션이 끝날 때까지 서버 안에서 지켜본 뒤 마지막 답을 게시판 글로
  * 커밋해 올린다. 답이 `[알림 없음]` 줄로 시작하면 글 없이 이 PC의 실행 기록에만 남긴다. 같은 루틴은 이 프로세스에서
- * 한 번에 하나만 돈다.
+ * 한 번에 하나만 돈다. 서버가 내려가며 끊긴 회차는 실패 글 대신 실행 표시를 남기고, 다음 부팅의 복구가 새 세션으로
+ * 한 번 다시 돌린다.
  */
 
 export const QUIET_MARKER = "[알림 없음]";
@@ -24,13 +25,40 @@ const ABORT_GRACE_MS = 10_000;
 const STOP_BACKGROUND_MS = 30_000;
 /** 게시하지 못한 실행 표시. 다음 틱의 복구가 실패 글을 다시 올리려 한다. */
 const POST_FAILED_BOOT = "post-failed";
+/** 서버 재시작으로 끊긴 회차는 이 횟수까지 시도한다(처음 1번 + 다시 1번). */
+const MAX_ATTEMPTS = 2;
+/** 끊긴 회차가 이보다 오래전에 시작했으면 다시 돌리지 않고 실패 글로 남긴다(지난 결과가 쓸모없을 수 있다). */
+const RETRY_WINDOW_MS = 3 * 60 * 60_000;
 
 const log = (message: string) => console.log(`[routines] ${message}`);
 
 declare global {
   var __cueloRoutineRuns: Map<string, Promise<void>> | undefined;
   var __cueloRoutineBootId: string | undefined;
+  var __cueloRoutineServerStop: { since: number | null } | undefined;
+  var __cueloRoutineRecovery: Promise<void> | undefined;
 }
+
+/** 종료 신호 뒤 이 시간 안에는 종료 중으로 본다. 그 뒤에도 프로세스가 살아 있으면 종료가 일어나지 않은 것이다. */
+const STOP_WINDOW_MS = 5 * 60_000;
+
+/**
+ * 서버 프로세스가 종료 중인지. 신호를 받으면 세션 레지스트리가 모든 세션을 닫으므로(`rpc-manager`), 그사이 닫히거나
+ * 실패한 루틴 회차는 루틴의 실패가 아니라 재시작으로 끊긴 회차다. 프로세스당 한 번만 듣는다.
+ */
+function serverStopping(now = Date.now()): boolean {
+  if (!globalThis.__cueloRoutineServerStop) {
+    globalThis.__cueloRoutineServerStop = { since: null };
+    const mark = () => { globalThis.__cueloRoutineServerStop!.since = Date.now(); };
+    process.on("SIGTERM", mark);
+    process.on("SIGINT", mark);
+  }
+  const since = globalThis.__cueloRoutineServerStop.since;
+  return since !== null && now - since < STOP_WINDOW_MS;
+}
+
+const sameRunning = (a: RoutineRunning | undefined, b: RoutineRunning | undefined) =>
+  !!a && !!b && a.bootId === b.bootId && a.startedAt === b.startedAt && (a.attempt ?? 1) === (b.attempt ?? 1);
 
 function runs(): Map<string, Promise<void>> {
   globalThis.__cueloRoutineRuns ??= new Map();
@@ -46,24 +74,29 @@ export function isRoutineRunning(id: string): boolean {
   return runs().has(id);
 }
 
-/** 새 회차를 시작한다. 이미 돌고 있으면 시작하지 않고 false. 실행은 기다리지 않는다. */
-export function startRoutineRun(dir: string, routine: Routine, trigger: RoutineRunning["trigger"]): boolean {
+/**
+ * 새 회차를 시작한다. 이미 돌고 있거나 서버가 종료 중이면 시작하지 않고 false. 실행은 기다리지 않는다. `retryOf`는
+ * 복구가 다시 돌리는 끊긴 회차의 표시이고, 새 실행이 그 표시를 덮어쓴다(먼저 지우지 않아 시작이 실패해도 남는다).
+ */
+export function startRoutineRun(dir: string, routine: Routine, trigger: RoutineRunning["trigger"], retryOf?: RoutineRunning): boolean {
   const map = runs();
-  if (map.has(routine.id)) return false;
-  // 끊겼거나 글을 못 올린 지난 실행의 표시가 남아 있으면, 복구가 그 글을 올릴 때까지 새 실행으로 덮지 않는다.
+  if (map.has(routine.id) || serverStopping()) return false;
+  // 끊겼거나 글을 못 올린 지난 실행의 표시가 남아 있으면, 복구가 처리할 때까지 새 실행으로 덮지 않는다.
   const pending = readRoutineRunStates()[routine.id]?.running;
-  if (pending && pending.bootId !== routineBootId()) return false;
-  const run = executeRun(dir, routine, trigger)
+  if (pending && !sameRunning(pending, retryOf)) return false;
+  const attempt = retryOf ? (retryOf.attempt ?? 1) + 1 : 1;
+  const run = executeRun(dir, routine, trigger, attempt)
     .catch((error) => console.error(`[routines] ${routine.id} run failed:`, error))
     .finally(() => map.delete(routine.id));
   map.set(routine.id, run);
   return true;
 }
 
-function preamble(routine: Routine, postsDir: string, inRoutineFolder: boolean, trigger: RoutineRunning["trigger"]): string {
+function preamble(routine: Routine, postsDir: string, inRoutineFolder: boolean, trigger: RoutineRunning["trigger"], attempt: number): string {
   const how = trigger === "schedule" ? "예약 루틴으로 자동 실행됐다" : "루틴의 지금 실행으로 시작됐다";
   return [
     `[CUELO 루틴: ${routine.name}] 이 세션은 ${how}. 사용자는 지금 보고 있지 않으니 질문하지 말고 끝까지 진행한다.`,
+    ...(attempt > 1 ? ["앞선 시도가 CUELO 서버 재시작으로 중간에 끊겨 이 회차를 새 세션으로 다시 실행한다. 앞선 시도가 남긴 작업(커밋하지 않은 변경, 반쯤 한 일)이 있으면 먼저 확인하고 이어서 마무리하며, 같은 일을 두 번 하지 않는다."] : []),
     "마지막 답은 그대로 루틴 게시판의 글 본문으로 올라간다.",
     `루틴 공통 안내 ${resolve(postsDir, "../../../GUIDE.md")}가 있으면 글을 쓰기 전에 읽는다. 글의 말투, 길이, 형식은 그 안내를 따르고(이 루틴의 지시가 요구한 표, 항목, 링크도 그 안내가 정한 자리에 넣는다), 무엇을 조사하고 알릴지는 이 루틴의 지시를 따른다.`,
     `알릴 것이 없으면 마지막 답을 \`${QUIET_MARKER}\` 한 줄로 시작한다.`,
@@ -163,7 +196,7 @@ function timedOut(answer: string): RunResult {
  * 닫아야 했을 때 그 닫기가 끝나면 풀린다(부른 쪽은 그때까지 실행 자리를 쥔다).
  */
 async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolean, postsDir: string, trigger: RoutineRunning["trigger"],
-  started: Date, stampDisplay: string, onSession: (sessionId: string) => void): Promise<{ result: RunResult; closed: Promise<void> }> {
+  attempt: number, started: Date, stampDisplay: string, onSession: (sessionId: string) => void): Promise<{ result: RunResult; closed: Promise<void> }> {
   const deadline = started.getTime() + RUN_TIMEOUT_MS;
   let settings;
   try {
@@ -195,7 +228,7 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
     return { result: timedOut(stopped.answer), closed: stopped.closed };
   }
   log(`${routine.id} started session ${realSessionId} in ${cwd} (${trigger})`);
-  const observed = await promptAndObserve(session, `${preamble(routine, postsDir, inRoutineFolder, trigger)}\n\n${routine.prompt}`, deadline);
+  const observed = await promptAndObserve(session, `${preamble(routine, postsDir, inRoutineFolder, trigger, attempt)}\n\n${routine.prompt}`, deadline);
   if (observed.timedOut) {
     const stopped = await stopTimedOutSession(session);
     return { result: timedOut(stopped.answer), closed: stopped.closed };
@@ -235,14 +268,14 @@ function commitPost(dir: string, routine: Routine, stampFile: string, post: Rout
   });
 }
 
-async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning["trigger"]): Promise<void> {
+async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning["trigger"], attempt: number): Promise<void> {
   const started = new Date();
   const stamp = runStamp(started, routine.timezone);
   const host = thisRoutineHost();
   const paths = routinePaths(dir, routine.id);
   updateRoutineRunState(routine.id, (current) => ({
     ...current,
-    running: { bootId: routineBootId(), sessionId: null, startedAt: started.toISOString(), trigger },
+    running: { bootId: routineBootId(), sessionId: null, startedAt: started.toISOString(), trigger, ...(attempt > 1 ? { attempt } : {}) },
   }));
 
   let sessionId: string | null = null;
@@ -252,7 +285,7 @@ async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning
     const cwd = routine.cwd ? expandHome(routine.cwd) : paths.folder;
     if (!routine.cwd) mkdirSync(paths.posts, { recursive: true });
     if (isExistingDirectory(cwd)) {
-      ({ result, closed } = await runSession(routine, cwd, !routine.cwd, paths.posts, trigger, started, stamp.display, (id) => {
+      ({ result, closed } = await runSession(routine, cwd, !routine.cwd, paths.posts, trigger, attempt, started, stamp.display, (id) => {
         sessionId = id;
         updateRoutineRunState(routine.id, (current) => current.running ? { ...current, running: { ...current.running, sessionId: id } } : current);
       }));
@@ -261,6 +294,15 @@ async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning
     }
   } catch (error) {
     result = { status: "failed", body: `세션을 실행하지 못했습니다: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  // 이 회차가 시작된 뒤 서버가 종료 신호를 받았으면, 실패(세션이 닫혔거나, 닫힌 세션에서 답을 못 읽었거나, 세션을
+  // 못 열었다)는 루틴의 실패가 아니다. 판정은 종료 창과 무관하게 신호 시각으로 한다. 실행 표시를 그대로 둬
+  // recordInterruptedRuns가 다시 돌리거나 실패 글로 남긴다.
+  const stopSignalAt = globalThis.__cueloRoutineServerStop?.since ?? null;
+  if (result.status === "failed" && stopSignalAt !== null && stopSignalAt >= started.getTime()) {
+    log(`${routine.id} was cut by the server stopping (attempt ${attempt}); recovery takes it over`);
+    return;
   }
 
   try {
@@ -300,17 +342,35 @@ async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning
 }
 
 /**
- * 끝을 보지 못한 실행(서버가 다시 떴거나 글을 올리지 못한 실행)을 실패 글로 남긴다. 글을 올린 뒤에야 표시를 지워,
- * 실패하면 다음 틱에 다시 해 본다. 루틴이 지워졌으면 표시만 지운다.
+ * 끝을 보지 못한 실행을 처리한다. 서버 재시작으로 끊긴 회차는 루틴이 아직 이 PC에서 켜져 있고, 시도 횟수가
+ * 남았고, 시작한 지 오래되지 않았으면 새 세션으로 한 번 다시 돌린다(새 실행이 표시를 덮어쓴다). 그 밖(글을 올리지
+ * 못한 실행, 다시 돌릴 수 없는 회차)은 실패 글로 남긴다. 글을 올린 뒤에야 표시를 지워, 실패하면 다음 틱에 다시 해
+ * 본다. 루틴이 지워졌으면 표시만 지운다. 이 프로세스가 남긴 표시도 처리한다: 종료 신호를 받고도 서버가 살아남으면
+ * 그 표시가 루틴을 계속 막기 때문이다. 종료 중에는 아무것도 하지 않고, 동시에 부르면 진행 중인 처리를 함께 기다린다.
  */
-export async function recordInterruptedRuns(dir: string): Promise<void> {
+export function recordInterruptedRuns(dir: string, now = Date.now()): Promise<void> {
+  globalThis.__cueloRoutineRecovery ??= recoverRuns(dir, now).finally(() => { globalThis.__cueloRoutineRecovery = undefined; });
+  return globalThis.__cueloRoutineRecovery;
+}
+
+async function recoverRuns(dir: string, now: number): Promise<void> {
   const host = thisRoutineHost();
-  for (const [id, state] of Object.entries(readRoutineRunStates())) {
-    const running = state.running;
-    if (!running || running.bootId === routineBootId() || isRoutineRunning(id)) continue;
+  for (const id of Object.keys(readRoutineRunStates())) {
+    // 앞 항목의 글을 올리는 동안 종료가 시작됐거나 표시가 바뀌었을 수 있어 항목마다 다시 읽는다.
+    if (serverStopping(now)) return;
+    const running = readRoutineRunStates()[id]?.running;
+    if (!running || isRoutineRunning(id)) continue;
     const routine = readRoutine(dir, id);
     if (routine) {
       const startedAt = new Date(running.startedAt);
+      const attempt = running.attempt ?? 1;
+      const cut = running.bootId !== POST_FAILED_BOOT;
+      if (cut && routine.enabled && routine.host === host && attempt < MAX_ATTEMPTS
+        && Number.isFinite(startedAt.getTime()) && now - startedAt.getTime() < RETRY_WINDOW_MS) {
+        if (startRoutineRun(dir, routine, running.trigger, running)) log(`${id} restarted after a server restart cut it (attempt ${attempt + 1})`);
+        // 시작하지 못했으면(이미 돌거나 종료 중) 표시를 그대로 두고 다음 틱에 다시 본다.
+        continue;
+      }
       const stamp = runStamp(Number.isNaN(startedAt.getTime()) ? new Date() : startedAt, routine.timezone);
       const post: RoutinePost = {
         title: extractPostTitle("", routine.name, stamp.display),
@@ -320,9 +380,11 @@ export async function recordInterruptedRuns(dir: string): Promise<void> {
         startedAt: running.startedAt,
         finishedAt: new Date().toISOString(),
         sessionId: running.sessionId,
-        body: running.bootId === POST_FAILED_BOOT
+        body: !cut
           ? "이 실행의 결과를 게시판에 올리지 못했습니다. 세션 기록은 세션 목록에서 볼 수 있습니다."
-          : "실행 중에 CUELO 서버가 다시 시작돼 결과를 받지 못했습니다. 세션 기록은 세션 목록에서 볼 수 있습니다.",
+          : attempt > 1
+            ? "실행 중에 CUELO 서버가 다시 시작돼 끊겼고, 새 세션으로 다시 실행한 회차도 서버 재시작으로 끊겼습니다. 세션 기록은 세션 목록에서 볼 수 있습니다."
+            : "실행 중에 CUELO 서버가 다시 시작돼 결과를 받지 못했습니다. 세션 기록은 세션 목록에서 볼 수 있습니다.",
       };
       try {
         await commitPost(dir, routine, stamp.file, post);
@@ -331,6 +393,7 @@ export async function recordInterruptedRuns(dir: string): Promise<void> {
         continue;
       }
     }
-    updateRoutineRunState(id, (current) => ({ ...current, running: undefined }));
+    // 그사이 같은 루틴이 새로 시작해 표시를 바꿨으면 그 표시는 지우지 않는다.
+    updateRoutineRunState(id, (current) => sameRunning(current.running, running) ? { ...current, running: undefined } : current);
   }
 }

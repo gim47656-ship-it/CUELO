@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getRoutineSyncState, commitRoutineChange, requestRoutineSync } from "@/lib/routines/git-sync";
 import { readRoutineRunStates } from "@/lib/routines/state";
+import { routineReadKeys } from "@/lib/routines/reads";
 import { isRoutineRunning } from "@/lib/routines/runner";
 import { ROUTINE_TIMEZONE, nextRunAt } from "@/lib/routines/schedule";
 import {
@@ -20,7 +21,7 @@ export async function GET(req: Request) {
   const repo = inspectRepo(dir);
   const host = thisRoutineHost();
   if (!repo.ok) {
-    return NextResponse.json({ setup: { reason: repo.reason, dir }, thisHost: host, hosts: [host], sync: getRoutineSyncState(), routines: [] });
+    return NextResponse.json({ setup: { reason: repo.reason, dir }, thisHost: host, hosts: [host], sync: getRoutineSyncState(), routines: [], readPosts: [] });
   }
   requestRoutineSync(dir);
   const runStates = readRoutineRunStates();
@@ -34,7 +35,7 @@ export async function GET(req: Request) {
     posts: listPosts(dir, routine.id),
   }));
   const hosts = [...new Set([host, ...routines.flatMap((routine) => [routine.host, ...routine.posts.map((post) => post.host)])].filter(Boolean))];
-  return NextResponse.json({ setup: null, thisHost: host, hosts, sync: getRoutineSyncState(), routines });
+  return NextResponse.json({ setup: null, thisHost: host, hosts, sync: getRoutineSyncState(), routines, readPosts: routineReadKeys(dir, now.getTime()) });
 }
 
 /** POST: 새 루틴을 만들어 커밋하고 올린다. 시간대는 언제나 Asia/Seoul로 쓴다. */

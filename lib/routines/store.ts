@@ -6,11 +6,12 @@ import { nightlySourceName, sanitizeSource } from "@/lib/upkeep/nightly-inbox";
 import { type RoutinePost, type RoutinePostMeta, parseRoutinePost, serializeRoutinePost } from "./post";
 import { ROUTINE_TIMEZONE, type RoutineSchedule, isValidTimeZone, parseSchedule } from "./schedule";
 import { parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
+import { POST_FILE_PATTERN, ROUTINE_ID_PATTERN } from "./post-key";
 
 /**
- * 공용 루틴 저장소의 작업 사본. `routines/<id>/routine.json`(루틴 정의)과 `routines/<id>/posts/*.md`(게시판 글)만
- * 다룬다. 이 모듈은 파일만 읽고 쓰며, git 동기화와 커밋은 `git-sync.ts`가 한 잠금 아래에서 맡는다. 저장소는 다른
- * PC가 쓴 내용이므로, 저장소 밖을 가리키는 심볼릭 링크는 따라가지 않는다.
+ * 공용 루틴 저장소의 작업 사본. `routines/<id>/routine.json`(루틴 정의)과 `routines/<id>/posts/*.md`(게시판 글)를 다룬다.
+ * PC별 읽음 기록 `reads/<PC>.json`은 `reads.ts`가 맡는다. 이 모듈은 파일만 읽고 쓰며, git 동기화와 커밋은
+ * `git-sync.ts`가 한 잠금 아래에서 맡는다. 저장소는 다른 PC가 쓴 내용이므로, 저장소 밖을 가리키는 심볼릭 링크는 따라가지 않는다.
  */
 
 export interface Routine {
@@ -33,8 +34,6 @@ export interface RoutinePostSummary extends RoutinePostMeta {
 
 export type RepoState = { ok: true; dir: string } | { ok: false; dir: string; reason: "missing" | "not-git" };
 
-const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const POST_FILE_PATTERN = /^\d{8}T\d{4}-[a-z0-9-]{1,63}(?:-\d+)?\.md$/;
 const NAME_LIMIT = 80;
 const PROMPT_LIMIT = 20_000;
 const CWD_LIMIT = 500;
@@ -61,7 +60,7 @@ export function thisRoutineHost(): string {
   return nightlySourceName(process.env, hostname());
 }
 
-export const isRoutineId = (id: string) => ID_PATTERN.test(id);
+export const isRoutineId = (id: string) => ROUTINE_ID_PATTERN.test(id);
 export const isPostFileName = (file: string) => POST_FILE_PATTERN.test(file);
 
 export function routinePaths(dir: string, id: string) {

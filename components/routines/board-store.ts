@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import type { RoutineSyncState } from "@/lib/routines/git-sync";
 import type { RoutineLastRun } from "@/lib/routines/state";
 import type { Routine, RoutinePostSummary } from "@/lib/routines/store";
+import { NEW_POST_MS, parsePostKey, postFileStartedAt } from "@/lib/routines/post-key";
 
 /**
  * 루틴 화면(가운데)과 사이드바 루틴 목록이 함께 보는 상태. 이 탭 안에 하나만 있고, 서버 목록(`/api/routines`)과
@@ -25,6 +26,8 @@ export interface BoardData {
   hosts: string[];
   sync: RoutineSyncState;
   routines: BoardRoutine[];
+  /** 모든 PC의 읽음 기록 합집합(최근 키만). 서버가 아직 올리지 못한 이 서버의 읽음도 들어 있다. */
+  readPosts: string[];
 }
 
 export type BoardScreen =
@@ -58,7 +61,10 @@ export function refreshRoutineBoard(): Promise<void> {
     try {
       const res = await fetch("/api/routines", { cache: "no-store" });
       if (!res.ok) throw new Error(await readApiError(res));
-      update({ data: await res.json() as BoardData, loadError: null });
+      const next = await res.json() as BoardData;
+      applyServerReads(next.readPosts ?? []);
+      update({ data: next, loadError: null });
+      if (!next.setup) shareLocalReads();
     } catch (error) {
       update({ loadError: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -84,8 +90,9 @@ export function useRoutineBoard(): BoardState {
 }
 
 /**
- * 이 브라우저에서 열어 본 글(`<루틴 id>/<파일>`). 서버에 두지 않으므로 PC나 브라우저마다 따로 센다. 최근 7일 안에 올라와
- * 아직 열어 보지 않은 글을 「새 글」로 보인다. 오래된 기록부터 지워 READ_LIMIT개까지만 둔다.
+ * 열어 본 글(`<루틴 id>/<파일>`). 이 브라우저의 localStorage에 남겨 바로 반영하고, 서버에도 알려 저장소의 PC별 읽음 파일
+ * (`reads/<PC>.json`)로 모은다. 서버가 돌려주는 모든 PC의 합집합(`serverReads`)과 이 브라우저 기록을 합쳐, 최근 7일 안에
+ * 올라왔고 어디서도 열지 않은 글만 「새 글」로 보인다. 오래된 기록부터 지워 READ_LIMIT개까지만 둔다.
  *
  * localStorage의 읽고-고쳐-쓰기는 탭끼리 원자적이지 않아, 쓰기는 Web Locks(`navigator.locks`)로 탭 사이에 한 줄로 세운다:
  * 잠금 안에서 저장된 목록을 다시 읽고 붙여 쓰므로 다른 탭의 기록을 덮지 않는다. 잠금이 없는 환경(보안 연결이 아닌 http)은
@@ -93,8 +100,14 @@ export function useRoutineBoard(): BoardState {
  */
 const READ_KEY = "cuelo-routine-read-posts";
 const READ_LIMIT = 2000;
-const NEW_POST_MS = 7 * 24 * 60 * 60 * 1000;
 const NO_READS: ReadonlySet<string> = new Set();
+let serverReads: ReadonlySet<string> = NO_READS;
+/**
+ * 이 탭이 서버에 보낸 키와 보낸 시각. 같은 키를 목록을 받을 때마다 보내지 않되, 서버 합집합(메모리에 모은 키 포함)에
+ * 보낸 지 `RESEND_MS`가 지나도 없으면 서버가 재시작 등으로 잃은 것이므로 다시 보낸다.
+ */
+const sentReads = new Map<string, number>();
+const RESEND_MS = 2 * 60_000;
 let readPosts: ReadonlySet<string> | null = null;
 const localOnly = new Set<string>();
 const readListeners = new Set<() => void>();
@@ -109,7 +122,7 @@ function storedReadPosts(): string[] {
 }
 
 function loadReadPosts(): ReadonlySet<string> {
-  readPosts ??= new Set([...storedReadPosts(), ...localOnly]);
+  readPosts ??= new Set([...storedReadPosts(), ...localOnly, ...serverReads]);
   return readPosts;
 }
 
@@ -129,6 +142,47 @@ function persistReadPost(key: string): void {
   reloadReadPosts();
 }
 
+const SHARE_BATCH = 500;
+
+/** 서버가 돌려준 모든 PC의 읽음 합집합을 반영한다. 내용이 같으면 화면을 다시 그리지 않는다. */
+function applyServerReads(keys: string[]): void {
+  const next = new Set(keys);
+  if (next.size === serverReads.size && keys.every((key) => serverReads.has(key))) return;
+  serverReads = next;
+  reloadReadPosts();
+}
+
+/** 읽음 키를 서버로 보낸다. 실패하면 보냄 기록을 지워 다음 목록 받기 때 다시 보낸다. */
+function shareReads(keys: string[]): void {
+  const now = Date.now();
+  const fresh = keys.filter((key) => now - (sentReads.get(key) ?? -Infinity) >= RESEND_MS);
+  for (let i = 0; i < fresh.length; i += SHARE_BATCH) {
+    const batch = fresh.slice(i, i + SHARE_BATCH);
+    for (const key of batch) sentReads.set(key, now);
+    void fetch("/api/routines/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: batch }) })
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+      })
+      .catch(() => {
+        for (const key of batch) sentReads.delete(key);
+      });
+  }
+}
+
+/**
+ * 이 브라우저에 읽음으로 남았지만 서버 합집합에 없고 아직 「새 글」 기간 안인 키를 서버로 올린다. 이전에 열어 둔 글과
+ * 서버가 다시 켜지며 잃은 읽음이 다른 PC로도 저절로 퍼진다.
+ */
+function shareLocalReads(): void {
+  const now = Date.now();
+  const keys = [...new Set([...storedReadPosts(), ...localOnly])].filter((key) => {
+    const parsed = parsePostKey(key);
+    const at = parsed ? postFileStartedAt(parsed.file) : null;
+    return at !== null && now - at < NEW_POST_MS && !serverReads.has(key);
+  });
+  shareReads(keys);
+}
+
 export function markRoutinePostRead(routineId: string, file: string): void {
   const key = `${routineId}/${file}`;
   if (loadReadPosts().has(key)) return;
@@ -137,6 +191,7 @@ export function markRoutinePostRead(routineId: string, file: string): void {
   reloadReadPosts();
   if (typeof navigator !== "undefined" && navigator.locks) void navigator.locks.request(READ_KEY, () => persistReadPost(key));
   else persistReadPost(key);
+  shareReads([key]);
 }
 
 /** 다른 탭이 목록을 쓰거나 저장소를 비우면 다시 읽는다. 아직 저장하지 못한 이 탭의 기록은 그대로 더해 보인다. */

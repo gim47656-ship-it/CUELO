@@ -13,6 +13,8 @@ export interface RoutineRunning {
   sessionId: string | null;
   startedAt: string;
   trigger: "schedule" | "manual";
+  /** 몇 번째 시도인지(없으면 1). 서버 재시작으로 끊긴 회차를 다시 돌릴 때 늘린다. */
+  attempt?: number;
 }
 
 export interface RoutineLastRun {
