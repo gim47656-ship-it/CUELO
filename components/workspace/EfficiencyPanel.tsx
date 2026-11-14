@@ -88,7 +88,7 @@ function harnessSummary(harnesses: ExperimentHarnessCount[], t: (key: string) =>
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-border py-1.5 last:border-b-0">
+    <div className="flex min-w-0 items-baseline justify-between gap-3 py-1.5">
       <dt className="min-w-0 flex-1 text-xs text-text-muted [overflow-wrap:anywhere]">{label}</dt>
       <dd className="m-0 flex-none text-right font-mono text-xs tabular-nums text-text">{value}</dd>
     </div>
@@ -610,14 +610,14 @@ export function EfficiencyPanel({
       aria-labelledby={headingId}
       aria-busy={busy}
     >
-      <header className="flex min-h-12 items-center gap-3 border-b border-border bg-bg px-3">
+      <header className="flex min-h-12 items-center gap-3 px-3">
         <h1 id={headingId} className="m-0 text-sm font-semibold text-text">{t("efficiency.title")}</h1>
         <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] tabular-nums text-text-dim">{timestampLabel}</span>
         <ActionButton variant="neutralWeak" size="xsmall" onClick={handleRefresh} disabled={busy}>
           {refreshLabel}
         </ActionButton>
       </header>
-      <div className="grid grid-cols-2 border-b border-border bg-bg" role="tablist" aria-label={t("efficiency.title")}>
+      <div className="mx-3 mb-2 grid grid-cols-2 gap-0.5 rounded-[var(--radius-control)] bg-[var(--bg-rail)] p-0.5" role="tablist" aria-label={t("efficiency.title")}>
         {(["governor", "lab"] as const).map((tab) => (
           <button
             key={tab}
@@ -627,8 +627,8 @@ export function EfficiencyPanel({
             id={`${tabPanelId}-${tab}-tab`}
             aria-controls={tabPanelId}
             className={classNames(
-              "min-h-10 border-0 border-r border-border bg-bg px-4 text-sm text-text-muted last:border-r-0 hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
-              activeTab === tab && "bg-bg-selected font-semibold text-text",
+              "min-h-10 rounded-[var(--radius-control)] px-4 text-sm text-text-muted hover:bg-bg-hover",
+              activeTab === tab && "bg-bg-raised font-semibold text-text hover:bg-bg-raised",
             )}
             onClick={() => onTabChange(tab)}
           >

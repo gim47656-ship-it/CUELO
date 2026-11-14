@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { TranscriptSearchHit, TranscriptSearchResult } from "@/lib/transcript-search";
+import { WorkbenchIcon } from "@/components/workspace/WorkbenchIcon";
 import type { SessionInfo } from "@/lib/types";
 
 type SearchResponse = TranscriptSearchResult & { query: string; sessions: Record<string, SessionInfo> };
@@ -74,27 +75,31 @@ export function PaletteTranscriptSearch({ onPick, t }: Props) {
 
   return (
     <div className="palette-search">
-      <input
-        type="search"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return;
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            focusResult(0);
-          } else if (event.key === "Enter" && data && data.hits.length > 0) {
-            event.preventDefault();
-            const hit = data.hits[0];
-            const session = data.sessions[hit.sessionId];
-            if (session) onPick(session, hit, data.query);
-          }
-        }}
-        placeholder={t("palette.searchPlaceholder")}
-        aria-label={t("palette.searchPlaceholder")}
-        autoComplete="off"
-        spellCheck={false}
-      />
+      <div className="palette-search-field">
+        <WorkbenchIcon name="search" />
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              focusResult(0);
+            } else if (event.key === "Enter" && data && data.hits.length > 0) {
+              event.preventDefault();
+              const hit = data.hits[0];
+              const session = data.sessions[hit.sessionId];
+              if (session) onPick(session, hit, data.query);
+            }
+          }}
+          placeholder={t("palette.searchPlaceholder")}
+          aria-label={t("palette.searchPlaceholder")}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <kbd aria-hidden="true">Ctrl K</kbd>
+      </div>
       {trimmed.length >= TRANSCRIPT_SEARCH_MIN_QUERY && (
         <div className="palette-search-results" role="region" aria-label={t("palette.searchResults")} aria-busy={state.kind === "loading"}>
           <p className="palette-search-status" aria-live="polite">

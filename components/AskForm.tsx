@@ -44,9 +44,8 @@ const controlStyle: CSSProperties = {
   width: "100%",
   minWidth: 0,
   padding: "0 10px",
-  border: "1px solid var(--border)",
   borderRadius: "var(--radius-control)",
-  // The shared :focus-visible ring is the only focus cue; no inline outline override here.
+  // Focus shows by the caret and a filled field under :focus-visible (global rule); no inline outline.
   background: "var(--bg)",
   color: "var(--text)",
   fontFamily: "var(--seed-font-family)",
@@ -56,9 +55,8 @@ const controlStyle: CSSProperties = {
 const secondaryButton: CSSProperties = {
   minHeight: 36,
   padding: "0 12px",
-  border: "1px solid var(--border)",
   borderRadius: "var(--radius-control)",
-  background: "transparent",
+  background: "var(--bg)",
   color: "var(--text-muted)",
   cursor: "pointer",
 };
@@ -88,7 +86,7 @@ function Spans({ spans }: { spans: readonly FormSpan[] }) {
         });
         if (span.style === "code") {
           return (
-            <code key={spanIndex} style={{ padding: "0 4px", borderRadius: 4, background: "var(--bg-subtle)", fontFamily: "var(--font-mono)", fontSize: "0.92em" }}>
+            <code key={spanIndex} style={{ padding: "0 4px", borderRadius: 4, background: "var(--bg)", fontFamily: "var(--font-mono)", fontSize: "0.92em" }}>
               {parts}
             </code>
           );
@@ -145,14 +143,14 @@ function ContextBlock({ block, id }: { block: Exclude<AskFormBlock, { kind: "fie
       return (
         <pre
           tabIndex={0}
-          style={{ margin: 0, padding: "8px 10px", overflowX: "auto", maxWidth: "100%", border: "1px solid var(--hairline)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
+          style={{ margin: 0, padding: "8px 10px", overflowX: "auto", maxWidth: "100%", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
         >
           {block.text}
         </pre>
       );
     case "table":
       return (
-        <div tabIndex={0} style={{ maxWidth: "100%", overflowX: "auto", border: "1px solid var(--hairline)", borderRadius: "var(--radius-control)" }}>
+        <div tabIndex={0} style={{ maxWidth: "100%", overflowX: "auto", borderRadius: "var(--radius-control)", background: "var(--bg)" }}>
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "var(--seed-font-size-t3-static)", fontVariantNumeric: "tabular-nums" }}>
             <tbody>
               {block.rows.map((row, rowIndex) => (
@@ -163,7 +161,7 @@ function ContextBlock({ block, id }: { block: Exclude<AskFormBlock, { kind: "fie
                       <Cell
                         key={cellIndex}
                         scope={rowIndex < block.headerRows ? "col" : undefined}
-                        style={{ padding: "6px 10px", borderBottom: "1px solid var(--hairline)", color: rowIndex < block.headerRows ? "var(--text-muted)" : "var(--text)", fontWeight: rowIndex < block.headerRows ? 600 : 400, textAlign: "left", verticalAlign: "top", minWidth: 72 }}
+                        style={{ padding: "6px 10px", background: rowIndex < block.headerRows ? "var(--bg-hover)" : undefined, color: rowIndex < block.headerRows ? "var(--text-muted)" : "var(--text)", fontWeight: rowIndex < block.headerRows ? 600 : 400, textAlign: "left", verticalAlign: "top", minWidth: 72 }}
                       >
                         <Spans spans={cell} />
                       </Cell>
@@ -283,7 +281,6 @@ function ChoiceControl({ field, id, index, state, error, captionId, fallbackName
     gap: 9,
     minHeight: 40,
     padding: "9px 10px",
-    border: `1px solid ${checked ? "var(--border-strong)" : "transparent"}`,
     borderRadius: "var(--radius-control)",
     background: checked ? "var(--bg-selected)" : "transparent",
     color: disabled ? "var(--text-dim)" : "var(--text)",
@@ -360,7 +357,7 @@ function TextControl({ field, id, index, state, error, captionId, fallbackName, 
     "aria-invalid": error ? true : undefined,
     "aria-describedby": error ? `${id}-error` : undefined,
   } as const;
-  const border = error ? "1px solid var(--danger)" : controlStyle.border;
+  const errorBackground = error ? "color-mix(in srgb, var(--danger) 14%, var(--bg))" : undefined;
   return (
     <FieldShell field={field} id={id} index={index} error={error} hasLabel={hasLabel}>
       {field.multiline ? (
@@ -368,7 +365,7 @@ function TextControl({ field, id, index, state, error, captionId, fallbackName, 
           {...common}
           rows={Math.max(2, field.rows)}
           onChange={(event) => onChange(index, { kind: "text", text: event.target.value })}
-          style={{ ...controlStyle, padding: "8px 10px", border, lineHeight: 1.5, resize: "vertical" }}
+          style={{ ...controlStyle, padding: "8px 10px", ...(errorBackground ? { background: errorBackground } : {}), lineHeight: 1.5, resize: "vertical" }}
         />
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -379,7 +376,7 @@ function TextControl({ field, id, index, state, error, captionId, fallbackName, 
             max={type === "number" || type === "range" ? field.max : undefined}
             step={type === "number" ? "any" : undefined}
             onChange={(event) => onChange(index, { kind: "text", text: event.target.value })}
-            style={{ ...controlStyle, height: type === "color" ? 40 : 36, border, ...(type === "range" ? { padding: 0 } : {}), fontVariantNumeric: "tabular-nums" }}
+            style={{ ...controlStyle, height: type === "color" ? 40 : 36, ...(errorBackground ? { background: errorBackground } : {}), ...(type === "range" ? { padding: 0 } : {}), fontVariantNumeric: "tabular-nums" }}
           />
           {type === "range" && (
             <output htmlFor={id} style={{ minWidth: 32, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)", fontVariantNumeric: "tabular-nums" }}>
@@ -478,7 +475,7 @@ export function AskForm({
 
   return (
     <div data-ask-form="" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ padding: "12px 16px" }}>
         <div style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>{t("chat.agentQuestion")}</div>
         <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)" }}>{t("chat.agentFormHint")}</div>
         {request.timeout ? (
@@ -496,7 +493,7 @@ export function AskForm({
         }}
         style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: 16 }}
       >
-        <div style={{ display: "grid", gap: 20, minWidth: 0 }}>
+        <div style={{ display: "grid", gap: 24, minWidth: 0 }}>
           {model.sections.map((section, sectionIndex) => {
             const title = spansText(section.title);
             let captionId: string | undefined;
@@ -504,7 +501,7 @@ export function AskForm({
               <section
                 key={sectionIndex}
                 aria-labelledby={title ? `${uid}-s${sectionIndex}` : undefined}
-                style={{ display: "grid", gap: 12, minWidth: 0, paddingTop: sectionIndex === 0 ? 0 : 20, borderTop: sectionIndex === 0 ? "none" : "1px solid var(--hairline)" }}
+                style={{ display: "grid", gap: 12, minWidth: 0 }}
               >
                 {title && (
                   <h3 id={`${uid}-s${sectionIndex}`} style={{ margin: 0, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)", fontWeight: 600, lineHeight: 1.4 }}>
@@ -531,7 +528,7 @@ export function AskForm({
         </div>
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "12px 16px" }}>
         {hasErrors && (
           <p role="alert" style={{ margin: 0, marginRight: "auto", color: "var(--danger)", fontSize: "var(--seed-font-size-t3-static)" }}>
             {t("chat.formInvalid")}
@@ -547,7 +544,6 @@ export function AskForm({
           style={{
             minHeight: 36,
             padding: "0 14px",
-            border: "1px solid transparent",
             borderRadius: "var(--radius-control)",
             background: sending ? "var(--seed-color-bg-disabled)" : "var(--seed-color-bg-neutral-inverted)",
             color: sending ? "var(--seed-color-fg-disabled)" : "var(--seed-color-fg-neutral-inverted)",

@@ -78,23 +78,11 @@
   position: relative;
 }
 
-/* More rows below: fade the last visible row so the cut reads as scrollable. */
-.requestScroller[data-more="true"]::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  inset-block-end: 0;
-  block-size: calc(var(--trace-row) * 1.2);
-  background: linear-gradient(to bottom, transparent, var(--bg-panel));
-  pointer-events: none;
-}
-
 .requestList {
   max-block-size: calc(var(--trace-row) * 6.5);
   margin: 0;
   padding: 0;
   overflow-y: auto;
-  border-block: 1px solid var(--seed-color-stroke-neutral-weak);
   list-style: none;
 }
 
@@ -120,14 +108,8 @@
 }
 
 .requestRow[aria-current="true"] {
-  background: var(--seed-color-bg-transparent-selected);
-  box-shadow: inset 2px 0 0 var(--trace-rail);
-}
-
-.requestRow:focus-visible,
-.stationButton:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: -2px;
+  background: var(--bg-selected);
+  font-weight: var(--seed-font-weight-bold);
 }
 
 .requestIndex,
@@ -209,18 +191,18 @@
   min-inline-size: 0;
 }
 
-/* The track: a segment on top of each station, solid when the step happened. */
+/* The track: a filled bar on top of each station, strong when the step happened. */
 .station::before {
   content: "";
   position: absolute;
-  inset-block-start: 9px;
+  inset-block-start: 8px;
   inset-inline: 0;
-  border-block-start: 2px dashed var(--seed-color-stroke-neutral-muted);
+  block-size: 3px;
+  background: var(--bg-hover);
 }
 
 .station[data-filled="true"]::before {
-  border-block-start-style: solid;
-  border-block-start-color: var(--trace-rail);
+  background: var(--trace-rail);
 }
 
 .stationButton {
@@ -247,17 +229,15 @@
   inline-size: 20px;
   block-size: 20px;
   margin-block-end: var(--seed-dimension-x1);
-  border: 1.5px dashed var(--seed-color-stroke-neutral-muted);
   border-radius: 50%;
-  background: var(--bg-panel);
+  background: var(--bg-hover);
   color: var(--seed-color-fg-neutral-subtle);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
 .station[data-filled="true"] .stationStep {
-  border-style: solid;
-  border-color: var(--trace-rail);
+  background: color-mix(in srgb, var(--trace-rail) 32%, var(--bg-panel));
   color: var(--seed-color-fg-neutral);
 }
 
@@ -309,9 +289,8 @@
 .detail {
   margin: var(--seed-dimension-x1) var(--seed-dimension-x3) 0;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border: 1px solid var(--seed-color-stroke-neutral-weak);
   border-radius: var(--radius-surface);
-  background: var(--seed-color-bg-layer-default);
+  background: var(--bg);
   max-block-size: 22rem;
   overflow-y: auto;
 }
@@ -324,9 +303,7 @@
 }
 
 .group + .group {
-  margin-block-start: var(--seed-dimension-x3);
-  padding-block-start: var(--seed-dimension-x3);
-  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+  margin-block-start: var(--seed-dimension-x4);
 }
 
 .bucket + .bucket {
@@ -369,14 +346,13 @@
 }
 
 .item + .item {
-  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
+  margin-block-start: var(--seed-dimension-x1);
 }
 
 .item[data-focused="true"],
 .group[data-focused="true"],
 .idList > li[data-focused="true"] {
-  background: var(--seed-color-bg-transparent-selected);
-  box-shadow: inset 2px 0 0 var(--trace-rail);
+  background: var(--bg-selected);
 }
 
 .item[data-skipped="true"] .path {
@@ -445,8 +421,8 @@
 
 .idList > li {
   padding: 1px var(--seed-dimension-x1_5);
-  border: 1px solid var(--seed-color-stroke-neutral-weak);
   border-radius: var(--radius-control);
+  background: var(--bg-hover);
 }
 
 /* Graph */
@@ -542,9 +518,8 @@
 .graphFrame {
   margin-inline: var(--seed-dimension-x3);
   min-inline-size: 0;
-  border: 1px solid var(--seed-color-stroke-neutral-weak);
   border-radius: var(--radius-surface);
-  background: var(--seed-color-bg-layer-default);
+  background: var(--bg);
   overflow: hidden;
 }
 
@@ -609,7 +584,6 @@
 
 .node {
   cursor: pointer;
-  outline: none;
   transition: opacity 120ms var(--seed-timing-function-easing);
 }
 
@@ -665,8 +639,11 @@
 }
 
 .node:focus-visible .hit {
-  stroke: var(--seed-color-stroke-focus-ring);
-  stroke-width: 2;
+  fill: var(--focus-fill);
+}
+
+.node:focus-visible .nodeText {
+  fill: var(--focus-text);
 }
 
 /* Lit: the pointed node and its neighbours. Colour only, so wrapped label widths never change. */
@@ -674,22 +651,21 @@
   fill: var(--seed-color-fg-neutral);
 }
 
-.node:hover .hit,
-.node:focus-visible .hit {
-  fill: var(--seed-color-bg-transparent-selected);
+.node:hover .hit {
+  fill: var(--bg-hover);
 }
 
-/* JEV verdict ring around a recalled memory. */
+/* JEV verdict halo: a tinted disc behind a recalled memory; the label names the verdict. */
 .ring {
-  fill: none;
-  stroke-width: 2;
+  stroke: none;
+  fill-opacity: 0.38;
 }
 
-[data-verdict="apply"] .ring { stroke: var(--seed-color-fg-positive); }
-[data-verdict="excepted"] .ring { stroke: var(--seed-color-fg-warning); }
-[data-verdict="conflict"] .ring { stroke: var(--seed-color-fg-critical); }
-[data-verdict="unconfirmed"] .ring { stroke: var(--seed-color-fg-informative); stroke-dasharray: 3 2; }
-[data-verdict="unlisted"] .ring { stroke: var(--seed-color-fg-neutral-subtle); stroke-width: 1.25; stroke-dasharray: 2 2; }
+[data-verdict="apply"] .ring { fill: var(--seed-color-fg-positive); }
+[data-verdict="excepted"] .ring { fill: var(--seed-color-fg-warning); }
+[data-verdict="conflict"] .ring { fill: var(--seed-color-fg-critical); }
+[data-verdict="unconfirmed"] .ring { fill: var(--seed-color-fg-informative); }
+[data-verdict="unlisted"] .ring { fill: var(--seed-color-fg-neutral-subtle); }
 
 /* Narrow deck: six stations wrap to three per row, then two. */
 @container trace (max-width: 520px) {

@@ -134,7 +134,7 @@ export const SavedPromptMenu = forwardRef<SavedPromptMenuHandle, Props>(function
   }));
 
   const rowStyle = (active: boolean): CSSProperties => ({
-    width: "100%", minWidth: 0, minHeight: 44, border: "none", borderRadius: "var(--radius-control)",
+    width: "100%", minWidth: 0, minHeight: 44, borderRadius: "var(--radius-control)",
     padding: "8px", background: active ? "var(--bg-selected)" : "none", color: "var(--text)",
     textAlign: "left", cursor: "pointer", fontSize: 12,
   });
@@ -144,9 +144,9 @@ export const SavedPromptMenu = forwardRef<SavedPromptMenuHandle, Props>(function
       onMouseDown={(event) => event.preventDefault()}
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}
       style={{ position: "absolute", left: 0, right: 0, zIndex: 120, background: "var(--bg)",
-        border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", boxShadow: "var(--seed-shadow-s3)",
+        borderRadius: "var(--radius-surface)", boxShadow: "var(--shadow-float)",
         display: "flex", flexDirection: "column", overflow: "hidden", maxHeight, ...style }}>
-      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--text-dim)", flexShrink: 0 }}>
+      <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-dim)", flexShrink: 0 }}>
         {loading ? t("savedPrompts.loading") : t("savedPrompts.title")}
       </div>
       <div style={{ overflowY: "auto", minHeight: 0, padding: 4 }}>
@@ -175,7 +175,7 @@ export const SavedPromptMenu = forwardRef<SavedPromptMenuHandle, Props>(function
         </button>}
       </div>
       {error && <div role="alert" style={{ padding: "6px 10px", fontSize: 12, color: "var(--danger, var(--text))", overflowWrap: "anywhere" }}>{t("savedPrompts.error", { error })}</div>}
-      <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--text-dim)", borderTop: "1px solid var(--border)", overflowWrap: "anywhere", overflowY: "auto", flexShrink: 0, maxHeight: "40%" }}>
+      <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--text-dim)", overflowWrap: "anywhere", overflowY: "auto", flexShrink: 0, maxHeight: "40%" }}>
         {t("savedPrompts.hint")}
       </div>
     </div>

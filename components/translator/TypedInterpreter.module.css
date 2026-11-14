@@ -1,33 +1,31 @@
 .root { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .root[hidden] { display: none; }
 .results { flex: 1; min-height: 0; overflow: auto; padding: 16px; overflow-wrap: anywhere; }
-.turn { border-bottom: 1px solid var(--border); padding: 0 0 16px; margin: 0 0 16px; }
+.turn { padding: 0; margin: 0 0 24px; }
 .label { color: var(--text-muted); font-size: 12px; margin: 0 0 4px; }
 .original, .translation { white-space: pre-wrap; margin: 0 0 12px; line-height: 1.5; }
 .original { color: var(--text-muted); }
 .translation { color: var(--text); font-size: calc(18px * var(--translator-scale, 1)); }
-.composer { flex: none; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--bg-panel); display: grid; gap: 12px; }
+.composer { flex: none; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--bg-panel); display: grid; gap: 12px; }
 .direction { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; color: var(--text-muted); font-size: 13px; }
 .direction label, .field { display: grid; gap: 4px; min-width: 0; }
 .direction span { align-self: center; }
 .field { color: var(--text); font-size: 13px; }
-.direction select, .direction button, .submit, .field textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-control, 8px); }
+.direction select, .direction button, .submit, .field textarea { font: inherit; color: var(--text); background: var(--bg); border: 0; border-radius: var(--radius-control, 4px); }
 .direction select, .direction button, .submit { min-height: 44px; padding: 8px 12px; }
 .field textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 88px; max-height: 30dvh; padding: 12px; font-size: 16px; line-height: 1.5; }
-.submit { justify-self: end; min-width: 96px; color: var(--bg); background: var(--accent); border-color: var(--accent); cursor: pointer; }
+.submit { justify-self: end; min-width: 96px; color: var(--seed-color-fg-neutral-inverted); background: var(--seed-color-bg-neutral-inverted); cursor: pointer; }
 .direction button { cursor: pointer; }
 .direction button:hover { background: var(--bg-hover); }
-.submit:hover:not(:disabled) { background: var(--accent-hover); }
+.submit:hover:not(:disabled) { background: var(--seed-color-bg-neutral-inverted-pressed); }
 .direction button:active { background: var(--bg-selected); }
 .submit:disabled, .field textarea:disabled { opacity: .6; cursor: default; }
-.direction :focus-visible, .field textarea:focus-visible, .submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .error { margin: 0; color: var(--danger); font-size: 13px; }
 @media (max-width: 480px) { .submit { justify-self: stretch; } .composer { padding-inline: 12px; } }
 .modes { display: flex; flex: none; gap: 4px; }
-.modes button { min-height: 44px; min-width: 44px; padding: 8px; font: inherit; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-control, 8px); color: var(--text-muted); background: var(--bg-panel); cursor: pointer; }
-.modes button[aria-pressed="true"] { background: var(--bg-selected); color: var(--text); border-color: var(--accent); }
-.modes button:hover { background: var(--bg-hover); }
-.modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modes button { min-height: 44px; min-width: 44px; padding: 8px; font: inherit; font-size: 13px; border: 0; border-radius: var(--radius-control, 4px); color: var(--text-muted); background: var(--bg-hover); cursor: pointer; }
+.modes button[aria-pressed="true"] { background: var(--bg-selected); color: var(--text); font-weight: 650; }
+.modes button:hover { background: var(--bg-selected); }
 @media (max-width: 480px) {
   .toolbar { flex-wrap: wrap; }
   .toolbar :global(.translator-pair) { min-inline-size: 140px; }

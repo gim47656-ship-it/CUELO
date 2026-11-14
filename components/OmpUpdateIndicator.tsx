@@ -307,25 +307,22 @@ export function OmpUpdateIndicator() {
           justifyContent: "center",
           gap: 8,
           padding: "7px 10px",
-          border: "1px solid color-mix(in srgb, var(--warning) 54%, var(--border))",
           borderRadius: "var(--radius-surface)",
-          background: "color-mix(in srgb, var(--warning) 8%, transparent)",
+          background: "color-mix(in srgb, var(--warning) 16%, var(--bg-panel))",
           color: "var(--warning)",
           cursor: "pointer",
           fontSize: 11,
           fontFamily: "var(--font-mono)",
-          transition: "background 0.12s, border-color 0.12s, color 0.12s",
+          transition: "background 0.12s",
         }}
         onMouseEnter={(event) => {
-          event.currentTarget.style.background = "color-mix(in srgb, var(--warning) 14%, var(--bg-hover))";
-          event.currentTarget.style.borderColor = "var(--warning)";
+          event.currentTarget.style.background = "color-mix(in srgb, var(--warning) 26%, var(--bg-panel))";
         }}
         onMouseLeave={(event) => {
-          event.currentTarget.style.background = "color-mix(in srgb, var(--warning) 8%, transparent)";
-          event.currentTarget.style.borderColor = "color-mix(in srgb, var(--warning) 54%, var(--border))";
+          event.currentTarget.style.background = "color-mix(in srgb, var(--warning) 16%, var(--bg-panel))";
         }}
       >
-        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warning)", boxShadow: "0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent)" }} />
+        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warning)" }} />
         <span>{t("updates.available")}</span>
         <span style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>{displayVersion(release.version)}</span>
       </button>
@@ -347,16 +344,15 @@ export function OmpUpdateIndicator() {
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
-            border: "1px solid var(--border)",
             borderRadius: "var(--radius-surface)",
-            background: "var(--bg-panel)",
-            boxShadow: "0 18px 46px rgba(0,0,0,0.28)",
+            background: "var(--bg)",
+            boxShadow: "var(--shadow-float)",
           }}
         >
-          <div style={{ padding: "13px 14px 11px", borderBottom: "1px solid var(--border)", background: "linear-gradient(135deg, color-mix(in srgb, var(--warning) 10%, var(--bg-panel)), var(--bg-panel) 65%)" }}>
+          <div style={{ padding: "13px 14px 11px", background: "color-mix(in srgb, var(--warning) 12%, var(--bg))" }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ color: "var(--text-dim)", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>{t("updates.dialogEyebrow")}</div>
+                <div style={{ color: "var(--text-dim)", fontSize: 10 }}>{t("updates.dialogEyebrow")}</div>
                 <div style={{ marginTop: 3, color: "var(--text)", fontSize: 15, fontWeight: 650 }}>{t("updates.dialogTitle")}</div>
               </div>
               <div style={{ color: "var(--warning)", fontFamily: "var(--font-mono)", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{displayVersion(release.version)}</div>
@@ -368,14 +364,14 @@ export function OmpUpdateIndicator() {
           </div>
 
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "11px 14px 14px" }}>
-            <div style={{ marginBottom: 7, color: "var(--text-dim)", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>{t("updates.changelog")}</div>
+            <div style={{ marginBottom: 7, color: "var(--text-dim)", fontSize: 10 }}>{t("updates.changelog")}</div>
             <div className="update-changelog" style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 }}>
               <MarkdownBody>{changelog}</MarkdownBody>
             </div>
 
           </div>
 
-          <div style={{ flexShrink: 0, padding: "10px 14px 12px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+          <div style={{ flexShrink: 0, padding: "10px 14px 12px", background: "var(--bg-panel)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
               <a
                 href={release.htmlUrl}
@@ -397,10 +393,9 @@ export function OmpUpdateIndicator() {
                     width: "100%",
                     minHeight: isMobile ? 44 : 32,
                     padding: "6px 12px",
-                    border: "none",
                     borderRadius: "var(--radius-control)",
                     background: "var(--accent)",
-                    color: "var(--bg)",
+                    color: "var(--accent-text)",
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: busy ? "not-allowed" : "pointer",
@@ -445,14 +440,14 @@ export function OmpUpdateIndicator() {
 
             <div style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
               <div style={{ marginBottom: 7, color: "var(--text-dim)" }}>{t("updates.manual")}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 6, padding: "6px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", fontFamily: "var(--font-mono)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 6, padding: "6px 7px", borderRadius: "var(--radius-surface)", background: "var(--bg)", fontFamily: "var(--font-mono)" }}>
                 <code style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", color: "var(--text)" }}>{SOURCE_UPDATE_COMMAND}</code>
                 <button
                   type="button"
                   onClick={() => void copyCommand(SOURCE_UPDATE_COMMAND)}
                   title={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
                   aria-label={copiedCommand === SOURCE_UPDATE_COMMAND ? t("updates.commandCopied") : t("updates.copyCommand")}
-                  style={{ flex: "0 0 auto", width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, padding: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
+                  style={{ flex: "0 0 auto", width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, padding: 0, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: copiedCommand === SOURCE_UPDATE_COMMAND ? "var(--accent)" : "var(--text-dim)", cursor: "pointer" }}
                 >
                   {copiedCommand === SOURCE_UPDATE_COMMAND ? (
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

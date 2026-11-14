@@ -5,23 +5,21 @@
   padding: 24px;
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--seed-font-family);
 }
 
 .card {
   width: 100%;
   max-width: 470px;
   padding: 26px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   background: var(--bg-panel);
 }
 
 .eyebrow {
-  color: var(--text-dim);
-  font-size: 10px;
-  letter-spacing: .16em;
-  text-transform: uppercase;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .title {
@@ -65,14 +63,14 @@
   width: 100%;
   height: 36px;
   padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 4px;
   background: var(--bg);
   color: var(--text);
   font: 12px var(--font-mono);
 }
 
-.input:focus { border-color: var(--accent); outline: none; }
+/* A text field shows focus with its caret; no ring (design-decisions.md 「Focus exceptions」). */
 .input:disabled { opacity: .6; }
 
 .primary, .secondary {
@@ -81,20 +79,23 @@
   height: 36px;
   margin-bottom: 14px;
   border: 0;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--bg);
+  border-radius: 6px;
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
   cursor: pointer;
-  font: 700 11px var(--font-mono);
+  font: 650 12px var(--seed-font-family);
   line-height: 36px;
   text-align: center;
   text-decoration: none;
 }
 
+/* On the panel card the secondary takes the selected step (1.30+ in every theme), apart from the fields' centre fill. */
 .secondary {
-  border: 1px solid var(--border);
-  background: transparent;
+  background: var(--bg-selected);
   color: var(--text);
 }
+
+.secondary:hover:not(:disabled) { background: var(--bg-hover); }
+.primary:hover:not(:disabled) { background: var(--seed-color-bg-neutral-inverted-pressed); }
 
 .primary:disabled, .secondary:disabled { cursor: not-allowed; opacity: .5; }

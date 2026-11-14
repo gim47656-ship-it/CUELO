@@ -46,6 +46,7 @@ import NvidiaColorIcon from "@lobehub/icons/es/Nvidia/components/Color";
 import OpenCodeIcon from "@lobehub/icons/es/OpenCode/components/Mono";
 import XiaomiMiMoIcon from "@lobehub/icons/es/XiaomiMiMo/components/Mono";
 import ZAIIcon from "@lobehub/icons/es/ZAI/components/Mono";
+import shared from "./SettingsConfig.module.css";
 
 type IconComponent = React.ComponentType<{ size?: number | string; style?: React.CSSProperties }>;
 
@@ -199,18 +200,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 const inputStyle = {
   padding: "6px 9px",
-  background: "var(--bg-panel)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-control)",
-  color: "var(--text)",
-  fontSize: 12,
-  outline: "none",
   width: "100%",
-  boxSizing: "border-box" as const,
 };
 
 function TextInput({ value, onChange, placeholder, mono }: { value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean }) {
-  return <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+  return <input className={shared.field} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
     style={{ ...inputStyle, fontFamily: mono ? "var(--font-mono)" : "inherit" }} />;
 }
 
@@ -243,6 +237,7 @@ function SecretTextInput({
   return (
     <div style={{ position: "relative", width: "100%", ...style }}>
       <input
+        className={shared.field}
         type={visible ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -257,7 +252,9 @@ function SecretTextInput({
         onClick={() => setVisible((v) => !v)}
          aria-label={visible ? t("i18n.hideDetails") : t("i18n.showDetails")}
          title={visible ? t("i18n.hideDetails") : t("i18n.showDetails")}
+        className={shared.bare}
         style={{
+          color: "var(--text-dim)",
           position: "absolute",
           right: 5,
           top: "50%",
@@ -265,10 +262,6 @@ function SecretTextInput({
           width: 24,
           height: 24,
           padding: 0,
-          border: "none",
-          background: "transparent",
-          color: "var(--text-dim)",
-          cursor: "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -293,7 +286,7 @@ function SecretTextInput({
 }
 
 function NumInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  return <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={inputStyle} />;
+  return <input className={shared.field} type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={inputStyle} />;
 }
 
 function Select({ value, onChange, options, required }: { value: string; onChange: (v: string) => void; options: readonly string[]; required?: boolean }) {
@@ -423,8 +416,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
          <SectionTitle>{t("i18n.provider")}</SectionTitle>
-        <button onClick={onDelete}
-          style={{ padding: "3px 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 11 }}>
+        <button onClick={onDelete} className={shared.btnDanger} style={{ minHeight: 24, padding: "0 8px", fontSize: 11 }}>
            {t("i18n.delete")}
         </button>
       </div>
@@ -432,8 +424,8 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
        <Field label={t("i18n.providerName")}>
         <TextInput value={editingName} onChange={setEditingName} placeholder="provider-name" mono />
         {editingName !== name && editingName.trim() && (
-          <button onClick={() => onRename(editingName.trim())}
-            style={{ marginTop: 4, padding: "3px 10px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: "var(--radius-control)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
+          <button onClick={() => onRename(editingName.trim())} className={shared.btnPrimary}
+            style={{ marginTop: 4, minHeight: 24, padding: "0 10px", fontSize: 11, alignSelf: "flex-start" }}>
              {t("i18n.rename")}
           </button>
         )}
@@ -466,23 +458,20 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
         </span>
       </Field>
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         {discoveryState.phase !== "success" && (
           <button
             onClick={handleDiscoverModels}
             disabled={!provider.baseUrl?.trim() || discoveryState.phase === "loading"}
-            style={{
-              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)",
-              background: "var(--bg-panel)", color: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
-            }}
+            className={shared.btn}
+            style={{ alignSelf: "flex-start", height: 30, fontSize: 11 }}
           >
             {discoveryState.phase === "loading" ? t("models.discoveryFetching") : t("models.discoveryFetch")}
           </button>
         )}
 
         {discoveryState.phase === "error" && (
-          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-surface)", color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
+          <div className={shared.btnDanger} style={{ padding: "7px 9px", borderRadius: "var(--radius-surface)", fontSize: 11, lineHeight: 1.4, justifyContent: "flex-start", cursor: "default" }}>
             {discoveryState.message}
           </div>
         )}
@@ -490,6 +479,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
         {discoveryState.phase === "success" && (
           <>
             <input
+              className={shared.field}
               value={discoveryQuery}
               onChange={(event) => setDiscoveryQuery(event.target.value)}
               placeholder={t("models.discoveryFilterPlaceholder", { count: discoveryState.models.length })}
@@ -497,12 +487,12 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               style={{ ...inputStyle, width: "100%", minWidth: 0 }}
             />
 
-            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg-panel)" }}>
+            <div className={shared.panel} style={{ maxHeight: 220, overflowY: "auto" }}>
               <label
                 style={{
                   minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8,
-                  position: "sticky", top: 0, zIndex: 1, borderBottom: "1px solid var(--border)",
-                  background: "var(--bg)", cursor: selectableShownIds.length ? "pointer" : "default",
+                  position: "sticky", top: 0, zIndex: 1,
+                  background: "var(--bg-rail)", cursor: selectableShownIds.length ? "pointer" : "default",
                   color: "var(--text-muted)", fontSize: 10, fontWeight: 600,
                 }}
               >
@@ -518,7 +508,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               </label>
               {shownDiscoveredModels.length === 0 ? (
                 <div style={{ padding: 12, color: "var(--text-dim)", fontSize: 11 }}>{t("models.discoveryNoMatches")}</div>
-              ) : shownDiscoveredModels.map((model, index) => {
+              ) : shownDiscoveredModels.map((model) => {
                 const alreadyAdded = existingModelIds.has(model.id);
                 const checked = selectedModelIds.includes(model.id);
                 return (
@@ -526,7 +516,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
                     key={model.id}
                     style={{
                       minHeight: 36, padding: "6px 9px", display: "flex", alignItems: "center", gap: 8,
-                      borderTop: index === 0 ? "none" : "1px solid var(--border)", cursor: alreadyAdded ? "default" : "pointer",
+                      cursor: alreadyAdded ? "default" : "pointer",
                       opacity: alreadyAdded ? 0.65 : 1,
                     }}
                   >
@@ -556,7 +546,8 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               <button
                 onClick={addSelectedModels}
                 disabled={selectedCount === 0}
-                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: "var(--radius-control)", background: selectedCount ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", color: selectedCount ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: selectedCount ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                className={selectedCount ? shared.btnPrimary : shared.btn}
+                style={{ whiteSpace: "nowrap", fontSize: 11 }}
               >
                 {selectedCount
                   ? t("models.discoveryAddSelectedCount", { count: selectedCount })
@@ -575,14 +566,16 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
 
-const LEVEL_COLORS: Record<ThinkingLevel, string> = {
-  off:     "var(--text-dim)",
-  minimal: "#6b7280",
-  low:     "#60a5fa",
-  medium:  "#a78bfa",
-  high:    "#f472b6",
-  xhigh:   "#fb923c",
-  max:     "#ef4444",
+// Intensity of the level dot: ink strength rises with the level, so the order reads
+// without a hue per level (colour is kept for state).
+const LEVEL_STRENGTH: Record<ThinkingLevel, number> = {
+  off: 0.25,
+  minimal: 0.4,
+  low: 0.55,
+  medium: 0.7,
+  high: 0.85,
+  xhigh: 0.95,
+  max: 1,
 };
 
 function ThinkingLevelMapEditor({
@@ -605,52 +598,21 @@ function ThinkingLevelMapEditor({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {THINKING_LEVELS.map((level) => {
         const raw = map[level];
         const state: "omit" | "null" | "string" =
           !(level in map) ? "omit" : raw === null ? "null" : "string";
         const strVal = typeof raw === "string" ? raw : "";
-        const color = LEVEL_COLORS[level];
-
-        const btnBase: React.CSSProperties = {
-          padding: "4px 10px",
-          fontSize: 10,
-          border: "none",
-          cursor: "pointer",
-          fontWeight: 400,
-          transition: "background 0.1s, color 0.1s",
-          whiteSpace: "nowrap",
-          background: "var(--bg-panel)",
-          color: "var(--text-dim)",
-        };
-        const btnActive: React.CSSProperties = {
-          background: "var(--seed-color-bg-neutral-inverted)",
-          color: "var(--seed-color-fg-neutral-inverted)",
-          fontWeight: 600,
-        };
-        const btnActiveDisabled: React.CSSProperties = {
-          background: "#ef4444",
-          color: "#fff",
-          fontWeight: 600,
-        };
 
         return (
           <div
             key={level}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "5px 4px",
-              borderRadius: "var(--radius-control)",
-              background: "transparent",
-              border: "1px solid transparent",
-            }}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px" }}
           >
             {/* Level badge */}
-            <div style={{ display: "flex", alignItems: "center", gap: 5, width: 68, flexShrink: 0 }}>
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0, opacity: state === "null" ? 0.3 : 1 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 6, width: 68, flexShrink: 0 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 1, background: "var(--text)", flexShrink: 0, opacity: state === "null" ? 0.15 : LEVEL_STRENGTH[level] }} />
               <span style={{
                 fontSize: 11,
                 fontFamily: "var(--font-mono)",
@@ -661,49 +623,21 @@ function ThinkingLevelMapEditor({
               </span>
             </div>
 
-            {/* Default + Disabled buttons */}
-            <div style={{ display: "flex", borderRadius: "var(--radius-control)", border: "1px solid var(--border)", overflow: "hidden", flexShrink: 0 }}>
-              <button
-                onClick={() => setLevel(level, "omit")}
-                style={{ ...btnBase, ...(state === "omit" ? btnActive : {}) }}
-              >
-                Default
-              </button>
-              <button
-                onClick={() => setLevel(level, null)}
-                style={{ ...btnBase, borderLeft: "1px solid var(--border)", ...(state === "null" ? btnActiveDisabled : {}) }}
-              >
-                Disabled
-              </button>
+            {/* Default / Disabled / Custom as one segmented control */}
+            <div className={shared.seg} role="group" aria-label={level}>
+              <button type="button" aria-pressed={state === "omit"} onClick={() => setLevel(level, "omit")}>Default</button>
+              <button type="button" aria-pressed={state === "null"} onClick={() => setLevel(level, null)}>Disabled</button>
+              <button type="button" aria-pressed={state === "string"} onClick={() => setLevel(level, strVal || level)}>Custom</button>
             </div>
-
-            {/* Custom button + input fused */}
-            <div style={{ display: "flex", borderRadius: "var(--radius-control)", border: `1px solid ${state === "string" ? "var(--accent)" : "var(--border)"}`, overflow: "hidden", transition: "border-color 0.1s" }}>
-              <button
-                onClick={() => setLevel(level, strVal || level)}
-                style={{ ...btnBase, ...(state === "string" ? btnActive : {}), borderRight: "1px solid var(--border)", flexShrink: 0 }}
-              >
-                Custom
-              </button>
-              <input
-                value={strVal}
-                onChange={(e) => setLevel(level, e.target.value)}
-                onFocus={() => { if (state !== "string") setLevel(level, strVal || level); }}
-                placeholder={level}
-                maxLength={10}
-                style={{
-                  width: "12ch",
-                  background: state === "string" ? "var(--bg)" : "var(--bg-panel)",
-                  border: "none",
-                  outline: "none",
-                  color: state === "string" ? "var(--text)" : "var(--text-dim)",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  padding: "4px 7px",
-                  transition: "background 0.1s, color 0.1s",
-                }}
-              />
-            </div>
+            <input
+              className={shared.field}
+              value={strVal}
+              onChange={(e) => setLevel(level, e.target.value)}
+              onFocus={() => { if (state !== "string") setLevel(level, strVal || level); }}
+              placeholder={level}
+              maxLength={10}
+              style={{ width: "12ch", minHeight: 26, fontFamily: "var(--font-mono)", fontSize: 11, padding: "0 7px" }}
+            />
           </div>
         );
       })}
@@ -762,32 +696,22 @@ function HeaderListEditor({ headers, onChange }: {
   const removeEntry = (id: number): void => {
     applyRows(rows.filter((row) => row.id !== id));
   };
-  const rowBtnStyle = {
-    padding: "6px 9px",
-    background: "none",
-    border: "1px solid rgba(239,68,68,0.3)",
-    borderRadius: "var(--radius-control)",
-    color: "#ef4444",
-    cursor: "pointer",
-    fontSize: 11,
-    lineHeight: 1,
-  } satisfies React.CSSProperties;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {rows.map((row) => (
         <div key={row.id} style={{ display: "flex", gap: 6 }}>
           <input value={row.name} onChange={(e) => setEntry(row.id, { name: e.target.value })}
-            placeholder="Header-Name" style={{ ...inputStyle, fontFamily: "var(--font-mono)", flex: 1 }} />
+            placeholder="Header-Name" className={shared.field} style={{ ...inputStyle, fontFamily: "var(--font-mono)", flex: 1 }} />
           <input value={row.value} onChange={(e) => setEntry(row.id, { value: e.target.value })}
-            placeholder="value" style={{ ...inputStyle, fontFamily: "var(--font-mono)", flex: 1 }} />
-          <button onClick={() => removeEntry(row.id)} style={rowBtnStyle}>✕</button>
+            placeholder="value" className={shared.field} style={{ ...inputStyle, fontFamily: "var(--font-mono)", flex: 1 }} />
+          <button onClick={() => removeEntry(row.id)} className={shared.btnDanger} aria-label="Remove header">✕</button>
         </div>
       ))}
       <button onClick={() => setRows((current) => [
         ...current,
         { id: nextRowIdRef.current++, name: "", value: "" },
       ])}
-        style={{ padding: "5px 9px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, alignSelf: "flex-start" }}>
+        className={shared.btn} style={{ fontSize: 11, alignSelf: "flex-start" }}>
         + Add header
       </button>
     </div>
@@ -984,9 +908,9 @@ function ModelDetail({
     ? catalogState.message
     : catalogResultSummary;
   const catalogStatusColor = catalogState.phase === "error"
-    ? "#ef4444"
+    ? "var(--danger)"
     : catalogState.phase === "success" && catalogState.recommendation.price.status === "unreliable"
-      ? "#d97706"
+      ? "var(--warning)"
       : "var(--text-dim)";
 
   return (
@@ -997,21 +921,20 @@ function ModelDetail({
           {testSummary && (
             <span
               title={testSummary}
+              className={testState.phase === "error" ? shared.btnDanger : testState.phase === "success" ? shared.btnOk : shared.btn}
               style={{
                 maxWidth: 260,
                 height: 24,
+                minHeight: 24,
                 padding: "0 8px",
-                border: `1px solid ${testState.phase === "error" ? "#fecaca" : testState.phase === "success" ? "#bbf7d0" : "var(--border)"}`,
-                borderRadius: "var(--radius-control)",
-                background: testState.phase === "error" ? "#fee2e2" : testState.phase === "success" ? "#dcfce7" : "#e5e7eb",
-                color: "#111827",
+                cursor: "default",
                 fontSize: 11,
-                display: "inline-flex",
-                alignItems: "center",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 boxSizing: "border-box",
+                display: "inline-block",
+                lineHeight: "24px",
               }}
             >
               {testSummary}
@@ -1021,21 +944,8 @@ function ModelDetail({
             onClick={handleTest}
             disabled={!model.id.trim() || testState.phase === "testing"}
              title={t("i18n.testConnection")}
-            style={{
-              height: 24,
-              padding: "0 8px",
-              background: testState.phase === "success" ? "#16a34a" : "none",
-              border: `1px solid ${testState.phase === "success" ? "#16a34a" : "var(--border)"}`,
-              borderRadius: "var(--radius-control)",
-              color: testState.phase === "success" ? "#fff" : (!model.id.trim() || testState.phase === "testing") ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: (!model.id.trim() || testState.phase === "testing") ? "not-allowed" : "pointer",
-              fontSize: 11,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              boxSizing: "border-box",
-              gap: 5,
-            }}
+            className={testState.phase === "success" ? shared.btnOk : shared.btn}
+            style={{ height: 24, minHeight: 24, padding: "0 8px", fontSize: 11 }}
           >
             {testState.phase === "success" && (
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -1044,8 +954,8 @@ function ModelDetail({
             )}
              {testState.phase === "testing" ? t("i18n.checking") : testState.phase === "success" ? t("common.ok") : t("i18n.test")}
           </button>
-          <button onClick={onDelete}
-            style={{ height: 24, padding: "0 8px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 11, boxSizing: "border-box" }}>
+          <button onClick={onDelete} className={shared.btnDanger}
+            style={{ height: 24, minHeight: 24, padding: "0 8px", fontSize: 11 }}>
              {t("i18n.remove")}
           </button>
         </div>
@@ -1056,18 +966,13 @@ function ModelDetail({
         <Field label="Name"><TextInput value={model.name ?? ""} onChange={(v) => set("name", v || undefined)} placeholder="Display name" /></Field>
       </div>
 
-      <div style={{ padding: "10px 0", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }}>
+      <div className={shared.panel} style={{ padding: "10px 12px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => void handleCatalogFill()}
             disabled={!model.id.trim() || catalogState.phase === "loading"}
-            style={{
-              height: 28, padding: "0 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)",
-              background: "var(--bg-panel)",
-              color: !model.id.trim() || catalogState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: !model.id.trim() || catalogState.phase === "loading" ? "not-allowed" : "pointer",
-              fontSize: 11,
-            }}
+            className={shared.btn}
+            style={{ fontSize: 11 }}
           >
             {catalogState.phase === "loading" ? t("models.catalogFilling") : t("models.catalogFill")}
           </button>
@@ -1097,7 +1002,8 @@ function ModelDetail({
           {catalogUndoRef.current && (
             <button
               onClick={undoCatalogFill}
-              style={{ flexShrink: 0, padding: "0 2px", border: "none", background: "none", color: "var(--accent)", cursor: "pointer", fontSize: 10 }}
+              className={shared.btnQuiet}
+              style={{ flexShrink: 0, minHeight: 20, fontSize: 10, color: "var(--accent)" }}
             >
               {t("models.catalogUndo")}
             </button>
@@ -1143,7 +1049,8 @@ function ModelDetail({
               {model.thinkingLevelMap && (
                 <button
                   onClick={() => set("thinkingLevelMap", undefined)}
-                  style={{ fontSize: 10, padding: "2px 7px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-dim)", cursor: "pointer" }}
+                  className={shared.btn}
+                  style={{ fontSize: 10, minHeight: 22, padding: "0 7px" }}
                 >
                   clear all
                 </button>
@@ -1373,8 +1280,8 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
            <SectionTitle>{t("i18n.subscription")}</SectionTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: provider.loggedIn ? "#4ade80" : "var(--border)", display: "inline-block" }} />
-          <span style={{ fontSize: 11, color: provider.loggedIn ? "#4ade80" : "var(--text-dim)" }}>
+          <span className={`${shared.lamp} ${provider.loggedIn ? shared.lampOn : ""}`} />
+          <span style={{ fontSize: 11, color: provider.loggedIn ? "var(--success)" : "var(--text-dim)" }}>
              {provider.loggedIn ? t("i18n.connected") : t("i18n.notConnected")}
           </span>
         </div>
@@ -1386,7 +1293,8 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         <div
           role="note"
           aria-label={t("relogin.title")}
-          style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg-panel)" }}
+          className={shared.panel}
+          style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px" }}
         >
           <AccountAvatar seed={relogin.target.seed} size={32} provider={relogin.target.provider} />
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
@@ -1428,7 +1336,8 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                 <button
                   key={option.id}
                   onClick={() => submitSelection(loginState.token, option.id)}
-                  style={{ padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
+                  className={shared.btn}
+                  style={{ padding: "6px 9px", fontSize: 12, justifyContent: "flex-start", textAlign: "left", color: "var(--text)" }}
                 >
                   {option.label}
                 </button>
@@ -1442,7 +1351,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
               {t("i18n.deviceLoginGuide")}
             </p>
             {loginState.instructions && (
-              <div role="status" style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0, overflowWrap: "anywhere" }}>
+              <div role="status" className={shared.panel} style={{ padding: "8px 10px", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0, overflowWrap: "anywhere" }}>
                 {loginState.instructions}
               </div>
             )}
@@ -1477,12 +1386,14 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") submitCode(loginState.token, inputValue); }}
                 placeholder={loginState.phase === "auth" ? "Paste the redirect URL or code" : (loginState.placeholder ?? "Enter value…")}
-                style={{ flex: 1, padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", fontSize: 12, outline: "none", fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
+                className={shared.field}
+                style={{ flex: 1, padding: "6px 9px", fontFamily: "var(--font-mono)" }}
               />
               <button
                 onClick={() => submitCode(loginState.token, inputValue)}
                 disabled={!inputValue.trim()}
-                style={{ padding: "6px 12px", background: inputValue.trim() ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)", border: "none", borderRadius: "var(--radius-control)", color: inputValue.trim() ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)", cursor: inputValue.trim() ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 600, flexShrink: 0 }}
+                className={inputValue.trim() ? shared.btnPrimary : shared.btn}
+                style={{ flexShrink: 0 }}
               >
                  {t("i18n.submit")}
               </button>
@@ -1497,7 +1408,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
               Open the verification page and enter this code:
             </p>
-            <div style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
+            <div className={shared.panel} style={{ padding: "8px 10px", color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
               {loginState.userCode}
             </div>
             <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
@@ -1523,10 +1434,10 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             )}
           </div>
         ) : (
-             <p style={{ margin: 0, fontSize: 12, color: "#4ade80" }}>{t("i18n.connectedSuccessfully")}</p>
+             <p style={{ margin: 0, fontSize: 12, color: "var(--success)" }}>{t("i18n.connectedSuccessfully")}</p>
         ))}
         {loginState.phase === "error" && (
-          <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{loginState.message}</p>
+          <p style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>{loginState.message}</p>
         )}
       </div>
 
@@ -1535,7 +1446,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
         {isWorking ? (
           <button
             onClick={() => { eventSourceRef.current?.close(); setLoginState({ phase: "idle" }); }}
-            style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 12 }}
+            className={shared.btn}
           >
              {t("i18n.cancel")}
           </button>
@@ -1544,14 +1455,14 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             <button
               ref={loginButtonRef}
               onClick={() => handleLogin()}
-              style={{ padding: "5px 14px", background: "var(--seed-color-bg-neutral-inverted)", border: "none", borderRadius: "var(--radius-control)", color: "var(--seed-color-fg-neutral-inverted)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              className={shared.btnPrimary}
             >
                {provider.loggedIn ? t("i18n.relogin") : t("i18n.login")}
             </button>
             {provider.deviceLoginId && (
               <button
                 onClick={() => handleLogin(provider.deviceLoginId)}
-                style={{ padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text)", cursor: "pointer", fontSize: 12 }}
+                className={shared.btn}
               >
                 {t("i18n.deviceLogin")}
               </button>
@@ -1559,7 +1470,7 @@ function OAuthDetail({ provider, onRefresh, relogin }: { provider: OAuthProvider
             {provider.loggedIn && !relogin && (
               <button
                 onClick={handleLogout}
-                style={{ padding: "5px 12px", background: "none", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "var(--radius-control)", color: "#ef4444", cursor: "pointer", fontSize: 12 }}
+                className={shared.btnDanger}
               >
                  {t("i18n.disconnect")}
               </button>
@@ -1635,8 +1546,8 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
          <SectionTitle>API Key</SectionTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: provider.configured ? "#4ade80" : "var(--border)", display: "inline-block" }} />
-          <span style={{ fontSize: 11, color: provider.configured ? "#4ade80" : "var(--text-dim)" }}>
+          <span className={`${shared.lamp} ${provider.configured ? shared.lampOn : ""}`} />
+          <span style={{ fontSize: 11, color: provider.configured ? "var(--success)" : "var(--text-dim)" }}>
              {provider.configured ? t("i18n.configured") : t("i18n.notConfigured")}
           </span>
         </div>
@@ -1663,15 +1574,8 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
           <button
             onClick={handleSave}
             disabled={saving || !apiKey.trim() || savedOk}
-            style={{
-              padding: "6px 12px",
-              background: savedOk ? "#16a34a" : apiKey.trim() ? "var(--seed-color-bg-neutral-inverted)" : "var(--bg-panel)",
-              border: "none", borderRadius: "var(--radius-control)",
-              color: savedOk ? "#fff" : apiKey.trim() ? "var(--seed-color-fg-neutral-inverted)" : "var(--text-dim)",
-              cursor: (saving || !apiKey.trim() || savedOk) ? "not-allowed" : "pointer",
-              fontSize: 12, fontWeight: 600, flexShrink: 0,
-              display: "flex", alignItems: "center", gap: 5,
-            }}
+            className={savedOk ? shared.btnOk : apiKey.trim() ? shared.btnPrimary : shared.btn}
+            style={{ flexShrink: 0 }}
           >
             {savedOk && (
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -1683,18 +1587,14 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
         </div>
       </Field>
 
-      {error && <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{error}</p>}
+      {error && <p style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>{error}</p>}
 
       {provider.configured && (
         <button
           onClick={handleRemove}
           disabled={removing}
-          style={{
-            alignSelf: "flex-start", padding: "5px 12px",
-            background: "none", border: "1px solid rgba(239,68,68,0.3)",
-            borderRadius: "var(--radius-control)", color: "#ef4444",
-            cursor: removing ? "not-allowed" : "pointer", fontSize: 12,
-          }}
+          className={shared.btnDanger}
+          style={{ alignSelf: "flex-start" }}
         >
            {removing ? t("i18n.removing") : t("i18n.disconnect")}
         </button>
@@ -1721,8 +1621,8 @@ function ProviderIcon({ id, size }: { id: string; size: number }) {
         style={{
           width: size,
           height: size,
-          border: "1px solid var(--border)",
           borderRadius: "var(--radius-control)",
+          background: "var(--bg-panel)",
           color: "var(--text-dim)",
           display: "inline-flex",
           alignItems: "center",
@@ -1755,11 +1655,6 @@ interface AddProviderPickerProps {
 }
 
 // Left-panel rows are buttons so the keyboard reaches them; the reset keeps the old row look.
-const navRowReset: React.CSSProperties = {
-  display: "flex", alignItems: "center", width: "100%", borderRadius: "var(--radius-control)",
-  border: "none", cursor: "pointer", textAlign: "left", font: "inherit", color: "inherit",
-};
-
 const navGroupLabelStyle: React.CSSProperties = {
   padding: "6px 8px 3px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)", letterSpacing: "0.04em",
 };
@@ -1785,14 +1680,11 @@ function AddProviderPicker({
   const cardStyle: React.CSSProperties = {
     display: "flex", flexDirection: "row", alignItems: "center", gap: 8,
     padding: "10px 12px",
-    background: "var(--bg-panel)",
-    border: "1px solid var(--border)",
     borderRadius: "var(--radius-surface)",
     boxSizing: "border-box",
-    cursor: "pointer",
+    justifyContent: "flex-start",
     minWidth: 0,
     textAlign: "left",
-    transition: "border-color 0.12s, background 0.12s",
     width: "100%",
   };
 
@@ -1800,12 +1692,13 @@ function AddProviderPicker({
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 1100, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      className={shared.scrim}
+      style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", overflow: "hidden" }}>
+      <div className={shared.sheet} style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Search */}
-        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <div className={shared.panel} style={{ margin: "10px 14px 0", padding: "0 10px", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }}>
             <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
@@ -1815,7 +1708,8 @@ function AddProviderPicker({
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
              placeholder={t("i18n.searchProviders")}
-            style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13, boxSizing: "border-box" }}
+            className={shared.fieldBare}
+            style={{ flex: 1, minHeight: 34, fontSize: 13 }}
           />
         </div>
 
@@ -1831,15 +1725,14 @@ function AddProviderPicker({
               {showCustom && (
                 <button
                   onClick={() => { onAddCustom(); onClose(); }}
+                  className={shared.btn}
                   style={cardStyle}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-panel)"; }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>OpenAI / Anthropic compatible</div>
                      <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>{t("i18n.customEndpoint")}</div>
                   </div>
-                  <span style={{ width: 26, height: 26, borderRadius: "var(--radius-control)", background: "var(--bg-hover)", border: "1px dashed var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <span style={{ width: 26, height: 26, borderRadius: "var(--radius-control)", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)" }}>
                       <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
@@ -1852,9 +1745,8 @@ function AddProviderPicker({
               )}
               {availableOAuth.map((p) => (
                 <button key={p.id} onClick={() => { onSelectOAuth(p.id); onClose(); }}
+                  className={shared.btn}
                   style={cardStyle}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-panel)"; }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
@@ -1869,9 +1761,8 @@ function AddProviderPicker({
               )}
               {availableApiKey.map((p) => (
                 <button key={p.id} onClick={() => { onSelectApiKey(p.id); onClose(); }}
+                  className={shared.btn}
                   style={cardStyle}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-panel)"; }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.displayName}</div>
@@ -2122,7 +2013,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
 
   return (
     <>
-    <div style={{ position: embedded ? "relative" : "fixed", inset: embedded ? undefined : 0, width: "100%", height: "100%", zIndex: embedded ? undefined : 1000, background: embedded ? "transparent" : "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center" }}
+    <div style={{ position: embedded ? "relative" : "fixed", inset: embedded ? undefined : 0, width: "100%", height: "100%", zIndex: embedded ? undefined : 1000, background: embedded ? "transparent" : "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={(e) => { if (!embedded && e.target === e.currentTarget) onClose(); }}
       {...(embedded ? {} : {
         role: "dialog",
@@ -2131,15 +2022,15 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
         // 앱의 전역 단축키는 이 대화상자가 열린 동안 꺼진다. 닫기는 여기서 직접 받는다.
         onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } },
       })}>
-      <div style={{ width: embedded ? "100%" : isMobile ? "calc(100vw - 16px)" : 860, maxWidth: embedded ? "none" : "calc(100vw - 16px)", height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "78vh", maxHeight: embedded ? "none" : "calc(100dvh - 16px)", background: "var(--bg)", border: embedded ? "none" : "1px solid var(--border)", borderRadius: embedded ? 0 : 10, display: "flex", flexDirection: "column", boxShadow: embedded ? "none" : "0 8px 32px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+      <div style={{ width: embedded ? "100%" : isMobile ? "calc(100vw - 16px)" : 860, maxWidth: embedded ? "none" : "calc(100vw - 16px)", height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "78vh", maxHeight: embedded ? "none" : "calc(100dvh - 16px)", background: "var(--bg)", borderRadius: embedded ? 0 : "var(--radius-surface)", display: "flex", flexDirection: "column", boxShadow: embedded ? "none" : "var(--shadow-float)", overflow: "hidden" }}>
 
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
              <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("common.models")}</span>
             <code style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>~/.omp/agent/models.yml</code>
           </div>
-          <button onClick={onClose} aria-label={t("i18n.close")} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
+          <button onClick={onClose} aria-label={t("i18n.close")} className={shared.btnQuiet} style={{ fontSize: 20, lineHeight: 1 }}>×</button>
         </div>
 
         {/* Body */}
@@ -2148,23 +2039,19 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
           {/* Left: tree */}
           <div style={{
             width: isMobile ? "100%" : 210,
-            maxHeight: isMobile ? "40vh" : undefined,
-            borderRight: isMobile ? "none" : "1px solid var(--border)",
-            borderBottom: isMobile ? "1px solid var(--border)" : "none",
-            display: "flex", flexDirection: "column", flexShrink: 0, background: "var(--bg-panel)",
-          }}>
-            <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px" }}>
+            maxHeight: isMobile ? "28vh" : undefined,
+            display: "flex", flexDirection: "column", flexShrink: 0, borderRadius: 0,
+          }} className={shared.panel}>
+            <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px 16px" }}>
               {/* omp routes work by role; keep that the first thing in the panel. */}
               <div role="group" aria-labelledby="models-nav-roles">
               <div id="models-nav-roles" style={navGroupLabelStyle}>{t("models.navGroupRoles")}</div>
               <button
                 type="button"
-                className="models-nav-row"
+                className={`models-nav-row ${shared.navRow}`}
                 aria-current={selection?.type === "roles" ? "true" : undefined}
                 onClick={() => setSelection({ type: "roles" })}
-                style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: selection?.type === "roles" ? "var(--bg-selected)" : "none" }}
-                onMouseEnter={(e) => { if (selection?.type !== "roles") e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { if (selection?.type !== "roles") e.currentTarget.style.background = "none"; }}
+                style={{ gap: 7, padding: "5px 8px" }}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
                   <line x1="4" y1="7" x2="20" y2="7" /><circle cx="9" cy="7" r="2.2" />
@@ -2173,7 +2060,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 <span style={{ fontSize: 12, color: "var(--text)", flex: 1 }}>{t("roles.title")}</span>
               </button>
               </div>
-              <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
+              <div style={{ height: 8 }} />
 
               {(activeOAuth.length > 0 || activeApiKey.length > 0) && (
                 <div id="models-nav-accounts" style={navGroupLabelStyle}>{t("models.navGroupAccounts")}</div>
@@ -2185,13 +2072,11 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 return (
                   <button
                     type="button"
-                    className="models-nav-row"
+                    className={`models-nav-row ${shared.navRow}`}
                     key={p.id}
                     aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelection({ type: "oauth", providerId: p.id })}
-                    style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: isSelected ? "var(--bg-selected)" : "none" }}
-                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "none"; }}
+                    style={{ gap: 7, padding: "5px 8px" }}
                   >
                     <ProviderIcon id={p.id} size={16} />
                     <span style={{ fontSize: 12, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
@@ -2205,13 +2090,11 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                 return (
                   <button
                     type="button"
-                    className="models-nav-row"
+                    className={`models-nav-row ${shared.navRow}`}
                     key={p.id}
                     aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelection({ type: "apikey", providerId: p.id })}
-                    style={{ ...navRowReset, gap: 7, padding: "5px 8px", background: isSelected ? "var(--bg-selected)" : "none" }}
-                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "none"; }}
+                    style={{ gap: 7, padding: "5px 8px" }}
                   >
                     <ProviderIcon id={p.id} size={16} />
                     <span style={{ fontSize: 12, color: "var(--text)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.displayName}</span>
@@ -2221,7 +2104,7 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
 
               {/* Divider before custom providers, only when there are active managed providers */}
               {(activeOAuth.length > 0 || activeApiKey.length > 0) && providers.length > 0 && (
-                <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
+                <div style={{ height: 8 }} />
               )}
 
               {!loading && providers.length > 0 && (
@@ -2238,12 +2121,10 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                     {/* Provider row */}
                     <button
                       type="button"
-                      className="models-nav-row"
+                      className={`models-nav-row ${shared.navRow}`}
                       aria-current={isProviderSelected ? "true" : undefined}
                       onClick={() => setSelection({ type: "provider", name: pName })}
-                      style={{ ...navRowReset, gap: 6, padding: "7px 8px", background: isProviderSelected ? "var(--bg-selected)" : "none" }}
-                      onMouseEnter={(e) => { if (!isProviderSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { if (!isProviderSelected) e.currentTarget.style.background = "none"; }}
+                      style={{ gap: 6, padding: "7px 8px" }}
                     >
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }}>
                         <rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" />
@@ -2263,48 +2144,39 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
                       return (
                         <button
                           type="button"
-                          className="models-nav-row"
+                          className={`models-nav-row ${shared.navRow}`}
                           key={i}
                           aria-current={isModelSelected ? "true" : undefined}
                           onClick={() => setSelection({ type: "model", providerName: pName, index: i })}
-                          style={{ ...navRowReset, gap: 6, padding: "5px 8px 5px 26px", background: isModelSelected ? "var(--bg-selected)" : "none" }}
-                          onMouseEnter={(e) => { if (!isModelSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isModelSelected) e.currentTarget.style.background = "none"; }}
+                          style={{ gap: 6, padding: "5px 8px 5px 26px" }}
                         >
                           <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: m.id ? "var(--text-muted)" : "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                              {m.id || t("i18n.newModel")}
                           </span>
                           {m.reasoning && (
-                            <span style={{ fontSize: 9, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: "var(--radius-control)", flexShrink: 0 }}>T</span>
+                            <span className={`${shared.badge} ${shared.badgeInfo}`} style={{ fontSize: 9, flexShrink: 0 }}>T</span>
                           )}
                         </button>
                       );
                     })}
 
                     {/* Add model button */}
-                    <div
+                    <button
+                      type="button"
+                      className={shared.navRow}
                       onClick={(e) => { e.stopPropagation(); addModel(pName); }}
-                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px 4px 26px", borderRadius: "var(--radius-control)", cursor: "pointer", color: "var(--text-dim)" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+                      style={{ gap: 4, padding: "4px 8px 4px 26px", color: "var(--text-dim)" }}
                     >
                        <span style={{ fontSize: 11 }}>+ {t("i18n.model")}</span>
-                    </div>
+                    </button>
                   </div>
                 );
               })}
             </div>
 
             {/* Add provider */}
-            <div style={{ borderTop: "1px solid var(--border)", padding: "8px 6px" }}>
-              <button onClick={() => setPickerOpen(true)} style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                width: "100%", padding: "6px 0", background: "none", border: "1px dashed var(--border)", borderRadius: "var(--radius-control)",
-                color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
-              }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.color = "var(--accent)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-muted)"; }}
-              >
+            <div style={{ padding: "8px 6px" }}>
+              <button onClick={() => setPickerOpen(true)} className={shared.btn} style={{ width: "100%" }}>
                  + {t("i18n.addProvider")}
               </button>
             </div>
@@ -2321,23 +2193,20 @@ export function ModelsConfig({ cwd, onClose, embedded = false, onModelsChanged, 
         </div>
 
         {/* Footer */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, padding: "10px 18px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-          {(loadError ?? saveError) && <span style={{ fontSize: 12, color: "#f87171", flex: 1 }}>{loadError ?? saveError}</span>}
-          <button onClick={onClose} style={{ padding: "6px 14px", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", color: "var(--text-muted)", cursor: "pointer", fontSize: 13 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, padding: "10px 18px", flexShrink: 0 }}>
+          {(loadError ?? saveError) && <span style={{ fontSize: 12, color: "var(--danger)", flex: 1 }}>{loadError ?? saveError}</span>}
+          <button onClick={onClose} className={shared.btn} style={{ padding: "6px 14px", fontSize: 13 }}>
              {t("i18n.cancel")}
           </button>
-          <button onClick={handleSave} disabled={saving || savedOk || saveBlocked} style={{
-            position: "relative",
-            padding: "6px 16px",
-            minWidth: 92,
-            background: savedOk ? "#16a34a" : saving || saveBlocked ? "var(--bg-panel)" : "var(--seed-color-bg-neutral-inverted)",
-            border: "none", borderRadius: "var(--radius-control)",
-            color: savedOk ? "#fff" : saving || saveBlocked ? "var(--text-muted)" : "var(--seed-color-fg-neutral-inverted)",
-            cursor: saveBlocked ? "not-allowed" : (saving || savedOk) ? "default" : "pointer", fontSize: 13, fontWeight: 600,
-            display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
-            transition: "background-color 0.2s ease, color 0.2s ease",
-            animation: savedOk ? "saved-pop 0.45s ease" : undefined,
-          }}>
+          <button onClick={handleSave} disabled={saving || savedOk || saveBlocked}
+            className={savedOk ? shared.btnOk : saving || saveBlocked ? shared.btn : shared.btnPrimary}
+            style={{
+              position: "relative",
+              padding: "6px 16px",
+              minWidth: 92,
+              fontSize: 13,
+              animation: savedOk ? "saved-pop 0.45s ease" : undefined,
+            }}>
             {savedOk && (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
                 style={{ strokeDasharray: 18, animation: "saved-check-draw 0.35s ease forwards", flexShrink: 0 }}>

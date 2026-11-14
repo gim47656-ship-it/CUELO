@@ -1,0 +1,9 @@
+{
+  "id": "vm-memory-guard",
+  "name": "VM 메모리 장치",
+  "description": "메모리가 모자랄 때 무거운 로컬 작업(production 빌드, 전체 테스트) 직전에 WinBoat VM을 정상 종료하고 끝나면 다시 켭니다. Windows 빌드(vm_build)가 돌거나 VM 화면이 연결돼 있으면 건드리지 않습니다.",
+  "createdAt": "2026-11-14T12:00:00+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": ["lab_vm_memory_guard"]
+}

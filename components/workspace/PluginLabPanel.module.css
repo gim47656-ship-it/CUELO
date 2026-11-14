@@ -21,7 +21,6 @@
   align-items: center;
   gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
 }
 
 .hint {
@@ -73,18 +72,17 @@
   gap: var(--seed-dimension-x2);
   min-inline-size: 0;
   padding: var(--seed-dimension-x3);
-  border: 1px solid var(--seed-color-stroke-neutral-weak);
   border-radius: var(--radius-surface);
-  background: var(--seed-color-bg-layer-default);
-  transition: border-color var(--seed-duration-color-transition) var(--seed-timing-function-easing);
+  background: var(--bg);
+  transition: opacity var(--seed-duration-color-transition) var(--seed-timing-function-easing);
 }
 
 .card[data-enabled="false"] {
-  background: transparent;
+  background: var(--bg-subtle);
 }
 
 .card[aria-busy="true"] {
-  border-color: var(--seed-color-stroke-neutral-muted);
+  opacity: 0.72;
 }
 
 .cardHead {
@@ -263,7 +261,6 @@
   justify-content: flex-end;
   margin-block-start: var(--seed-dimension-x0_5);
   padding-block-start: var(--seed-dimension-x2);
-  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
 }
 
 /* Open panel: the plugin's own page fills the deck between header and status line. */
@@ -278,9 +275,9 @@
   flex: 1 1 auto;
   min-block-size: 12rem;
   inline-size: 100%;
-  border: 1px solid var(--seed-color-stroke-neutral-weak);
+  border: 0;
   border-radius: var(--radius-surface);
-  background: var(--seed-color-bg-layer-default);
+  background: var(--bg);
   color-scheme: normal;
 }
 

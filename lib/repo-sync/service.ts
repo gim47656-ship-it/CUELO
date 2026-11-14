@@ -62,20 +62,25 @@ export function originName(url: string): string | null {
   const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)gim47656-ship-it\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(url);
   return match && validName(match[1]) ? match[1] : null;
 }
-export async function discover(o: Options = {}): Promise<{ name: string; path: string }[]> {
+/**
+ * Clones this PC already has under ~/src (and ~/cuelo-routines). A clone a running CUELO serves from
+ * (`install: true`) still counts as present, so it is never offered for a fresh clone, but runSync must
+ * never fetch or fast-forward it.
+ */
+export async function discover(o: Options = {}): Promise<{ name: string; path: string; install?: true }[]> {
   const home = homeOf(o), src = join(home, "src");
   const entries = exists(src) ? readdirSync(src).map((n) => join(src, n)) : [];
   entries.push(join(home, "cuelo-routines"));
-  const found: { name: string; path: string }[] = [];
+  const found: { name: string; path: string; install?: true }[] = [];
   const installs = [resolve(home, "cuelo-run"), resolve(home, "app"), process.env.CUELO_APP_DIR, ...readBusySnapshots(join(home, ".omp/agent")).map((s) => s.appDir)]
     .filter((p): p is string => !!p).map((p) => { try { return realpathSync(p); } catch { return resolve(p); } });
   for (const path of entries) {
     // A .git file is a linked worktree/submodule, not an independently owned clone.
     if (!exists(path) || !lstatSync(path).isDirectory() || !exists(join(path, ".git")) || !lstatSync(join(path, ".git")).isDirectory()) continue;
-    if (installs.includes(realpathSync(path)) || realpathSync(path) !== resolve(path)) continue;
+    if (realpathSync(path) !== resolve(path)) continue;
     try {
       const name = originName(await command(["git", "remote", "get-url", "origin"], path));
-      if (name) found.push({ name, path });
+      if (name) found.push(installs.includes(realpathSync(path)) ? { name, path, install: true } : { name, path });
     } catch { /* Not a usable origin; leave this directory alone. */ }
   }
   return found;
@@ -176,7 +181,7 @@ export async function runSync(o: Options = {}) {
     const busy = await busyState(o);
     state.unresolvedRunningIds = busy.unresolved;
     const results: Result[] = [];
-    for (const clone of await discover(o)) {
+    for (const clone of (await discover(o)).filter((c) => !c.install)) {
       const old = state.results.find((r) => r.path === clone.path);
       const meta = state.repos.find((r) => r.name.toLowerCase() === clone.name.toLowerCase());
       let result: Result;

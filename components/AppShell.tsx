@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useReducer, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/navigation";
 import { ActionButton, Icon, Menu } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -69,7 +70,6 @@ import {
   getNavigatorPresentation,
   getWorkspacePinDecision,
   reduceWorkspaceLayout,
-  WORKSPACE_RESOURCE_TABS,
   type WorkspaceEfficiencyTab,
   WORKSPACE_VIEW_IDS,
   type WorkspacePanelViewId,
@@ -142,6 +142,27 @@ function findDispatchFocusTarget(origin: string): HTMLElement | null {
   return row.querySelector<HTMLElement>(".answer-dispatch-open")
     ?? row.closest(".answer-dispatch")?.querySelector<HTMLElement>(".answer-dispatch-toggle")
     ?? null;
+}
+
+/** 명령 팔레트의 보기 행 아이콘(목업 palette.webp). 현재 보기는 아이콘 대신 체크를 보인다. */
+const PALETTE_VIEW_ICONS: Record<WorkspaceViewId, WorkbenchIconName> = {
+  chat: "message-square",
+  process: "list-tree",
+  subagents: "bot",
+  files: "file-text",
+  resource: "users",
+  sidechat: "messages-square",
+  efficiency: "gauge",
+  plugins: "puzzle",
+  memory: "brain",
+};
+
+/** 헤더 위 패널(세션 정보·시스템 프롬프트·분기)을 연 조작부. 메뉴 항목은 메뉴와 함께 사라지므로 더 보기 버튼을 돌려준다. */
+function findTopPanelOpener(): HTMLElement | null {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active.closest("[data-top-panel-opener]")
+    ? active
+    : document.querySelector<HTMLElement>(".workspace-header-more");
 }
 
 export function AppShell({
@@ -494,6 +515,24 @@ export function AppShell({
   }, [selectedSession?.id]);
 
   const handleCommandPaletteKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      // ↑↓ walk the command rows. The search field's own handler already moved focus into its
+      // results when there are any, and the result list keeps its own arrows.
+      const container = commandPaletteRef.current;
+      const target = event.target as HTMLElement;
+      if (!container || event.nativeEvent.isComposing || document.activeElement !== target) return;
+      if (target.closest(".palette-search-results")) return;
+      const rows = Array.from(container.querySelectorAll<HTMLElement>(".workspace-command-list button"));
+      if (rows.length === 0) return;
+      const down = event.key === "ArrowDown";
+      const index = rows.indexOf(target);
+      if (index < 0 && !down) return;
+      event.preventDefault();
+      if (index < 0) rows[0].focus();
+      else if (!down && index === 0) container.querySelector<HTMLElement>(".palette-search-field > input")?.focus();
+      else rows[(index + (down ? 1 : -1)) % rows.length].focus();
+      return;
+    }
     if (event.key !== "Tab") return;
     const container = commandPaletteRef.current;
     if (!container) return;
@@ -819,6 +858,15 @@ export function AppShell({
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const topPanelRef = useRef<HTMLDivElement>(null);
+  // 패널을 연 조작부(맥락 미터, 더 보기 메뉴). 닫으면 초점이 여기로 돌아간다. 메뉴 항목은 메뉴와 함께 사라지므로 메뉴 버튼으로 돌린다.
+  const topPanelOpenerRef = useRef<HTMLElement | null>(null);
+  const closeTopPanel = useCallback(() => {
+    const opener = topPanelOpenerRef.current;
+    topPanelOpenerRef.current = null;
+    setActiveTopPanel(null);
+    if (opener?.isConnected) window.requestAnimationFrame(() => opener.focus());
+  }, []);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   // The right inspector stays open on a wide desktop until the operator hides it (per browser).
   // Below its pin width, and on the phone, 이번 턴 opens on request (turn row, peek strip, toggle).
@@ -1032,8 +1080,7 @@ export function AppShell({
       return true;
     }
     if (activeTopPanel) {
-      setActiveTopPanel(null);
-      requestComposerFocus();
+      closeTopPanel();
       return true;
     }
     if (workspaceLayout.transientLayer) {
@@ -1063,6 +1110,7 @@ export function AppShell({
     moreMenuOpen,
     reloginTarget,
     activeTopPanel,
+    closeTopPanel,
     projectTrustBusy,
     projectTrustDialogOpen,
     requestComposerFocus,
@@ -1077,12 +1125,14 @@ export function AppShell({
   const toggleTopPanel = useCallback((panel: "branches" | "system" | "session") => {
     dispatchWorkspaceLayout({ type: "close-layer" });
     if (isCompactWorkspace) setCompactDrawerOpen(false);
+    topPanelOpenerRef.current = findTopPanelOpener();
     setActiveTopPanel((current) => current === panel ? null : panel);
   }, [isCompactWorkspace, setCompactDrawerOpen]);
 
   const openSessionStatsPanel = useCallback(() => {
     dispatchWorkspaceLayout({ type: "close-layer" });
     if (isCompactWorkspace) setCompactDrawerOpen(false);
+    topPanelOpenerRef.current = findTopPanelOpener();
     setActiveTopPanel("session");
   }, [isCompactWorkspace, setCompactDrawerOpen]);
 
@@ -1111,7 +1161,19 @@ export function AppShell({
     update();
     const ro = new ResizeObserver(update);
     ro.observe(topBarRef.current);
-    return () => ro.disconnect();
+    // 패널 밖을 누르면 닫는다. 연 조작부를 다시 누르는 경우는 그 조작부의 토글이 맡는다. 초점은 누른 곳에 둔다.
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (topPanelRef.current?.contains(target) || target.closest("[data-top-panel-opener], [role='menu']")) return;
+      topPanelOpenerRef.current = null;
+      setActiveTopPanel(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      ro.disconnect();
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
   }, [activeTopPanel]);
 
   // File tabs are rendered in the AuxiliaryDeck's existing FileViewer slot.
@@ -2332,7 +2394,8 @@ export function AppShell({
                 variant="ghost"
                 size="small"
                 type="button"
-                onClick={openSessionStatsPanel}
+                onClick={() => toggleTopPanel("session")}
+                data-top-panel-opener=""
                 aria-expanded={activeTopPanel === "session"}
                 title={contextTitle ?? translate("session.title")}
                 aria-label={contextStatus ? `${contextTitle}. ${contextStatus}` : contextTitle ?? undefined}
@@ -2472,19 +2535,31 @@ export function AppShell({
               </Menu.Positioner>
             </Menu.Root>
           </header>
-          {/* Top panel dropdown — shared, only one active at a time */}
-          {activeTopPanel && topPanelPos && (
-            <div style={{
-              position: "fixed",
-              top: topPanelPos.top,
-              left: topPanelPos.left,
-              width: topPanelPos.width,
-              maxHeight: `calc(100dvh - ${topPanelPos.top}px - var(--omp-dock-h, 204px) - 8px)`,
-              overflowY: "auto",
-              zIndex: 500,
-            }}>
+          {/* Top panel: one at a time, rendered on <body> so the header's stacking context cannot put the stream above it */}
+          {activeTopPanel && topPanelPos && createPortal(
+            <div
+              ref={topPanelRef}
+              className="workspace-top-layer"
+              role="dialog"
+              aria-label={translate(activeTopPanel === "branches" ? "i18n.branches" : activeTopPanel === "system" ? "system.label" : "session.title")}
+              style={{
+                top: topPanelPos.top,
+                left: topPanelPos.left,
+                width: topPanelPos.width,
+                maxHeight: `calc(100dvh - ${topPanelPos.top}px - 8px)`,
+              }}
+            >
+              <button
+                type="button"
+                className="workspace-top-layer-close"
+                aria-label={translate("chat.close")}
+                title={translate("chat.close")}
+                onClick={closeTopPanel}
+              >
+                <WorkbenchIcon name="x" />
+              </button>
               {activeTopPanel === "branches" && (
-                <div className="workspace-top-panel" aria-label={translate("i18n.branches")}>
+                <div className="workspace-top-panel">
                   <BranchNavigator
                     tree={branchState.sessionId === (selectedSession?.id ?? null) ? branchState.tree : []}
                     activeLeafId={branchState.sessionId === (selectedSession?.id ?? null) ? branchState.leafId : null}
@@ -2494,38 +2569,27 @@ export function AppShell({
                 </div>
               )}
               {activeTopPanel === "system" && (
-                <div style={{
-                  background: "var(--bg-subtle)",
-                }}>
+                <div className="workspace-top-panel">
                   {systemPrompt ? (
                     <div style={{
-                      maxHeight: "min(600px, 75vh)",
-                      overflowY: "auto",
-                      padding: "12px 16px",
                       color: "var(--text-muted)",
                       fontSize: 12,
                       lineHeight: 1.6,
                       whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
                       fontFamily: "var(--font-mono)",
                     }}>
                       {systemPrompt}
                     </div>
-                  ) : systemPrompt === "" ? (
-                    <div style={{ padding: "10px 16px", fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-                       {translate("system.empty")}
-                    </div>
                   ) : (
-                    <div style={{ padding: "10px 16px", fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-                       {translate("system.load")}
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                       {translate(systemPrompt === "" ? "system.empty" : "system.load")}
                     </div>
                   )}
                 </div>
               )}
               {activeTopPanel === "session" && (
-                <div className="session-info-popover" style={{
-                  background: "var(--bg-subtle)",
-                  padding: "12px 16px",
-                }}>
+                <div className="workspace-top-panel session-info-popover">
                   {sessionStats ? (() => {
                     const formatDuration = (ms: number) => {
                       if (ms <= 0) return "0s";
@@ -2665,29 +2729,21 @@ export function AppShell({
                     );
 
                     return (
-                      <div style={{
-                        display: "grid",
-                        gridTemplateColumns: isCompactWorkspace
-                          ? "1fr"
-                          : "minmax(360px, 1.7fr) minmax(140px, 0.55fr) minmax(190px, 0.75fr)",
-                        gap: isCompactWorkspace ? 16 : 24,
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                        fontFamily: "var(--font-mono)",
-                      }}>
+                      <div className="session-info-grid">
                         {sessionInfoSection}
                          {section(translate("session.messages"), messageRows)}
                          {section(translate("session.tokens"), [...tokenRows, ...extraTokenRows], "right", true)}
                       </div>
                     );
                   })() : (
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                        {translate("session.load")}
                     </div>
                   )}
                 </div>
               )}
-            </div>
+            </div>,
+            document.body,
           )}
 
         </div>
@@ -2849,10 +2905,6 @@ export function AppShell({
             onKeyDown={handleCommandPaletteKeyDown}
             aria-label={locale === "ko" ? "명령 팔레트" : "Command palette"}
           >
-            <header>
-              <strong>{locale === "ko" ? "명령 팔레트" : "Command palette"}</strong>
-              <kbd>Ctrl K</kbd>
-            </header>
             <PaletteTranscriptSearch
               t={translate}
               onPick={(session, hit) => {
@@ -2864,60 +2916,86 @@ export function AppShell({
               }}
             />
             <div className="workspace-command-list">
-              {sessionActivity.waiting.map((session) => (
+              {sessionActivity.waiting.length ? (
+                <div className="workspace-command-group" role="group" aria-label={translate("workbench.needsInput")}>
+                  <h3 aria-hidden="true">{translate("workbench.needsInput")}</h3>
+                  {sessionActivity.waiting.map((session) => (
+                    <button
+                      key={`waiting-${session.id}`}
+                      type="button"
+                      className="workspace-command-waiting"
+                      onClick={() => {
+                        dispatchWorkspaceLayout({ type: "close-layer" });
+                        selectWorkspaceView("chat", true);
+                        handleSelectSession(session);
+                      }}
+                    >
+                      <span>
+                        <span className="workbench-lamp" data-kind="input" aria-hidden="true" />
+                        {session.name?.trim() || session.firstMessage?.trim() || session.id}
+                      </span>
+                      <small>{translate("workbench.needsInput")}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="workspace-command-group" role="group" aria-label={translate("palette.groupViews")}>
+                <h3 aria-hidden="true">{translate("palette.groupViews")} <small>{translate("palette.groupViewsHint")}</small></h3>
+                {WORKSPACE_VIEW_IDS.map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    aria-current={workspaceLayout.activeView === view ? "true" : undefined}
+                    onClick={() => {
+                      if (view === "resource") setResourceTab("characters");
+                      selectWorkspaceView(view, true);
+                    }}
+                  >
+                    <span><WorkbenchIcon name={workspaceLayout.activeView === view ? "check" : PALETTE_VIEW_ICONS[view]} />{viewLabels[view]}</span>
+                    <small>{workspaceLayout.activeView === view ? (locale === "ko" ? "현재 보기" : "Current view") : ""}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="workspace-command-group" role="group" aria-label={translate("palette.groupShortcuts")}>
+                <h3 aria-hidden="true">{translate("palette.groupShortcuts")}</h3>
+                {(["usage", "models"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => {
+                      setResourceTab(tab);
+                      selectWorkspaceView("resource", false);
+                    }}
+                  >
+                    <span><WorkbenchIcon name={tab === "usage" ? "user-round" : "chart-column"} />{tab === "usage" ? "계정 한도" : "모델 통계"}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="workspace-command-group" role="group" aria-label={translate("palette.groupScreen")}>
+                <h3 aria-hidden="true">{translate("palette.groupScreen")}</h3>
+                <button type="button" onClick={handleSidebarToggle}>
+                  <span><WorkbenchIcon name="panel-left" />{navigatorPresentation.presented ? translate("sidebar.hide") : translate("sidebar.show")}</span>
+                  <kbd>Ctrl B</kbd>
+                </button>
+                <button type="button" onClick={toggleWideChat}>
+                  <span><WorkbenchIcon name="maximize-2" />{translate(wideChat ? "palette.wideChatOff" : "palette.wideChatOn")}</span>
+                </button>
                 <button
-                  key={`waiting-${session.id}`}
                   type="button"
-                  className="workspace-command-waiting"
                   onClick={() => {
                     dispatchWorkspaceLayout({ type: "close-layer" });
-                    selectWorkspaceView("chat", true);
-                    handleSelectSession(session);
+                    setSettingsConfigOpen(true);
                   }}
                 >
-                  <span>
-                    <span className="workbench-lamp" data-kind="input" aria-hidden="true" />
-                    {session.name?.trim() || session.firstMessage?.trim() || session.id}
-                  </span>
-                  <small>{translate("workbench.needsInput")}</small>
+                  <span><WorkbenchIcon name="settings" />{translate("common.settings")}</span>
                 </button>
-              ))}
-              {WORKSPACE_VIEW_IDS.map((view) => (
-                <button key={view} type="button" onClick={() => selectWorkspaceView(view, true)}>
-                  <span>{viewLabels[view]}</span>
-                  <small>{workspaceLayout.activeView === view ? (locale === "ko" ? "현재 보기" : "Current view") : ""}</small>
-                </button>
-              ))}
-              {WORKSPACE_RESOURCE_TABS.map((tab) => (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => {
-                    setResourceTab(tab);
-                    selectWorkspaceView("resource", false);
-                  }}
-                >
-                  <span>{tab === "characters" ? "캐릭터" : tab === "usage" ? "계정 한도" : "모델 통계"}</span>
-                  <small>{viewLabels.resource}</small>
-                </button>
-              ))}
-              <button type="button" onClick={handleSidebarToggle}>
-                <span>{navigatorPresentation.presented ? translate("sidebar.hide") : translate("sidebar.show")}</span>
-                <small>Ctrl B</small>
-              </button>
-              <button type="button" onClick={toggleWideChat}>
-                <span>{translate(wideChat ? "palette.wideChatOff" : "palette.wideChatOn")}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  dispatchWorkspaceLayout({ type: "close-layer" });
-                  setSettingsConfigOpen(true);
-                }}
-              >
-                <span>{translate("common.settings")}</span>
-              </button>
+              </div>
             </div>
+            <footer className="workspace-command-footer" aria-hidden="true">
+              <span><kbd>↑↓</kbd> {translate("palette.hintMove")}</span>
+              <span><kbd>Enter</kbd> {translate("palette.hintOpen")}</span>
+              <span><kbd>Esc</kbd> {translate("palette.hintClose")}</span>
+            </footer>
           </div>
         </div>
       )}

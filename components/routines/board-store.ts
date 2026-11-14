@@ -131,15 +131,26 @@ function reloadReadPosts(): void {
   for (const listener of readListeners) listener();
 }
 
-function persistReadPost(key: string): void {
+function persistReadPosts(keys: readonly string[]): void {
   const stored = storedReadPosts();
+  const known = new Set(stored);
+  const added = keys.filter((key) => !known.has(key));
   try {
-    if (!stored.includes(key)) localStorage.setItem(READ_KEY, JSON.stringify([...stored, key].slice(-READ_LIMIT)));
-    localOnly.delete(key);
+    if (added.length) localStorage.setItem(READ_KEY, JSON.stringify([...stored, ...added].slice(-READ_LIMIT)));
+    for (const key of keys) localOnly.delete(key);
   } catch {
     // 저장소가 막힌 브라우저에서는 이 탭에서만 읽음으로 둔다.
   }
   reloadReadPosts();
+}
+
+/** 읽음으로 바꿀 키들을 화면에 바로 반영하고, 탭 사이 잠금 안에서 한 번에 저장한 뒤 서버에 알린다. */
+function markKeysRead(keys: string[]): void {
+  for (const key of keys) localOnly.add(key);
+  reloadReadPosts();
+  if (typeof navigator !== "undefined" && navigator.locks) void navigator.locks.request(READ_KEY, () => persistReadPosts(keys));
+  else persistReadPosts(keys);
+  shareReads(keys);
 }
 
 const SHARE_BATCH = 500;
@@ -186,12 +197,20 @@ function shareLocalReads(): void {
 export function markRoutinePostRead(routineId: string, file: string): void {
   const key = `${routineId}/${file}`;
   if (loadReadPosts().has(key)) return;
-  // 잠금을 기다리는 동안에도 화면에는 바로 읽음으로 보인다.
-  localOnly.add(key);
-  reloadReadPosts();
-  if (typeof navigator !== "undefined" && navigator.locks) void navigator.locks.request(READ_KEY, () => persistReadPost(key));
-  else persistReadPost(key);
-  shareReads([key]);
+  markKeysRead([key]);
+}
+
+/**
+ * 「전체 읽음 표시」: 주어진 루틴들(게시판 전체, 또는 게시판 안의 루틴 하나)에서 지금 새 글인 것을 한 번에 읽음으로 한다.
+ * 저장소는 한 번 쓰고, 화면은 한 번 다시 그리고, 서버에는 SHARE_BATCH개씩 나눠 보낸다. 읽음으로 바꾼 글 수를 돌려준다.
+ */
+export function markAllRoutinePostsRead(routines: readonly Pick<BoardRoutine, "id" | "posts">[], now = Date.now()): number {
+  const read = loadReadPosts();
+  const keys = routines.flatMap((routine) => routine.posts
+    .filter((post) => isNewRoutinePost(routine.id, post, read, now))
+    .map((post) => `${routine.id}/${post.file}`));
+  if (keys.length) markKeysRead(keys);
+  return keys.length;
 }
 
 /** 다른 탭이 목록을 쓰거나 저장소를 비우면 다시 읽는다. 아직 저장하지 못한 이 탭의 기록은 그대로 더해 보인다. */

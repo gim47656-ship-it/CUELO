@@ -265,6 +265,8 @@ html.dark[data-omp-theme-name="anthracite"]:not([data-cuelo-look="graphite"]) {
   --seed-color-bg-transparent-selected: var(--bg-selected);
   --seed-color-fg-neutral-muted: var(--text-muted);
   --seed-color-fg-neutral-subtle: var(--text-dim);
+  /* SEED's overlay-muted (17% black) left modals floating over a readable chat; same scrim as default dark. */
+  --scrim: rgb(0 0 0 / 0.5);
 }
 
 /* Nord keeps its frost accent and snow ink; the centre steps one shade below
@@ -285,6 +287,8 @@ html.dark[data-omp-theme-name="dark-nord"]:not([data-cuelo-look="graphite"]) {
   --seed-color-bg-layer-basement: var(--bg-panel);
   --seed-color-bg-layer-default-pressed: var(--bg-hover);
   --seed-color-bg-transparent-selected: var(--bg-selected);
+  /* SEED's overlay-muted (17% black) left modals floating over a readable chat; same scrim as default dark. */
+  --scrim: rgb(0 0 0 / 0.5);
 }
 /* ========================= end workbench palette ========================= */
 
@@ -1212,10 +1216,6 @@ pre, code {
 .mermaid-preview-button:hover {
   opacity: 0.85;
 }
-.mermaid-preview-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
 
 .mermaid-zoom-dialog {
   width: 100vw;
@@ -1351,11 +1351,6 @@ pre, code {
   }
 }
 
-.directory-picker-path:focus-visible {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
 /* File viewer markdown preview — larger headings */
 .markdown-file-preview h1 { font-size: 1.8em; }
 .markdown-file-preview h2 { font-size: 1.4em; }
@@ -1363,7 +1358,6 @@ pre, code {
 .markdown-file-preview p { margin: 0 0 12px; }
 .markdown-file-preview pre {
   background: var(--bg-panel);
-  border: 1px solid var(--border);
   border-radius: var(--radius-surface);
   padding: 12px 16px;
   overflow-x: auto;
@@ -1383,11 +1377,10 @@ pre, code {
   padding: 0;
 }
 
-/* YAML frontmatter metadata card (file preview) */
+/* YAML frontmatter metadata: one filled block above the preview, no frame */
 .markdown-frontmatter {
   margin-bottom: 20px;
   padding: 14px 16px 12px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
 }
@@ -1407,8 +1400,7 @@ pre, code {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-muted);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
   padding: 0 10px;
 }
@@ -1827,12 +1819,6 @@ span.linenumber {
   background: var(--bg-hover);
 }
 
-.model-role-disclosure:focus-visible,
-.models-nav-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
 @media (max-width: 640px) {
   .empty-workspace-context {
     margin-inline: 8px;
@@ -1900,11 +1886,89 @@ span.linenumber {
 }
 
 /* Secondary session surfaces (session info, system prompt, branches) drop
-   from the header row as one filled sheet. */
+   from the header row as one opaque floating layer on <body>: the panel fill
+   steps 1.30 or more away from the centre beneath, the float shadow lifts it
+   over the stream and composer, and it scrolls inside its own height. It sits
+   under the drawer, sheet, palette and upkeep layers (250 and up). */
+.workspace-top-layer {
+  container: top-layer / inline-size;
+  position: fixed;
+  z-index: 240;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-end-start-radius: 10px;
+  border-end-end-radius: 10px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-float);
+  color: var(--text);
+  word-break: keep-all;
+}
+
+.workspace-top-layer-close {
+  position: sticky;
+  inset-block-start: var(--seed-dimension-x2);
+  z-index: 1;
+  float: inline-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 32px;
+  block-size: 32px;
+  margin: var(--seed-dimension-x2) var(--seed-dimension-x2) 0 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.workspace-top-layer-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 .workspace-top-panel {
   padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
-  border: 0;
-  background: var(--bg-subtle);
+}
+
+/* 세션 정보 · 메시지 · Token: one column when narrow, info over two columns
+   in the middle, three columns only when the layer is wide enough for them. */
+.session-info-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--seed-dimension-x4);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@container top-layer (min-width: 560px) {
+  .session-info-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .session-info-grid > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@container top-layer (min-width: 900px) {
+  .session-info-grid {
+    grid-template-columns: minmax(0, 1.7fr) minmax(140px, 0.55fr) minmax(190px, 0.75fr);
+    gap: var(--seed-dimension-x6);
+  }
+
+  .session-info-grid > :first-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-top-layer-close {
+    inline-size: 44px;
+    block-size: 44px;
+  }
 }
 
 .branch-navigator-tree {
@@ -2355,10 +2419,6 @@ span.linenumber {
   background: var(--bg-hover);
 }
 
-.file-doc-shortcuts-link:focus-visible {
-  outline: none;
-}
-
 .file-doc-shortcuts-unavailable {
   color: var(--text-dim);
 }
@@ -2403,29 +2463,23 @@ span.linenumber {
   background: var(--scrim);
 }
 
-/* The palette floats: raised fill and the float shadow, no frame or seams. */
+/* The palette floats on the panel fill with the float shadow, no frame or seams. On the panel
+   the field (--bg) and the current row (--bg-selected) both clear 1.30 in every theme; on the
+   raised fill the dark themes' rows did not. One column in groups, as in mockups/palette.webp. */
 .workspace-command-palette {
-  inline-size: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  inline-size: min(588px, 100%);
+  max-block-size: 100%;
   overflow: hidden;
   border: 0;
-  border-radius: var(--seed-radius-r2);
-  background: var(--bg-raised);
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
   box-shadow: var(--shadow-float);
 }
 
-.workspace-command-palette > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-block-size: 42px;
-  padding-inline: 14px;
-  border: 0;
-  color: var(--text);
-  font-size: 12px;
-}
-
 .workspace-command-palette kbd {
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
@@ -2433,29 +2487,70 @@ span.linenumber {
 
 .workspace-command-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  padding: 4px;
+  gap: 12px;
+  min-block-size: 0;
+  overflow-y: auto;
+  padding: 8px;
   background: transparent;
+}
+
+.workspace-command-group {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-command-group > h3 {
+  margin: 0;
+  padding: 0 10px 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace-command-group > h3 > small {
+  margin-inline-start: 6px;
+  font-family: inherit;
+  font-weight: 400;
 }
 
 .workspace-command-list button {
   display: flex;
-  min-block-size: 44px;
+  min-block-size: 32px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-inline: 12px;
+  padding-inline: 10px;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text);
+  font-size: 14px;
   text-align: start;
   cursor: pointer;
 }
 
+.workspace-command-list button > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-inline-size: 0;
+}
+
+.workspace-command-list button .workbench-icon {
+  flex: none;
+  color: var(--text-muted);
+}
+
 .workspace-command-list button:hover {
   background: var(--bg-hover);
+}
+
+.workspace-command-list button[aria-current="true"] {
+  background: var(--bg-selected);
+}
+
+.workspace-command-list button[aria-current="true"] .workbench-icon {
+  color: var(--text);
 }
 
 /* The waiting entry names a session: Korean breaks between words, and the lamp
@@ -2465,32 +2560,58 @@ span.linenumber {
   overflow-wrap: anywhere;
 }
 
-.workspace-command-waiting > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-inline-size: 0;
-}
-
 .workspace-command-list small {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 
+.workspace-command-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 8px 18px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.workspace-command-footer kbd {
+  margin-inline-end: 4px;
+}
+
+/* Key hints mean nothing on a touch screen; the list keeps the room. */
+@media (pointer: coarse) {
+  .workspace-command-footer,
+  .workspace-command-palette kbd {
+    display: none;
+  }
+}
+
 /* --- palette: transcript search ------------------------------------------- */
-.palette-search > input {
-  display: block;
-  inline-size: calc(100% - 8px);
-  block-size: 40px;
-  margin: 0 4px;
+.palette-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 0;
   padding-inline: 12px;
-  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg-subtle);
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.palette-search-field > input {
+  flex: 1;
+  min-inline-size: 0;
+  block-size: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--text);
   font-size: 14px;
+}
+
+.palette-search-field > .workbench-icon {
+  flex: none;
 }
 
 .palette-search-results {
@@ -2984,10 +3105,22 @@ span.linenumber {
   [role="option"],
   [role="switch"],
   [tabindex]:not([tabindex="-1"]):not(input, textarea, select)
-):focus-visible {
+):not(:where(.chat-composer-send, .seed-action-button--variant_neutralSolid, .upkeep-button[data-variant="primary"], [data-focus-halo])):focus-visible {
   outline: none !important;
   background-color: var(--focus-fill) !important;
   color: var(--focus-text) !important;
+  transition: none !important;
+}
+
+/* Ink-filled primary buttons are already dark (or, in dark themes, light), so the
+   focus fill would differ from their resting face by only 1.5:1 to 2.3:1. They
+   keep their face and gain a focus-fill plate flush around it instead: the plate
+   stands 3:1 or more against every surface, follows the button's radius and
+   shifts no layout (design-decisions.md 「Primary button focus」). Mouse clicks
+   show nothing. Forced colours drop the shadow; the outline rule below covers it. */
+:is(.chat-composer-send, .seed-action-button--variant_neutralSolid, .upkeep-button[data-variant="primary"], [data-focus-halo]):focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 var(--focus-halo, 4px) var(--focus-fill) !important;
   transition: none !important;
 }
 
@@ -3595,11 +3728,6 @@ h2.priority-group-heading {
   color: var(--text);
 }
 
-.navigator-usage-more:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 /* 좁은 화면에서만 나타나는 접기 줄. 드로어 안에서 사용량 스트립이 세션 목록의 세로 공간을
    계속 누르던 것을 사용자가 스스로 접을 수 있게 한다. */
 .navigator-usage-shell {
@@ -3627,11 +3755,6 @@ h2.priority-group-heading {
 .navigator-usage-toggle:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-.navigator-usage-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .navigator-usage-toggle svg {
@@ -3767,8 +3890,7 @@ h2.priority-group-heading {
 }
 
 .navigator-usage-relogin:hover {
-  background: var(--bg-hover);
-  border-color: var(--text-dim);
+  background: var(--bg-selected);
 }
 
 /* 접혀 있어도 오류 계정이 있다는 사실은 남긴다. */
@@ -3777,14 +3899,6 @@ h2.priority-group-heading {
   color: var(--seed-color-fg-critical-contrast);
   font-size: var(--readout-size);
   white-space: nowrap;
-}
-
-.navigator-usage-open:focus-visible,
-.navigator-usage-edit:focus-visible,
-.navigator-usage-move:focus-visible,
-.navigator-usage-relogin:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* 순서 이동 안내를 화면 낭독기에만 전한다. */
@@ -3800,8 +3914,6 @@ h2.priority-group-heading {
 /* --- workspace header + instrument seam ------------------------------------ */
 .workspace-header-stack {
   border-block-end: 0;
-  background: var(--bg-panel);
-  box-shadow: 0 1px 0 var(--bevel-shade);
 }
 
 .workspace-session-identity strong {
@@ -4306,8 +4418,10 @@ h2.priority-group-heading {
 .panel-header-title {
   flex: 0 1 auto;
   min-inline-size: 0;
-  margin: 0;
+  margin: 0 -4px;
+  padding-inline: 4px;
   overflow: hidden;
+  border-radius: var(--radius-control);
   color: var(--seed-color-fg-neutral);
   font-size: var(--seed-font-size-t4-static);
   font-weight: 600;
@@ -4316,8 +4430,8 @@ h2.priority-group-heading {
 }
 
 .panel-header-title:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: 1px;
+  background: var(--focus-fill);
+  color: var(--focus-text);
 }
 
 .panel-header-subtitle {
@@ -4410,11 +4524,6 @@ h2.priority-group-heading {
   background: var(--seed-color-bg-transparent-pressed);
 }
 
-.panel-header-link-button:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: 1px;
-}
-
 .panel-header .panel-header-more {
   display: none;
 }
@@ -4443,7 +4552,8 @@ h2.priority-group-heading {
   max-block-size: 40%;
   overflow-y: auto;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-muted);
+  margin-block-end: var(--seed-dimension-x2);
+  background: var(--bg-subtle);
   font-size: 12px;
 }
 
@@ -4502,8 +4612,7 @@ h2.priority-group-heading {
 }
 
 .process-log-turn + .process-log-turn {
-  border-block-start: 1px solid var(--seed-color-stroke-neutral-muted);
-  padding-block-start: var(--seed-dimension-x2);
+  padding-block-start: var(--seed-dimension-x3);
 }
 
 .process-log-turn-toggle {
@@ -4551,7 +4660,7 @@ h2.priority-group-heading {
 .file-tab.is-active {
   background: var(--bg) !important;
   color: var(--text) !important;
-  box-shadow: inset 0 -2px var(--accent);
+  font-weight: 650;
 }
 
 .file-tab.is-active .catppuccin-file-icon {
@@ -4604,11 +4713,6 @@ h2.priority-group-heading {
   min-block-size: 44px;
 }
 
-.resource-view-tabs .seed-tabs__trigger:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring);
-  outline-offset: -4px;
-}
-
 .resource-view-tabs > .seed-tabs__content,
 .resource-view-content {
   min-block-size: 0;
@@ -4620,7 +4724,6 @@ h2.priority-group-heading {
 
 .character-roster-intro {
   padding: var(--seed-dimension-x4);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
 }
 
 .character-roster-intro h2,
@@ -4651,11 +4754,9 @@ h2.priority-group-heading {
   container: character-roster / inline-size;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-  column-gap: 1px;
-  row-gap: 0;
+  gap: var(--seed-dimension-x2);
   min-inline-size: 0;
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
-  background: var(--seed-color-stroke-neutral-weak);
+  padding: 0 var(--seed-dimension-x3) var(--seed-dimension-x3);
 }
 
 .character-roster-item {
@@ -4665,19 +4766,8 @@ h2.priority-group-heading {
   gap: 0;
   min-inline-size: 0;
   padding: var(--seed-dimension-x4);
-  background: var(--seed-color-bg-layer-basement);
-}
-
-@container character-roster (max-width: 640px) {
-  .character-roster-item:not(:first-child) {
-    border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
-  }
-}
-
-@container character-roster (min-width: 641px) {
-  .character-roster-item:nth-child(n + 3) {
-    border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
-  }
+  border-radius: var(--radius-surface);
+  background: var(--bg);
 }
 
 .character-roster-identity {
@@ -4712,8 +4802,8 @@ h2.priority-group-heading {
   inline-size: fit-content;
   margin-block-start: var(--seed-dimension-x1);
   padding-inline: var(--seed-dimension-x1_5);
-  border: 1px solid var(--seed-color-stroke-neutral-muted);
-  border-radius: var(--seed-radius-full);
+  border: 0;
+  border-radius: var(--radius-control);
   background: var(--seed-color-bg-layer-fill);
   color: var(--seed-color-fg-neutral-muted);
   font-size: var(--seed-font-size-t2-static);
@@ -4797,7 +4887,6 @@ h2.priority-group-heading {
   grid-row: span 2;
   grid-template-rows: subgrid;
   padding-block-start: var(--seed-dimension-x3);
-  border-block-start: 1px solid var(--seed-color-stroke-neutral-weak);
 }
 
 .character-roster-examples dd {
@@ -4827,50 +4916,45 @@ h2.priority-group-heading {
   gap: var(--seed-dimension-x3);
   min-block-size: 40px;
   padding-inline: var(--seed-dimension-x3);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
   background: var(--seed-color-bg-layer-basement);
 }
 
 .resource-panel h2.resource-group-heading {
   padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
-  border-block-end: 1px solid var(--seed-color-stroke-neutral-weak);
   background: var(--seed-color-bg-layer-fill) !important;
   font-size: var(--seed-font-size-t3-static) !important;
 }
 
 .resource-panel > header {
-  border-block-end-color: var(--border) !important;
   background: var(--bg-panel) !important;
 }
 
 .resource-panel > header button {
-  border-color: var(--border-strong) !important;
   border-radius: var(--radius-control);
-  background: var(--bg) !important;
+  background: var(--bg-hover) !important;
 }
 
 .resource-panel > header button:hover:not(:disabled) {
-  background: var(--bg-hover) !important;
+  background: var(--bg-selected) !important;
   color: var(--text) !important;
 }
 
 .resource-panel button:not([role="tab"]) {
-  border-color: var(--border-strong) !important;
   border-radius: var(--radius-control) !important;
-  background: var(--bg) !important;
+  background: var(--bg-hover) !important;
   color: var(--text-muted) !important;
 }
 
 .resource-panel button:not([role="tab"]):hover:not(:disabled) {
-  background: var(--bg-hover) !important;
+  background: var(--bg-selected) !important;
   color: var(--text) !important;
 }
 
 .resource-panel button[aria-pressed="true"]:not([role="tab"]),
 .resource-panel button[aria-checked="true"]:not([role="tab"]) {
-  background: var(--metric-soft) !important;
+  background: var(--bg-selected) !important;
   color: var(--text) !important;
-  box-shadow: inset var(--spine) 0 var(--metric);
+  font-weight: 650;
 }
 
 .resource-panel button:not([role="tab"]):active:not(:disabled) {
@@ -4878,22 +4962,22 @@ h2.priority-group-heading {
 }
 
 .resource-account[data-account-state="active"] {
-  box-shadow: inset var(--spine) 0 var(--metric);
+  background: var(--metric-soft);
 }
 
 .resource-account[data-account-state="off"] {
-  box-shadow: inset var(--spine) 0 var(--border-strong);
+  background: var(--bg-subtle);
 }
 
 .resource-account[data-account-state="auto-blocked"] {
-  box-shadow: inset var(--spine) 0 var(--warning);
+  background: var(--warning-soft);
 }
 
 /* --- 사용량 패널: 계정 정체성과 한도 행 ------------------------------------- */
 
 /* 계정 얼굴. 계정을 구별하는 일을 주소 대신 얼굴과 별칭이 맡는다.
-   테두리는 장식이 아니다 — 어두운 그림(rin)이 거의 검은 패널 위에서 20px 로 줄면
-   경계가 사라져 얼굴이 아니라 얼룩으로 보인다. 그 한 겹이 윤곽을 세운다. */
+   테두리 대신 채운 원판(--bg-selected)을 깔아, 어두운 그림(rin)이 20px로 줄어도
+   패널 위에서 얼룩이 아니라 얼굴로 보이게 한다. */
 .account-avatar {
   flex: none;
   border: 0;
@@ -5123,11 +5207,6 @@ h2.priority-group-heading {
   margin-block-start: 12px;
 }
 
-.tool-image-actions button:focus-visible {
-  outline: 2px solid var(--accent-ring, var(--accent));
-  outline-offset: 2px;
-}
-
 /* 파일 보기 HTML 미리보기와 「요소 지정」 선택 줄. 줄은 한 줄이고 넘치면 말줄임, 좁으면 단추가 아래로 내려간다. */
 .html-pick-shell {
   display: flex;
@@ -5150,7 +5229,6 @@ h2.priority-group-heading {
   align-items: center;
   gap: 6px 12px;
   padding: 6px 12px;
-  border-block-end: 1px solid var(--border);
   background: var(--bg-panel);
   font-size: 13px;
 }
@@ -5184,11 +5262,6 @@ h2.priority-group-heading {
   white-space: nowrap;
 }
 
-.html-pick-actions button:focus-visible {
-  outline: 2px solid var(--accent-ring, var(--accent));
-  outline-offset: 2px;
-}
-
 .html-pick-hint {
   margin: 0;
   color: var(--text-muted);
@@ -5209,22 +5282,19 @@ h2.priority-group-heading {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-hover);
   color: var(--text-muted);
   line-height: 1.5;
 }
 
 .resource-account-badge[data-tone="active"] {
-  border-color: var(--metric);
-  background: var(--metric-soft);
+  background: color-mix(in srgb, var(--metric) 28%, var(--bg));
   color: var(--text);
 }
 
 .resource-account-badge[data-tone="blocked"] {
-  border-color: var(--warning-line);
-  background: var(--warning-soft);
+  background: color-mix(in srgb, var(--warning) 30%, var(--bg));
   color: var(--text);
 }
 
@@ -5233,7 +5303,7 @@ h2.priority-group-heading {
 }
 
 .resource-account-badge[data-tone="pending"] {
-  border-style: dashed;
+  opacity: 0.72;
 }
 
 .resource-account-toggle {
@@ -5264,8 +5334,8 @@ h2.priority-group-heading {
   flex: none;
   align-items: center;
   padding: 0 5px;
-  border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
+  background: var(--bg-hover);
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -5275,14 +5345,12 @@ h2.priority-group-heading {
 }
 
 .usage-chip[data-tone="warning"] {
-  border-color: var(--warning-line);
-  background: var(--warning-soft);
+  background: color-mix(in srgb, var(--warning) 30%, var(--bg));
   color: var(--text);
 }
 
 .usage-chip[data-tone="danger"] {
-  border-color: var(--danger-line);
-  background: var(--danger-soft);
+  background: color-mix(in srgb, var(--danger) 30%, var(--bg));
   color: var(--text);
 }
 
@@ -5291,14 +5359,10 @@ h2.priority-group-heading {
 .resource-panel button.resource-account-more,
 .resource-panel button.resource-account-reveal,
 .resource-panel button.resource-account-reveal[aria-pressed] {
-  padding: 0;
-  border: 0 !important;
-  background: none !important;
+  min-block-size: 0;
+  padding: 2px 8px;
   box-shadow: none !important;
-  color: var(--text-muted) !important;
   font-size: 11px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 .resource-panel button.resource-account-more:hover:not(:disabled),
@@ -5318,13 +5382,11 @@ h2.priority-group-heading {
 .resource-reset-confirm-group[data-reset-state="pending"] {
   margin-block-start: 12px;
   padding: 10px 12px 8px;
-  border-block-start: 1px solid var(--border);
+  border-radius: var(--radius-control);
   background: var(--danger-soft);
-  box-shadow: inset var(--spine) 0 var(--danger);
 }
 
 .resource-panel button.resource-reset-confirm {
-  border-color: var(--danger) !important;
   background: var(--danger) !important;
   color: var(--bg) !important;
 }
@@ -5376,18 +5438,16 @@ h2.priority-group-heading {
 }
 
 .efficiency-panel > header {
-  border-block-end-color: var(--border) !important;
   background: var(--bg-panel) !important;
 }
 
 .efficiency-panel > header button {
-  border-color: var(--border-strong) !important;
   border-radius: var(--radius-control);
-  background: var(--bg) !important;
+  background: var(--bg-hover) !important;
 }
 
 .efficiency-panel > header button:hover:not(:disabled) {
-  background: var(--bg-hover) !important;
+  background: var(--bg-selected) !important;
   color: var(--text) !important;
 }
 
@@ -5402,9 +5462,8 @@ h2.priority-group-heading {
 }
 
 .efficiency-panel button[role="tab"][aria-selected="true"] {
-  background: var(--bg-selected) !important;
+  background: var(--bg-raised) !important;
   color: var(--text) !important;
-  box-shadow: inset 0 -2px var(--accent);
 }
 
 .efficiency-panel [role="tabpanel"] {
@@ -5422,8 +5481,7 @@ h2.priority-group-heading {
 }
 
 .efficiency-detail > section + section {
-  margin-block-start: 6px;
-  border-block-start: 1px solid var(--border);
+  margin-block-start: 10px;
 }
 
 /* 좁은 패널에서는 한 열, 넓으면 두 열 이상으로 흐른다. 라벨은 자르지 않고 접는다. */
@@ -5482,8 +5540,9 @@ ul.efficiency-stack {
 .efficiency-run-list {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   margin: 0;
-  padding: 0;
+  padding: 0 8px;
   list-style: none;
   min-inline-size: 0;
 }
@@ -5494,9 +5553,9 @@ ul.efficiency-stack {
   gap: 4px;
   inline-size: 100%;
   min-inline-size: 0;
-  padding: 8px 16px;
+  padding: 8px;
   border: 0;
-  border-block-end: 1px solid var(--border);
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text);
   text-align: start;
@@ -5509,7 +5568,6 @@ ul.efficiency-stack {
 
 .efficiency-run-item.is-selected {
   background: var(--bg-selected);
-  box-shadow: inset 2px 0 var(--accent);
 }
 
 .efficiency-run-top {
@@ -5549,7 +5607,7 @@ ul.efficiency-stack {
 }
 
 .efficiency-detail-pane {
-  border-block-start: 1px solid var(--border);
+  margin-block-start: 8px;
   min-inline-size: 0;
 }
 
@@ -5575,7 +5633,6 @@ ul.efficiency-stack {
   gap: 2px;
   min-inline-size: 0;
   padding: 8px 10px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-surface);
   background: var(--bg);
 }
@@ -5600,7 +5657,6 @@ ul.efficiency-stack {
   gap: 6px;
   min-inline-size: 0;
   padding: 10px 12px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-surface);
   background: var(--bg);
   overflow-wrap: anywhere;
@@ -5710,7 +5766,7 @@ ul.efficiency-stack {
 }
 
 .efficiency-role + .efficiency-role {
-  border-block-start: 1px solid var(--border);
+  margin-block-start: 4px;
 }
 
 .efficiency-role-summary {
@@ -5733,15 +5789,14 @@ ul.efficiency-stack {
   grid-area: 1 / 1;
   align-self: center;
   justify-self: center;
-  inline-size: 6px;
-  block-size: 6px;
-  border-inline-end: 1.5px solid var(--text-dim);
-  border-block-end: 1.5px solid var(--text-dim);
-  transform: rotate(-45deg);
+  inline-size: 7px;
+  block-size: 8px;
+  background: var(--text-dim);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 
 .efficiency-role[open] > .efficiency-role-summary::before {
-  transform: rotate(45deg);
+  transform: rotate(90deg);
 }
 
 .efficiency-role-summary > * {
@@ -5838,7 +5893,6 @@ ul.efficiency-stack {
   flex-direction: column;
   gap: 1px;
   padding-block: 5px;
-  border-block-end: 1px solid var(--border);
   min-inline-size: 0;
 }
 
@@ -5874,9 +5928,8 @@ ul.efficiency-stack {
   position: relative;
   block-size: 14px;
   overflow: hidden;
-  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  background: var(--bg-subtle);
+  background: var(--metric-track);
   min-inline-size: 0;
 }
 
@@ -5903,7 +5956,6 @@ ul.efficiency-stack {
   gap: 4px 8px;
   align-items: center;
   padding: 8px 16px;
-  border-block-end: 1px solid var(--border);
   background: var(--bg-panel);
   min-inline-size: 0;
 }
@@ -5921,9 +5973,9 @@ ul.efficiency-stack {
   min-inline-size: 0;
   max-inline-size: 100%;
   padding: 4px 8px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-hover);
   color: var(--text);
   font-size: 11px;
   overflow-wrap: anywhere;
@@ -6007,10 +6059,10 @@ ul.efficiency-stack {
 .run-saw-turns {
   display: flex;
   flex-direction: column;
+  gap: 6px;
   margin: 4px 0 0;
-  padding: 0;
+  padding: 0 12px;
   list-style: none;
-  border-block-start: 1px solid var(--border);
   min-inline-size: 0;
 }
 
@@ -6018,8 +6070,9 @@ ul.efficiency-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px 16px;
-  border-block-end: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: var(--radius-surface);
+  background: var(--bg);
   min-inline-size: 0;
 }
 
@@ -6078,7 +6131,7 @@ ul.efficiency-stack {
   gap: 2px;
   padding: 5px 8px;
   border-radius: var(--radius-control);
-  background: var(--bg-raised);
+  background: var(--bg-hover);
   min-inline-size: 0;
 }
 
@@ -6157,8 +6210,9 @@ ul.efficiency-stack {
 }
 
 .run-saw-link {
-  padding: 0;
+  padding: 2px 6px;
   border: 0;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--accent);
   font-size: 11px;
@@ -6166,13 +6220,7 @@ ul.efficiency-stack {
 }
 
 .run-saw-link:hover {
-  text-decoration: underline;
-}
-
-.run-saw-link:focus-visible {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 2px;
-  border-radius: 2px;
+  background: var(--bg-hover);
 }
 
 .run-saw-full {
@@ -6183,9 +6231,8 @@ ul.efficiency-stack {
   padding: 8px;
   overflow: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-hover);
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -6196,16 +6243,14 @@ ul.efficiency-stack {
 
 .run-saw-trailing {
   padding: 8px 16px;
-  border-block-end: 1px solid var(--border);
 }
 
 .run-saw-prelude {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-block-start: 8px;
+  margin-block-start: 12px;
   padding: 8px 16px 4px;
-  border-block-start: 1px solid var(--border);
   min-inline-size: 0;
 }
 
@@ -6235,24 +6280,17 @@ section[aria-label="Subagent 기록"] {
 }
 
 .side-chat-panel > header {
-  border-block-end-color: var(--border) !important;
+  background: var(--bg-panel) !important;
 }
 
 .side-chat-question {
-  border-color: var(--border-strong) !important;
-  border-inline-start: var(--spine) solid var(--accent-line) !important;
   border-radius: var(--radius-surface) !important;
   background: var(--bg) !important;
 }
 
 .side-chat-answer {
-  border-color: var(--border) !important;
   border-radius: var(--radius-surface) !important;
   background: var(--bg-panel) !important;
-}
-
-.side-chat-answer.is-streaming {
-  border-inline-start: var(--spine) solid var(--accent) !important;
 }
 
 /* The side chat is read at a glance in a narrow panel, so a long table cell or code line wraps
@@ -6289,43 +6327,33 @@ section[aria-label="Subagent 기록"] {
 
 /* the composer is a form element so submit works from the keyboard */
 .side-chat-panel > form {
-  border-block-start-color: var(--border) !important;
-  background: var(--bg-raised) !important;
-}
-
-.side-chat-panel > form textarea {
-  border-color: var(--border-strong) !important;
-  border-radius: var(--radius-control) !important;
   background: var(--bg) !important;
 }
 
-.side-chat-panel > form textarea:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px var(--accent-ring);
+.side-chat-panel > form textarea {
+  border-radius: var(--radius-control) !important;
+  background: var(--bg-hover) !important;
 }
 
 .side-chat-panel > form button,
 section[aria-label="Subagent 기록"] [role="list"] button {
-  border-color: var(--border-strong) !important;
   border-radius: var(--radius-control) !important;
-  background: var(--bg) !important;
+  background: var(--bg-hover) !important;
   color: var(--text-muted) !important;
 }
 
 .side-chat-panel > form button:hover:not(:disabled),
 section[aria-label="Subagent 기록"] [role="list"] button:hover:not(:disabled) {
-  background: var(--bg-hover) !important;
+  background: var(--bg-selected) !important;
   color: var(--text) !important;
 }
 
 section[aria-label="Subagent 기록"] [role="listitem"] > button {
-  border-color: var(--border) !important;
   border-radius: var(--radius-surface) !important;
   background: var(--bg) !important;
 }
 
 section[aria-label="Subagent 기록"] [role="listitem"] > button:hover {
-  border-color: var(--border-strong) !important;
   background: var(--bg-hover) !important;
 }
 
@@ -6511,10 +6539,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
   .workspace-context-meter {
     flex-basis: 56px;
-  }
-
-  .workspace-command-list {
-    grid-template-columns: 1fr;
   }
 
   .directory-picker-back,
@@ -6760,7 +6784,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .translator-panel-open {
   min-block-size: 40px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--text);
@@ -6811,7 +6835,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   flex-direction: column;
   gap: var(--seed-dimension-x2);
   padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
-  border-block-end: 1px solid var(--border);
 }
 
 /* 맨 윗줄: 뒤로 · 제목(통역 중에는 언어 짝) · 글자 크기와 마주보기. 늘 한 줄이다. */
@@ -6847,7 +6870,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   min-inline-size: 40px;
   min-block-size: 40px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
@@ -6889,9 +6912,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   min-inline-size: 0;
   min-block-size: 40px;
   padding: 0 var(--seed-dimension-x2);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: transparent;
+  background: var(--bg-panel);
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -6939,9 +6962,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .translator-language select {
   min-block-size: 32px;
   padding: 0 var(--seed-dimension-x2);
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font: inherit;
   font-size: var(--seed-font-size-t3-static);
@@ -6950,9 +6973,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .translator-swap {
   min-inline-size: 32px;
   min-block-size: 32px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: transparent;
+  background: var(--bg-panel);
   color: var(--text-muted);
   cursor: pointer;
   font-size: var(--seed-font-size-t4-static);
@@ -6982,7 +7005,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .translator-banner {
   margin: var(--seed-dimension-x2) var(--seed-dimension-x4) 0;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--bg-subtle);
   color: var(--text-muted);
@@ -6990,7 +7012,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-banner[data-tone="danger"] {
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
@@ -7021,8 +7043,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   min-block-size: 0;
 }
 
+/* 두 흐름은 선 대신 사이 간격과 각 칸의 제목으로 나눈다. */
 .translator-stream + .translator-stream {
-  border-block-start: 1px solid var(--border);
+  margin-block-start: var(--seed-dimension-x3);
 }
 
 .translator-stream-label {
@@ -7040,9 +7063,10 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   inset-inline-start: 50%;
   min-block-size: 32px;
   padding: 0 var(--seed-dimension-x3);
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
   color: var(--text);
   font-size: var(--seed-font-size-t3-static);
   cursor: pointer;
@@ -7057,11 +7081,11 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   .translator-streams {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
+    column-gap: var(--seed-dimension-x6);
   }
 
   .translator-stream + .translator-stream {
-    border-block-start: 0;
-    border-inline-start: 1px solid var(--border);
+    margin-block-start: 0;
   }
 }
 
@@ -7133,9 +7157,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   gap: var(--seed-dimension-x1);
   min-inline-size: 0;
   padding: var(--seed-dimension-x2_5) var(--seed-dimension-x3);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--assistant-bg);
+  border-radius: var(--radius-surface);
+  background: var(--bg-hover);
 }
 
 .translator-entry[data-side="me"] .translator-bubble {
@@ -7181,7 +7204,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-entry[data-latest="true"] .translator-bubble {
-  border-color: var(--border-strong);
   padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
 }
 
@@ -7201,9 +7223,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   display: flex;
   flex-direction: column;
   gap: var(--seed-dimension-x2);
-  padding: var(--seed-dimension-x2) max(var(--seed-dimension-x4), calc((100% - 860px) / 2))
+  padding: var(--seed-dimension-x3) max(var(--seed-dimension-x4), calc((100% - 860px) / 2))
     calc(var(--seed-dimension-x3) + env(safe-area-inset-bottom, 0px));
-  border-block-start: 1px solid var(--border);
 }
 
 /* 지금 단계: 색 점과 글이 함께 간다(색만으로 알리지 않는다). */
@@ -7254,8 +7275,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   gap: var(--seed-dimension-x2);
   min-block-size: 72px;
   padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
+  border: 0;
+  border-radius: var(--radius-surface);
   background: var(--bg-panel);
   color: var(--text);
   cursor: pointer;
@@ -7269,13 +7290,23 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   min-block-size: 52px;
 }
 
-.translator-call-button:hover:not(:disabled) {
-  background: var(--bg-hover);
+/* Before a call, starting it is the screen's one primary: ink fill, focus halo (data-focus-halo). */
+.translator-call-button:not([aria-pressed="true"]):not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
+}
+
+.translator-call-button:not([aria-pressed="true"]):hover:not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted-pressed);
+}
+
+.translator-call-button[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 26%, var(--bg));
 }
 
 .translator-call-button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  font-weight: 700;
 }
 
 .translator-call-button:disabled {
@@ -7360,7 +7391,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   display: inline-block;
   margin-inline-end: var(--seed-dimension-x1_5);
   padding: 0 var(--seed-dimension-x1_5);
-  border: 1px solid var(--border);
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
   color: var(--text-muted);
   font-size: var(--seed-font-size-t3-static);
@@ -7380,10 +7411,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   color: var(--text-dim);
 }
 
-.translator-entry[data-draft="true"] .translator-bubble {
-  border-style: dashed;
-}
-
 .translator-entry[data-draft="true"] .translator-translation {
   color: var(--text-dim);
 }
@@ -7394,7 +7421,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   align-items: center;
   gap: var(--seed-dimension-x2);
   padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
-  border-block: 1px solid var(--border-strong);
   background: var(--bg-panel);
 }
 
@@ -7426,9 +7452,9 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   gap: var(--seed-dimension-x1_5);
   min-block-size: 48px;
   padding: 0 var(--seed-dimension-x3);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: transparent;
+  border: 0;
+  border-radius: var(--radius-surface);
+  background: var(--bg);
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
@@ -7450,13 +7476,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .translator-face-notice[data-tone="danger"] {
   color: var(--danger);
-}
-
-.translator-view button:focus-visible,
-.translator-view select:focus-visible,
-.translator-panel button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 @media (max-width: 640px) {
@@ -7550,16 +7569,19 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 /* ---------------------------------------------------------------------------
    보수(upkeep). 사이드바 「보수」로 여는 전체 화면 점검판. 뒤의 작업 화면은 마운트된 채 덮이기만
-   한다. 상태는 색과 함께 항상 글자(정상·주의·문제·미확인)로 적는다.
+   한다. 작업대와 같은 세 칸: 섹션 목록(패널 면) | 고른 섹션의 지표 표(가운데 면) | 고른 지표(패널 면).
+   칸은 면의 톤 한 단계로 나누고 선을 긋지 않는다. 상태는 색과 함께 늘 글자(정상·주의·문제·미확인)로 적는다.
    --------------------------------------------------------------------------- */
 .upkeep-view {
   position: fixed;
   inset: 0;
   z-index: 250;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: clamp(240px, 22vw, 300px) minmax(0, 1fr) var(--w-inspector);
   background: var(--bg);
   color: var(--text);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .upkeep-view[hidden] {
@@ -7570,31 +7592,35 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   outline: none;
 }
 
-.upkeep-view {
-  word-break: keep-all;
+.upkeep-list,
+.upkeep-main,
+.upkeep-inspector {
+  min-inline-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.upkeep-header {
-  flex: 0 0 auto;
-  border-block-end: 1px solid var(--border);
+.upkeep-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x4);
+  padding: var(--seed-dimension-x3) var(--seed-dimension-x3) var(--seed-dimension-x6);
   background: var(--bg-panel);
-  padding: var(--seed-dimension-x3) var(--seed-dimension-x5);
 }
 
-.upkeep-header-bar {
+.upkeep-list-bar {
   display: flex;
   align-items: center;
-  gap: var(--seed-dimension-x3);
-  max-inline-size: 1120px;
-  margin-inline: auto;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
 }
 
-.upkeep-header-bar h2 {
-  flex: 1 1 auto;
-  min-inline-size: 0;
+.upkeep-list h2 {
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
+  padding-inline: var(--seed-dimension-x2);
+  font-family: var(--font-heading);
+  font-size: 20px;
+  font-weight: 700;
 }
 
 .upkeep-back {
@@ -7603,7 +7629,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   gap: 4px;
   min-block-size: 32px;
   padding-inline: 6px 10px;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
@@ -7618,29 +7644,94 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .upkeep-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px var(--seed-dimension-x4);
-  max-inline-size: 1120px;
-  margin: 6px auto 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px var(--seed-dimension-x3);
+  margin: 0;
+  padding-inline: var(--seed-dimension-x2);
+  font-size: 12px;
+}
+
+.upkeep-meta > div {
+  display: contents;
+}
+
+.upkeep-meta dt {
   color: var(--text-muted);
+}
+
+.upkeep-meta dd {
+  margin: 0;
   font-family: var(--font-mono);
-  font-size: var(--readout-size);
   font-variant-numeric: tabular-nums;
 }
 
-.upkeep-body {
-  flex: 1 1 auto;
-  min-block-size: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding: var(--seed-dimension-x4) var(--seed-dimension-x5) var(--seed-dimension-x10);
+.upkeep-group-title {
+  margin: 0 0 4px;
+  padding-inline: var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.upkeep-body > * {
-  max-inline-size: 1120px;
-  margin-inline: auto;
+.upkeep-sections {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 섹션 한 줄: 이름은 왼쪽, 판정 글자는 오른쪽. 고른 줄은 채운 면과 굵기로 보인다. */
+.upkeep-section-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+  min-block-size: 32px;
+  padding-inline: var(--seed-dimension-x2);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-fast);
+}
+
+.upkeep-section-item:hover {
+  background: var(--bg-hover);
+}
+
+.upkeep-section-item[aria-pressed="true"] {
+  background: var(--bg-selected);
+  font-weight: 650;
+}
+
+.upkeep-section-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upkeep-full {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.upkeep-full .upkeep-actions,
+.upkeep-full .upkeep-note {
+  padding-inline: var(--seed-dimension-x2);
+}
+
+.upkeep-main {
+  padding: var(--seed-dimension-x4) var(--seed-dimension-x6) var(--seed-dimension-x10);
+}
+
+.upkeep-inspector {
+  padding: var(--seed-dimension-x4) var(--seed-dimension-x4) var(--seed-dimension-x10);
+  background: var(--bg-panel);
 }
 
 .upkeep-empty {
@@ -7660,27 +7751,38 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .upkeep-banner {
   margin-block: 0 var(--seed-dimension-x3);
   padding: 8px 12px;
-  border: 1px solid var(--warning-line);
   border-radius: var(--radius-surface);
   background: var(--warning-soft);
   font-size: 13px;
 }
 
+/* 버튼 세 단계: 주 버튼은 잉크 채움(고른 지표의 「작업 프롬프트로 새 세션」), 보조는 옆 칸의 면 톤,
+   「복사」·「다시 읽기」는 글자만. 테두리는 없다. */
 .upkeep-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-block-size: 32px;
   padding-inline: 12px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font: inherit;
   font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
+  transition: background-color var(--dur-fast);
 }
 
-.upkeep-button:hover:not(:disabled) {
-  background: var(--bg-hover);
+.upkeep-list .upkeep-button,
+.upkeep-inspector .upkeep-button {
+  background: var(--bg);
+}
+
+.upkeep-view .upkeep-button:hover:not(:disabled) {
+  background: var(--bg-selected);
 }
 
 .upkeep-button:disabled {
@@ -7688,25 +7790,40 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   cursor: default;
 }
 
-.upkeep-button[data-variant="primary"] {
-  border-color: transparent;
+.upkeep-view .upkeep-button[data-variant="ghost"] {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.upkeep-view .upkeep-button[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.upkeep-view .upkeep-button[data-variant="chosen"] {
+  background: var(--bg-selected);
+  font-weight: 650;
+}
+
+.upkeep-view .upkeep-button[data-variant="primary"] {
   background: var(--seed-color-bg-neutral-inverted);
   color: var(--seed-color-fg-neutral-inverted);
 }
 
-.upkeep-button[data-variant="primary"]:hover {
-  background: color-mix(in srgb, var(--seed-color-bg-neutral-inverted) 86%, var(--bg));
+.upkeep-view .upkeep-button[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted-pressed);
 }
 
 .upkeep-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
 .upkeep-status {
   flex: 0 0 auto;
-  font-size: var(--readout-size);
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -7716,71 +7833,30 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .upkeep-status[data-status="problem"] { color: var(--danger); }
 .upkeep-status[data-status="unknown"] { color: var(--text-muted); font-weight: 400; }
 
-/* 섹션 여섯 개의 한 줄 상태판. 누르면 그 섹션으로 내려간다. */
-.upkeep-strip {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 6px;
-  margin-block-end: var(--seed-dimension-x3);
+.upkeep-crumb {
+  margin: 0 0 var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
-.upkeep-strip-item {
+.upkeep-section {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-inline-size: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  text-align: start;
-  cursor: pointer;
+  gap: var(--seed-dimension-x2);
+  max-inline-size: 1040px;
 }
 
-.upkeep-strip-item:hover {
-  background: var(--bg-hover);
-}
-
-.upkeep-strip-item[data-status="watch"] { border-color: var(--warning-line); background: var(--warning-soft); }
-.upkeep-strip-item[data-status="problem"] { border-color: var(--danger-line); background: var(--danger-soft); }
-
-.upkeep-strip-title {
-  max-inline-size: 100%;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.upkeep-full {
+.upkeep-section-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--seed-dimension-x2) var(--seed-dimension-x4);
-  margin-block-end: var(--seed-dimension-x2);
-  color: var(--text-muted);
-  font-size: 13px;
 }
 
-.upkeep-full p {
-  margin: 0;
-}
-
-.upkeep-section {
-  padding-block: var(--seed-dimension-x5) var(--seed-dimension-x2);
-  border-block-start: 1px solid var(--border);
-  scroll-margin-block-start: var(--seed-dimension-x2);
-}
-
-.upkeep-section-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 4px var(--seed-dimension-x4);
+/* The head wraps as a whole; a button label never breaks inside itself. */
+.upkeep-section-head .upkeep-button {
+  white-space: nowrap;
 }
 
 .upkeep-section-title {
@@ -7792,17 +7868,12 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .upkeep-section-title h3 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 650;
 }
 
 .upkeep-section-title h3:focus {
   outline: none;
-}
-
-.upkeep-section-head .upkeep-actions {
-  grid-column: 2;
-  grid-row: 1 / span 3;
 }
 
 .upkeep-summary {
@@ -7812,7 +7883,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .upkeep-warnings {
-  margin-block-start: var(--seed-dimension-x2);
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -7822,83 +7892,185 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   padding-inline-start: 18px;
 }
 
-.upkeep-rows {
-  margin: var(--seed-dimension-x3) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.upkeep-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-block: 12px;
-  border-block-start: 1px solid var(--hairline);
-}
-
-.upkeep-row-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--seed-dimension-x3);
-}
-
-.upkeep-row-head h4 {
-  min-inline-size: 0;
-  margin: 0;
+/* 섹션 지표 표. 머리 아래 한 줄만 남기고, 행은 32px 리듬과 채움으로 나눈다. */
+.upkeep-table {
+  inline-size: 100%;
+  margin-block-start: var(--seed-dimension-x2);
+  border-collapse: separate;
+  border-spacing: 0 2px;
   font-size: 13px;
+}
+
+.upkeep-table[hidden] {
+  display: none;
+}
+
+.upkeep-table thead th {
+  padding: 0 10px 6px;
+  /* deslop-ignore-next-line ln-04 -- the kept data-table header rule: separates column labels from numbers */
+  border-block-end: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  text-align: start;
+  white-space: nowrap;
 }
 
-.upkeep-row-marks {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: baseline;
-  gap: 8px;
+.upkeep-table :is(td, tbody th) {
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  font-weight: 400;
+  text-align: start;
+  vertical-align: baseline;
+  transition: background-color var(--dur-fast);
 }
 
-/* 점검 완료 표시한 행. 행 판정 색은 그대로 두고 옆에 확인했다는 표를 단다. */
+.upkeep-table tbody tr > :first-child {
+  border-start-start-radius: var(--radius-control);
+  border-end-start-radius: var(--radius-control);
+}
+
+.upkeep-table tbody tr > :last-child {
+  border-start-end-radius: var(--radius-control);
+  border-end-end-radius: var(--radius-control);
+}
+
+.upkeep-table tbody tr:hover > * {
+  background: var(--bg-hover);
+}
+
+.upkeep-table tbody tr[aria-selected="true"] > * {
+  background: var(--bg-selected);
+}
+
+.upkeep-table .upkeep-cell-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.upkeep-table thead th.upkeep-cell-num {
+  font-family: inherit;
+}
+
+.upkeep-cell-unit {
+  margin-inline-start: 6px;
+  color: var(--text-muted);
+  font-family: var(--seed-font-family);
+  font-size: 11px;
+}
+
+.upkeep-cell-sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* 지표 이름 단추는 행 안의 글처럼 보이고, 누르면 그 지표가 오른쪽 칸에 펼쳐진다. */
+.upkeep-row-select {
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.upkeep-row[aria-selected="true"] .upkeep-row-select {
+  font-weight: 650;
+}
+
+.upkeep-cell-due {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .upkeep-checked {
-  padding: 1px 8px;
-  border: 1px solid var(--success);
-  border-radius: var(--seed-radius-full);
   color: var(--success);
-  font-size: var(--readout-size);
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
 
-.upkeep-values {
+/* --- 오른쪽 칸: 고른 지표 ---------------------------------------------------- */
+.upkeep-detail {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px var(--seed-dimension-x5);
+  flex-direction: column;
+  gap: var(--seed-dimension-x3);
+}
+
+.upkeep-detail-title {
   margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+/* 숫자 묶음: 패널 위의 한 면. 큰 고정폭 숫자 아래 작은 이름. */
+.upkeep-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: var(--seed-dimension-x3);
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius-surface);
+  background: var(--bg);
 }
 
 .upkeep-values > div {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  flex-direction: column-reverse;
+  gap: 2px;
+  min-inline-size: 0;
 }
 
 .upkeep-values dt {
   color: var(--text-muted);
-  font-size: var(--readout-size);
+  font-size: 11px;
 }
 
 .upkeep-values dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
+}
+
+.upkeep-values > div[data-status="problem"] dd { color: var(--danger); }
+.upkeep-values > div[data-status="watch"] dd { color: var(--warning); }
+
+.upkeep-detail-state {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-surface);
+  background: var(--bg);
+}
+
+.upkeep-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.upkeep-block h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .upkeep-line {
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
-  overflow-wrap: anywhere;
+  line-height: 1.55;
 }
 
 .upkeep-line-label {
@@ -7907,11 +8079,23 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-weight: 600;
 }
 
+.upkeep-line-split {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px var(--seed-dimension-x2);
+}
+
+.upkeep-verdict .upkeep-line-label {
+  font-size: 12px;
+}
+
 .upkeep-nowrap {
   white-space: nowrap;
 }
 
 .upkeep-fold {
+  align-self: flex-start;
   margin-block-start: var(--seed-dimension-x2);
 }
 
@@ -7923,6 +8107,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .upkeep-details summary {
   inline-size: fit-content;
+  padding: 2px 4px;
+  margin-inline: -4px;
   border-radius: var(--radius-control);
   color: var(--text-muted);
   font-size: 12px;
@@ -7951,7 +8137,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .upkeep-evidence-detail {
   color: var(--text-muted);
-  overflow-wrap: anywhere;
 }
 
 .upkeep-evidence-link {
@@ -7959,20 +8144,17 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-family: var(--font-mono);
   text-decoration: underline;
   text-underline-offset: 2px;
-  overflow-wrap: anywhere;
 }
 
 .upkeep-quote {
   margin: 6px 0 0;
   padding: 8px 10px;
-  border: 1px solid var(--border);
   border-radius: var(--radius-surface);
-  background: var(--bg-subtle);
+  background: var(--bg);
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .upkeep-notice {
@@ -7988,9 +8170,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   max-inline-size: min(560px, calc(100vw - 24px));
   margin-inline: auto;
   padding: 10px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-surface);
-  background: var(--bg-panel);
+  border-radius: 10px;
+  background: var(--bg-raised);
   box-shadow: var(--shadow-float);
   color: var(--text);
   font-size: 13px;
@@ -8003,48 +8184,138 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 .upkeep-notice button {
   flex: 0 0 auto;
   border: 0;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
   cursor: pointer;
 }
 
-.upkeep-view button:focus-visible,
-.upkeep-view summary:focus-visible,
-.upkeep-view a:focus-visible,
-.upkeep-notice button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+/* 1232px 아래: 오른쪽 칸이 표 아래로 내려가 가운데와 함께 흐른다. 고른 지표는 스크롤로 데려간다. */
+@media (max-width: 1231px) {
+  .upkeep-view {
+    grid-template-columns: clamp(240px, 26vw, 300px) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .upkeep-list {
+    grid-row: 1 / span 2;
+    position: sticky;
+    inset-block-start: 0;
+    block-size: 100dvh;
+  }
+
+  .upkeep-main,
+  .upkeep-inspector {
+    overflow: visible;
+  }
+
+  .upkeep-main {
+    padding-block-end: var(--seed-dimension-x6);
+  }
+
+  .upkeep-inspector {
+    margin: 0 var(--seed-dimension-x6) var(--seed-dimension-x10);
+    border-radius: var(--radius-surface);
+  }
 }
 
-@media (max-width: 900px) {
-  .upkeep-strip {
+/* 폰: 목록, 표, 고른 지표가 한 줄로 흐른다. 표는 행마다 채운 묶음이 되고 칸 이름을 앞에 붙인다. */
+@media (max-width: 859px) {
+  .upkeep-view {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .upkeep-list {
+    position: static;
+    block-size: auto;
+    overflow: visible;
+  }
+
+  .upkeep-main {
+    padding-inline: var(--seed-dimension-x3);
+  }
+
+  .upkeep-inspector {
+    margin-inline: var(--seed-dimension-x3);
+  }
+
+  .upkeep-table,
+  .upkeep-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .upkeep-table thead {
+    display: none;
+  }
+
+  .upkeep-table tbody tr {
+    display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px 8px;
+    padding: 10px 12px;
+    border-radius: var(--radius-surface);
+    background: var(--bg-subtle);
+  }
+
+  .upkeep-table tbody tr:hover,
+  .upkeep-table tbody tr[aria-selected="true"] {
+    background: var(--bg-selected);
+  }
+
+  .upkeep-table tbody tr > * {
+    padding: 0;
+    border-radius: 0;
+    background: transparent !important;
+  }
+
+  .upkeep-table .upkeep-cell-status {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .upkeep-table .upkeep-cell-label {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    padding-inline-end: 64px;
+  }
+
+  .upkeep-table .upkeep-cell-num,
+  .upkeep-table .upkeep-cell-check,
+  .upkeep-table .upkeep-cell-due {
+    display: flex;
+    flex-direction: column-reverse;
+    text-align: start;
+    white-space: normal;
+  }
+
+  .upkeep-table :is(.upkeep-cell-num, .upkeep-cell-check, .upkeep-cell-due)::after {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-family: var(--seed-font-family);
+    font-size: 11px;
+  }
+
+  .upkeep-table .upkeep-cell-check:empty {
+    display: none;
+  }
+
+  .upkeep-cell-unit {
+    display: none;
   }
 }
 
 @media (max-width: 640px) {
-  .upkeep-header,
-  .upkeep-body {
-    padding-inline: var(--seed-dimension-x3);
-  }
-
-  .upkeep-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .upkeep-section-head {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .upkeep-section-head .upkeep-actions {
-    grid-column: 1;
-    grid-row: auto;
-  }
-
   /* 폰에서 누르기 쉬운 44px, 두 버튼이 한 줄을 나눠 쓴다. */
   .upkeep-button,
-  .upkeep-back {
+  .upkeep-back,
+  .upkeep-section-item {
     min-block-size: 44px;
   }
 
@@ -8058,12 +8329,21 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     flex-grow: 2;
   }
 
-  .upkeep-full .upkeep-actions {
-    flex-basis: 100%;
+  .upkeep-row-select {
+    padding-block: 10px;
+    margin-block: -10px;
   }
 
   .upkeep-details summary {
     padding-block: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upkeep-section-item,
+  .upkeep-button,
+  .upkeep-table :is(td, tbody th) {
+    transition: none;
   }
 }
 
@@ -8101,7 +8381,6 @@ html.dark[data-cuelo-look="graphite"] {
   /* translucent panel and the reading backing over the wallpaper */
   --gt-panel: rgb(31 32 33 / 0.82);
   --gt-backing: rgb(27 27 29 / 0.94);
-  --gt-hairline: rgb(228 226 227 / 0.08);
   /* the one brand colour (logo lamp), spent on the send action only */
   --gt-amber: #e08c00;
   --gt-amber-hover: #f5a524;
@@ -8201,6 +8480,7 @@ html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] {
 
 /* One continuous column backing behind the transcript and the composer. */
 html.dark[data-cuelo-look="graphite"] .chat-window {
+  /* deslop-ignore-next-line 06 df-08 -- graphite look: the backing band feathers into the wallpaper; kept as an accepted look carry-over (after/m1/design-decisions.md 「Smaller replacements」) */
   background: linear-gradient(
     to right,
     transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
@@ -8234,6 +8514,7 @@ html.dark[data-cuelo-look="graphite"] .chat-empty-start {
 
 html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] .chat-composer-dock {
   --gt-band-half: calc(var(--reading-measure) / 2 + 16px);
+  /* deslop-ignore-next-line 06 df-08 -- graphite look: the backing band feathers into the wallpaper; kept as an accepted look carry-over (after/m1/design-decisions.md 「Smaller replacements」) */
   background: linear-gradient(
     to right,
     transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
@@ -8251,7 +8532,6 @@ html.dark[data-cuelo-look="graphite"] .workspace-header-stack {
 }
 
 html.dark[data-cuelo-look="graphite"] .workspace-header-seam {
-  border-block-end-color: var(--gt-outline-variant);
   background: transparent;
 }
 
@@ -8290,13 +8570,9 @@ html.dark[data-cuelo-look="graphite"] .navigator-project-row {
     margin-inline: calc(-6px - var(--seed-dimension-x1));
   }
 
-  /* Over a dark wall the panel fill alone barely separates; one quiet hairline
-     marks each panel edge (outline, so it stays above the header fill). */
   html.dark[data-cuelo-look="graphite"] .sidebar-container,
   html.dark[data-cuelo-look="graphite"] .workspace-session-region {
     border-radius: var(--seed-radius-r4);
-    outline: 1px solid var(--gt-hairline);
-    outline-offset: -1px;
   }
 
   html.dark[data-cuelo-look="graphite"] .sidebar-container,
@@ -8328,21 +8604,12 @@ html.dark[data-cuelo-look="graphite"] .priority-session-row.is-selected {
 
 /* The 2px spine reads as a near-white stripe in this palette (and bends into an
    arc on a pill row). Rows already carry a spinner or unread dot, so the edge
-   goes back to the plain outline. */
+   stays plain. */
 html.dark[data-cuelo-look="graphite"] .navigator-session-row.is-running:not(.is-selected),
 html.dark[data-cuelo-look="graphite"] .priority-session-row.is-running:not(.is-selected),
 html.dark[data-cuelo-look="graphite"] .navigator-session-row.is-unread:not(.is-selected):not(.is-running),
 html.dark[data-cuelo-look="graphite"] .priority-session-row.is-unread:not(.is-selected):not(.is-running) {
   box-shadow: none;
-}
-
-html.dark[data-cuelo-look="graphite"] .message-user-bubble,
-html.dark[data-cuelo-look="graphite"] .side-chat-answer.is-streaming {
-  border-inline-start: 1px solid var(--border) !important;
-}
-
-html.dark[data-cuelo-look="graphite"] .side-chat-question {
-  border-inline-start: 1px solid var(--border-strong) !important;
 }
 
 html.dark[data-cuelo-look="graphite"] .navigator-search-input,
@@ -8359,12 +8626,12 @@ html.dark[data-cuelo-look="graphite"] .navigator-mode-switcher button[aria-press
 
 /* --- floating layers: 16px, surfaceContainerHigh ----------------------------- */
 html.dark[data-cuelo-look="graphite"] .workspace-command-palette {
-  border-color: var(--gt-outline-variant);
+  border: 0;
   border-radius: var(--seed-radius-r4);
   background: var(--gt-surface-high);
 }
 
-html.dark[data-cuelo-look="graphite"] .palette-search > input {
+html.dark[data-cuelo-look="graphite"] .palette-search-field {
   background: var(--gt-surface-high);
 }
 
@@ -8398,23 +8665,16 @@ html.dark[data-cuelo-look="graphite"] .chat-composer-send:hover:not(:disabled) {
   color: var(--gt-on-amber) !important;
 }
 
-/* --- upkeep page: same wallpaper, same column backing ----------------------- */
+/* --- upkeep page: same wallpaper; list and inspector as panels, the table on the backing --- */
 html.dark[data-cuelo-look="graphite"] .upkeep-view {
   background: var(--gt-wall);
 }
 
-html.dark[data-cuelo-look="graphite"] .upkeep-header {
-  border-block-end-color: var(--gt-outline-variant);
+html.dark[data-cuelo-look="graphite"] .upkeep-list,
+html.dark[data-cuelo-look="graphite"] .upkeep-inspector {
   background: var(--gt-surface-container);
 }
 
-html.dark[data-cuelo-look="graphite"] .upkeep-body {
-  --gt-band-half: 584px;
-  background: linear-gradient(
-    to right,
-    transparent calc(50% - var(--gt-band-half) - var(--gt-band-feather)),
-    var(--gt-backing) calc(50% - var(--gt-band-half)),
-    var(--gt-backing) calc(50% + var(--gt-band-half)),
-    transparent calc(50% + var(--gt-band-half) + var(--gt-band-feather))
-  );
+html.dark[data-cuelo-look="graphite"] .upkeep-main {
+  background: var(--gt-backing);
 }

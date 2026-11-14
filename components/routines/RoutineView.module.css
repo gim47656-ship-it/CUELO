@@ -1,4 +1,4 @@
-/* 루틴 게시판: 디시 갤러리 모양(루틴마다 머리띠, 굵은 선 표, 글 아래 목록). CUELO 토큰만 쓴다. */
+/* 루틴 게시판: 디시 갤러리 구성(루틴마다 머리, 표, 글 아래 목록)을 선 없이 면의 톤과 간격으로 나눈다. CUELO 토큰만 쓴다. */
 
 /* 작업 화면 위에 덮는 자리. 통역 화면과 같은 방식으로, 작업 쪽은 visibility로만 가린다. */
 :global(.chat-session-column) > .view {
@@ -31,7 +31,6 @@
   align-items: center;
   gap: var(--seed-dimension-x2);
   padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
-  border-block-end: 1px solid var(--border);
   background: var(--bg-panel);
   flex: 0 0 auto;
 }
@@ -49,7 +48,7 @@
   align-items: center;
   min-block-size: 32px;
   padding-inline: 6px 10px;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-muted);
@@ -97,7 +96,6 @@
 
 .link:hover {
   color: var(--text);
-  text-decoration: underline;
 }
 
 .head {
@@ -106,8 +104,6 @@
   align-items: flex-end;
   gap: 8px 16px;
   padding: 12px 0 10px;
-  border-block-start: 3px solid var(--accent);
-  border-block-end: 1px solid var(--border-strong);
 }
 
 .head h1 {
@@ -164,9 +160,9 @@
   gap: 4px;
   min-block-size: 32px;
   padding-inline: 12px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font: inherit;
   font-size: 12px;
@@ -175,7 +171,7 @@
 }
 
 .button:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--bg-selected);
 }
 
 .button:disabled {
@@ -184,35 +180,24 @@
 }
 
 .button[data-variant="primary"] {
-  border-color: var(--text);
-  background: var(--text);
-  color: var(--bg);
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
 }
 
 .button[data-variant="primary"]:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 85%, var(--bg));
+  background: var(--seed-color-bg-neutral-inverted-pressed);
 }
 
 .button[data-variant="danger"] {
-  border-color: var(--danger-line);
+  background: var(--danger-soft);
   color: var(--danger);
-}
-
-.button:focus-visible,
-.link:focus-visible,
-.back:focus-visible,
-.tabs button:focus-visible,
-.field input:focus-visible,
-.field textarea:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
-  outline-offset: 1px;
 }
 
 .badge {
   display: inline-block;
   padding: 0 6px;
-  border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
+  background: var(--bg-hover);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
@@ -222,92 +207,100 @@
 }
 
 .badge[data-status="failed"] {
-  border-color: var(--danger-line);
   background: var(--danger-soft);
   color: var(--danger);
 }
 
 .badge[data-status="timeout"] {
-  border-color: var(--warning-line);
   background: var(--warning-soft);
   color: var(--warning);
 }
 
 .badge[data-status="running"] {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
+  background: var(--bg-selected);
   color: var(--text);
 }
 
 /* 켜짐·꺼짐은 색만이 아니라 글자로도 갈린다. 꺼짐도 흐리게 두지 않아 목록에서 바로 읽힌다. */
 .badge[data-status="on"] {
-  border-color: var(--success-line);
   background: var(--success-soft);
   color: var(--success);
 }
 
 .badge[data-status="off"] {
-  border-color: var(--border-strong);
-  background: var(--bg-subtle);
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 /* 마지막 실행 결과. 실패·시간 초과는 위의 failed·timeout 색을 같이 쓴다. */
 .badge[data-status="ok"] {
-  border-color: var(--accent-line);
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .badge[data-status="quiet"] {
-  border-color: var(--border);
+  background: var(--bg-subtle);
   color: var(--text-muted);
 }
 
 /* 아직 열어 보지 않은 최근 글(디시의 N 표시). */
 .badge[data-status="new"] {
-  border-color: var(--danger-line);
   background: var(--danger);
   color: var(--bg);
 }
 
+/* 글 갈래(전체글·실패, 전체·켜짐·꺼짐): 채운 판 위의 분절 단추. 고른 칸은 올린 면과 굵기로 보인다. */
 .tabs {
-  display: flex;
+  display: inline-flex;
+  gap: 2px;
   margin-block-start: 12px;
+  padding: 2px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
   font-size: 13px;
+}
+
+/* An inline tray does not take the column's auto margins; start it where the column starts. */
+.body > .tabs {
+  margin-inline: max(0px, calc((100% - 980px) / 2)) 0;
 }
 
 .tabs button {
   padding: 6px 12px;
-  border: 1px solid transparent;
-  border-block-end: 0;
+  border: 0;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--text-muted);
   font: inherit;
   cursor: pointer;
 }
 
-.tabs button[aria-pressed="true"] {
-  border-color: var(--border-strong);
-  border-radius: var(--radius-control) var(--radius-control) 0 0;
-  background: var(--bg);
+.tabs button:hover {
+  background: var(--bg-hover);
   color: var(--text);
-  font-weight: 600;
+}
+
+.tabs button[aria-pressed="true"] {
+  background: var(--bg-selected);
+  color: var(--text);
+  font-weight: 650;
 }
 
 .table {
   inline-size: 100%;
+  margin-block-start: 8px;
   border-collapse: collapse;
-  border-block-start: 2px solid var(--text);
   font-size: 13px;
 }
 
 .table[data-flush="true"] {
-  border-block-start: 0;
+  margin-block-start: 0;
 }
 
 .table th {
   padding: 7px 8px;
-  border-block-end: 1px solid var(--border-strong);
+  /* deslop-ignore-next-line ln-04 -- the kept data-table header rule: separates column labels from the rows */
+  border-block-end: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
@@ -317,10 +310,18 @@
 
 .table td {
   padding: 8px;
-  border-block-end: 1px solid var(--hairline);
   color: var(--text-muted);
   text-align: center;
   white-space: nowrap;
+}
+
+/* 행은 선 대신 한 줄 건너 옅은 채움과 손을 올린 줄의 채움으로 나눈다. */
+.table tbody tr:nth-child(even) td {
+  background: var(--bg-subtle);
+}
+
+.table tbody tr:hover td {
+  background: var(--bg-hover);
 }
 
 .table .title {
@@ -383,7 +384,6 @@
 .notice {
   margin-block: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--warning-line);
   border-radius: var(--radius-surface);
   background: var(--warning-soft);
   font-size: 13px;
@@ -391,13 +391,11 @@
 }
 
 .notice[data-tone="danger"] {
-  border-color: var(--danger-line);
   background: var(--danger-soft);
 }
 
 .notice[data-tone="info"] {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
+  background: var(--bg-panel);
 }
 
 .notice h2 {
@@ -414,9 +412,9 @@
 }
 
 .postHead {
-  padding: 14px 4px 10px;
-  border-block-start: 2px solid var(--text);
-  border-block-end: 1px solid var(--border-strong);
+  padding: 14px 16px 12px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
 }
 
 .postHead h2 {
@@ -440,8 +438,7 @@
 
 .postBody {
   margin-block-end: 24px;
-  padding: 20px 4px 28px;
-  border-block-end: 1px solid var(--border-strong);
+  padding: 16px 4px 28px;
   font-size: 15px;
 }
 
@@ -450,10 +447,11 @@
   white-space: pre-line;
 }
 
+/* 본문 안의 구분선은 선 대신 빈 간격이다. */
 .postBody :global(hr) {
-  margin-block: 16px;
+  block-size: 0;
+  margin-block: 24px;
   border: 0;
-  border-block-start: 1px solid var(--border);
 }
 
 /* 짧은 본문은 이 높이까지만 보이고, 넘치면 아래를 흐리게 끊고 「글 전체 보기」를 둔다. */
@@ -463,6 +461,7 @@
 }
 
 .clamp[data-overflow="true"] {
+  /* deslop-ignore-next-line 06 -- a functional fade: it tells the reader the clamped post continues below 「글 전체 보기」, not atmosphere */
   mask-image: linear-gradient(to bottom, #000 70%, transparent);
 }
 
@@ -473,9 +472,9 @@
   min-block-size: 32px;
   margin-block-start: 12px;
   padding: 4px 12px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -485,12 +484,6 @@
 .expand:hover,
 .details > summary:hover {
   background: var(--bg-hover);
-}
-
-.expand:focus-visible,
-.details > summary:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
-  outline-offset: 1px;
 }
 
 .details {
@@ -529,17 +522,12 @@
   white-space: nowrap;
 }
 
-.form {
-  border-block-start: 2px solid var(--text);
-}
-
 .row {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
-  padding: 12px 4px;
-  border-block-end: 1px solid var(--hairline);
+  padding: 10px 4px;
 }
 
 .rowLabel {
@@ -562,9 +550,9 @@
 .field textarea {
   min-inline-size: 0;
   padding: 6px 8px;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-panel);
   color: var(--text);
   font: inherit;
   font-size: 14px;
@@ -599,7 +587,7 @@
   justify-content: center;
   min-inline-size: 36px;
   min-block-size: 32px;
-  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
   border-radius: var(--radius-control);
   color: var(--text-muted);
   font-size: 13px;
@@ -612,17 +600,11 @@
   pointer-events: none;
 }
 
-/* 고른 요일은 강조색으로 채워 안 고른 요일(테두리만)과 한눈에 갈린다. */
+/* 고른 요일은 강조색으로 채워 안 고른 요일(옅은 면)과 한눈에 갈린다. */
 .days label:has(input:checked) {
-  border-color: var(--accent);
   background: var(--accent);
   color: var(--bg);
   font-weight: 600;
-}
-
-.days label:has(input:focus-visible) {
-  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
-  outline-offset: 1px;
 }
 
 .check {
@@ -648,8 +630,8 @@
   justify-content: space-between;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--danger-line);
   border-radius: var(--radius-surface);
+  background: var(--danger-soft);
   font-size: 13px;
 }
 
@@ -714,11 +696,6 @@
   font-weight: 600;
 }
 
-.panelList button:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
-  outline-offset: -2px;
-}
-
 .panelBadges {
   display: inline-flex;
   flex-shrink: 0;
@@ -779,9 +756,9 @@
   align-items: center;
   gap: 2px;
   padding-inline-start: 8px;
-  border: 1px solid var(--accent-line);
   border-radius: var(--radius-control);
   background: var(--bg-selected);
+  font-weight: 600;
   font-size: 13px;
 }
 
@@ -797,11 +774,6 @@
 
 .chipRemove:hover {
   color: var(--text);
-}
-
-.chipRemove:focus-visible {
-  outline: 2px solid var(--seed-color-stroke-focus-ring, var(--accent));
-  outline-offset: -2px;
 }
 
 @media (max-width: 720px) {

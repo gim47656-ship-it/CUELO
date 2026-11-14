@@ -160,12 +160,23 @@ for (const mode of ["busy", "sibling-busy", "stale", "missing", "unresolved"] as
     assert.equal(git(f.path, "rev-parse", "HEAD"), before);
   });
 }
-test("running install clone is excluded before any fetch", async () => {
+test("running install clone is flagged so sync skips it", async () => {
   const f = fixture();
   git(f.path, "remote", "set-url", "origin", "https://github.com/gim47656-ship-it/CUELO.git");
   const old = process.env.CUELO_APP_DIR; process.env.CUELO_APP_DIR = f.path;
-  try { assert.deepEqual(await discover(f), []); }
+  try { assert.deepEqual(await discover(f), [{ name: "CUELO", path: f.path, install: true }]); }
   finally { if (old === undefined) delete process.env.CUELO_APP_DIR; else process.env.CUELO_APP_DIR = old; }
+});
+test("a dev checkout served by a verify server is still cloned, never offered for a fresh clone", async () => {
+  // 11-14: `next start` on 30163 from ~/src/CUELO-private wrote a busy snapshot with that appDir, the sidebar then
+  // listed CUELO-private as uncloned and 받기 failed with "Clone destination already exists".
+  const f = fixture();
+  git(f.path, "remote", "set-url", "origin", "https://github.com/gim47656-ship-it/Example.git");
+  const dir = join(f.home, ".omp/agent/cuelo-busy-cwds"); mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `30163-${process.pid}.json`), JSON.stringify({ writtenAt: Date.now(), pid: process.pid, port: 30163, cwds: [], unresolved: 0, appDir: f.path }), { mode: 0o600 });
+  writeFileSync(join(f.home, ".omp/agent/repo-sync.json"), JSON.stringify({ version: 1, accountStatus: "ok", repos: [{ name: "Example" }], decisions: {}, clones: {}, results: [], unresolvedRunningIds: 0 }));
+  assert.deepEqual((await getState(f)).uncloned, []);
+  await assert.rejects(decide("Example", "clone", f), /already/);
 });
 test("live running IDs cannot be replaced by idle snapshot after session API 503", async () => {
   const f = fixture();

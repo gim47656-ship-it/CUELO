@@ -8,7 +8,7 @@ import { type RoutinePost, findTitleHeading, splitPostDetails } from "@/lib/rout
 import type { RoutineSchedule } from "@/lib/routines/schedule";
 import type { RoutinePostSummary } from "@/lib/routines/store";
 import {
-  type BoardData, type BoardRoutine, type BoardScreen, isNewRoutinePost, markRoutinePostRead, readApiError, refreshRoutineBoard,
+  type BoardData, type BoardRoutine, type BoardScreen, isNewRoutinePost, markAllRoutinePostsRead, markRoutinePostRead, readApiError, refreshRoutineBoard,
   showRoutineScreen, useReadRoutinePosts, useRoutineBoard,
 } from "./board-store";
 import styles from "./RoutineView.module.css";
@@ -199,6 +199,18 @@ function Crumb({ routine, tail, t }: { routine?: BoardRoutine; tail?: string; t:
   );
 }
 
+/** 머리 줄의 새 글 수와 「전체 읽음 표시」. 게시판 목록에서는 모든 루틴, 게시판 하나에서는 그 루틴의 새 글을 읽음으로 한다. */
+function MarkAllRead({ routines, t }: { routines: readonly BoardRoutine[]; t: T }) {
+  const read = useReadRoutinePosts();
+  const fresh = routines.reduce((count, routine) => count + routine.posts.filter((post) => isNewRoutinePost(routine.id, post, read)).length, 0);
+  return (
+    <>
+      {fresh > 0 ? <span className={styles.badge} data-status="new">{t("routines.newPosts", { count: fresh })}</span> : null}
+      <button type="button" className={styles.button} disabled={fresh === 0} onClick={() => markAllRoutinePostsRead(routines)}>{t("routines.markAllRead")}</button>
+    </>
+  );
+}
+
 function BoardHead({ routine, data, t, onMessage }: { routine: BoardRoutine; data: BoardData; t: T; onMessage: (text: string) => void }) {
   const here = routine.host === data.thisHost;
   const last = lastRunLabel(routine, t);
@@ -210,6 +222,7 @@ function BoardHead({ routine, data, t, onMessage }: { routine: BoardRoutine; dat
         {routine.running ? <span className={styles.badge} data-status="running">{t("routines.running")}</span> : null}
       </h1>
       <div className={styles.headActions}>
+        <MarkAllRead routines={[routine]} t={t} />
         <ToggleButton routine={routine} t={t} onMessage={onMessage} />
         <RunButton routine={routine} data={data} t={t} onMessage={onMessage} />
         <button type="button" className={styles.button} onClick={() => showRoutineScreen({ kind: "form", id: routine.id })}>{t("routines.settings")}</button>
@@ -288,7 +301,7 @@ function Gallery({ data, t }: { data: BoardData; t: T }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [message, setMessage] = useState<string | null>(null);
   const read = useReadRoutinePosts();
-  const newButton = <button type="button" className={styles.button} data-variant="primary" onClick={() => showRoutineScreen({ kind: "form", id: null })}>{t("routines.new")}</button>;
+  const newButton = <button type="button" className={styles.button} data-variant="primary" data-focus-halo onClick={() => showRoutineScreen({ kind: "form", id: null })}>{t("routines.new")}</button>;
   if (data.routines.length === 0) {
     return (
       <>
@@ -303,7 +316,7 @@ function Gallery({ data, t }: { data: BoardData; t: T }) {
     <>
       <header className={styles.head}>
         <h1>{t("routines.title")}</h1>
-        <div className={styles.headActions}><SyncLine data={data} t={t} />{newButton}</div>
+        <div className={styles.headActions}><SyncLine data={data} t={t} /><MarkAllRead routines={data.routines} t={t} />{newButton}</div>
         <div className={styles.sub}>
           <span className={styles.strong}>{t("routines.enabledCount", { on: on.length, total: data.routines.length })}</span>
           <span className={styles.subNote}>{t("routines.galleryIntro")}</span>
@@ -671,7 +684,7 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
         {error ? <p className={styles.error} role="alert">{error}</p> : null}
         <div className={styles.formActions}>
           <button type="button" className={styles.button} onClick={cancel}>{t("routines.form.cancel")}</button>
-          <button type="submit" className={styles.button} data-variant="primary" disabled={busy}>{busy ? t("routines.form.saving") : t("routines.form.save")}</button>
+          <button type="submit" className={styles.button} data-variant="primary" data-focus-halo disabled={busy}>{busy ? t("routines.form.saving") : t("routines.form.save")}</button>
         </div>
       </form>
       {routine ? (

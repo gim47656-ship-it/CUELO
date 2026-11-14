@@ -14,9 +14,9 @@
   justify-content: space-between;
   gap: 10px;
   padding: 0 9px 0 10px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--ctl, var(--bg-panel));
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -25,13 +25,11 @@
 }
 
 .trigger:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--ctl, var(--bg-panel)) 86%, var(--text));
 }
 
 .trigger:focus-visible {
-  outline: none;
-  border-color: var(--accent);
+  background: var(--bg-raised);
 }
 
 .trigger:disabled {
@@ -71,17 +69,15 @@
   flex-direction: column;
   width: max(100%, 240px);
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent));
   border-radius: var(--radius-surface);
   background: var(--bg-panel);
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--bg) 72%, transparent);
+  box-shadow: var(--shadow-float);
 }
 
 .searchWrap {
   position: relative;
   flex: 0 0 auto;
   padding: 7px;
-  border-bottom: 1px solid var(--border);
 }
 
 .searchIcon {
@@ -102,16 +98,15 @@
   width: 100%;
   height: 31px;
   padding: 0 9px 0 29px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-control);
-  outline: none;
   background: var(--bg);
   color: var(--text);
   font: 11px var(--font-mono);
 }
 
-.search:focus {
-  border-color: var(--accent);
+.search:focus-visible {
+  background: var(--bg-raised);
 }
 
 .search::placeholder {
@@ -144,12 +139,13 @@
 }
 
 .option[data-active="true"] {
-  background: var(--bg-hover);
+  background: var(--bg-selected);
   color: var(--text);
 }
 
 .option[data-selected="true"] {
   color: var(--accent);
+  font-weight: 700;
 }
 
 .option:disabled {

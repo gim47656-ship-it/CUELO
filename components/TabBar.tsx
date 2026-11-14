@@ -34,6 +34,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
         overflowX: "auto",
         flexShrink: 0,
         height: 36,
+        gap: 2,
       }}
     >
       {tabs.map((tab) => {
@@ -57,14 +58,14 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               alignItems: "center",
               height: 36,
               paddingRight: 6,
-              borderRight: "1px solid var(--border)",
+              borderRadius: "var(--radius-control) var(--radius-control) 0 0",
               fontSize: 12,
               whiteSpace: "nowrap",
               maxWidth: 180,
               minWidth: 80,
               flexShrink: 0,
               userSelect: "none",
-              transition: "background 0.1s, color 0.1s",
+              transition: "background 120ms, color 120ms",
             }}
           >
             <button

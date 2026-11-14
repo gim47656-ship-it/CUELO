@@ -56,9 +56,8 @@ function panelButtonStyle(disabled = false): React.CSSProperties {
   return {
     minHeight: 30,
     padding: "4px 9px",
-    border: "1px solid var(--border)",
     borderRadius: "var(--radius-control)",
-    background: "var(--bg)",
+    background: "var(--bg-hover)",
     color: disabled ? "var(--text-dim)" : "var(--text-muted)",
     cursor: disabled ? "default" : "pointer",
     fontSize: "var(--seed-font-size-t2-static)",
@@ -68,7 +67,7 @@ function panelButtonStyle(disabled = false): React.CSSProperties {
 
 function QuestionBlock({ children }: { children: string }) {
   return (
-    <div className="side-chat-question" style={{ alignSelf: "flex-end", maxWidth: "92%", padding: "8px 10px", border: "1px solid var(--border)", color: "var(--text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.55 }}>
+    <div className="side-chat-question" style={{ alignSelf: "flex-end", maxWidth: "92%", padding: "8px 10px", color: "var(--text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.55 }}>
       {children}
     </div>
   );
@@ -76,7 +75,7 @@ function QuestionBlock({ children }: { children: string }) {
 
 function AnswerBlock({ children, streaming = false }: { children: string; streaming?: boolean }) {
   return (
-    <div className={`side-chat-answer${streaming ? " is-streaming" : ""}`} style={{ alignSelf: "flex-start", maxWidth: "100%", padding: "8px 10px", border: "1px solid var(--border)", color: "var(--text)", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.58 }}>
+    <div className={`side-chat-answer${streaming ? " is-streaming" : ""}`} style={{ alignSelf: "flex-start", maxWidth: "100%", padding: "8px 10px", color: "var(--text)", overflowWrap: "anywhere", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.58 }}>
       {children
         ? <MarkdownBody isStreaming={streaming}>{children}</MarkdownBody>
         : streaming ? "응답을 기다리는 중…" : null}
@@ -452,7 +451,7 @@ export function SideChatPanel({
       data-state={!normalizedSessionId || !sessionPath ? "unavailable" : visibleRequest ? "streaming" : "ready"}
       style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", background: "var(--bg-panel)", color: "var(--text)" }}
     >
-      <header style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 42, padding: "6px 10px", borderBottom: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+      <header style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 42, padding: "6px 10px", background: "var(--bg-panel)" }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: "var(--seed-font-size-t3-static)", fontWeight: 600 }}>{title}</div>
           <div title={sessionPath ?? undefined} style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "var(--seed-font-size-t2-static)" }}>
@@ -514,7 +513,7 @@ export function SideChatPanel({
                               ...current,
                               [forwardKey]: event.target.value,
                             }))}
-                            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", resize: "vertical", padding: "7px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--seed-font-family)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
+                            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", resize: "vertical", padding: "7px 8px", borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", fontFamily: "var(--seed-font-family)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
                           />
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <button
@@ -552,7 +551,7 @@ export function SideChatPanel({
                 <QuestionBlock>{entry.question}</QuestionBlock>
                 <SideChatReply identity={replyIdentity} status="failed" utteranceKey={`failed:${entry.question}:${index}`}>
                   {entry.partialAnswer && <AnswerBlock>{entry.partialAnswer}</AnswerBlock>}
-                  <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-surface)", background: "var(--bg)", color: "var(--danger)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                  <div role="alert" data-error-kind={entry.kind} style={{ padding: "7px 9px", borderRadius: "var(--radius-surface)", background: "var(--danger-soft)", color: "var(--text)", fontSize: 10.5, lineHeight: 1.5, overflowWrap: "anywhere" }}>
                     {entry.message}
                   </div>
                 </SideChatReply>
@@ -581,7 +580,7 @@ export function SideChatPanel({
           event.preventDefault();
           submitOrAbort();
         }}
-        style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}
+        style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 10px", background: "var(--bg-panel)" }}
       >
         <label htmlFor="side-chat-question" style={{ color: "var(--text-muted)", fontSize: "var(--seed-font-size-t2-static)", fontWeight: 600 }}>
           사이드채팅 질문
@@ -618,7 +617,7 @@ export function SideChatPanel({
           }}
           disabled={streaming || unavailable}
           placeholder="질문 입력 — Enter 전송, Shift+Enter 줄바꿈"
-          style={{ width: "100%", minWidth: 0, minHeight: 88, maxHeight: 240, boxSizing: "border-box", resize: "vertical", padding: "8px 9px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", outline: "none", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--seed-font-family)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
+          style={{ width: "100%", minWidth: 0, minHeight: 88, maxHeight: 240, boxSizing: "border-box", resize: "vertical", padding: "8px 9px", borderRadius: "var(--radius-control)", background: "var(--bg-hover)", color: "var(--text)", fontFamily: "var(--seed-font-family)", fontSize: "var(--seed-font-size-t3-static)", lineHeight: 1.5 }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span aria-live="polite" style={{ flex: 1, minWidth: 0, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t2-static)", lineHeight: 1.4, overflowWrap: "anywhere" }}>

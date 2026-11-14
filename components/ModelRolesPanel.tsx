@@ -11,6 +11,7 @@ import {
 } from "@/lib/model-role-selection";
 import { useI18n } from "@/hooks/useI18n";
 import { SearchableSelect } from "./SearchableSelect";
+import shared from "./SettingsConfig.module.css";
 
 interface ModelEntry {
   id: string;
@@ -140,20 +141,14 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t("roles.scope")}</span>
-        <div style={{ display: "flex", flexShrink: 0, border: "1px solid var(--border)", borderRadius: "var(--radius-control)", overflow: "hidden" }}>
+        <div className={shared.seg} role="group" aria-label={t("roles.scope")} style={{ flexShrink: 0 }}>
           {SCOPES.map((option) => (
             <button
               key={option}
+              type="button"
+              aria-pressed={scope === option}
               onClick={() => setScope(option)}
-              style={{
-                padding: "4px 10px",
-                border: "none",
-                background: scope === option ? "var(--bg-selected)" : "transparent",
-                color: scope === option ? "var(--text)" : "var(--text-muted)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: scope === option ? 600 : 400,
-              }}
+              style={{ fontSize: 11 }}
             >
               {option === "global" ? t("roles.scopeGlobal") : t("roles.scopeProject")}
             </button>
@@ -165,14 +160,14 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
       </div>
 
       {error && (
-        <div style={{ fontSize: 12, color: "var(--danger, #ff4757)" }}>{error}</div>
+        <div style={{ fontSize: 12, color: "var(--danger)" }}>{error}</div>
       )}
 
       {loading ? (
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("i18n.loading")}</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {visibleRoles.map((role) => {
+          {visibleRoles.map((role, rowIndex) => {
             // A saved selector the current model list cannot resolve must still
             // read as that selector instead of as "not set". Only the effort
             // suffix is dropped here: the picker lists models, and the thinking
@@ -187,24 +182,21 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
             return (
               <div
                 key={role.role}
+                className={rowIndex % 2 === 0 ? shared.panel : undefined}
                 style={{
                   display: "flex",
                   flexDirection: "column",
                   gap: 8,
                   padding: "8px 10px",
-                  border: "1px solid var(--border)",
                   borderRadius: "var(--radius-surface)",
-                  background: "var(--bg-panel)",
                 }}
               >
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, rowGap: 6 }}>
-                  <span style={{
+                  <span className={shared.badge} style={{
                     flexShrink: 0,
                     minWidth: 62,
+                    justifyContent: "center",
                     padding: "2px 6px",
-                    borderRadius: "var(--radius-control)",
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-subtle)",
                     color: "var(--accent)",
                     fontFamily: "var(--font-mono)",
                     fontSize: 9.5,
@@ -261,7 +253,7 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                   />
 
                   {role.warning && (
-                    <span title={role.warning} style={{ color: "var(--warning, #ffb347)", fontSize: 12 }}>!</span>
+                    <span title={role.warning} style={{ color: "var(--warning)", fontSize: 12 }}>!</span>
                   )}
                 </div>
 
@@ -273,13 +265,8 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                     <div
                       role="group"
                       aria-label={`${role.name} ${t("roles.thinking")}`}
-                      style={{
-                        display: "flex",
-                        flex: "1 1 auto",
-                        minWidth: 0,
-                        flexWrap: "wrap",
-                        gap: 3,
-                      }}
+                      className={shared.seg}
+                      style={{ flexWrap: "wrap", minWidth: 0 }}
                     >
                       {thinkingOptions.map((level: ModelRoleThinkingLevel) => {
                         const active = currentThinkingLevel === level;
@@ -295,17 +282,11 @@ export function ModelRolesPanel({ cwd, onRolesChanged }: Props) {
                               void assign(role.role, formatModelRoleSelector(current, level));
                             }}
                             style={{
-                              padding: "3px 7px",
-                              border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
-                              borderRadius: "var(--radius-control)",
-                              background: active ? "var(--bg-selected)" : "transparent",
-                              color: active ? "var(--accent)" : "var(--text-muted)",
-                              cursor: pendingRole === role.role ? "not-allowed" : "pointer",
+                              minHeight: 24,
+                              padding: "0 7px",
                               fontFamily: "var(--font-mono)",
                               fontSize: 10,
-                              fontWeight: active ? 700 : 500,
-                              lineHeight: 1.2,
-                              opacity: pendingRole === role.role ? 0.55 : 1,
+                              cursor: pendingRole === role.role ? "not-allowed" : "pointer",
                             }}
                           >
                             {level}

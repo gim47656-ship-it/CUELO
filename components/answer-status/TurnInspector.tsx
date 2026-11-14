@@ -21,8 +21,13 @@ export type TurnKey = number | "live";
  */
 export const TurnSelectionContext = createContext<{
   selected: TurnKey | null;
+  /** 이번 턴 is on screen. While it is, a turn shows one result row; otherwise it shows the full card. */
   shown: boolean;
   select: (key: TurnKey) => void;
+  /** The newest finished turn: the one a compaction's hidden dispatches belong to. */
+  latestTurn?: number | null;
+  compactedCalls?: readonly ToolCallContent[];
+  onOpenFile?: (filePath: string) => void;
 }>({ selected: null, shown: false, select: () => {} });
 
 /**
@@ -119,6 +124,42 @@ export function TurnResultRow({ summary, turnKey, live = false }: {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
       </span>
     </button>
+  );
+}
+
+/**
+ * One turn in the stream. While the inspector's 이번 턴 is on screen the stream keeps only the compact
+ * result row; when the inspector is closed, stacked away or on another view, the same body the inspector
+ * shows stands here in full, so a turn is never without its work flow.
+ */
+export function TurnStreamRow({ summary, turnKey, live = false }: {
+  summary: FinishedTurnSummary;
+  turnKey: TurnKey;
+  live?: boolean;
+}) {
+  const { shown } = useContext(TurnSelectionContext);
+  return shown
+    ? <TurnResultRow summary={summary} turnKey={turnKey} live={live} />
+    : <TurnInlineCard summary={summary} turnKey={turnKey} live={live} />;
+}
+
+/** The inspector's 이번 턴 body, unfolded, in the stream; opening it in the inspector stays a secondary action. */
+function TurnInlineCard({ summary, turnKey, live }: { summary: FinishedTurnSummary; turnKey: TurnKey; live: boolean }) {
+  const { st, locale } = useAnswerStatusText();
+  const counts = useTurnCounts(summary, live);
+  const { select, latestTurn, compactedCalls, onOpenFile } = useContext(TurnSelectionContext);
+  const turnCompacted = turnKey === "live" || turnKey === latestTurn ? compactedCalls : undefined;
+  if (counts.empty && !(turnCompacted?.length)) return null;
+  return (
+    <section className="turn-inline" data-live={live ? "" : undefined}>
+      <TurnInspectorBody summary={summary} live={live} folded={false} compactedCalls={turnCompacted} onOpenFile={onOpenFile} st={st} locale={locale} />
+      <div className="turn-inline-actions">
+        <button type="button" className="turn-inline-show" onClick={() => select(turnKey)}>
+          {st("turn.show")}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+        </button>
+      </div>
+    </section>
   );
 }
 

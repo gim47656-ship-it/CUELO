@@ -512,6 +512,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       type="button"
       className="translator-call-button"
       data-compact={compact ? "true" : undefined}
+      data-focus-halo
       aria-pressed={active}
       disabled={!canStart}
       onClick={toggleCall}

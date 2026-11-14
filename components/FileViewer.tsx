@@ -87,7 +87,6 @@ const FILE_LINE_NUMBER_STYLE: CSSProperties = {
   textAlign: "right",
   color: "var(--text-dim)",
   background: "var(--bg-panel)",
-  borderRight: "1px solid var(--border)",
   fontFamily: "var(--font-mono)",
   fontSize: 11,
   fontStyle: "normal",
@@ -468,8 +467,6 @@ function DiffView({ patch }: { patch: string }) {
                 color: "var(--text-dim)",
                 background: "var(--bg-panel)",
                 fontSize: 11,
-                borderTop: "1px solid var(--border)",
-                borderBottom: "1px solid var(--border)",
               }}
             >
               ... {seg.count} unchanged lines ...
@@ -480,14 +477,14 @@ function DiffView({ patch }: { patch: string }) {
         const lines = seg.lines.map((line, li) => {
           const bg =
             line.type === "added"
-              ? "rgba(0,200,80,0.12)"
+              ? "color-mix(in srgb, var(--success) 16%, var(--bg))"
               : line.type === "removed"
-              ? "rgba(240,60,60,0.14)"
+              ? "color-mix(in srgb, var(--danger) 16%, var(--bg))"
               : "transparent";
           const prefix =
             line.type === "added" ? "+" : line.type === "removed" ? "-" : " ";
           const prefixColor =
-            line.type === "added" ? "#4ade80" : line.type === "removed" ? "#f87171" : "var(--text-dim)";
+            line.type === "added" ? "var(--success)" : line.type === "removed" ? "var(--danger)" : "var(--text-dim)";
 
           return (
             <div
@@ -497,11 +494,6 @@ function DiffView({ patch }: { patch: string }) {
                 display: "flex",
                 minWidth: "100%",
                 background: bg,
-                borderLeft: line.type === "added"
-                  ? "3px solid #4ade80"
-                  : line.type === "removed"
-                  ? "3px solid #f87171"
-                  : "3px solid transparent",
               }}
             >
               <span
@@ -612,7 +604,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
         }}
       >
         {error ? (
-          <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>
+          <div style={{ color: "var(--danger)", fontSize: 13 }}>{error}</div>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -627,7 +619,6 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
               maxWidth: "100%",
               maxHeight: "100%",
               objectFit: "contain",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
             }}
           />
         )}
@@ -711,7 +702,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
       >
         <div style={{ width: "min(680px, 100%)" }}>
           {error && (
-            <div style={{ color: "#f87171", fontSize: 13, marginBottom: 12, textAlign: "center" }}>
+            <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12, textAlign: "center" }}>
               {error}
             </div>
           )}
@@ -806,7 +797,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
       />
       <div style={{ flex: 1, minHeight: 0, background: "var(--bg-panel)" }}>
         {error ? (
-          <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, color: "#f87171", fontSize: 13, textAlign: "center" }}>
+          <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, color: "var(--danger)", fontSize: 13, textAlign: "center" }}>
             {error}
           </div>
         ) : (
@@ -815,7 +806,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
             src={previewUrl}
             sandbox={isPdf ? undefined : "allow-same-origin"}
             title={t("i18n.previewFile", { file: getFileName(filePath) })}
-            style={{ width: "100%", height: "100%", border: "none", background: isPdf ? "var(--bg)" : "#eef1f5" }}
+            style={{ width: "100%", height: "100%", background: isPdf ? "var(--bg)" : "var(--bg-raised)" }}
           />
         )}
       </div>

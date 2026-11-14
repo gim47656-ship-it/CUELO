@@ -87,9 +87,13 @@ interface Pace {
 
 const DAY_MS = 86_400_000;
 
-const buttonClass = "min-h-9 border border-border bg-bg px-3 text-xs font-medium text-text transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50";
+const buttonClass = "min-h-9 bg-bg-hover px-3 text-xs font-medium text-text transition-colors hover:bg-bg-selected disabled:cursor-not-allowed disabled:opacity-50";
 // 터치 화면(굵은 포인터)이나 좁은 화면에서는 누르는 칸을 44px 이상으로 키운다. 데스크톱 마우스에서는 지금 크기를 둔다.
 const touchTargetClass = "pointer-coarse:min-h-11 pointer-coarse:min-w-11 max-sm:min-h-11 max-sm:min-w-11";
+// 묶음은 선이 아니라 중앙 바탕색 한 단계로 패널과 갈라진다.
+const groupClass = "mx-3 mb-2 rounded-[var(--radius-surface)] bg-bg px-3 py-3";
+const groupHeadingClass = "m-0 px-4 pb-1.5 pt-4 text-xs font-semibold text-text-muted";
+const noticeClass = "mx-3 mb-2 rounded-[var(--radius-control)] bg-bg px-3 py-2 text-xs";
 
 function classNames(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -224,7 +228,7 @@ function dayLabel(timestamp: number): string {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3 border-b border-border py-1.5 last:border-b-0">
+    <div className="flex min-w-0 items-baseline justify-between gap-3 py-1.5">
       <dt className="text-xs text-text-muted">{label}</dt>
       <dd className="m-0 font-mono text-xs tabular-nums text-text">{value}</dd>
     </div>
@@ -254,7 +258,7 @@ function StateNotice({
   }
   if (state.status === "stale") {
     return (
-      <div className="border-b border-border bg-bg px-4 py-2 text-xs text-text-muted" role="status">
+      <div className={classNames(noticeClass, "text-text-muted")} role="status">
         마지막 데이터를 표시합니다. 새로고침 실패: {state.error.message}
       </div>
     );
@@ -334,7 +338,7 @@ function UsageMeter({ limit, now, detailed }: { limit: UsageLimit; now: number; 
         </span>
       </div>
       <div
-        className="relative mt-1 h-3.5 overflow-hidden border border-border-strong bg-metric-track"
+        className="relative mt-1 h-3.5 bg-metric-track"
         role="progressbar"
         aria-label={`${limit.label || limit.id} 사용량`}
         aria-valuemin={0}
@@ -351,17 +355,13 @@ function UsageMeter({ limit, now, detailed }: { limit: UsageLimit; now: number; 
             style={{
               left: `${bandStart}%`,
               width: `${bandEnd - bandStart}%`,
-              boxShadow: "inset 1px 0 var(--bg-panel)",
             }}
           />
         ) : null}
         {pacePosition != null ? (
           <div
-            className="absolute inset-y-0 w-0.5 bg-text"
-            style={{
-              left: `${pacePosition}%`,
-              boxShadow: "0 0 0 1px color-mix(in srgb, var(--bg-panel) 80%, transparent)",
-            }}
+            className="absolute -inset-y-1 w-0.5 bg-text"
+            style={{ left: `${pacePosition}%` }}
             aria-hidden="true"
           />
         ) : null}
@@ -374,7 +374,7 @@ function UsageMeter({ limit, now, detailed }: { limit: UsageLimit; now: number; 
         </div>
       ) : null}
       {detailed ? (
-        <dl className="m-0 mt-1.5 border-s-2 border-border ps-2.5">
+        <dl className="m-0 mt-1.5">
           {pace?.pacePct != null ? <Metric label="페이스" value={`${pace.pacePct.toFixed(1)}%`} /> : null}
           {pace ? (
             <Metric
@@ -725,7 +725,7 @@ export function UsageAccount({
 
   return (
     <section
-      className="resource-account border-b border-border-strong px-4 py-3 last:border-b-0"
+      className={classNames("resource-account", groupClass)}
       data-account-state={accountState}
       aria-current={active ? "true" : undefined}
     >
@@ -791,7 +791,7 @@ export function UsageAccount({
           {feedback.message}
         </div>
       ) : null}
-      <div id={detailsId} className="resource-account-limits divide-y divide-border">
+      <div id={detailsId} className="resource-account-limits">
         {detailsOpen ? (
           <div className="flex items-baseline justify-between gap-3 py-2">
             <span className="text-xs text-text-muted">계정</span>
@@ -839,7 +839,7 @@ export function UsageAccount({
           />
         ) : (
           <div
-            className="resource-reset mt-3 border-t border-border pt-2.5"
+            className="resource-reset mt-3"
             data-reset-state={!brokerOk
               ? "offline"
               : !savedReset || savedReset.state === "unavailable"
@@ -963,11 +963,11 @@ export function UsageView({
     <>
       <StateNotice state={state} loading={loading} subject="사용량" />
       {data?.brokerOk === false ? (
-        <div className="border-b border-border bg-bg px-4 py-2 text-xs text-text-muted" role="status">
+        <div className={classNames(noticeClass, "text-text-muted")} role="status">
           제어 서버에 연결할 수 없어 계정 전환과 리셋 사용을 잠시 쓸 수 없습니다. 사용량 표시는 계속 갱신됩니다.
         </div>
       ) : null}
-      <div className="flex min-h-7 items-center gap-4 border-b border-border bg-bg-raised px-4 text-[11px] font-semibold tracking-[0.08em] text-text-muted uppercase" aria-label="사용량 그래프 범례">
+      <div className="flex min-h-7 items-center gap-4 px-4 text-[11px] font-semibold text-text-muted" aria-label="사용량 그래프 범례">
         <span className="inline-flex items-center gap-1.5"><span className="size-2 bg-metric" aria-hidden="true" />누적</span>
         <span className="inline-flex items-center gap-1.5"><span className="size-2 bg-metric-recent" aria-hidden="true" />이번 구간</span>
         <span className="inline-flex items-center gap-1.5"><span className="h-3 w-0.5 bg-text" aria-hidden="true" />페이스</span>
@@ -1068,7 +1068,7 @@ function CreditEditor({
   const [start, setStart] = useState(setting?.startDate ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputClass = "min-h-8 w-full min-w-0 border border-border bg-bg px-2 font-mono text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  const inputClass = "min-h-8 w-full min-w-0 bg-bg-hover px-2 font-mono text-xs text-text";
   const submit = async (value: CreditSettingInput | null) => {
     setPending(true);
     setError(null);
@@ -1086,7 +1086,7 @@ function CreditEditor({
   };
   return (
     <form
-      className="mt-2 grid gap-2 border border-border bg-bg-raised p-2.5"
+      className="mt-2 grid gap-2"
       aria-label={t("credits.formLabel", { wallet: walletName })}
       onSubmit={(event) => {
         event.preventDefault();
@@ -1152,7 +1152,7 @@ function CreditWalletCard({
   const pct = meter.spentFraction === null || wallet.remainingUsd === null ? null : Math.round(meter.spentFraction * 100);
 
   return (
-    <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet={wallet.wallet}>
+    <section className={groupClass} aria-labelledby={headingId} data-credit-wallet={wallet.wallet}>
       <div className="flex min-w-0 items-center gap-2">
         <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{walletName}</h3>
         {!editing ? (
@@ -1176,7 +1176,7 @@ function CreditWalletCard({
             </span>
           </div>
           <div
-            className="relative mt-1 h-3.5 overflow-hidden border border-border-strong bg-metric-track"
+            className="relative mt-1 h-3.5 overflow-hidden bg-metric-track"
             role="progressbar"
             aria-label={t("credits.meterLabel", { wallet: walletName })}
             aria-valuemin={0}
@@ -1197,7 +1197,7 @@ function CreditWalletCard({
         <CreditEditor walletName={walletName} setting={setting} onSave={onSave} onClose={() => setEditing(false)} t={t} />
       ) : null}
       {wallet.rows.length > 0 ? (
-        <ul className="m-0 mt-1.5 list-none border-t border-border p-0">
+        <ul className="m-0 mt-1.5 list-none p-0">
           {wallet.rows.map((row) => {
             const face = providerModelFace("hive", row.model) ?? providerAccountFace("hive");
             const purposes = row.purposes.map((item) => {
@@ -1277,7 +1277,7 @@ function AnthropicPaidCard({ wallet, balance, now, onSaveBalance, t }: {
     ? t("credits.priceUnknown")
     : `${wallet.spentComplete ? "" : "≥"}${formatMoney(wallet.spentUsd)}`;
   return (
-    <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet="anthropic">
+    <section className={groupClass} aria-labelledby={headingId} data-credit-wallet="anthropic">
       <div className="flex min-w-0 items-center gap-2">
         <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{t("credits.wallet.anthropic")}</h3>
         <BillingLink wallet="anthropic" walletName={t("credits.wallet.anthropic")} t={t} />
@@ -1306,7 +1306,7 @@ function AnthropicPaidCard({ wallet, balance, now, onSaveBalance, t }: {
         <p className="m-0 mt-1.5 text-xs text-text-muted">{t("credits.anthropic.none")}</p>
       ) : null}
       {wallet.rows.length > 0 ? (
-        <ul className="m-0 mt-1.5 list-none border-t border-border p-0">
+        <ul className="m-0 mt-1.5 list-none p-0">
           {wallet.rows.map((row) => {
             const part = (key: keyof typeof COST_CATEGORY_TOKENS) => {
               const cost = row.costs[key];
@@ -1374,7 +1374,7 @@ function BalanceEditor({
   const [observedAt, setObservedAt] = useState(() => localDateTimeInput(recorded?.observedAt ?? Date.now()));
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<BalanceField, string>>>({});
-  const inputClass = "min-h-8 w-full min-w-0 border border-border bg-bg px-2 font-mono text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent pointer-coarse:min-h-11 max-sm:min-h-11";
+  const inputClass = "min-h-8 w-full min-w-0 bg-bg-hover px-2 font-mono text-xs text-text pointer-coarse:min-h-11 max-sm:min-h-11";
   const ids = { amount: `${formId}-amount`, observedAt: `${formId}-observed`, hint: `${formId}-hint`,
     amountError: `${formId}-amount-error`, observedAtError: `${formId}-observed-error` };
   const submit = async (value: BalanceInput | null) => {
@@ -1395,7 +1395,7 @@ function BalanceEditor({
   };
   return (
     <form
-      className="mt-2 grid gap-2 border border-border bg-bg-raised p-2.5"
+      className="mt-2 grid gap-2"
       aria-label={t("credits.balance.formLabel", { wallet: walletName })}
       // 빈 칸도 브라우저 말풍선이 아니라 칸 아래 오류(aria-describedby)로 알린다.
       noValidate
@@ -1506,7 +1506,7 @@ function BalanceRecord({
       <div className="mt-2 flex min-w-0 items-baseline justify-between gap-2">
         <span className="min-w-0 text-[13px] text-text-muted">
           {t("credits.balance.label")}
-          <span className="ms-1.5 border border-border px-1 text-[11px]">{t("credits.balance.source")}</span>
+          <span className="ms-1.5 rounded-[var(--radius-control)] bg-bg-hover px-1 text-[11px]">{t("credits.balance.source")}</span>
         </span>
         {recorded ? (
           <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-text" data-balance-amount>
@@ -1546,7 +1546,7 @@ function BalanceOnlyCard({ balance, now, onSaveBalance, t }: {
   const headingId = useId();
   const walletName = t(`credits.wallet.${balance.wallet}`);
   return (
-    <section className="border-b border-border-strong px-4 py-3 last:border-b-0" aria-labelledby={headingId} data-credit-wallet={balance.wallet}>
+    <section className={groupClass} aria-labelledby={headingId} data-credit-wallet={balance.wallet}>
       <div className="flex min-w-0 items-center gap-2">
         <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{walletName}</h3>
         <BillingLink wallet={balance.wallet} walletName={walletName} t={t} />
@@ -1592,14 +1592,14 @@ export function ApiCreditsCards({
   return (
     <>
       <h2 className="resource-group-heading">{t("credits.heading")}</h2>
-      <p className="m-0 border-b border-border px-4 py-2 text-xs text-text-muted">{t("credits.estimateNote")}</p>
+      <p className={classNames("m-0", noticeClass, "text-text-muted")}>{t("credits.estimateNote")}</p>
       {loading && state.status === "idle" ? <div className="p-4 text-sm text-text-muted" role="status">{t("credits.loading")}</div> : null}
       {state.status === "error" || state.status === "stale" ? (
-        <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.loadFailed", { reason: state.error.message })}</div>
+        <div className={classNames(noticeClass, "bg-[var(--danger-soft)] text-text")} role="alert">{t("credits.loadFailed", { reason: state.error.message })}</div>
       ) : null}
-      {data?.settingsError ? <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{t("credits.settingsError")}</div> : null}
+      {data?.settingsError ? <div className={classNames(noticeClass, "bg-[var(--danger-soft)] text-text")} role="alert">{t("credits.settingsError")}</div> : null}
       {data?.balancesError ? (
-        <div className="border-b border-border px-4 py-2 text-xs text-text" role="alert">{creditReason(t, data.balancesError)}</div>
+        <div className={classNames(noticeClass, "bg-[var(--danger-soft)] text-text")} role="alert">{creditReason(t, data.balancesError)}</div>
       ) : null}
       {cards}
     </>
@@ -1654,13 +1654,13 @@ function ModelRow({ model }: { model: ModelAggregate }) {
     ? formatCost(0, false)
     : `${formatCost(model.cost, costComplete)} · ${formatPercent(model.costShare)}`;
   return (
-    <section className="border-b border-border px-4 py-3 last:border-b-0">
+    <section className={groupClass}>
       <div className="flex items-baseline gap-2">
         <h3 className="m-0 min-w-0 flex-1 truncate text-sm font-semibold text-text" title={model.model}>{model.model}</h3>
         <span className="text-xs text-text-muted">{model.provider}</span>
         <span className="font-mono text-xs tabular-nums text-text">{costLabel}</span>
       </div>
-      <div className="my-2 h-1 overflow-hidden border border-border-strong bg-metric-track" aria-hidden="true">
+      <div className="my-2 h-1 overflow-hidden bg-metric-track" aria-hidden="true">
         <div className="h-full bg-metric" style={{ width: `${width}%` }} />
       </div>
       <dl className="m-0 grid grid-cols-2 gap-x-4">
@@ -1680,12 +1680,12 @@ function AgentRow({ agent }: { agent: AgentAggregate }) {
     ?? agent.agentType;
   const width = Math.max(1, Math.min(100, agent.costShare * 100));
   return (
-    <section className="border-b border-border px-4 py-3 last:border-b-0">
+    <section className={groupClass}>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="m-0 text-sm font-semibold text-text">{label}</h3>
         <span className="font-mono text-xs tabular-nums text-text">{formatCost(agent.cost, agent.costComplete)} · {formatPercent(agent.costShare)}</span>
       </div>
-      <div className="my-2 h-1 overflow-hidden border border-border-strong bg-metric-track" aria-hidden="true">
+      <div className="my-2 h-1 overflow-hidden bg-metric-track" aria-hidden="true">
         <div className="h-full bg-metric" style={{ width: `${width}%` }} />
       </div>
       <dl className="m-0 grid grid-cols-2 gap-x-4">
@@ -1700,7 +1700,7 @@ function AgentRow({ agent }: { agent: AgentAggregate }) {
 function DailyRow({ day }: { day: DailyModelCost }) {
   const names = day.models.slice(0, 3).map((model) => model.model).join(", ");
   return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border px-4 py-2 last:border-b-0">
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-3 px-3 py-1.5">
       <span className="font-mono text-xs tabular-nums text-text-muted">{dayLabel(day.timestamp)}</span>
       <span className="truncate text-xs text-text-muted" title={names}>{names}</span>
       <span className="font-mono text-xs tabular-nums text-text">{formatCost(day.cost, day.costComplete)}</span>
@@ -1717,8 +1717,8 @@ export function ModelsView({ state, loading }: { state: PanelState<ModelStatsSna
       {data ? (
         <>
           <section aria-labelledby="resource-overall-heading">
-            <h2 id="resource-overall-heading" className="m-0 border-b border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">전체</h2>
-            <dl className="m-0 grid grid-cols-2 gap-x-4 px-4 py-3">
+            <h2 id="resource-overall-heading" className={groupHeadingClass}>전체</h2>
+            <dl className={classNames("m-0 grid grid-cols-2 gap-x-4", groupClass)}>
               <Metric label="요청" value={formatNumber(data.overall.requests)} />
               <Metric label="추정 비용" value={formatCost(data.overall.cost, data.overall.costComplete)} />
               <Metric label="토큰" value={formatTokens(data.overall.tokens)} />
@@ -1728,24 +1728,26 @@ export function ModelsView({ state, loading }: { state: PanelState<ModelStatsSna
             </dl>
           </section>
           <section aria-labelledby="resource-models-heading">
-            <h2 id="resource-models-heading" className="m-0 border-y border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">모델별</h2>
+            <h2 id="resource-models-heading" className={groupHeadingClass}>모델별</h2>
             {data.models.length ? data.models.map((model) => <ModelRow key={`${model.provider}:${model.model}`} model={model} />) : (
               <div className="p-4 text-sm text-text-muted">모델 기록이 없습니다.</div>
             )}
           </section>
           <section aria-labelledby="resource-agents-heading">
-            <h2 id="resource-agents-heading" className="m-0 border-y border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">에이전트 종류별</h2>
+            <h2 id="resource-agents-heading" className={groupHeadingClass}>에이전트 종류별</h2>
             {data.agents.length ? data.agents.map((agent) => <AgentRow key={agent.agentType} agent={agent} />) : (
               <div className="p-4 text-sm text-text-muted">기록이 없습니다.</div>
             )}
           </section>
           {data.daily.length ? (
             <section aria-labelledby="resource-daily-heading">
-              <h2 id="resource-daily-heading" className="m-0 border-y border-border bg-bg-raised px-4 py-2 text-[10px] font-semibold tracking-[0.08em] text-text-muted uppercase">일별 추정 비용</h2>
-              {data.daily.map((day) => <DailyRow key={day.timestamp} day={day} />)}
+              <h2 id="resource-daily-heading" className={groupHeadingClass}>일별 추정 비용</h2>
+              <div className="mx-3 mb-2 rounded-[var(--radius-surface)] bg-bg py-1.5">
+                {data.daily.map((day) => <DailyRow key={day.timestamp} day={day} />)}
+              </div>
             </section>
           ) : null}
-          <p className="m-0 border-t border-border px-4 py-3 text-xs leading-5 text-text-dim">
+          <p className="m-0 px-4 py-3 text-xs leading-5 text-text-dim">
             `omp stats` 기준 누적값입니다. 금액은 토큰 단가로 계산한 추정치이며 실제 청구액이나 구독 사용량이 아닙니다. 구독 한도 %는 계정 한도 탭에서 확인하세요.
             {unpricedModels > 0
               ? ` 가격을 다 매기지 못한 모델이 ${unpricedModels}개 있어 추정 비용·비중·캐시 절감은 단가를 아는 사용량만 셉니다. ≥가 붙은 금액은 추정 비용의 최솟값입니다. 에이전트 종류별 집계는 모델을 나누지 않아 모든 행에 ≥를 붙입니다.`

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import shared from "./SettingsConfig.module.css";
 
 /**
  * Confirms trusting the open project. When sessions in the project are still
@@ -33,13 +34,7 @@ export function ProjectTrustDialog({
     dismissRef.current?.focus();
   }, [scheduled]);
 
-  const buttonStyle = {
-    height: 32,
-    padding: "0 12px",
-    borderRadius: "var(--radius-control)",
-    cursor: busy ? "not-allowed" : "pointer",
-    fontSize: 12,
-  } as const;
+  const buttonStyle = { height: 32, padding: "0 12px" } as const;
 
   return (
     <div
@@ -52,7 +47,7 @@ export function ProjectTrustDialog({
         alignItems: "center",
         justifyContent: "center",
         padding: 16,
-        background: "rgba(0,0,0,0.4)",
+        background: "var(--scrim)",
       }}
       onClick={(event) => {
         if (!busy && event.target === event.currentTarget) onCancel();
@@ -63,13 +58,11 @@ export function ProjectTrustDialog({
         aria-modal="true"
         aria-labelledby="project-trust-title"
         aria-describedby="project-trust-body"
+        className={shared.panel}
         style={{
           width: 440,
           maxWidth: "100%",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius-surface)",
-          background: "var(--bg-panel)",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.24)",
+          boxShadow: "var(--shadow-float)",
           overflow: "hidden",
         }}
       >
@@ -79,7 +72,7 @@ export function ProjectTrustDialog({
             height="20"
             viewBox="0 0 24 24"
             fill="none"
-            stroke="#f59e0b"
+            stroke="var(--warning)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -105,7 +98,6 @@ export function ProjectTrustDialog({
                 display: "block",
                 marginTop: 10,
                 padding: "8px 10px",
-                border: "1px solid var(--border)",
                 borderRadius: "var(--radius-control)",
                 background: "var(--bg)",
                 color: "var(--text)",
@@ -117,7 +109,7 @@ export function ProjectTrustDialog({
               {cwd}
             </code>
             {error && (
-              <div role="alert" style={{ marginTop: 10, color: "#ef4444", fontSize: 12, lineHeight: 1.5 }}>
+              <div role="alert" style={{ marginTop: 10, color: "var(--danger)", fontSize: 12, lineHeight: 1.5 }}>
                 {error}
               </div>
             )}
@@ -129,8 +121,7 @@ export function ProjectTrustDialog({
             flexWrap: "wrap",
             justifyContent: "flex-end",
             gap: 8,
-            padding: "10px 18px",
-            borderTop: "1px solid var(--border)",
+            padding: "10px 18px 14px",
           }}
         >
           {scheduled && (
@@ -138,7 +129,8 @@ export function ProjectTrustDialog({
               type="button"
               onClick={onCancelSchedule}
               disabled={busy}
-              style={{ ...buttonStyle, border: "1px solid var(--border)", background: "transparent", color: "var(--text-muted)" }}
+              className={shared.btn}
+              style={buttonStyle}
             >
               {t("trust.cancelSchedule")}
             </button>
@@ -148,7 +140,8 @@ export function ProjectTrustDialog({
             type="button"
             onClick={onCancel}
             disabled={busy}
-            style={{ ...buttonStyle, border: "1px solid var(--border)", background: "transparent", color: "var(--text-muted)" }}
+            className={shared.btn}
+            style={buttonStyle}
           >
             {scheduled ? t("trust.close") : t("trust.cancel")}
           </button>
@@ -157,15 +150,8 @@ export function ProjectTrustDialog({
               type="button"
               onClick={onConfirm}
               disabled={busy}
-              style={{
-                ...buttonStyle,
-                border: "1px solid transparent",
-                background: "var(--seed-color-bg-neutral-inverted)",
-                color: "var(--seed-color-fg-neutral-inverted)",
-                cursor: busy ? "wait" : "pointer",
-                opacity: busy ? 0.7 : 1,
-                fontWeight: 600,
-              }}
+              className={shared.btnPrimary}
+              style={{ ...buttonStyle, cursor: busy ? "wait" : "pointer" }}
             >
               {busy ? t("trust.trusting") : t("trust.trustProject")}
             </button>

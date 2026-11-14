@@ -5,6 +5,7 @@ import { sendAgentCommand } from "@/lib/agent-client";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PluginPackageInfo, PluginsResponse } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
+import shared from "./SettingsConfig.module.css";
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
@@ -56,9 +57,9 @@ function findInstalledPackage(
 
 function statusColor(status: PluginPackageInfo["status"]): string {
   if (status === "loaded") return "var(--accent)";
-  if (status === "installed") return "#f59e0b";
+  if (status === "installed") return "var(--warning)";
   if (status === "disabled") return "var(--text-dim)";
-  return "#ef4444";
+  return "var(--danger)";
 }
 
 function ResourceList({ pkg }: { pkg: PluginPackageInfo }) {
@@ -92,14 +93,8 @@ function ResourceList({ pkg }: { pkg: PluginPackageInfo }) {
         gap: 12,
       }}
     >
-      {groups.map((group, groupIndex) => (
-        <div
-          key={group.kind}
-          style={{
-            borderTop: groupIndex === 0 ? "none" : "1px solid var(--border)",
-            paddingTop: groupIndex === 0 ? 0 : 12,
-          }}
-        >
+      {groups.map((group) => (
+        <div key={group.kind}>
           <div
             style={{
               fontSize: 10,
@@ -153,31 +148,12 @@ function ResourceList({ pkg }: { pkg: PluginPackageInfo }) {
 function ScopeTag({ scope }: { scope: PluginScope }) {
   return (
     <span
-      style={{
-        fontSize: 10,
-        padding: "1px 5px",
-        borderRadius: "var(--radius-control)",
-        flexShrink: 0,
-        background: scope === "project" ? "rgba(99,102,241,0.12)" : "rgba(120,120,120,0.12)",
-        color: scope === "project" ? "rgba(99,102,241,0.85)" : "var(--text-dim)",
-      }}
+      className={`${shared.badge} ${scope === "project" ? shared.badgeInfo : ""}`}
+      style={{ flexShrink: 0 }}
     >
       {scope}
     </span>
   );
-}
-
-function buttonStyle(disabled?: boolean, danger?: boolean): React.CSSProperties {
-  return {
-    padding: "6px 12px",
-    background: danger ? "rgba(239,68,68,0.08)" : "none",
-    border: "1px solid var(--border)",
-    borderRadius: "var(--radius-control)",
-    color: danger ? "#ef4444" : "var(--text-muted)",
-    cursor: disabled ? "not-allowed" : "pointer",
-    fontSize: 12,
-    opacity: disabled ? 0.5 : 1,
-  };
 }
 
 function Toggle({
@@ -199,35 +175,10 @@ function Toggle({
       title={label}
       aria-label={label}
       aria-pressed={enabled}
-      style={{
-        flexShrink: 0,
-        width: 40,
-        height: 22,
-        borderRadius: "var(--seed-radius-full)",
-        border: "none",
-        padding: 0,
-        cursor: loading ? "wait" : "pointer",
-        background: enabled ? "var(--accent)" : "var(--border)",
-        position: "relative",
-        transition: "background 0.18s",
-        outline: "none",
-        opacity: loading ? 0.65 : 1,
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: 3,
-          left: enabled ? 21 : 3,
-          width: 16,
-          height: 16,
-          borderRadius: "50%",
-          background: "var(--bg)",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
-          transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
-        }}
-      />
-    </button>
+      className={shared.switch}
+      data-on={enabled}
+      style={{ flexShrink: 0, opacity: loading ? 0.65 : 1 }}
+    />
   );
 }
 
@@ -277,11 +228,11 @@ function AddPluginPanel({
           >
             <svg width="28" height="28" viewBox="0 0 800 800" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>
               <path
-                fill="#000"
+                fill="currentColor"
                 fillRule="evenodd"
                 d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
               />
-              <path fill="#000" d="M517.36 400H634.72V634.72H517.36Z" />
+              <path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z" />
             </svg>
             oh-my-pi plugins
           </a>
@@ -311,18 +262,8 @@ function AddPluginPanel({
           }}
           onBlur={(e) => onSourceChange(normalizePluginSourceInput(e.currentTarget.value))}
           placeholder="@scope/package or github:user/repo"
-          style={{
-            width: "100%",
-            height: 36,
-            padding: "0 11px",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-control)",
-            background: "var(--bg-panel)",
-            color: "var(--text)",
-            fontFamily: "var(--font-mono)",
-            fontSize: 13,
-            outline: "none",
-          }}
+          className={shared.field}
+          style={{ width: "100%", height: 36, padding: "0 11px", fontFamily: "var(--font-mono)", fontSize: 13 }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && source.trim() && !busy) onInstall();
           }}
@@ -334,12 +275,8 @@ function AddPluginPanel({
           type="button"
           onClick={onInstall}
           disabled={busy || !source.trim()}
-          style={{
-            ...buttonStyle(busy || !source.trim()),
-            background: "var(--seed-color-bg-neutral-inverted)",
-            color: "var(--seed-color-fg-neutral-inverted)",
-            borderColor: "transparent",
-          }}
+          className={shared.btnPrimary}
+          style={{ padding: "6px 12px" }}
         >
           {busy ? t("i18n.installing") : t("i18n.install")}
         </button>
@@ -355,26 +292,15 @@ function AddPluginPanel({
               key={example}
               type="button"
               onClick={() => onSourceChange(example)}
+              className={shared.btn}
               style={{
                 width: "100%",
                 minHeight: 30,
+                justifyContent: "flex-start",
                 textAlign: "left",
                 padding: "6px 9px",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius-control)",
-                background: "var(--bg-panel)",
-                color: "var(--text-dim)",
-                cursor: "pointer",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = "var(--text-muted)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "var(--bg-panel)";
-                e.currentTarget.style.color = "var(--text-dim)";
               }}
             >
               {example}
@@ -384,7 +310,7 @@ function AddPluginPanel({
       </div>
 
       {actionError && (
-        <div style={{ fontSize: 12, color: "#ef4444", whiteSpace: "pre-wrap" }}>
+        <div style={{ fontSize: 12, color: "var(--danger)", whiteSpace: "pre-wrap" }}>
           {actionError}
         </div>
       )}
@@ -429,27 +355,11 @@ function PackageDetail({
           />
           <ScopeTag scope={pkg.scope} />
           {pkg.disabled ? (
-            <span
-              style={{
-                fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: "var(--radius-control)",
-                background: "rgba(120,120,120,0.12)",
-                color: "var(--text-dim)",
-              }}
-            >
+            <span className={shared.badge}>
               {t("i18n.disabled")}
             </span>
           ) : pkg.filtered && (
-            <span
-              style={{
-                fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: "var(--radius-control)",
-                background: "rgba(245,158,11,0.12)",
-                color: "#d97706",
-              }}
-            >
+            <span className={`${shared.badge} ${shared.badgeWarn}`}>
               {t("i18n.filtered")}
             </span>
           )}
@@ -471,14 +381,14 @@ function PackageDetail({
           <button
             onClick={() => onAction("update", pkg)}
             disabled={busy || reloadBusy}
-            style={buttonStyle(busy || reloadBusy)}
+            className={shared.btn}
           >
              {busyKey === `update:${key}` ? t("i18n.updating") : t("i18n.update")}
           </button>
           <button
             onClick={onReloadSession}
             disabled={!sessionId || reloadBusy || busy}
-            style={buttonStyle(!sessionId || reloadBusy || busy)}
+            className={shared.btn}
              title={sessionId ? t("i18n.reloadSessionHint") : t("i18n.openSessionToReload")}
           >
              {reloadBusy ? t("i18n.reloading") : t("i18n.reloadSession")}
@@ -486,7 +396,7 @@ function PackageDetail({
           <button
             onClick={() => onAction("remove", pkg)}
             disabled={busy || reloadBusy}
-            style={buttonStyle(busy || reloadBusy, true)}
+            className={shared.btnDanger}
           >
              {busyKey === `remove:${key}` ? t("i18n.removing") : t("i18n.remove")}
           </button>
@@ -515,7 +425,7 @@ function PackageDetail({
         <div style={{ color: "var(--text-dim)" }}>{t("i18n.installedPath")}</div>
         <div
           style={{
-            color: pkg.installedPath ? "var(--text-muted)" : "#ef4444",
+            color: pkg.installedPath ? "var(--text-muted)" : "var(--danger)",
             fontFamily: "var(--font-mono)",
             overflowWrap: "anywhere",
           }}
@@ -536,12 +446,12 @@ function PackageDetail({
       </div>
 
       {actionMessage && (
-        <div style={{ fontSize: 12, color: "#16a34a" }}>
+        <div style={{ fontSize: 12, color: "var(--success)" }}>
           {actionMessage}
         </div>
       )}
       {actionError && (
-        <div style={{ fontSize: 12, color: "#ef4444", whiteSpace: "pre-wrap" }}>
+        <div style={{ fontSize: 12, color: "var(--danger)", whiteSpace: "pre-wrap" }}>
           {actionError}
         </div>
       )}
@@ -699,7 +609,7 @@ export function PluginsConfig({
         width: "100%",
         height: "100%",
         zIndex: embedded ? undefined : 1000,
-        background: embedded ? "transparent" : "rgba(0,0,0,0.35)",
+        background: embedded ? "transparent" : "var(--scrim)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -715,11 +625,10 @@ export function PluginsConfig({
           height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "76vh",
           maxHeight: embedded ? "none" : "calc(100dvh - 16px)",
           background: "var(--bg)",
-          border: embedded ? "none" : "1px solid var(--border)",
-          borderRadius: embedded ? 0 : 8,
+          borderRadius: embedded ? 0 : "var(--radius-surface)",
           display: "flex",
           flexDirection: "column",
-          boxShadow: embedded ? "none" : "0 8px 32px rgba(0,0,0,0.18)",
+          boxShadow: embedded ? "none" : "var(--shadow-float)",
           overflow: "hidden",
         }}
       >
@@ -729,7 +638,6 @@ export function PluginsConfig({
             alignItems: "center",
             justifyContent: "space-between",
             padding: "12px 18px",
-            borderBottom: "1px solid var(--border)",
             flexShrink: 0,
           }}
         >
@@ -752,15 +660,9 @@ export function PluginsConfig({
           </div>
           <button
             onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 20,
-              lineHeight: 1,
-              padding: "2px 6px",
-            }}
+            aria-label={t("i18n.close")}
+            className={shared.btnQuiet}
+            style={{ fontSize: 20, lineHeight: 1 }}
           >
             ×
           </button>
@@ -771,7 +673,6 @@ export function PluginsConfig({
             role="status"
             style={{
               padding: "8px 18px",
-              borderBottom: "1px solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",
               fontSize: 12,
@@ -786,8 +687,6 @@ export function PluginsConfig({
             style={{
               width: isMobile ? "100%" : 245,
               maxHeight: isMobile ? "40vh" : undefined,
-              borderRight: isMobile ? "none" : "1px solid var(--border)",
-              borderBottom: isMobile ? "1px solid var(--border)" : "none",
               display: "flex",
               flexDirection: "column",
               flexShrink: 0,
@@ -800,7 +699,7 @@ export function PluginsConfig({
                   Loading...
                 </div>
               ) : error ? (
-                <div style={{ padding: "10px 8px", fontSize: 11, color: "#ef4444" }}>
+                <div style={{ padding: "10px 8px", fontSize: 11, color: "var(--danger)" }}>
                   {error}
                 </div>
               ) : packages.length === 0 ? (
@@ -850,13 +749,8 @@ export function PluginsConfig({
                           }}
                         >
                           <span
-                            style={{
-                              flexShrink: 0,
-                              width: 7,
-                              height: 7,
-                              borderRadius: "50%",
-                              background: statusColor(pkg.status),
-                            }}
+                            className={shared.lamp}
+                            style={{ background: statusColor(pkg.status) }}
                           />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div
@@ -906,7 +800,7 @@ export function PluginsConfig({
                 ))
               )}
             </div>
-            <div style={{ padding: "8px 6px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+            <div style={{ padding: "8px 6px", flexShrink: 0 }}>
               <button
                 type="button"
                 onClick={() => {
@@ -914,24 +808,11 @@ export function PluginsConfig({
                   setActionError(null);
                   setActionMessage(null);
                 }}
+                className={shared.btn}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "7px 8px",
-                  borderRadius: "var(--radius-control)",
-                  border: "none",
                   width: "100%",
-                  cursor: "pointer",
-                  background: addMode ? "var(--bg-selected)" : "none",
-                  color: addMode ? "var(--accent)" : "var(--text-dim)",
-                  fontSize: 12,
-                }}
-                onMouseEnter={(e) => {
-                  if (!addMode) e.currentTarget.style.background = "var(--bg-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  if (!addMode) e.currentTarget.style.background = "none";
+                  background: addMode ? "var(--bg-selected)" : "var(--bg)",
+                  color: addMode ? "var(--accent)" : "var(--text-muted)",
                 }}
               >
                 <svg
@@ -998,7 +879,6 @@ export function PluginsConfig({
             justifyContent: "space-between",
             gap: 12,
             padding: "10px 18px",
-            borderTop: "1px solid var(--border)",
             flexShrink: 0,
           }}
         >
@@ -1006,7 +886,7 @@ export function PluginsConfig({
             {data?.diagnostics.length ? (
               <span
                 title={data.diagnostics.map((d) => `${d.type}: ${d.source ? `${d.source}: ` : ""}${d.message}`).join("\n")}
-                style={{ color: data.diagnostics.some((d) => d.type === "error") ? "#ef4444" : "#d97706" }}
+                style={{ color: data.diagnostics.some((d) => d.type === "error") ? "var(--danger)" : "var(--warning)" }}
               >
                 {data.diagnostics.length} diagnostic{data.diagnostics.length === 1 ? "" : "s"}
               </span>
@@ -1016,10 +896,10 @@ export function PluginsConfig({
               </span>
             )}
           </div>
-          <button onClick={() => void loadPlugins()} disabled={loading || busyKey !== null} style={buttonStyle(loading || busyKey !== null)}>
+          <button onClick={() => void loadPlugins()} disabled={loading || busyKey !== null} className={shared.btn}>
              {t("i18n.refresh")}
           </button>
-          <button onClick={onClose} style={buttonStyle(false)}>
+          <button onClick={onClose} className={shared.btn}>
              {t("i18n.close")}
           </button>
         </div>

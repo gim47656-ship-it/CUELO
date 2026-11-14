@@ -88,7 +88,7 @@ export default function RecoverPage() {
               The password was changed and password access is on. Open CUELO and sign in with the
               username <code>omp</code> and your new password.
             </p>
-            <Link className={styles.primary} href="/">Back to CUELO</Link>
+            <Link className={styles.primary} href="/" data-focus-halo>Back to CUELO</Link>
           </>
         ) : (
           <>
@@ -150,7 +150,7 @@ export default function RecoverPage() {
 
             {error && <p className={styles.error}>{error}</p>}
 
-            <button type="button" className={styles.primary} disabled={!canSubmit} onClick={() => void completeRecovery()}>
+            <button type="button" className={styles.primary} data-focus-halo disabled={!canSubmit} onClick={() => void completeRecovery()}>
               {busy && stage === "code-sent" ? "Setting…" : "Set new password"}
             </button>
           </>

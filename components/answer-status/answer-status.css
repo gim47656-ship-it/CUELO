@@ -1071,3 +1071,64 @@ details[open] > summary .flow-chevron,
     display: none;
   }
 }
+
+/* --- the turn in the stream while 이번 턴 is not on screen ------------------
+ * The same body the inspector shows (TurnInspectorBody), unfolded, on the panel
+ * fill like the inspector, so the stream and the inspector look alike. A
+ * filled surface only: no frame, no nested frame; the flow connectors and the
+ * rework loop mark inside stay the only lines. */
+.turn-inline {
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin-block: 8px 20px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+}
+
+.turn-inline > .turn-inspector {
+  padding-block: 8px 4px;
+}
+
+.turn-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 10px;
+}
+
+.turn-inline-show {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-block-size: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease-out;
+}
+
+.turn-inline-show:hover {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .turn-inline > .turn-inspector {
+    padding-inline: 12px;
+  }
+
+  .turn-inline-show {
+    min-block-size: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-inline-show {
+    transition: none;
+  }
+}

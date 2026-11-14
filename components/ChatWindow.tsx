@@ -32,7 +32,7 @@ import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
 import { buildDispatchLedger, placeCompactedDispatch, withCompactedWork } from "@/lib/answer-status/dispatch";
-import { TurnInspector, TurnPeek, TurnResultRow, TurnSelectionContext, type TurnKey } from "./answer-status/TurnInspector";
+import { TurnInspector, TurnPeek, TurnSelectionContext, TurnStreamRow, type TurnKey } from "./answer-status/TurnInspector";
 import { collectJobNotices, collectPriorCiHeads, collectTurnBlocks, findRequestStart, readTurnSpan, summarizeFinishedTurns, summarizeTurn, type FinishedTurnSummary } from "@/lib/answer-status/turn-summary";
 import { deriveWorkFlow } from "@/lib/answer-status/work-flow";
 import { ChatSearchBar } from "./ChatSearchBar";
@@ -504,7 +504,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
               writtenFiles,
               turnSummary,
             }))}
-            {turnSummary && <TurnResultRow summary={turnSummary} turnKey={position} />}
+            {turnSummary && <TurnStreamRow summary={turnSummary} turnKey={position} />}
             {savedLessons}
             {thread}
             {cueNodes}
@@ -1365,6 +1365,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
   const pickedValid = pickedTurn === "live" ? liveSummary !== null : pickedTurn !== null && turnSummaries.has(pickedTurn);
   const shownTurn: TurnKey | null = pickedValid ? pickedTurn : liveSummary ? "live" : latestTurn;
   const shownSummary = shownTurn === "live" ? liveSummary : shownTurn === null ? null : turnSummaries.get(shownTurn) ?? null;
+  const hasLiveTurn = liveSummary !== null;
   const turnSelection = useMemo(() => ({
     selected: shownTurn,
     shown: turnInspectorTarget !== null,
@@ -1372,7 +1373,11 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
       setPickedTurn(key);
       onShowTurnInspector?.();
     },
-  }), [onShowTurnInspector, shownTurn, turnInspectorTarget]);
+    // The hidden dispatches belong to one turn: the running one, else the newest finished one.
+    latestTurn: hasLiveTurn ? null : latestTurn,
+    compactedCalls: compactedDispatch?.calls,
+    onOpenFile,
+  }), [onShowTurnInspector, shownTurn, turnInspectorTarget, hasLiveTurn, latestTurn, compactedDispatch, onOpenFile]);
   // The compacted dispatches belong to the request the compaction cut into, which is the latest turn.
   const latestShown = shownTurn === null || shownTurn === "live" || shownTurn === latestTurn;
   const turnInspectorPortal = turnInspectorTarget && createPortal(
@@ -1676,7 +1681,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
                 onOpenFile={onOpenFile}
               />
             )}
-            {!detached && liveSummary && <TurnResultRow summary={liveSummary} turnKey="live" live />}
+            {!detached && liveSummary && <TurnStreamRow summary={liveSummary} turnKey="live" live />}
             </TurnSelectionContext.Provider>
             </AnswerStatusContext.Provider>
             {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}

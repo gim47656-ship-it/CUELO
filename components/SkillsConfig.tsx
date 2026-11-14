@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import shared from "./SettingsConfig.module.css";
 import type {
   SkillInfo as Skill,
   SkillInstallScope,
@@ -52,6 +53,10 @@ function Toggle({
   const { t } = useI18n();
   return (
     <button
+      type="button"
+      className={shared.switch}
+      data-on={enabled}
+      aria-pressed={enabled}
       onClick={onToggle}
       disabled={loading}
       title={
@@ -59,34 +64,8 @@ function Toggle({
           ? t("i18n.visibleInPrompt")
           : t("i18n.hiddenFromPrompt")
       }
-      style={{
-        flexShrink: 0,
-        width: 40,
-        height: 22,
-        borderRadius: "var(--seed-radius-full)",
-        border: "none",
-        padding: 0,
-        cursor: loading ? "wait" : "pointer",
-        background: enabled ? "var(--accent)" : "var(--border)",
-        position: "relative",
-        transition: "background 0.18s",
-        outline: "none",
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: 3,
-          left: enabled ? 21 : 3,
-          width: 16,
-          height: 16,
-          borderRadius: "50%",
-          background: "var(--bg)",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
-          transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
-        }}
-      />
-    </button>
+      style={{ flexShrink: 0 }}
+    />
   );
 }
 
@@ -133,18 +112,8 @@ function SkillDetail({
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
           <span
-            style={{
-              fontSize: 10,
-              padding: "1px 5px",
-              borderRadius: "var(--radius-control)",
-              flexShrink: 0,
-              background:
-                label === "project"
-                  ? "rgba(99,102,241,0.12)"
-                  : "rgba(120,120,120,0.12)",
-              color:
-                label === "project" ? "rgba(99,102,241,0.8)" : "var(--text-dim)",
-            }}
+            className={`${shared.badge} ${label === "project" ? shared.badgeInfo : ""}`}
+            style={{ flexShrink: 0 }}
           >
             {label}
           </span>
@@ -184,7 +153,7 @@ function SkillDetail({
             </span>
           )}
           {saveError && (
-            <span style={{ fontSize: 12, color: "#f87171", overflowWrap: "anywhere" }}>
+            <span style={{ fontSize: 12, color: "var(--danger)", overflowWrap: "anywhere" }}>
               {saveError}
             </span>
           )}
@@ -256,16 +225,8 @@ function SkillDetail({
               <button
                 onClick={onCheckUpdate}
                 disabled={checkingUpdate || updating}
-                style={{
-                  padding: "4px 9px",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-control)",
-                  background: "none",
-                  color: "var(--text-muted)",
-                  cursor: checkingUpdate || updating ? "not-allowed" : "pointer",
-                  opacity: checkingUpdate || updating ? 0.5 : 1,
-                  fontSize: 11,
-                }}
+                className={shared.btn}
+                style={{ fontSize: 11 }}
               >
                  {t("i18n.check")}
               </button>
@@ -275,7 +236,7 @@ function SkillDetail({
                 style={{
                   fontFamily: "var(--font-mono)",
                   fontSize: 12,
-                  color: "#d97706",
+                  color: "var(--warning)",
                 }}
               >
                 {shortVersion(updateStatus.latestVersion)}
@@ -289,9 +250,9 @@ function SkillDetail({
                   color: checkingUpdate
                     ? "var(--accent)"
                     : updateStatus?.state === "up-to-date"
-                      ? "#16a34a"
+                      ? "var(--success)"
                       : updateStatus?.state === "error"
-                          ? "#ef4444"
+                          ? "var(--danger)"
                           : "var(--text-dim)",
                 }}
               >
@@ -308,24 +269,15 @@ function SkillDetail({
               <button
                 onClick={onUpdate}
                 disabled={updating || checkingUpdate}
-                style={{
-                  padding: "4px 10px",
-                  border: "none",
-                  borderRadius: "var(--radius-control)",
-                  background: "var(--seed-color-bg-neutral-inverted)",
-                  color: "var(--seed-color-fg-neutral-inverted)",
-                  cursor: updating || checkingUpdate ? "not-allowed" : "pointer",
-                  opacity: updating || checkingUpdate ? 0.5 : 1,
-                  fontSize: 11,
-                  fontWeight: 600,
-                }}
+                className={shared.btnPrimary}
+                style={{ fontSize: 11 }}
               >
                  {updating ? t("i18n.updating") : t("i18n.update")}
               </button>
             )}
           </div>
           {updateError && (
-            <span style={{ fontSize: 12, color: "#ef4444" }}>{updateError}</span>
+            <span style={{ fontSize: 12, color: "var(--danger)" }}>{updateError}</span>
           )}
         </div>
       )}
@@ -477,31 +429,14 @@ function AddSkillPanel({
               if (e.key === "Enter") search(query);
             }}
              placeholder={t("i18n.skillSearchPlaceholder")}
-            style={{
-              flex: 1,
-              padding: "7px 10px",
-              fontSize: 13,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-control)",
-              color: "var(--text)",
-              outline: "none",
-            }}
+            className={shared.field}
+            style={{ flex: 1, padding: "7px 10px", fontSize: 13 }}
           />
           <button
             onClick={() => search(query)}
             disabled={searching || !query.trim()}
-            style={{
-              padding: "7px 16px",
-              fontSize: 13,
-              borderRadius: "var(--radius-control)",
-              border: "none",
-              background: "var(--seed-color-bg-neutral-inverted)",
-              color: "var(--seed-color-fg-neutral-inverted)",
-              cursor: searching || !query.trim() ? "not-allowed" : "pointer",
-              opacity: searching || !query.trim() ? 0.5 : 1,
-              flexShrink: 0,
-            }}
+            className={shared.btnPrimary}
+            style={{ padding: "7px 16px", fontSize: 13, flexShrink: 0 }}
           >
              {searching ? t("i18n.searching") : t("i18n.search")}
           </button>
@@ -509,34 +444,19 @@ function AddSkillPanel({
 
         {/* Scope + install path row */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            style={{
-              display: "flex",
-              borderRadius: "var(--radius-control)",
-              border: "1px solid var(--border)",
-              overflow: "hidden",
-              fontSize: 12,
-              flexShrink: 0,
-            }}
-          >
+          <div className={shared.seg} role="group" style={{ flexShrink: 0 }}>
             {(["global", "project"] as const).map((s) => (
               <button
                 key={s}
+                type="button"
+                aria-pressed={scope === s}
                 onClick={() => {
                   if (s === "global" || projectResourcesLoaded) setScope(s);
                 }}
                 disabled={s === "project" && !projectResourcesLoaded}
                 title={s === "project" && !projectResourcesLoaded ? t("trust.projectScopeUnavailable") : undefined}
                 style={{
-                  padding: "3px 10px",
-                  border: "none",
                   cursor: s === "project" && !projectResourcesLoaded ? "not-allowed" : "pointer",
-                  background: scope === s ? "var(--bg-selected)" : "none",
-                  color: scope === s ? "var(--text)" : "var(--text-dim)",
-                  fontWeight: scope === s ? 600 : 400,
-                  opacity: s === "project" && !projectResourcesLoaded ? 0.45 : 1,
-                  borderRight:
-                    s === "global" ? "1px solid var(--border)" : "none",
                 }}
               >
                 {s}
@@ -559,11 +479,11 @@ function AddSkillPanel({
 
         {/* Errors */}
         {searchError && (
-          <div style={{ fontSize: 12, color: "#f87171" }}>{searchError}</div>
+          <div style={{ fontSize: 12, color: "var(--danger)" }}>{searchError}</div>
         )}
         {installError && (
           <div
-            style={{ fontSize: 12, color: "#f87171", wordBreak: "break-word" }}
+            style={{ fontSize: 12, color: "var(--danger)", wordBreak: "break-word" }}
           >
             {installError}
           </div>
@@ -589,8 +509,7 @@ function AddSkillPanel({
                   display: "flex",
                   alignItems: "center",
                   gap: 14,
-                  padding: "12px 0",
-                  borderBottom: "1px solid var(--border)",
+                  padding: "10px 0",
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -653,25 +572,8 @@ function AddSkillPanel({
                     !isInstalled && !isInstalling && install(r.package)
                   }
                   disabled={isInstalled || isInstalling || installing !== null}
-                  style={{
-                    flexShrink: 0,
-                    padding: "5px 14px",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    borderRadius: "var(--radius-control)",
-                    border: "1px solid var(--border)",
-                    cursor:
-                      isInstalled || isInstalling || installing !== null
-                        ? "not-allowed"
-                        : "pointer",
-                    background: isInstalled ? "rgba(34,197,94,0.1)" : "none",
-                    color: isInstalled
-                      ? "#16a34a"
-                      : isInstalling
-                        ? "var(--accent)"
-                        : "var(--text-muted)",
-                    transition: "color 0.12s",
-                  }}
+                  className={isInstalled ? shared.btnOk : shared.btn}
+                  style={{ flexShrink: 0, padding: "5px 14px" }}
                 >
                   {isInstalled
                      ? `✓ ${t("i18n.installed")}`
@@ -907,7 +809,7 @@ export function SkillsConfig({
         width: "100%",
         height: "100%",
         zIndex: embedded ? undefined : 1000,
-        background: embedded ? "transparent" : "rgba(0,0,0,0.35)",
+        background: embedded ? "transparent" : "var(--scrim)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -923,11 +825,10 @@ export function SkillsConfig({
           height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "78vh",
           maxHeight: embedded ? "none" : "calc(100dvh - 16px)",
           background: "var(--bg)",
-          border: embedded ? "none" : "1px solid var(--border)",
-          borderRadius: embedded ? 0 : 10,
+          borderRadius: embedded ? 0 : "var(--radius-surface)",
           display: "flex",
           flexDirection: "column",
-          boxShadow: embedded ? "none" : "0 8px 32px rgba(0,0,0,0.18)",
+          boxShadow: embedded ? "none" : "var(--shadow-float)",
           overflow: "hidden",
         }}
       >
@@ -938,7 +839,6 @@ export function SkillsConfig({
             alignItems: "center",
             justifyContent: "space-between",
             padding: "12px 18px",
-            borderBottom: "1px solid var(--border)",
             flexShrink: 0,
           }}
         >
@@ -964,15 +864,9 @@ export function SkillsConfig({
           </div>
           <button
             onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 20,
-              lineHeight: 1,
-              padding: "2px 6px",
-            }}
+            aria-label={t("i18n.close")}
+            className={shared.btnQuiet}
+            style={{ fontSize: 20, lineHeight: 1 }}
           >
             ×
           </button>
@@ -983,7 +877,6 @@ export function SkillsConfig({
             role="status"
             style={{
               padding: "8px 18px",
-              borderBottom: "1px solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",
               fontSize: 12,
@@ -1000,8 +893,6 @@ export function SkillsConfig({
             style={{
               width: isMobile ? "100%" : 210,
               maxHeight: isMobile ? "40vh" : undefined,
-              borderRight: isMobile ? "none" : "1px solid var(--border)",
-              borderBottom: isMobile ? "1px solid var(--border)" : "none",
               display: "flex",
               flexDirection: "column",
               flexShrink: 0,
@@ -1024,7 +915,7 @@ export function SkillsConfig({
                   style={{
                     padding: "10px 8px",
                     fontSize: 11,
-                    color: "#f87171",
+                    color: "var(--danger)",
                   }}
                 >
                   {error}
@@ -1110,20 +1001,8 @@ export function SkillsConfig({
                         }}
                       >
                         <span
-                          style={{
-                            flexShrink: 0,
-                            width: 7,
-                            height: 7,
-                            borderRadius: "50%",
-                            background: disabled
-                              ? "var(--border)"
-                              : "var(--accent)",
-                            boxShadow: disabled
-                              ? "none"
-                              : "0 0 4px var(--accent)",
-                            transition:
-                              "background 0.15s, box-shadow 0.15s",
-                          }}
+                          className={shared.lamp}
+                          style={disabled ? undefined : { background: "var(--accent)" }}
                         />
                         <span
                           style={{
@@ -1149,7 +1028,7 @@ export function SkillsConfig({
                             <span
                                title={t("i18n.updateAvailable")}
                               style={{
-                                color: "#d97706",
+                                color: "var(--warning)",
                                 fontSize: 13,
                                 lineHeight: 1,
                                 flexShrink: 0,
@@ -1228,7 +1107,6 @@ export function SkillsConfig({
             <div
               style={{
                 padding: "8px 6px",
-                borderTop: "1px solid var(--border)",
                 flexShrink: 0,
               }}
             >
@@ -1241,16 +1119,9 @@ export function SkillsConfig({
                   padding: "7px 8px",
                   borderRadius: "var(--radius-control)",
                   cursor: "pointer",
-                  background: addMode ? "var(--bg-selected)" : "none",
-                  color: addMode ? "var(--accent)" : "var(--text-dim)",
+                  background: addMode ? "var(--bg-selected)" : "var(--bg)",
+                  color: addMode ? "var(--accent)" : "var(--text-muted)",
                   fontSize: 12,
-                }}
-                onMouseEnter={(e) => {
-                  if (!addMode)
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  if (!addMode) e.currentTarget.style.background = "none";
                 }}
               >
                 <svg
@@ -1340,7 +1211,6 @@ export function SkillsConfig({
             alignItems: "center",
             justifyContent: "space-between",
             padding: "10px 18px",
-            borderTop: "1px solid var(--border)",
             flexShrink: 0,
           }}
         >
@@ -1349,19 +1219,7 @@ export function SkillsConfig({
               <button
                 onClick={() => void checkForUpdates()}
                 disabled={checkingAll || updatingSkill !== null}
-                style={{
-                  padding: "6px 12px",
-                  background: "none",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-control)",
-                  color: "var(--text-muted)",
-                  cursor:
-                    checkingAll || updatingSkill !== null
-                      ? "not-allowed"
-                      : "pointer",
-                  opacity: checkingAll || updatingSkill !== null ? 0.5 : 1,
-                  fontSize: 12,
-                }}
+                className={shared.btn}
               >
                  {checkingAll ? t("i18n.checking") : t("i18n.checkUpdates")}
               </button>
@@ -1369,7 +1227,7 @@ export function SkillsConfig({
             {Object.values(updateStatuses).filter(
               (status) => status.state === "update-available",
             ).length > 0 && (
-              <span style={{ fontSize: 12, color: "#d97706" }}>
+              <span style={{ fontSize: 12, color: "var(--warning)" }}>
                 {
                   Object.values(updateStatuses).filter(
                     (status) => status.state === "update-available",
@@ -1385,15 +1243,8 @@ export function SkillsConfig({
           </div>
           <button
             onClick={onClose}
-            style={{
-              padding: "6px 14px",
-              background: "none",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-control)",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
+            className={shared.btn}
+            style={{ padding: "6px 14px", fontSize: 13 }}
           >
              {t("i18n.close")}
           </button>

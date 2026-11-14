@@ -102,7 +102,7 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
           onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} />
       </label>
       {error ? <p className={styles.error} role="alert">{tt(error === "live-auth" ? "translator.typeAuth" : "translator.typeError")}</p> : null}
-      <button className={styles.submit} type="submit" disabled={pending || !draft.trim()}>{tt(pending ? "translator.typePending" : "translator.typeSubmit")}</button>
+      <button className={styles.submit} type="submit" data-focus-halo disabled={pending || !draft.trim()}>{tt(pending ? "translator.typePending" : "translator.typeSubmit")}</button>
     </form>
   </div>;
 }

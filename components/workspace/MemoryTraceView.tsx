@@ -240,12 +240,6 @@ export function MemoryTraceView({ title, visible, sessionId }: MemoryTraceViewPr
   const loadSeq = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLUListElement>(null);
-  const [listMore, setListMore] = useState(false);
-  const updateListMore = useCallback(() => {
-    const list = listRef.current;
-    setListMore(Boolean(list && list.scrollTop + list.clientHeight < list.scrollHeight - 2));
-  }, []);
 
   useEffect(() => {
     setScope(readScope());
@@ -291,15 +285,6 @@ export function MemoryTraceView({ title, visible, sessionId }: MemoryTraceViewPr
   const traced = useMemo(() => flows.filter((flow) => flow.request.steps.length > 0), [flows]);
   const newestFirst = useMemo(() => [...traced].reverse(), [traced]);
   const selected = traced.find((flow) => flow.request.entryId === selectedId) ?? newestFirst[0] ?? null;
-
-  useEffect(() => {
-    const list = listRef.current;
-    if (!list) return;
-    updateListMore();
-    const observer = new ResizeObserver(updateListMore);
-    observer.observe(list);
-    return () => observer.disconnect();
-  }, [updateListMore, newestFirst]);
 
   // 요청이 바뀌면 처음 채워진 칸을 펼친다.
   useEffect(() => {
@@ -374,9 +359,8 @@ export function MemoryTraceView({ title, visible, sessionId }: MemoryTraceViewPr
             {t("memoryTrace.requestsLabel")}
             <span className={styles.sectionCount}>{traced.length}</span>
           </h3>
-          {/* 넘치면 아래가 흐려져 더 있다는 것을 보여 준다. 끝까지 내리면 사라진다. */}
-          <div className={styles.requestScroller} data-more={listMore ? "true" : undefined}>
-          <ul className={styles.requestList} ref={listRef} onScroll={updateListMore}>
+          <div className={styles.requestScroller}>
+          <ul className={styles.requestList}>
             {newestFirst.map((flow) => {
               const active = flow === selected;
               return (

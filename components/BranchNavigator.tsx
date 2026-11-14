@@ -129,43 +129,11 @@ function TreeNodeView({ node, activePathIds, depth, isLast, parentLines, onSelec
         }}
         onClick={() => onSelect(rep.entry.id)}
       >
-        {/* Indent guide lines */}
-        {parentLines.map((hasLine, i) => (
-          <div key={i} style={{ width: 16, flexShrink: 0, position: "relative", height: "100%", alignSelf: "stretch" }}>
-            {hasLine && (
-              <div style={{
-                position: "absolute",
-                left: 7,
-                top: 0,
-                bottom: 0,
-                width: 1,
-                background: "var(--border)",
-              }} />
-            )}
-          </div>
+        {/* Indentation: depth is spacing, not drawn guide lines. */}
+        {parentLines.map((_, i) => (
+          <div key={i} style={{ width: 16, flexShrink: 0 }} />
         ))}
-
-        {/* Branch connector */}
-        <div style={{ width: 16, flexShrink: 0, position: "relative", height: "100%", alignSelf: "stretch" }}>
-          {/* vertical line up (to parent) */}
-          <div style={{
-            position: "absolute",
-            left: 7,
-            top: 0,
-            bottom: isLast ? "50%" : 0,
-            width: 1,
-            background: "var(--border)",
-          }} />
-          {/* horizontal line to node */}
-          <div style={{
-            position: "absolute",
-            left: 7,
-            top: "50%",
-            width: 9,
-            height: 1,
-            background: "var(--border)",
-          }} />
-        </div>
+        <div style={{ width: 16, flexShrink: 0 }} />
 
         {/* Node dot */}
         <div style={{
@@ -173,8 +141,7 @@ function TreeNodeView({ node, activePathIds, depth, isLast, parentLines, onSelec
           height: 7,
           borderRadius: "50%",
           flexShrink: 0,
-          background: isActive ? "var(--accent)" : isOnPath ? "var(--text-muted)" : "var(--border)",
-          border: isActive ? "none" : "1px solid var(--text-dim)",
+          background: isActive ? "var(--accent)" : isOnPath ? "var(--text-muted)" : "var(--text-dim)",
           marginRight: 6,
           transition: "background 0.12s",
         }} />
@@ -185,8 +152,7 @@ function TreeNodeView({ node, activePathIds, depth, isLast, parentLines, onSelec
             fontSize: 9,
             fontFamily: "var(--font-mono)",
             color: role === "user" ? "var(--accent)" : "var(--text-dim)",
-            background: role === "user" ? "rgba(37,99,235,0.08)" : "var(--bg-hover)",
-            border: `1px solid ${role === "user" ? "rgba(37,99,235,0.2)" : "var(--border)"}`,
+            background: role === "user" ? "color-mix(in srgb, var(--accent) 16%, var(--bg-panel))" : "var(--bg-hover)",
             borderRadius: "var(--radius-control)",
             padding: "0 4px",
             marginRight: 5,
