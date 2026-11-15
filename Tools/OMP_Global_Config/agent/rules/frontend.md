@@ -1,5 +1,5 @@
 ---
-description: 웹·앱 UI의 시각 디자인, 레이아웃, 반응형, 디자인 시스템, 디자인 리뷰와 디자인 스킬 채택·제외 결정을 다룰 때 읽는다.
+description: For web/app visual design, layout, responsiveness, design systems, reviews and adopting or excluding design skills.
 ---
 
 # 프론트엔드 디자인

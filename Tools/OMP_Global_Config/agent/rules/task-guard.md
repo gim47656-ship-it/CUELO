@@ -1,5 +1,5 @@
 ---
-description: Main 전용 — task를 실제로 발주하기 직전에 `rule://task-guard`(skill 아님)로 읽는다. 브리프의 TASK_GUARD 블록을 받은 Maker는 읽지 않는다. TASK_GUARD 양식·요청당 budget·side quest 제한(런타임 task guard가 검사하는 계약).
+description: Main only, immediately before task dispatch; read rule://task-guard, not a skill. Makers receiving TASK_GUARD must not read it. Covers the runtime-enforced template, per-request budget and side-quest limits.
 ---
 
 # Task Guard

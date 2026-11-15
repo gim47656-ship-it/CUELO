@@ -1,5 +1,5 @@
 ---
-description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신 경계를 다룰 때 읽는다.
+description: For SubAgent delegation, parallel execution, review contracts and Git/communication boundaries.
 ---
 
 # SubAgent 오케스트레이션

@@ -252,4 +252,9 @@ const factory: CustomToolFactory = (pi) => ({
   },
 });
 
-export default factory;
+// 2026-11-15 시작 컨텍스트 축소: 네이티브 Linux(집·사무실 Mint)에는 Windows 창이 없어 이 도구를 쓸 수 없는데
+// 설명이 매 세션 실렸다. Windows와 WSL에서만 등록한다.
+export default ((pi) =>
+  process.platform === "win32" || (process.platform === "linux" && process.env.WSL_DISTRO_NAME)
+    ? factory(pi)
+    : []) satisfies CustomToolFactory;

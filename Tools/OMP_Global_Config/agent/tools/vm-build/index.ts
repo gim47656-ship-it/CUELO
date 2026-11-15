@@ -191,7 +191,8 @@ const defaultDeps = (cwd: string, run: Runner, signal?: AbortSignal): RunDeps =>
 const factory: CustomToolFactory = (pi) => ({
   name: "vm_build",
   label: "VM Build",
-  loadMode: "essential",
+  // 2026-11-15: VM 빌드 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+  loadMode: "discoverable",
   description:
     "Push the Linux source of truth one way to its Windows VM copy over SSH (mapping in ~/.omp/agent/vm-build.json, e.g. `ssh winboat`), then optionally build or test it there. "
     + "mode commit fast-forwards the VM branch to the Linux branch HEAD; mode snapshot also sends uncommitted Linux changes as a detached snapshot commit (Linux index, refs and files stay untouched). "

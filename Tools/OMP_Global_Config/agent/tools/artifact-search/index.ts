@@ -535,7 +535,8 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
   return {
     name: "artifact_search",
     label: "Artifact Search",
-    loadMode: "essential" as const,
+    // 2026-11-15: 큰 출력 검색 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+    loadMode: "discoverable" as const,
     approval: "read" as const,
     description:
       "Literal keyword search inside ONE session artifact (`artifact://<id>`, the spilled full output of an earlier tool call). Not semantic: no model understands the question; it matches whole words (a query word also matches words that start with it), all words must appear in the same excerpt, case-insensitive; Korean works by whole word or word start, with no morphology. "

@@ -144,7 +144,8 @@ export default function testSession(pi: ExtensionAPI): void {
   const envFor = (sessionId: string, ctx: ExtensionContext): Env => ({ root: storeRoot(), sessionId, projectDir: ctx.cwd, backend });
 
   pi.registerTool({
-    name: "test_session", label: "Test Session", loadMode: "essential", approval: "exec",
+    // 2026-11-15: 드물게 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+    name: "test_session", label: "Test Session", loadMode: "discoverable", approval: "exec",
     description: DESCRIPTION,
     parameters: z.object({
       action: z.enum(["start", "list", "launch", "track", "stop", "finish"]),

@@ -1,5 +1,5 @@
 ---
-description: 집·사무실 CUELO 배포 확인과 WSL 배포, 커밋 CI 감시, 게시한 WSL 저장소의 Windows 사본 반영을 할 때 읽는다. `git_finalize`로 게시를 마쳤거나 CI를 기다리거나 배포·재시작을 하려는 시점이다.
+description: For home/office CUELO deployment checks, WSL deploys, commit CI monitoring and published WSL-to-Windows source sync; read after git_finalize, while awaiting CI or before deploy/restart.
 ---
 
 # 배포·CI 감시·Windows 사본 반영

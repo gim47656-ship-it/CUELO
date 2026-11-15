@@ -1,5 +1,5 @@
 ---
-description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규칙을 더하거나 고치거나 지울 때 읽는다. RULES.md·전역 AGENTS.md 규칙마다 실제로 지키는 장치와 반복 지적의 승격 절차.
+description: Read when correcting agent mistakes or changing rules; maps enforcers and escalation.
 ---
 
 # 규칙별 지키는 장치
@@ -143,5 +143,22 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | 별칭 summon marker·voice block 처리(A29) | `extensions/character-voice.ts`(호출 순간 정확한 marker 지시 주입), command-guard CharacterSummonGuard |
 | typed judgment routing·검수·검증 소유권 세부(A16·A18) | `rule://subagent`, `harness-policy.json` |
 | `goal` `token_budget`(A25) | `cuelo-plugins/goal-budget-hint/index.ts` |
+
+## 글에서 줄인 규칙 (2026-11-15)
+
+규칙 ID는 유지한다. 한국어 정본과 영어 사본을 함께 압축했으며 승인 경계는 옮기지 않았다.
+
+| 압축한 항목 | 남은 정본 |
+|---|---|
+| R3, R4, R5, R6, R13, R21, R25, R28, R29의 장문과 예시 | RULES.md 같은 항목의 짧은 판단 기준 |
+| R35의 브라우저 실행 설명 | `rule://surface-verification-procedure`, `ego_browser` 설명 |
+| R39, R40의 문서 생성과 역할 설명 | `rule://docs-handoff`, RULES.md의 게시와 승인 경계 |
+| R41의 검토 절차 | `cross_review` 설명, `rule://cross-review-procedure`; 한도 예외 날짜와 인용은 RULES.md에도 유지 |
+| 실수 뒤 규칙 추가와 승격(R2 아님, R1~R46 공통) | 이 문서 「반복 지적의 승격 절차」 |
+| A9, A10, A11의 종료와 감시 설명 | AGENTS.md 짧은 항목, `rule://subagent` 「병렬과 대기」 |
+| A12, A16의 모델 배분 목록 | `maker_route`, `rule://subagent` 「발주 시점 추론 선택」 |
+| A13의 코드 성질 예시 | AGENTS.md 분류 기준, `harness-policy.json` `routing.high-risk.materialRiskDefinition` |
+| A14, A17, A18, A20, A23의 발주와 검증 절차 | AGENTS.md 판단 기준, `rule://task-guard`, `rule://subagent` |
+| A21, A24~A28, A30~A34, A37의 장문 | AGENTS.md 같은 항목의 짧은 기준; 개별 문장 대응은 maker-RulesDedupe 기록 |
 
 아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.

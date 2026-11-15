@@ -1,5 +1,5 @@
 ---
-description: 에이전트 정의(agent/agents)를 SOP 조각에서 생성·검증·동기화할 때 절차를 확인한다.
+description: For generating, verifying and syncing agent definitions (agent/agents) from SOP fragments.
 globs: ["Tools/OMP_Global_Config/**"]
 ---
 

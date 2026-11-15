@@ -1,5 +1,5 @@
 ---
-description: 웹 UI·HTML 보고 슬라이드·PPT·Word·PDF 보고서를 제작하거나 템플릿을 재사용할 때, 도구 이름을 말하지 않아도 산출물에 맞는 제작 경로를 고른다.
+description: For web UI, HTML report slides, PPT, Word, PDF reports or template reuse, choose the creation path without waiting for tool names.
 ---
 
 # 웹·발표·문서 제작 도구 선택

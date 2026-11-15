@@ -1,5 +1,5 @@
 ---
-description: 여러 파일·모듈의 착수 계약과 완료 판정, 작업·모델·에이전트 효율 분석의 증거와 비교 기준을 정할 때 읽는다.
+description: For multi-file/module start contracts and completion verdicts, plus evidence/comparison criteria for task, model or agent efficiency.
 ---
 
 # 착수 계약과 최종 판정

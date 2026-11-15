@@ -134,6 +134,8 @@ OMP 18.8.9부터 `modelThresholds`의 숫자는 고정 압축 시점이 아니�
 
 모델 통계의 캐시율은 `cacheRead / (input + cacheRead + cacheWrite)`입니다. 캐시 수치를 보고하지 않는 판정 API는 「미보고」로, 메타데이터가 없어 보고 여부를 가릴 수 없는 경우는 「알 수 없음」으로 표시합니다. 이 표시만으로 캐시 기능의 미지원 여부를 판정하지는 않습니다. 전체 비율에서도 이 모델들을 제외하고 「일부」라고 알립니다. 가격표가 없는 사용량은 「가격 미상」으로 표시하며, 일부만 계산한 추정 비용은 `≥`로 구분합니다. 이는 토큰 단가 환산값의 하한이며 실제 청구액·구독료의 하한이 아닙니다.
 
+2026-11-15부터 새 세션이 시작할 때 매번 읽는 고정 안내를 줄였습니다. 드물게 쓰는 도구 여덟 개(`tool_trial`, `test_session`, `routing_verdict`, `plugin_lab`, `deploy_verify`, `vm_build`, `lab_vm_memory_guard`, `artifact_search`)는 처음부터 설명을 싣지 않고 `xd://` 장치 목록에 이름만 둡니다. 쓸 때 `read xd://<도구>`로 사용법을 읽고 `write xd://<도구>`로 부르며, 도구의 동작과 규칙은 그대로입니다. `windows_build`와 `windows_control`은 Windows와 WSL에서만 등록하고 네이티브 Linux에서는 등록하지 않으며, 그곳의 Windows 빌드는 `vm_build`가 맡습니다. 네이티브 Linux에서는 computer 안내 가운데 macOS 전용과 Windows 전용 항목도 뺍니다. 함께 들여온 Google 공식 Android 스킬 33개는 자동 스킬 목록에서 숨기며, 이름을 대거나 `skill://<이름>`으로 부르면 그대로 읽힙니다. 줄어든 양과 작업 품질에 미치는 영향은 아직 재지 않았고, 배포 뒤 실제 세션으로 다시 잽니다.
+
 
 ## 역할과 작업 모드
 

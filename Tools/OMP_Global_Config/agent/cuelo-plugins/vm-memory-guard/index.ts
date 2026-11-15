@@ -109,7 +109,8 @@ export function createVmMemoryGuard(options: { deps?: GuardDeps; asyncPollMs?: n
     pi.registerTool({
       name: "lab_vm_memory_guard",
       label: "VM memory guard",
-      loadMode: "essential",
+      // 2026-11-15: 수동 조작은 드물어 xd:// 장치로 내린다. 자동 가드 hook은 그대로 돈다(doc/history/2026/11/15-startup-context-cut).
+      loadMode: "discoverable",
       description:
         "WinBoat VM memory guard. `status` shows the VM state, MemAvailable, the threshold, active job references, the last guard action and the active heavy-command patterns; "
         + "`stop` shuts the VM down normally (refused while vm_build runs or a VM client is connected unless force: true; a manual stop is never undone automatically); "

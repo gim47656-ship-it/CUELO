@@ -87,13 +87,24 @@ function keywordProblems(value: unknown, path: string, out: string[]): string[] 
   return out;
 }
 
+// Windows 전용 도구는 네이티브 Linux에서 등록하지 않는다(팩토리 호출 때 판정). 이 테스트는 어느 호스트에서든
+// 그 스키마를 검사해야 하므로 두 도구의 팩토리를 부르는 동안만 WSL 호스트로 보이게 한다.
+const WINDOWS_TOOL_SOURCES: Record<string, true> = { "tools/windows-build/index.ts": true, "tools/windows-control/index.ts": true };
 for (const file of entryFiles()) {
   const source = file.slice(agentDir.length).replaceAll("\\", "/");
   // 확장·도구 목록은 디렉터리에서 발견하므로 정적 import로 쓸 수 없다.
   const mod: Record<string, unknown> = await import(file);
   const entry = mod.default;
   if (typeof entry !== "function") continue;
-  const result: unknown = await entry(fakeApi(source));
+  const savedWslDistro = process.env.WSL_DISTRO_NAME;
+  if (WINDOWS_TOOL_SOURCES[source]) process.env.WSL_DISTRO_NAME ||= "tool-wire-schema-test";
+  let result: unknown;
+  try {
+    result = await entry(fakeApi(source));
+  } finally {
+    if (savedWslDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+    else process.env.WSL_DISTRO_NAME = savedWslDistro;
+  }
   for (const tool of Array.isArray(result) ? result : [result]) if (isWireTool(tool)) registered.push({ source, tool });
 }
 
@@ -177,7 +188,7 @@ describe("custom tool wire schemas", () => {
 
   test("discovers the registered tools", () => {
     const names = registered.map(({ tool }) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(["git_finalize", "windows_build", "skim", "draft", "maker_route", "routing_verdict"]));
+    expect(names).toEqual(expect.arrayContaining(["git_finalize", "windows_build", "windows_control", "skim", "draft", "maker_route", "routing_verdict"]));
   });
 
   for (const { source, tool } of registered) {

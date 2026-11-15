@@ -3369,6 +3369,21 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		patched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: false,",
 	},
 	{
+		// 2026-11-15 사용자 요청(「시작하자 먹는 이 80 k 중 줄일수있는방안좀」 → 「그거 제안대로 모조리수정하고」): Computer Use 안내는 매 세션 system prompt 에 들어간다.
+		// 네이티브 Linux 는 macOS 앱 열기 문단과 Windows 클래식 Win32 문단을 쓸 일이 없다. win32·darwin·WSL(WSL_DISTRO_NAME)·
+		// Windows helper(CUELO_WINDOWS_COMPUTER_HOST)는 안내를 그대로 둔다. 남기는 문단의 문구는 바꾸지 않고, 접두가 맞지 않으면 아무것도 빼지 않는다.
+		file: "src/tools/computer.ts",
+		marker: "export function computerUseGuidanceForHost(",
+		anchor: "/** Create the enabled-only computer host prelude for one tool session. */",
+		patched: "/** Native Linux (no WSL, no Windows helper) drops the macOS-only and Windows-only bullets; every other host keeps the guide unchanged. */\nexport function computerUseGuidanceForHost(\n\tguidance: string,\n\tplatform: NodeJS.Platform = process.platform,\n\tenv: NodeJS.ProcessEnv = process.env,\n): string {\n\tif (platform !== \"linux\" || env.WSL_DISTRO_NAME || env.CUELO_WINDOWS_COMPUTER_HOST?.trim()) return guidance;\n\tconst hostOnly = [\"- macOS app that may be closed or windowless?\", \"- Classic Win32 windows (WinForms, VB6, MFC)\"];\n\treturn guidance\n\t\t.split(\"\\n\")\n\t\t.filter(line => !hostOnly.some(prefix => line.startsWith(prefix)))\n\t\t.join(\"\\n\");\n}\n\n/** Create the enabled-only computer host prelude for one tool session. */",
+	},
+	{
+		file: "src/tools/computer.ts",
+		marker: "guidance: computerUseGuidanceForHost(computerUsePrompt)",
+		anchor: "\t\tguidance: computerUsePrompt,",
+		patched: "\t\tguidance: computerUseGuidanceForHost(computerUsePrompt),",
+	},
+	{
 		// 2026-10-09 사용자 결정: computer 승인 창은 control.acquire에서만 뜬다. 모델이
 		// BackgroundUnavailable을 우회하려고 acquire를 불러 매번 승인을 묻게 됐다(Windows 시절
 		// 세션은 동작별 takeover만 썼다). 승인 게이트는 그대로 두고, 동작별 takeover를 먼저 쓰게 안내한다.

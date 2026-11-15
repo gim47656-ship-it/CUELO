@@ -1,5 +1,5 @@
 ---
-description: HANDOFF·README·doc 지도의 역할, 작업 기록 소유권과 검색 순서를 정할 때 읽는다.
+description: For HANDOFF, README and doc-map roles, work-record ownership and lookup order.
 ---
 
 # 프로젝트 문서 지도와 기록

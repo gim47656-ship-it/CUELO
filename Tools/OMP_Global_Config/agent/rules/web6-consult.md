@@ -1,5 +1,5 @@
 ---
-description: ChatGPT 6 Pro(별칭 SHION) 상담을 쓸 때 자리·발동 조건·호출 경로·입력 제한을 확인한다. 사용자가 6 Pro나 SHION을 명시했거나 6PRO 탭 세션일 때 연다.
+description: For ChatGPT 6 Pro (SHION) consultation seats, triggers, routing and input limits; read when the user names 6 Pro/SHION or in a 6PRO tab session.
 ---
 
 # ChatGPT 6 Pro 상담

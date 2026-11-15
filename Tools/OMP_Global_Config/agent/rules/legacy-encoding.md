@@ -1,5 +1,5 @@
 ---
-description: VB.NET·VB6·레거시 설정/데이터 파일을 수정할 때 인코딩 판별과 보존 절차를 확인한다.
+description: For encoding detection and preservation when editing VB.NET, VB6 or legacy config/data files.
 globs: ["**/*.vb", "**/*.frm", "**/*.bas", "**/*.cfg", "**/*.csv", "**/*.resx"]
 ---
 

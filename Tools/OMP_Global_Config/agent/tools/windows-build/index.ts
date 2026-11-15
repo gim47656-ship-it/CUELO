@@ -387,4 +387,9 @@ const factory: CustomToolFactory = (pi) => ({
   },
 });
 
-export default factory;
+// 2026-11-15 시작 컨텍스트 축소: 네이티브 Linux에는 Windows MSBuild가 없어(VM 빌드는 vm_build) 설명이 매 세션
+// 헛되이 실렸다. Windows와 WSL에서만 등록한다.
+export default ((pi) =>
+  process.platform === "win32" || (process.platform === "linux" && process.env.WSL_DISTRO_NAME)
+    ? factory(pi)
+    : []) satisfies CustomToolFactory;

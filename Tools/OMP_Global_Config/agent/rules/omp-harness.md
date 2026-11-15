@@ -1,5 +1,5 @@
 ---
-description: OMP 업데이트·업그레이드·버전 교체의 upstream rebase 판단과 전역 설정 미러 동기화·검증 절차를 확인한다.
+description: For OMP updates, upgrades or version swaps, upstream rebase decisions and global config mirror sync/verification.
 globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 ---
 

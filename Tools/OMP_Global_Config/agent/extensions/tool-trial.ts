@@ -248,7 +248,8 @@ export function runToolTrial(input: TrialInput, deps: TrialDeps): { text: string
 export default function toolTrial(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
-    name: "tool_trial", label: "Tool Trial", loadMode: "essential", approval: "read",
+    // 2026-11-15: 드물게 쓰므로 xd:// 장치로 내려 매 세션 시작 문맥에서 설명을 뺀다(doc/history/2026/11/15-startup-context-cut).
+    name: "tool_trial", label: "Tool Trial", loadMode: "discoverable", approval: "read",
     description: "같은 시나리오에서 기존 도구(baseline)와 후보 도구(candidate)를 직접 돌려 본 결과를 근거 위치와 함께 이 세션의 비공개 기록으로 남기고 보수적인 참고 판정을 돌려줍니다. 게이트가 아니며 통과를 주지 않고, 도구를 대신 실행하거나 텔레메트리를 훑거나 모델로 판정하지 않습니다. action: start(scenario·acceptance·environment·baselineTool/Version·candidateTool/Version 필수) → observe(trialId·side·outcome pass|fail|unsupported|not-run·evidence 위치; not-run 외에는 근거 필수; expectedRevision을 주면 다른 기록이 먼저 들어왔을 때 충돌로 멈춤) → show/list. past는 같은 시나리오의 다른 세션 기록을 명시적으로 볼 때만 쓰며 현재 판정에 합치지 않습니다. 판정: 둘 다 통과면 추가 능력 입증 안 됨, 기존 미실행에 후보만 통과면 판단 보류, 기존 실패·미지원에 후보 통과면 그 시나리오에서만 추가 능력 관찰, 상충 관찰·환경 불일치는 판단 보류. 근거는 위치만 확인하고 내용의 진위는 검증하지 않습니다. 속도 개선은 추론하지 않습니다.",
     parameters: z.object({
       action: z.enum(["start", "observe", "show", "list", "past"]),

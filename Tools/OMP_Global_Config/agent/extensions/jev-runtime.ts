@@ -1460,7 +1460,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     if (pi.registerTool) {
       const z = pi.zod;
       pi.registerTool({
-        name: "routing_verdict", label: "Routing Verdict", loadMode: "essential", approval: "read",
+        // 2026-11-15: 수용 기록 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+        name: "routing_verdict", label: "Routing Verdict", loadMode: "discoverable", approval: "read",
         description: "Main 전용 발주 수용 판정 기록(advisory). 실행 상태와 분리해 accepted·rework·held만 남기며 gate도 LLM 호출도 아니다. identity는 spawn/pre-review advisory와 maker_route 결과의 plan이 아니라 실제 spawn triple(sessionId·assignmentId·attemptId)을 쓴다. accepted·rework는 비어 있지 않은 revision과 evidenceLocators 최소 1개, reason이 필요하고 held는 revision·evidence를 생략할 수 있다. accepted는 완료가 관측된 attempt에만 쓸 수 있다. revision은 Main이 실제로 검수한 revision이다. 원장은 그 attempt의 terminal report revision(sourceRevision, 미관측이면 null)과의 관계를 same·integrated·mismatch·unknown으로 함께 남기고, mismatch·unknown이면 기록한 뒤 diagnostic으로 알린다. 통합 뒤 새 revision을 검수했다면 선택 integratedFrom에 이 attempt의 원 revision을 적어 연결을 명시한다. integratedFrom은 연결 주장일 뿐이며 검수 근거는 reason·evidenceLocators가 담당한다. 선택 appliedLessons에는 그 attempt가 실제로 적용한 교훈의 기억 id(`<memories>`·recall·learn 결과의 `id:`)를 넣으며, 적용 근거는 evidenceLocators로 남긴다. spawn으로 관측되지 않은 attempt, stale identity, 현재 session이 아닌 identity는 기록하지 않고 오류와 알려진 attemptId 목록으로 알린다.",
         parameters: z.object({
           sessionId: z.string(),
