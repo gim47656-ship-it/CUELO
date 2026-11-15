@@ -34,6 +34,8 @@ const control = {
   runningSessions: new Set<string>(),
   failStart: new Set<string>(),
   failAbort: new Set<string>(),
+  /** abort가 끝나지 않는 세션(2026-11-15 집 PC: 한 세션의 abort가 돌아오지 않아 서버가 이후 배포 요청을 못 받았다). */
+  hangAbort: new Set<string>(),
   alive: new Set<string>(),
   /** child 작업이 시간 안에 끝나지 않는 세션. */
   unsettledChildren: new Set<string>(),
@@ -61,6 +63,7 @@ function sessionFor(sessionId: string): FakeSession {
     send: async () => {
       control.drainCalls.push(`abort:${sessionId}`);
       if (control.failAbort.has(sessionId)) throw new Error(`abort failed: ${sessionId}`);
+      if (control.hangAbort.has(sessionId)) await Promise.withResolvers<void>().promise;
     },
     sendInternalPrompt: async (message: string) => {
       control.prompts.push(`${sessionId}:${message.slice(0, 4)}`);
@@ -430,6 +433,29 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     const ack = JSON.parse(readFileSync(ackPath("probe-children"), "utf8")) as { aborted: string[]; unsettled: string[] };
     expect(ack.aborted).toEqual([SID(18), SID(19)]);
     expect(ack.unsettled).toEqual([SID(19)]);
+  },
+
+  "abort가 돌아오지 않는 세션이 있어도 상한 뒤 ack를 쓰고 그 세션만 실패로 남긴다": async (mod) => {
+    seedPending([]);
+    control.running = [SID(20), SID(21)];
+    control.alive.add(SID(20));
+    control.alive.add(SID(21));
+    control.hangAbort.add(SID(20));
+    seedRequest("probe-hang");
+
+    // 상한 50 ms는 코드가 쓰는 실제 대기 상한이다. 고치기 전에는 여기서 돌아오지 않아 시험 시간 제한에 걸린다.
+    expect(await mod.handleInterruptRequest(new Set(), new Set(), 50)).toBe(true);
+
+    const ack = JSON.parse(readFileSync(ackPath("probe-hang"), "utf8")) as {
+      aborted: string[];
+      failed: Array<{ sessionId: string; error: string }>;
+      unsettled: string[];
+    };
+    expect(ack.aborted).toEqual([SID(21)]);
+    expect(ack.failed.map((f) => f.sessionId)).toEqual([SID(20)]);
+    expect(ack.unsettled).toEqual([SID(20)]);
+    // 멈춘 세션도 child 작업 정지는 받는다(abort를 붙잡은 bash·child가 그것일 수 있다).
+    expect(control.drainCalls).toContain(`stop:${SID(20)}`);
   },
 
   "직전 서버 세대 영수증의 running 중 기록이 끊긴 세션만 복구 대기열에 올리고 영수증을 소비한다": async (mod) => {

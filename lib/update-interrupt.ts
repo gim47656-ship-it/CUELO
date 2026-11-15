@@ -48,6 +48,11 @@ const MAX_ERROR_CHARS = 200;
 // drain ack 전에 child 작업이 끝나기를 기다리는 상한. worker는 interrupt request 뒤 10초만 ack를
 // 기다리고, 이 감시는 1초 간격이라 그 안에 들어가야 한다.
 const CHILD_SETTLE_MS = 5000;
+/**
+ * 세션 하나의 abort를 기다리는 상한. 2026-11-15 집 PC: 한 세션의 abort가 돌아오지 않아 이 처리가 ack를 쓰지 못하고
+ * 멈췄고, 요청 처리가 한 번에 하나라 그 뒤 배포 요청을 서버가 아예 받지 못해 매번 drain 시간 초과로 실패했다.
+ */
+const ABORT_WAIT_MS = 5000;
 
 interface PendingFailure {
   sessionId: string;
@@ -142,7 +147,7 @@ function readPending(): PendingResume | null {
  * `inFlight`는 지금 처리 중인 id다. 완료 표시(`handled`)는 ack 저장까지 끝난 뒤에만 하므로,
  * pending 쓰기 같은 중간 단계가 실패하면 다음 tick이 같은 요청을 다시 처리한다.
  */
-export async function handleInterruptRequest(handled: Set<string>, inFlight: Set<string>): Promise<boolean> {
+export async function handleInterruptRequest(handled: Set<string>, inFlight: Set<string>, abortWaitMs = ABORT_WAIT_MS): Promise<boolean> {
   const root = interruptsRoot();
   const request = readJson(join(root, "request.json"));
   const id = typeof request?.id === "string" ? request.id : "";
@@ -171,18 +176,29 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
 
     const aborted: string[] = [];
     const failed: Array<{ sessionId: string; error: string }> = [];
-    for (const sessionId of running) {
+    const unsettled: string[] = [];
+    // 세션마다 동시에 보내고 상한까지만 기다린다. 상한을 넘긴 abort는 뒤에서 계속 돌게 두고, 그 세션은 실패와
+    // unsettled로 알린다. worker는 그 세션을 통과시키지 않으므로 이번 배포는 실패하지만 다음 요청은 받는다.
+    await Promise.all(running.map(async (sessionId) => {
+      const { promise: expired, resolve: expire } = Promise.withResolvers<"timeout">();
+      const timer = setTimeout(() => expire("timeout"), abortWaitMs);
       try {
-        await getRpcSession(sessionId)?.send({ type: "abort" });
-        aborted.push(sessionId);
+        const outcome = await Promise.race([getRpcSession(sessionId)?.send({ type: "abort" }).then(() => "done" as const) ?? "done" as const, expired]);
+        if (outcome === "done") aborted.push(sessionId);
+        else {
+          failed.push({ sessionId, error: `abort did not finish within ${abortWaitMs} ms` });
+          unsettled.push(sessionId);
+        }
       } catch (error) {
         failed.push({ sessionId, error: minimalError(error) });
+      } finally {
+        clearTimeout(timer);
       }
-    }
+    }));
+    aborted.sort();
     // 턴 abort는 부모만 멈춘다. background task child와 bash는 계속 돌아 cutover 중에 설치 폴더를
     // 잡는다(2026-09-28). 세션마다 그것까지 멈추고 실제로 끝났는지 본 뒤에 ack를 쓴다. 시간 안에
     // 끝나지 않은 세션은 `unsettled`로 알려 worker가 그 세션을 통과시키지 않게 한다.
-    const unsettled: string[] = [];
     await Promise.all(running.map(async (sessionId) => {
       try {
         const settled = await getRpcSession(sessionId)?.stopBackgroundWorkForDrain(CHILD_SETTLE_MS) ?? true;
@@ -198,7 +214,8 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
       processId: process.pid,
       aborted,
       failed,
-      unsettled: unsettled.sort(),
+      // abort 상한을 넘긴 세션이 child 정지에서도 남으면 두 번 들어간다.
+      unsettled: [...new Set(unsettled)].sort(),
       atUtc: new Date().toISOString(),
     });
     // 여기까지 왔을 때만 완료로 표시한다. 앞에서 표시하면 pending 쓰기 실패가 재처리를 막는다.
