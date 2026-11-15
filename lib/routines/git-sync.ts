@@ -144,12 +144,12 @@ export function syncRoutineRepo(dir: string): Promise<void> {
 }
 
 /** 화면 읽기가 부르는 백그라운드 동기화. 최근에 시도했거나 진행 중이면 건너뛴다. */
-export function requestRoutineSync(dir: string, minIntervalMs = 30_000): void {
+export function requestRoutineSync(dir: string, minIntervalMs = 30_000): Promise<void> | undefined {
   const h = holder();
   if (h.state.syncing || Date.now() - h.lastAttemptAt < minIntervalMs) return;
   h.lastAttemptAt = Date.now();
   h.state.syncing = true;
-  void syncRoutineRepo(dir);
+  return syncRoutineRepo(dir);
 }
 
 async function commitIdentity(dir: string): Promise<string[]> {
@@ -161,7 +161,7 @@ async function commitIdentity(dir: string): Promise<string[]> {
  * 받아 온 뒤 `mutate`로 파일을 바꾸고, 그 경로만 커밋해 올린다. 받기·올리기 실패는 상태에 남기고 로컬 커밋은
  * 유지한다(다음 동기화 때 올린다). 파일 변경이나 커밋 자체가 실패하면 예외를 던진다.
  */
-export function commitRoutineChange<T>(dir: string, message: string, mutate: () => { paths: string[]; result: T }): Promise<T> {
+export function commitRoutineChange<T>(dir: string, message: string, mutate: () => { paths: string[]; result: T; rollback?: () => void }): Promise<T> {
   return withGitLock(async () => {
     const h = holder();
     h.state.syncing = true;
@@ -177,12 +177,23 @@ export function commitRoutineChange<T>(dir: string, message: string, mutate: () 
     try {
       // 남의 rebase 도중에 커밋하면 그 rebase에 섞인다. 그동안은 쓰지 않는다.
       if (await rebaseInProgress(dir)) throw new Error(pullError ?? "작업 사본에서 rebase가 진행 중이라 저장하지 않았습니다.");
-      const { paths, result } = mutate();
+      const { paths, result, rollback } = mutate();
       // 경로 없이 `git add -A --`를 부르면 작업 사본 전체가 담긴다. 바꾼 파일이 없으면 커밋하지 않는다.
       if (paths.length > 0) {
-        await git(dir, ["add", "-A", "--", ...paths]);
-        const staged = (await git(dir, ["diff", "--cached", "--name-only", "--", ...paths])).trim();
-        if (staged) await git(dir, [...(await commitIdentity(dir)), "commit", "--quiet", "-m", message, "--", ...paths]);
+        let added = false;
+        try {
+          await git(dir, ["add", "-A", "--", ...paths]);
+          added = true;
+          const staged = (await git(dir, ["diff", "--cached", "--name-only", "--", ...paths])).trim();
+          if (staged) await git(dir, [...(await commitIdentity(dir)), "commit", "--quiet", "-m", message, "--", ...paths]);
+        } catch (error) {
+          if (rollback) {
+            rollback();
+            // A failed commit must not leave the newly-created user reply in the index.
+            if (added) await git(dir, ["add", "-A", "--", ...paths]);
+          }
+          throw error;
+        }
       }
       if (upstream) {
         try {

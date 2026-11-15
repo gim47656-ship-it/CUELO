@@ -69,6 +69,19 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+self.addEventListener("push", (event) => {
+  if (!event.data) return;
+  let payload;
+  try { payload = event.data.json(); } catch { return; }
+  if (!payload || typeof payload.title !== "string" || typeof payload.body !== "string") return;
+  event.waitUntil(self.registration.showNotification(payload.title, {
+    body: payload.body,
+    tag: typeof payload.tag === "string" ? payload.tag : undefined,
+    icon: "/icons/icon-192.png",
+    data: { url: typeof payload.url === "string" ? payload.url : "/" },
+  }));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 

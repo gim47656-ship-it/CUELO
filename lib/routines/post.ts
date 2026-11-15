@@ -4,8 +4,16 @@
  * 머리말 값은 JSON 문자열로 쓴다. JSON 문자열은 YAML 큰따옴표 문자열이기도 해서 다른 도구로 열어도 읽힌다.
  */
 
-export type RoutinePostStatus = "ok" | "failed" | "timeout";
-export const ROUTINE_POST_STATUSES: readonly RoutinePostStatus[] = ["ok", "failed", "timeout"];
+export type RoutinePostStatus = "ok" | "failed" | "timeout" | "waiting";
+export const ROUTINE_POST_STATUSES: readonly RoutinePostStatus[] = ["ok", "failed", "timeout", "waiting"];
+export const WAITING_MARKER = "[답 필요]";
+
+export function waitingAnswer(body: string): { status: "ok" | "waiting"; body: string } {
+  const lines = body.split("\n");
+  return lines[0].replace(/\r$/, "") === WAITING_MARKER
+    ? { status: "waiting", body: lines.slice(1).join("\n").trim() }
+    : { status: "ok", body };
+}
 
 export interface RoutinePostMeta {
   title: string;

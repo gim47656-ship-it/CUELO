@@ -1,8 +1,9 @@
 import { commitRoutineChange, requestRoutineSync, syncRoutineRepo } from "./git-sync";
-import { isRoutineRunning, recordInterruptedRuns, startRoutineRun } from "./runner";
-import { dueRunKey } from "./schedule";
+import { isRoutineRunning, recordInterruptedRuns, startRoutineRun, processRoutineReplies } from "./runner";
+import { scheduledRun } from "./schedule";
 import { readRoutineRunStates, updateRoutineRunState } from "./state";
 import { inspectRepo, readRoutine, readRoutines, routinesDir, thisRoutineHost, writeRoutineFile } from "./store";
+import { notifyRoutineItems } from "./notifications";
 
 const TICK_MS = 30_000;
 const FIRST_TICK_MS = 15_000;
@@ -52,23 +53,25 @@ export function ensureRoutineScheduler(): void {
       for (const [id, runState] of Object.entries(readRoutineRunStates())) {
         if (runState.pendingOnceDisable) await disableOnce(dir, id, runState.pendingOnceDisable);
       }
-      requestRoutineSync(dir, SYNC_INTERVAL_MS);
+      await requestRoutineSync(dir, SYNC_INTERVAL_MS);
+      try { processRoutineReplies(dir); } catch (error) { console.error("[routines] reply scan failed:", error); }
+      void notifyRoutineItems(dir).catch((error) => console.error("[routines] push scan failed:", error));
       const host = thisRoutineHost();
       const runStates = readRoutineRunStates();
       // 끊긴 실행의 글이 아직 안 올라간 루틴(running 표시가 남은 루틴)은 새 회차로 덮지 않는다.
       const due = readRoutines(dir).flatMap((routine) => {
         if (!routine.enabled || routine.host !== host || isRoutineRunning(routine.id) || runStates[routine.id]?.running) return [];
-        const key = dueRunKey(routine.schedule, routine.timezone, new Date());
-        return key && runStates[routine.id]?.lastRunKey !== key ? [{ id: routine.id, key, schedule: JSON.stringify(routine.schedule) }] : [];
+        const slot = scheduledRun(routine.schedule, routine.timezone, routine.createdAt, runStates[routine.id]?.lastRunKey, new Date());
+        return slot ? [{ id: routine.id, ...slot, schedule: JSON.stringify(routine.schedule) }] : [];
       });
       if (due.length === 0) return;
       await syncRoutineRepo(dir);
       for (const { id, key, schedule } of due) {
-        // 동기화가 오래 걸렸을 수 있어 시계도 다시 읽는다: 실행 창이 닫혔으면 따라잡지 않는다. 일정은 회차 키가 같아도
-        // 모양이 바뀌었으면(예: 매주 13:00 → 오늘 13:00 한 번) 바뀐 것으로 본다.
+        // Re-read after sync, preserving all host, enable, running and schedule guards.
         const fresh = readRoutine(dir, id);
         if (!fresh || !fresh.enabled || fresh.host !== host || JSON.stringify(fresh.schedule) !== schedule
-          || dueRunKey(fresh.schedule, fresh.timezone, new Date()) !== key) {
+          || isRoutineRunning(id) || readRoutineRunStates()[id]?.running
+          || scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, readRoutineRunStates()[id]?.lastRunKey, new Date())?.key !== key) {
           log(`${id} skipped ${key}: disabled, deleted, moved, rescheduled or past its window before the run`);
           continue;
         }
@@ -77,7 +80,8 @@ export function ensureRoutineScheduler(): void {
         // 사이에는 기다림이 없고, 1회 일정을 끄는 커밋은 시작한 뒤에 한다.
         const previous = readRoutineRunStates()[id];
         updateRoutineRunState(id, (current) => ({ ...current, lastRunKey: key, ...(onceSchedule ? { pendingOnceDisable: onceSchedule } : {}) }));
-        if (!startRoutineRun(dir, fresh, "schedule")) {
+        const trigger = scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, previous?.lastRunKey, new Date())?.trigger ?? "catch-up";
+        if (!startRoutineRun(dir, fresh, trigger)) {
           updateRoutineRunState(id, (current) => ({ ...current, lastRunKey: previous?.lastRunKey, pendingOnceDisable: previous?.pendingOnceDisable }));
           continue;
         }

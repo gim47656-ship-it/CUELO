@@ -1,13 +1,14 @@
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { type AgentSessionWrapper, startNewRpcSession } from "@/lib/rpc-manager";
-import { invalidateSessionListCache } from "@/lib/session-reader";
+import { type AgentSessionWrapper, getRpcSession, startRpcSession, startNewRpcSession } from "@/lib/rpc-manager";
+import { invalidateSessionListCache, resolveSessionPath, readSessionHeader } from "@/lib/session-reader";
 import { commitRoutineChange } from "./git-sync";
-import { type RoutinePost, type RoutinePostStatus, extractPostTitle } from "./post";
-import { runStamp } from "./schedule";
+import { type RoutinePost, type RoutinePostStatus, extractPostTitle, waitingAnswer } from "./post";
+import { runStamp, scheduledRun } from "./schedule";
 import { type RoutineLastRun, type RoutineRunning, readRoutineRunStates, updateRoutineRunState } from "./state";
-import { type Routine, expandHome, isExistingDirectory, readRoutine, routinePaths, thisRoutineHost, writePostFile } from "./store";
+import { type Routine, expandHome, isExistingDirectory, readRoutine, readRoutines, readPost, readReplies, listPosts, routinePaths, thisRoutineHost, writePostFile, writeReplyFile } from "./store";
+import { type RoutineReply, pendingReplies, pendingReplyWrites } from "./reply";
 import { routineModelSettings, runRoutineChecker } from "./model";
 import { checkRoutineAnswer, parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 
@@ -92,10 +93,27 @@ export function startRoutineRun(dir: string, routine: Routine, trigger: RoutineR
   return true;
 }
 
+/**
+ * 「지금 실행」. 이 PC에서 마침 돌 차례인 회차(1회 일정의 지금 시각, 따라잡을 회차 포함)가 있으면 이 실행이 그 회차를
+ * 쓴 것으로 남긴다. 그러지 않으면 실행이 끝난 뒤 스케줄러가 같은 회차를 다시 돌린다(「지금 한 번」이 두 번 돈다).
+ * 1회 일정은 스케줄러처럼 끄기 표시도 남긴다. 시작하지 못하면 남긴 표시를 되돌린다.
+ */
+export function startManualRoutineRun(dir: string, routine: Routine): boolean {
+  const previous = readRoutineRunStates()[routine.id];
+  const slot = routine.enabled && routine.host === thisRoutineHost()
+    ? scheduledRun(routine.schedule, routine.timezone, routine.createdAt, previous?.lastRunKey, new Date())
+    : null;
+  const onceSchedule = slot && routine.schedule.kind === "once" ? JSON.stringify(routine.schedule) : undefined;
+  if (slot) updateRoutineRunState(routine.id, (current) => ({ ...current, lastRunKey: slot.key, ...(onceSchedule ? { pendingOnceDisable: onceSchedule } : {}) }));
+  if (startRoutineRun(dir, routine, "manual")) return true;
+  if (slot) updateRoutineRunState(routine.id, (current) => ({ ...current, lastRunKey: previous?.lastRunKey, pendingOnceDisable: previous?.pendingOnceDisable }));
+  return false;
+}
+
 function preamble(routine: Routine, postsDir: string, inRoutineFolder: boolean, trigger: RoutineRunning["trigger"], attempt: number): string {
-  const how = trigger === "schedule" ? "예약 루틴으로 자동 실행됐다" : "루틴의 지금 실행으로 시작됐다";
+  const how = trigger === "schedule" || trigger === "catch-up" ? "예약 루틴으로 자동 실행됐다" : "루틴의 지금 실행으로 시작됐다";
   return [
-    `[CUELO 루틴: ${routine.name}] 이 세션은 ${how}. 사용자는 지금 보고 있지 않으니 질문하지 말고 끝까지 진행한다.`,
+    `[CUELO 루틴: ${routine.name}] 이 세션은 ${how}. 사용자는 지금 보고 있지 않으니 가능한 일은 끝까지 진행한다. 답이 꼭 필요하면 마지막 답의 첫 줄을 정확히 [답 필요]로 쓰고 다음 줄에 질문한다. 사용자의 답장은 같은 세션을 이어서 전달된다.`,
     ...(attempt > 1 ? ["앞선 시도가 CUELO 서버 재시작으로 중간에 끊겨 이 회차를 새 세션으로 다시 실행한다. 앞선 시도가 남긴 작업(커밋하지 않은 변경, 반쯤 한 일)이 있으면 먼저 확인하고 이어서 마무리하며, 같은 일을 두 번 하지 않는다."] : []),
     "마지막 답은 그대로 루틴 게시판의 글 본문으로 올라간다.",
     `루틴 공통 안내 ${resolve(postsDir, "../../../GUIDE.md")}가 있으면 글을 쓰기 전에 읽는다. 글의 말투, 길이, 형식은 그 안내를 따르고(이 루틴의 지시가 요구한 표, 항목, 링크도 그 안내가 정한 자리에 넣는다), 무엇을 조사하고 알릴지는 이 루틴의 지시를 따른다.`,
@@ -196,7 +214,8 @@ function timedOut(answer: string): RunResult {
  * 닫아야 했을 때 그 닫기가 끝나면 풀린다(부른 쪽은 그때까지 실행 자리를 쥔다).
  */
 async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolean, postsDir: string, trigger: RoutineRunning["trigger"],
-  attempt: number, started: Date, stampDisplay: string, onSession: (sessionId: string) => void): Promise<{ result: RunResult; closed: Promise<void> }> {
+  attempt: number, started: Date, stampDisplay: string, onSession: (sessionId: string) => void,
+  continuation?: { post: RoutinePost; replies: RoutineReply[]; pending: RoutineReply[]; sessionId: string | null }): Promise<{ result: RunResult; closed: Promise<void> }> {
   const deadline = started.getTime() + RUN_TIMEOUT_MS;
   let settings;
   try {
@@ -206,7 +225,15 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
   }
   if (!settings) return { result: timedOut(""), closed: Promise.resolve() };
   const { enabled, model } = settings.value;
-  const starting = startNewRpcSession(undefined, cwd, model ? { initialModel: parseRoutineModel(model) } : {});
+  const priorId = continuation?.sessionId;
+  const live = priorId ? getRpcSession(priorId) : undefined;
+  const sessionFile = priorId && !live ? await resolveSessionPath(priorId) : null;
+  const header = sessionFile ? readSessionHeader(sessionFile) : null;
+  const resumed = !!(live || sessionFile);
+  if (live && !live.isSafelyIdle()) throw new Error("이 글의 세션이 다른 작업을 처리 중입니다. 작업이 끝난 뒤 다시 답장해 주세요.");
+  const starting = live ? Promise.resolve({ session: live, realSessionId: live.sessionId })
+    : sessionFile && priorId ? startRpcSession(priorId, sessionFile, header?.cwd ?? cwd)
+    : startNewRpcSession(undefined, cwd, model ? { initialModel: parseRoutineModel(model) } : {});
   let startedSession;
   try {
     startedSession = await untilDeadline(starting, deadline);
@@ -228,7 +255,10 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
     return { result: timedOut(stopped.answer), closed: stopped.closed };
   }
   log(`${routine.id} started session ${realSessionId} in ${cwd} (${trigger})`);
-  const observed = await promptAndObserve(session, `${preamble(routine, postsDir, inRoutineFolder, trigger, attempt)}\n\n${routine.prompt}`, deadline);
+  const message = continuation
+    ? `${preamble(routine, postsDir, inRoutineFolder, "reply", attempt)}\n\n루틴 글에 사용자가 답장했다. 답장을 처리하고 마지막 답을 댓글로 남긴다. 답장이므로 [알림 없음]으로 생략하지 않는다.\n${resumed ? "" : `원래 지시:\n${routine.prompt}\n\n원래 글:\n${continuation.post.body}\n\n이전 대화:\n${continuation.replies.filter((r) => !continuation.pending.some((p) => p.file === r.file)).map((r) => `${r.author}: ${r.body}`).join("\n\n")}\n`}\n사용자 답장(시간순):\n${continuation.pending.map((r) => r.body).join("\n\n")}`
+    : `${preamble(routine, postsDir, inRoutineFolder, trigger, attempt)}\n\n${routine.prompt}`;
+  const observed = await promptAndObserve(session, message, deadline);
   if (observed.timedOut) {
     const stopped = await stopTimedOutSession(session);
     return { result: timedOut(stopped.answer), closed: stopped.closed };
@@ -236,13 +266,15 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
   const raw = await lastAnswer(session);
   const answer = raw.trim();
   let closed = Promise.resolve();
-  if (!observed.error && raw.split("\n", 1)[0].replace(/\r$/, "") === QUIET_MARKER) return { result: { status: "quiet" }, closed };
+  if (!continuation && !observed.error && raw.split("\n", 1)[0].replace(/\r$/, "") === QUIET_MARKER) return { result: { status: "quiet" }, closed };
   if (!answer || observed.error) {
     const reason = observed.error ? `세션이 오류로 끝났습니다: ${observed.error}` : "세션이 마지막 답 없이 끝났습니다.";
     return { result: { status: "failed", body: answer ? `${answer}\n\n---\n\n_${reason}_` : reason }, closed };
   }
+  if (raw.split("\n", 1)[0].replace(/\r$/, "") === "[답 필요]") return { result: waitingAnswer(raw), closed };
+  let revisionRaw: string | undefined;
   const body = enabled ? await checkRoutineAnswer({
-    instruction: routine.prompt, answer, deadline, check: runRoutineChecker,
+    instruction: continuation ? `${routine.prompt}\n\n사용자 답장:\n${continuation.pending.map((r) => r.body).join("\n\n")}` : routine.prompt, answer, deadline, check: runRoutineChecker,
     log: (message) => log(`${routine.id} ${message}`),
     revise: async (message, revisionDeadline) => {
       const revision = await promptAndObserve(session, message, revisionDeadline);
@@ -254,10 +286,12 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
       if (revision.error) throw new Error(revision.error);
       const result = await untilDeadline(lastAnswer(session), revisionDeadline);
       if (!result) throw new Error("revision answer exceeded routine deadline");
+      revisionRaw = result.value;
       return result.value;
     },
   }) : answer;
-  return { result: { status: "ok", body }, closed };
+  const marked = waitingAnswer(revisionRaw?.trim() === body ? revisionRaw : raw);
+  return { result: { status: marked.status, body: marked.status === "waiting" ? marked.body : body }, closed };
 }
 
 /** 글을 커밋해 올린다. 그사이 루틴이 지워졌으면 글을 쓰지 않는다(지운 폴더를 되살리지 않는다). */
@@ -361,6 +395,44 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
     const running = readRoutineRunStates()[id]?.running;
     if (!running || isRoutineRunning(id)) continue;
     const routine = readRoutine(dir, id);
+    if (routine && readRoutineRunStates()[id]?.pendingReply) {
+      try { await publishPendingReply(dir, routine); }
+      catch (error) { console.error(`[routines] ${id} reply publication failed:`, error); }
+      continue;
+    }
+    if (running.trigger === "reply" && running.replyPost) {
+      const post = readPost(dir, id, running.replyPost);
+      if (routine && post?.host === host) {
+        const replies = readReplies(dir, id, running.replyPost);
+        const claimed = replies.filter((r) => running.replyFiles?.includes(r.file));
+        // A committed agent response wins over a stale local claim after a crash.
+        const answered = claimed.length > 0 && !pendingReplies(replies).some((r) => running.replyFiles?.includes(r.file));
+        if (!answered && claimed.length && (running.attempt ?? 1) < MAX_ATTEMPTS
+          && now - Date.parse(running.startedAt) < RETRY_WINDOW_MS) {
+          startRoutineReply(dir, routine, running.replyPost, running);
+          continue;
+        }
+        if (!answered) {
+          try {
+            await commitRoutineChange(dir, `routine(${id}): interrupted reply`, () => ({
+              paths: [writeReplyFile(dir, id, running.replyPost!, {
+                author: "agent", host, createdAt: new Date().toISOString(), status: "failed",
+                sessionId: running.sessionId ?? undefined,
+                replyTo: running.replyFiles,
+                body: "답장을 처리하던 서버가 다시 시작되어 끝내지 못했습니다. 다시 답장하면 이어서 처리합니다.",
+              }).path], result: undefined,
+            }));
+          } catch (error) { console.error(`[routines] ${id} interrupted reply failed:`, error); continue; }
+        }
+      }
+      updateRoutineRunState(id, (current) => {
+        if (!sameRunning(current.running, running)) return current;
+        const handledReplyFiles = { ...current.handledReplyFiles };
+        delete handledReplyFiles[running.replyPost!];
+        return { ...current, handledReplyFiles, running: undefined };
+      });
+      continue;
+    }
     if (routine) {
       const startedAt = new Date(running.startedAt);
       const attempt = running.attempt ?? 1;
@@ -395,5 +467,87 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
     }
     // 그사이 같은 루틴이 새로 시작해 표시를 바꿨으면 그 표시는 지우지 않는다.
     updateRoutineRunState(id, (current) => sameRunning(current.running, running) ? { ...current, running: undefined } : current);
+  }
+}
+
+export function startRoutineReply(dir: string, routine: Routine, file: string, retryOf?: RoutineRunning): boolean {
+  const map = runs();
+  if (pendingReplyWrites.has(`${routine.id}/${file}`)) return false;
+  const state = readRoutineRunStates()[routine.id];
+  if (map.has(routine.id) || serverStopping() || (state?.running && !sameRunning(state.running, retryOf))) return false;
+  const post = readPost(dir, routine.id, file);
+  if (!post || post.host !== thisRoutineHost()) return false;
+  const replies = readReplies(dir, routine.id, file);
+  const handled = state?.handledReplyFiles?.[file];
+  const pending = retryOf ? replies.filter((r) => retryOf.replyFiles?.includes(r.file)) : pendingReplies(replies, handled);
+  if (!pending.length) return false;
+  const started = new Date();
+  const running: RoutineRunning = {
+    bootId: routineBootId(), sessionId: retryOf?.sessionId ?? replies.findLast((r) => r.author === "agent" && r.sessionId)?.sessionId ?? post.sessionId,
+    startedAt: started.toISOString(), trigger: "reply", replyPost: file,
+    replyFiles: pending.map((r) => r.file), attempt: retryOf ? (retryOf.attempt ?? 1) + 1 : 1,
+  };
+  updateRoutineRunState(routine.id, (current) => ({
+    ...current, running, handledReplyFiles: {
+      ...current.handledReplyFiles,
+      [file]: running.replyFiles!,
+    },
+  }));
+  const work = executeReply(dir, routine, file, post, replies, pending, running)
+    .catch((error) => console.error(`[routines] ${routine.id} reply failed:`, error))
+    .finally(() => map.delete(routine.id));
+  map.set(routine.id, work);
+  return true;
+}
+
+async function executeReply(dir: string, routine: Routine, file: string, post: RoutinePost, replies: RoutineReply[], pending: RoutineReply[], running: RoutineRunning): Promise<void> {
+  const paths = routinePaths(dir, routine.id);
+  let result: RunResult;
+  let closed = Promise.resolve();
+  let sessionId = running.sessionId;
+  try {
+    const cwd = routine.cwd ? expandHome(routine.cwd) : paths.folder;
+    if (!isExistingDirectory(cwd)) throw new Error(`프로젝트 폴더가 없습니다: ${cwd}`);
+    ({ result, closed } = await runSession(routine, cwd, !routine.cwd, paths.posts, "reply", running.attempt ?? 1,
+      new Date(running.startedAt), runStamp(new Date(running.startedAt), routine.timezone).display, (id) => {
+        sessionId = id;
+        updateRoutineRunState(routine.id, (current) => ({ ...current, running: { ...running, sessionId: id } }));
+      }, { post, replies, pending, sessionId }));
+  } catch (error) {
+    result = { status: "failed", body: `답장을 처리하지 못했습니다: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  try {
+    if (globalThis.__cueloRoutineServerStop?.since && globalThis.__cueloRoutineServerStop.since >= Date.parse(running.startedAt)) return;
+    updateRoutineRunState(routine.id, (current) => ({ ...current, pendingReply: { post: file, reply: {
+      file: "", author: "agent", host: thisRoutineHost(), createdAt: new Date().toISOString(),
+      status: result.status === "quiet" ? "ok" : result.status, sessionId: sessionId ?? undefined,
+      replyTo: running.replyFiles,
+      body: result.status === "quiet" ? QUIET_MARKER : result.body,
+    } } }));
+    await publishPendingReply(dir, routine);
+  } finally { await closed; }
+}
+
+async function publishPendingReply(dir: string, routine: Routine): Promise<void> {
+  await commitRoutineChange(dir, `routine(${routine.id}): reply`, () => {
+    const pending = readRoutineRunStates()[routine.id]?.pendingReply;
+    if (!pending || !readRoutine(dir, routine.id) || !readPost(dir, routine.id, pending.post)) return { paths: [], result: undefined };
+    const path = pending.path && existsSync(join(dir, pending.path)) ? pending.path : writeReplyFile(dir, routine.id, pending.post, pending.reply).path;
+    updateRoutineRunState(routine.id, (current) => ({ ...current, pendingReply: { ...pending, path } }));
+    return { paths: [path], result: undefined };
+  });
+  updateRoutineRunState(routine.id, (current) => {
+    const handledReplyFiles = { ...current.handledReplyFiles };
+    if (current.pendingReply) delete handledReplyFiles[current.pendingReply.post];
+    return { ...current, handledReplyFiles, pendingReply: undefined, running: undefined };
+  });
+}
+
+export function processRoutineReplies(dir: string): void {
+  for (const routine of readRoutines(dir)) {
+    for (const post of listPosts(dir, routine.id)) {
+      if (post.thread !== "pending") continue;
+      if (startRoutineReply(dir, routine, post.file)) break;
+    }
   }
 }

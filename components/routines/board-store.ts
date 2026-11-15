@@ -30,11 +30,13 @@ export interface BoardData {
   readPosts: string[];
 }
 
+export type RoutineDraft = Pick<Routine, "name" | "schedule" | "host" | "prompt" | "enabled" | "cwd" | "model">;
+
 export type BoardScreen =
   | { kind: "gallery" }
   | { kind: "board"; id: string }
   | { kind: "post"; id: string; file: string }
-  | { kind: "form"; id: string | null };
+  | { kind: "form"; id: string | null; draft?: RoutineDraft; oneOff?: boolean };
 
 interface BoardState {
   data: BoardData | null;
@@ -56,7 +58,9 @@ export async function readApiError(res: Response): Promise<string> {
   return typeof body?.error === "string" ? body.error : `${res.status} ${res.statusText}`;
 }
 
-export function refreshRoutineBoard(): Promise<void> {
+export function refreshRoutineBoard(afterMutation = false): Promise<void> {
+  // A poll started before a mutation cannot confirm that mutation's saved state.
+  if (afterMutation && inflight) return inflight.then(() => refreshRoutineBoard());
   inflight ??= (async () => {
     try {
       const res = await fetch("/api/routines", { cache: "no-store" });

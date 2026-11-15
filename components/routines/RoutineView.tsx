@@ -7,8 +7,12 @@ import type { TranslationParams } from "@/lib/i18n/types";
 import { type RoutinePost, findTitleHeading, splitPostDetails } from "@/lib/routines/post";
 import type { RoutineSchedule } from "@/lib/routines/schedule";
 import type { RoutinePostSummary } from "@/lib/routines/store";
+import type { RoutineReply } from "@/lib/routines/reply";
+import { QuickTask } from "./QuickTask";
+import { RoutineThread } from "./RoutineThread";
+import { RoutineNotifications } from "./RoutineNotifications";
 import {
-  type BoardData, type BoardRoutine, type BoardScreen, isNewRoutinePost, markAllRoutinePostsRead, markRoutinePostRead, readApiError, refreshRoutineBoard,
+  type BoardData, type BoardRoutine, type BoardScreen, type RoutineDraft, isNewRoutinePost, markAllRoutinePostsRead, markRoutinePostRead, readApiError, refreshRoutineBoard,
   showRoutineScreen, useReadRoutinePosts, useRoutineBoard,
 } from "./board-store";
 import styles from "./RoutineView.module.css";
@@ -75,9 +79,10 @@ function scheduleLabel(schedule: RoutineSchedule, t: T): string {
  * 마지막으로 끝난 회차. 글이 남는 회차(글 올림, 실패, 시간 초과)는 어느 PC든 최신 글로 보고, 글 없이 끝난 「알릴 것 없음」은
  * 이 PC의 실행 기록이 그 글보다 나중일 때만 쓴다. 다른 PC에서 글 없이 끝난 회차는 그 PC의 기록이라 여기서는 보이지 않는다.
  */
-function lastResult(routine: BoardRoutine): { status: "ok" | "failed" | "timeout" | "quiet"; at: string; fromPost: boolean } | null {
+function lastResult(routine: BoardRoutine): { status: "ok" | "failed" | "timeout" | "waiting" | "pending" | "quiet"; at: string; fromPost: boolean } | null {
   const post = routine.posts[0];
-  const fromPost = post ? { status: post.status, at: post.finishedAt || post.startedAt, fromPost: true } : null;
+  const status: RoutinePostSummary["status"] | "pending" | undefined = post?.thread === "waiting" || post?.thread === "pending" ? post.thread : post?.status === "waiting" ? "ok" : post?.status;
+  const fromPost = post && status ? { status, at: post.finishedAt || post.startedAt, fromPost: true } : null;
   const run = routine.lastRun ? { status: routine.lastRun.status, at: routine.lastRun.finishedAt, fromPost: false } : null;
   if (run?.status === "quiet" && (!fromPost || Date.parse(run.at) > Date.parse(fromPost.at))) return run;
   return fromPost ?? run;
@@ -85,7 +90,7 @@ function lastResult(routine: BoardRoutine): { status: "ok" | "failed" | "timeout
 
 function lastRunLabel(routine: BoardRoutine, t: T): string | null {
   const result = lastResult(routine);
-  return result ? t("routines.lastRun", { time: shortDateTime(result.at), result: t(`routines.lastRun.${result.status}`) }) : null;
+  return result ? t("routines.lastRun", { time: shortDateTime(result.at), result: result.status === "waiting" ? "답 필요" : result.status === "pending" ? "이어서 처리 중" : t(`routines.lastRun.${result.status}`) }) : null;
 }
 
 function NewMark({ t }: { t: T }) {
@@ -100,7 +105,7 @@ function LatestLine({ routine, read, t }: { routine: BoardRoutine; read: Readonl
   return (
     <span className={styles.latest}>
       <span className={styles.latestMeta}>
-        <span className={styles.badge} data-status={result.status}>{t(`routines.lastRun.${result.status}`)}</span>
+        <span className={styles.badge} data-status={result.status}>{result.status === "waiting" ? "답 필요" : result.status === "pending" ? "이어서 처리 중" : t(`routines.lastRun.${result.status}`)}</span>
         <span className={styles.mono}>{shortDateTime(result.at)}</span>
         {post && !result.fromPost ? <span>· {t("routines.col.latest")} {shortDateTime(post.startedAt)}</span> : null}
       </span>
@@ -125,6 +130,7 @@ function bodyWithoutTitle(body: string, title: string): string {
 
 function StatusBadge({ status, t }: { status: RoutinePostSummary["status"]; t: T }) {
   if (status === "ok") return null;
+  if (status === "waiting") return <span className={styles.badge} data-status="waiting">답 필요</span>;
   return <span className={styles.badge} data-status={status}>{t(`routines.status.${status}`)}</span>;
 }
 
@@ -247,7 +253,7 @@ function BoardHead({ routine, data, t, onMessage }: { routine: BoardRoutine; dat
 function PostTable({ routine, current, t }: { routine: BoardRoutine; current?: string; t: T }) {
   const read = useReadRoutinePosts();
   const [onlyFailed, setOnlyFailed] = useState(false);
-  const failed = routine.posts.filter((post) => post.status !== "ok");
+  const failed = routine.posts.filter((post) => post.status === "failed" || post.status === "timeout");
   const shown = onlyFailed ? failed : routine.posts;
   const total = routine.posts.length;
   return (
@@ -281,9 +287,11 @@ function PostTable({ routine, current, t }: { routine: BoardRoutine; current?: s
             <tr key={post.file} aria-current={post.file === current ? "true" : undefined}>
               <td className={`${styles.no} ${styles.mono}`}>{total - routine.posts.indexOf(post)}</td>
               <td className={styles.title}>
-                <StatusBadge status={post.status} t={t} />{post.status === "ok" ? null : " "}
+                {post.status !== "waiting" ? <><StatusBadge status={post.status} t={t} />{post.status === "ok" ? null : " "}</> : null}
                 {isNewRoutinePost(routine.id, post, read) ? <><NewMark t={t} /> </> : null}
+                {post.thread === "waiting" ? <><span className={styles.badge} data-status="waiting">답 필요</span>{" "}</> : null}
                 <button type="button" className={styles.link} onClick={() => showRoutineScreen({ kind: "post", id: routine.id, file: post.file })}>{post.title}</button>
+                {post.replyCount > 0 ? <span className={styles.replyCount}> [{post.replyCount}]</span> : null}
               </td>
               <td className={`${styles.host} ${styles.mono}`}>{post.host}</td>
               <td className={styles.mono}>{boardDate(post.startedAt)}</td>
@@ -428,13 +436,13 @@ function PostBody({ body, t }: { body: string; t: T }) {
 }
 
 function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: string; data: BoardData; t: T }) {
-  const [post, setPost] = useState<RoutinePost | null>(null);
+  const [post, setPost] = useState<(RoutinePost & { replies: RoutineReply[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setPost(null);
+    // Keep the current thread and composer mounted during periodic refreshes.
     setError(null);
-    void request<{ post: RoutinePost }>(`/api/routines/${encodeURIComponent(routine.id)}/posts/${encodeURIComponent(file)}`, { cache: "no-store" }, t)
+    void request<{ post: RoutinePost & { replies: RoutineReply[] } }>(`/api/routines/${encodeURIComponent(routine.id)}/posts/${encodeURIComponent(file)}`, { cache: "no-store" }, t)
       .then((result) => {
         if (cancelled) return;
         if (result.ok) {
@@ -445,7 +453,7 @@ function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: str
     return () => {
       cancelled = true;
     };
-  }, [routine.id, file, t]);
+  }, [routine.id, file, data, t]);
   const started = post ? kstParts(post.startedAt) : null;
   const finished = post ? kstParts(post.finishedAt) : null;
   return (
@@ -455,7 +463,7 @@ function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: str
       {post ? (
         <article>
           <header className={styles.postHead}>
-            <h2><StatusBadge status={post.status} t={t} />{post.status === "ok" ? null : " "}{post.title}</h2>
+            <h2>{post.status !== "waiting" ? <StatusBadge status={post.status} t={t} /> : null}{post.status === "ok" || post.status === "waiting" ? null : " "}{post.title}</h2>
             <div className={styles.postMeta}>
               <span>{t("routines.postAuthor", { host: post.host })}</span>
               {started ? <span className={styles.mono}>{started.date} {started.time}{finished ? ` ~ ${finished.time}` : ""}</span> : null}
@@ -463,6 +471,11 @@ function PostView({ routine, file, data, t }: { routine: BoardRoutine; file: str
             </div>
           </header>
           <PostBody key={file} body={bodyWithoutTitle(post.body, post.title)} t={t} />
+          <RoutineThread key={file} id={routine.id} file={file} host={post.host} thisHost={data.thisHost}
+            replies={post.replies}
+            thread={routine.posts.find((summary) => summary.file === file)?.thread ?? "none"}
+            onReply={(reply) => setPost((current) => current ? { ...current, replies: [...current.replies, reply] } : current)}
+            renderBody={(body) => <PostBody body={body} t={t} />} />
         </article>
       ) : null}
       <PostTable routine={routine} current={file} t={t} />
@@ -492,9 +505,10 @@ function todayKst(): string {
   return parts ? parts.date.replace(/\./g, "-") : "";
 }
 
-function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data: BoardData; t: T }) {
-  const initial = routine?.schedule;
-  const [name, setName] = useState(routine?.name ?? "");
+function RoutineForm({ routine, draft, oneOff = false, data, t }: { routine: BoardRoutine | null; draft?: RoutineDraft; oneOff?: boolean; data: BoardData; t: T }) {
+  const seed = routine ?? draft;
+  const initial = seed?.schedule;
+  const [name, setName] = useState(seed?.name ?? "");
   const [kind, setKind] = useState<RoutineSchedule["kind"]>(initial?.kind ?? "weekly");
   const [days, setDays] = useState<number[]>(initial?.kind === "weekly" ? initial.days : initial?.kind === "hourly" && initial.days ? initial.days : DAYS);
   const [times, setTimes] = useState<string[]>(initial?.kind === "weekly" ? initial.times : ["09:00"]);
@@ -504,11 +518,25 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
   const [startHour, setStartHour] = useState(initial?.kind === "hourly" ? initial.startHour ?? 0 : 0);
   const [onceDate, setOnceDate] = useState(initial?.kind === "once" ? initial.date : todayKst());
   const [onceTime, setOnceTime] = useState(initial?.kind === "once" ? initial.time : "09:00");
-  const [host, setHost] = useState(routine?.host ?? data.thisHost);
-  const [cwd, setCwd] = useState(routine?.cwd ?? "");
-  const [model, setModel] = useState(routine?.model ?? "");
-  const [prompt, setPrompt] = useState(routine?.prompt ?? "");
-  const [enabled, setEnabled] = useState(routine?.enabled ?? true);
+  const [host, setHost] = useState(seed?.host ?? data.thisHost);
+  const [cwd, setCwd] = useState(seed?.cwd ?? "");
+  const [model, setModel] = useState(seed?.model ?? "");
+  const [prompt, setPrompt] = useState(seed?.prompt ?? "");
+  const [enabled, setEnabled] = useState(seed?.enabled ?? true);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const retrying = useRef(false);
+  const retryRun = async (id: string) => {
+    if (retrying.current) return;
+    retrying.current = true;
+    setBusy(true);
+    const result = await request(`/api/routines/${encodeURIComponent(id)}/run`, { method: "POST" }, t);
+    await refreshRoutineBoard(true);
+    if (!result.ok) setRunError(result.error);
+    else showRoutineScreen({ kind: "board", id });
+    setBusy(false);
+    retrying.current = false;
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancel = () => showRoutineScreen(routine ? { kind: "board", id: routine.id } : { kind: "gallery" });
@@ -520,13 +548,16 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
     return { kind, everyHours, minute, ...(everyHours > 1 ? { startHour } : {}), ...(days.length === 7 ? {} : { days }) };
   };
 
+  const submitting = useRef(false);
   const submit = async (event: { preventDefault: () => void }) => {
     event.preventDefault();
+    if (savedId || submitting.current) return;
     const built = schedule();
     if (typeof built === "string") {
       setError(built);
       return;
     }
+    submitting.current = true;
     setBusy(true);
     setError(null);
     const result = await request<{ routine: { id: string } }>(routine ? `/api/routines/${encodeURIComponent(routine.id)}` : "/api/routines", {
@@ -534,13 +565,24 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled, schedule: built, host, prompt, cwd, model }),
     }, t);
-    setBusy(false);
     if (!result.ok) {
       setError(result.error);
+      setBusy(false);
+      submitting.current = false;
       return;
     }
-    await refreshRoutineBoard();
+    if (oneOff && built.kind === "once" && !routine) {
+      setSavedId(result.body.routine.id);
+      if (host === data.thisHost) {
+        await retryRun(result.body.routine.id);
+        submitting.current = false;
+        return;
+      }
+    }
+    await refreshRoutineBoard(true);
     showRoutineScreen({ kind: "board", id: result.body.routine.id });
+    setBusy(false);
+    submitting.current = false;
   };
 
   const remove = async () => {
@@ -568,6 +610,7 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
       <Crumb routine={routine ?? undefined} tail={title} t={t} />
       <header className={styles.head}><h1>{title}</h1></header>
       <form className={styles.form} onSubmit={(event) => void submit(event)}>
+        <fieldset className={styles.formFields} disabled={!!savedId || busy}>
         <div className={styles.row}>
           <label className={styles.rowLabel} htmlFor="routine-name">{t("routines.form.name")}</label>
           <div className={styles.field}><input id="routine-name" type="text" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} /></div>
@@ -681,10 +724,13 @@ function RoutineForm({ routine, data, t }: { routine: BoardRoutine | null; data:
             <span className={styles.hint}>{t("routines.form.enabledHint")}</span>
           </label>
         </div>
+        </fieldset>
+        {oneOff && host !== data.thisHost ? <p className={styles.hint}>{host} PC가 켜져 있으면 동기화 후 약 10분 안에 시작합니다.</p> : null}
+        {runError && savedId ? <div className={styles.error} role="alert"><p>저장은 완료되었지만 실행을 시작하지 못했습니다. 다시 실행해 주세요. {runError}</p><button type="button" className={`${styles.button} ${styles.newControl}`} disabled={busy} onClick={() => void retryRun(savedId)}>다시 실행</button></div> : null}
         {error ? <p className={styles.error} role="alert">{error}</p> : null}
         <div className={styles.formActions}>
           <button type="button" className={styles.button} onClick={cancel}>{t("routines.form.cancel")}</button>
-          <button type="submit" className={styles.button} data-variant="primary" data-focus-halo disabled={busy}>{busy ? t("routines.form.saving") : t("routines.form.save")}</button>
+          <button type="submit" className={styles.button} data-variant="primary" data-focus-halo disabled={busy || !!savedId}>{busy ? t("routines.form.saving") : oneOff ? "지금 한 번 실행" : t("routines.form.save")}</button>
         </div>
       </form>
       {routine ? (
@@ -724,17 +770,17 @@ function Screen({ data, screen, t }: { data: BoardData; screen: BoardScreen; t: 
       </>
     );
   }
-  if (screen.kind === "form") return <RoutineForm key={screen.id ?? "new"} routine={routine} data={data} t={t} />;
-  if (screen.kind === "post" && routine) return <PostView routine={routine} file={screen.file} data={data} t={t} />;
+  if (screen.kind === "form") return <RoutineForm key={screen.id ?? (screen.draft ? `draft-${screen.draft.name}-${screen.draft.prompt}` : "new")} routine={routine} draft={screen.draft} oneOff={screen.oneOff} data={data} t={t} />;
+  if (screen.kind === "post" && routine) return <PostView key={`${routine.id}/${screen.file}`} routine={routine} file={screen.file} data={data} t={t} />;
   if (screen.kind === "board" && routine) return <Board key={routine.id} routine={routine} data={data} t={t} />;
   return <Gallery data={data} t={t} />;
 }
 
-export function RoutineView({ visible = true, onBack }: { visible?: boolean; onBack: () => void }) {
+export function RoutineView({ visible = true, onBack, requestNotificationPermission }: { visible?: boolean; onBack: () => void; requestNotificationPermission: () => Promise<NotificationPermission | null> }) {
   const { t } = useI18n();
   const { data, loadError, screen } = useRoutineBoard();
   const syncing = data?.sync.syncing ?? false;
-  const running = data?.routines.some((routine) => routine.running) ?? false;
+  const running = data?.routines.some((routine) => routine.running || routine.posts.some((post) => post.thread === "pending")) ?? false;
 
   useEffect(() => {
     if (!visible) return;
@@ -753,6 +799,7 @@ export function RoutineView({ visible = true, onBack }: { visible?: boolean; onB
       </div>
       <div className={styles.body}>
         {loadError && !data ? <div className={styles.notice} data-tone="danger">{t("routines.loadFailed", { error: loadError })}</div> : null}
+        {data && !data.setup && (screen.kind === "gallery" || screen.kind === "board") ? <><RoutineNotifications requestPermission={requestNotificationPermission} /><QuickTask data={data} formatSchedule={(draft) => scheduleLabel(draft.schedule, t)} /></> : null}
         {data ? <Screen data={data} screen={screen} t={t} /> : null}
       </div>
     </section>
@@ -771,21 +818,25 @@ export function RoutinePanel({ onOpen }: { onOpen?: () => void }) {
   };
   const routines = data?.routines ?? [];
   const on = routines.filter((routine) => routine.enabled).length;
+  const waiting = routines.flatMap((routine) => routine.posts.filter((post) => post.thread === "waiting").map((post) => ({ id: routine.id, file: post.file })));
   return (
     <div id="navigator-routine-panel" className={styles.panel}>
       <p>{t("routines.panelIntro")}</p>
+      {waiting.length > 0 ? <button type="button" className={`${styles.button} ${styles.newControl}`} onClick={() => open({ kind: "post", ...waiting[0] })}>답 필요 {waiting.length}</button> : null}
       {routines.length > 0 ? (
         <>
           <p className={styles.strong}>{t("routines.enabledCount", { on, total: routines.length })}</p>
           <ul className={styles.panelList}>
             {routines.map((routine) => {
               const fresh = routine.posts.filter((post) => isNewRoutinePost(routine.id, post, read)).length;
+              const waitingCount = routine.posts.filter((post) => post.thread === "waiting").length;
               return (
                 <li key={routine.id}>
                   <button type="button" aria-current={routine.id === current ? "true" : undefined} onClick={() => open({ kind: "board", id: routine.id })}>
                     <span>{routine.name}</span>
                     <span className={styles.panelBadges}>
                       {fresh > 0 ? <span className={styles.badge} data-status="new">{t("routines.newPosts", { count: fresh })}</span> : null}
+                      {waitingCount > 0 ? <span className={styles.badge} data-status="waiting">답 필요 {waitingCount}</span> : null}
                       <span className={styles.badge} data-status={routine.enabled ? "on" : "off"}>{routine.enabled ? t("routines.on") : t("routines.off")}</span>
                     </span>
                   </button>

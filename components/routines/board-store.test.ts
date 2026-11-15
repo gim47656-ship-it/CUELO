@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { RoutinePostSummary } from "@/lib/routines/store";
-import { isNewRoutinePost, markAllRoutinePostsRead } from "./board-store";
+import { isNewRoutinePost, markAllRoutinePostsRead, refreshRoutineBoard } from "./board-store";
 
 /**
  * Faked boundaries: `localStorage` (a Map that counts writes) and `fetch` (records each POST body).
@@ -68,4 +68,23 @@ describe("markAllRoutinePostsRead", () => {
     expect(writes).toBe(0);
     expect(posted).toEqual([]);
   });
+});
+
+test("a mutation refresh waits out a pre-mutation poll and fetches fresh data", async () => {
+  const delayed = Promise.withResolvers<Response>();
+  let gets = 0;
+  const data = { setup: { reason: "missing", dir: "fixture" }, readPosts: [], routines: [] };
+  Object.assign(globalThis, { fetch: async () => {
+    gets += 1;
+    return gets === 1 ? delayed.promise : Response.json(data);
+  } });
+  try {
+    const poll = refreshRoutineBoard();
+    const mutation = refreshRoutineBoard(true);
+    delayed.resolve(Response.json(data));
+    await Promise.all([poll, mutation]);
+    expect(gets).toBe(2);
+  } finally {
+    Object.assign(globalThis, { fetch: fakeFetch });
+  }
 });

@@ -820,3 +820,253 @@
     min-block-size: 44px;
   }
 }
+
+/* New interactions stay in the board's normal scroll flow, including above a phone keyboard. */
+.quickTask {
+  margin-block: 16px 28px;
+}
+
+.taskInput,
+.draftFields {
+  display: grid;
+  min-inline-size: 0;
+  gap: 8px;
+}
+
+.taskInput > label,
+.draft .field {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.taskInput textarea {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.composerActions,
+.draftMeta,
+.notificationRow,
+.replyMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.composerActions {
+  justify-content: flex-end;
+}
+
+.composerActions > .hint {
+  margin-inline-end: auto;
+}
+
+.quickTask .button,
+.thread .button,
+.pushSwitch,
+.notifications .button,
+.newControl {
+  min-inline-size: 44px;
+  min-block-size: 44px;
+}
+
+.draft {
+  margin-block-start: 16px;
+  padding: 16px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-subtle);
+}
+
+.draft h2,
+.thread h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.formFields,
+.draftFields {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.draftMeta {
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.draft .field input,
+.draft .field select,
+.draft .field textarea {
+  min-block-size: 44px;
+  font-size: 16px;
+}
+
+.thread {
+  margin-block: 24px 32px;
+}
+
+.replies {
+  display: grid;
+  gap: 20px;
+  margin: 16px 0 24px;
+  padding: 0;
+  list-style: none;
+}
+
+.replies > li {
+  min-inline-size: 0;
+  padding: 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+}
+
+.replies > li[data-author="user"] {
+  background: var(--bg-panel);
+}
+
+.replyMeta,
+.replyCount {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.replyMeta strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.replies .postBody {
+  margin: 0;
+  padding: 8px 0 0;
+}
+
+.pending {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.badge[data-status="waiting"] {
+  background: var(--warning);
+  color: var(--bg);
+}
+
+.notifications {
+  margin-block-end: 16px;
+}
+
+.notifications p {
+  margin: 4px 0;
+}
+
+.pushSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pushSwitch:hover:not(:disabled),
+.pushSwitch:active:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.pushSwitch:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.switchTrack {
+  display: inline-flex;
+  align-items: center;
+  inline-size: 36px;
+  block-size: 24px;
+  padding: 4px;
+  box-sizing: border-box;
+  border-radius: var(--radius-control);
+  background: var(--bg-selected);
+}
+
+.switchTrack > span {
+  inline-size: 16px;
+  block-size: 16px;
+  border-radius: var(--radius-control);
+  background: var(--text-muted);
+}
+
+.switchTrack[data-on="true"] {
+  justify-content: flex-end;
+  background: var(--seed-color-bg-neutral-inverted);
+}
+
+.switchTrack[data-on="true"] > span {
+  background: var(--seed-color-fg-neutral-inverted);
+}
+
+.view :is(button, a, textarea, input, select, summary):focus-visible,
+.panel button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+
+.taskInput textarea:disabled,
+.draftFields:disabled {
+  opacity: 0.6;
+}
+
+.quickTask .button:active:not(:disabled),
+.thread .button:active:not(:disabled),
+.notifications .button:active:not(:disabled) {
+  opacity: 0.8;
+}
+
+.draft > .composerActions {
+  margin-block-start: 12px;
+}
+
+@media (max-width: 720px) {
+  .draft {
+    padding: 12px;
+  }
+
+  .draft .field input,
+  .draft .field select,
+  .draft .field textarea {
+    font-size: 16px;
+  }
+
+  .panelBadges {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    flex-shrink: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  .view :global(#routine-task-hint),
+  .view :global(#routine-reply-hint) {
+    display: none;
+  }
+}

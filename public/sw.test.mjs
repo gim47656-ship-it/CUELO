@@ -134,3 +134,19 @@ test("navigation keeps the gateway error when the recovery page is not cached", 
   const result = await navigateWith(async () => new Response("GATEWAY_502", { status: 502 }), { cached: false });
   assert.deepEqual(result, { status: 502, body: "GATEWAY_502", cacheLookups: ["/offline.html"] });
 });
+
+test("push shows routine notifications with the deep link and ignores malformed data", async () => {
+  const shown = [];
+  self.registration = { showNotification: async (...args) => shown.push(args) };
+  let pending;
+  const payload = { title: "Routine", body: "답이 필요해요: Question", url: "/?routine=test&post=post.md", tag: "post" };
+  listeners.get("push")({ data: { json: () => payload }, waitUntil: (work) => { pending = work; } });
+  await pending;
+  assert.equal(shown[0][0], payload.title);
+  assert.equal(shown[0][1].body, payload.body);
+  assert.deepEqual(shown[0][1].data, { url: payload.url });
+  assert.equal(shown[0][1].tag, payload.tag);
+  listeners.get("push")({ data: { json: () => { throw new Error("bad"); } } });
+  listeners.get("push")({ data: null });
+  assert.equal(shown.length, 1);
+});

@@ -7,6 +7,8 @@ import { type RoutinePost, type RoutinePostMeta, parseRoutinePost, serializeRout
 import { ROUTINE_TIMEZONE, type RoutineSchedule, isValidTimeZone, parseSchedule } from "./schedule";
 import { parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 import { POST_FILE_PATTERN, ROUTINE_ID_PATTERN } from "./post-key";
+import { type RoutineReply, type RoutineThreadState, REPLY_FILE_PATTERN, parseReply, serializeReply, threadState } from "./reply";
+export type { RoutineReply, RoutineThreadState } from "./reply";
 
 /**
  * 공용 루틴 저장소의 작업 사본. `routines/<id>/routine.json`(루틴 정의)과 `routines/<id>/posts/*.md`(게시판 글)를 다룬다.
@@ -30,6 +32,8 @@ export interface Routine {
 
 export interface RoutinePostSummary extends RoutinePostMeta {
   file: string;
+  replyCount: number;
+  thread: RoutineThreadState;
 }
 
 export type RepoState = { ok: true; dir: string } | { ok: false; dir: string; reason: "missing" | "not-git" };
@@ -175,7 +179,7 @@ export function readRoutines(dir: string): Routine[] {
 }
 
 /** 글 목록, 최신순(파일 이름이 실행 시각으로 시작한다). */
-export function listPosts(dir: string, id: string): RoutinePostSummary[] {
+export function listPosts(dir: string, id: string, includeReplies = true): RoutinePostSummary[] {
   let files: string[];
   try {
     files = readdirSync(routinePaths(dir, id).posts);
@@ -186,9 +190,11 @@ export function listPosts(dir: string, id: string): RoutinePostSummary[] {
   for (const file of files.filter(isPostFileName).sort().reverse()) {
     const post = readPost(dir, id, file);
     if (!post) continue;
+    const replies = includeReplies ? readReplies(dir, id, file) : [];
     out.push({
       file, title: post.title, routineId: post.routineId, host: post.host, status: post.status,
       startedAt: post.startedAt, finishedAt: post.finishedAt, sessionId: post.sessionId,
+      replyCount: replies.length, thread: threadState(post.status, replies),
     });
   }
   return out;
@@ -200,6 +206,44 @@ export function readPost(dir: string, id: string, file: string): RoutinePost | n
     return parseRoutinePost(readFileSync(join(routinePaths(dir, id).posts, file), "utf8"));
   } catch {
     return null;
+  }
+}
+
+export function readReplies(dir: string, id: string, postFile: string): RoutineReply[] {
+  if (!isRoutineId(id) || !isPostFileName(postFile)) return [];
+  const stem = postFile.slice(0, -3);
+  if (!isContained(dir, id, "replies", stem)) return [];
+  const folder = join(routinePaths(dir, id).folder, "replies", stem);
+  try {
+    return readdirSync(folder).filter((file) => REPLY_FILE_PATTERN.test(file)).sort().flatMap((file) => {
+      if (!isContained(dir, id, "replies", stem, file)) return [];
+      try {
+        const reply = parseReply(readFileSync(join(folder, file), "utf8"), file);
+        return reply ? [reply] : [];
+      } catch { return []; }
+    }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.file.localeCompare(b.file));
+  } catch { return []; }
+}
+
+export function writeReplyFile(dir: string, id: string, postFile: string, reply: Omit<RoutineReply, "file">): { path: string; reply: RoutineReply } {
+  if (!readPost(dir, id, postFile)) throw new Error("Post not found");
+  const stem = postFile.slice(0, -3);
+  if (!isContained(dir, id, "replies", stem)) throw new Error("Reply folder is outside the repository");
+  const folder = join(routinePaths(dir, id).folder, "replies", stem);
+  mkdirSync(folder, { recursive: true });
+  let time = Date.parse(reply.createdAt);
+  for (;;) {
+    const stamp = new Date(time).toISOString().replace(/[-:Z.]/g, "");
+    const file = `${stamp}-${reply.host}-${reply.author}.md`;
+    if (!REPLY_FILE_PATTERN.test(file)) throw new Error("Invalid reply file name");
+    const saved = { ...reply, file, createdAt: new Date(time).toISOString() };
+    try {
+      writeFileSync(join(folder, file), serializeReply(saved), { encoding: "utf8", flag: "wx" });
+      return { path: `${routinePaths(dir, id).relFolder}/replies/${stem}/${file}`, reply: saved };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      time++;
+    }
   }
 }
 

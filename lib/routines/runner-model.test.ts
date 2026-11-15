@@ -1,4 +1,5 @@
 import { afterAll, test, expect, mock } from "bun:test";
+import { localParts, scheduledRun } from "./schedule";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -14,6 +15,8 @@ let settingsFail = false;
 let checks = 0;
 let prompts: string[] = [];
 let answer = "original";
+let forcedAnswer: string | undefined;
+let forcedRevision: string | undefined;
 const posts: RoutinePost[] = [];
 const states = new Map();
 let stopOnPrompt = false;
@@ -22,7 +25,7 @@ mock.module("./model", () => ({
   routineModelSettings: async () => { if (settingsFail) throw new Error("routine-model.json: invalid model sonnet"); return { enabled, model: enabled ? selected : undefined }; },
   runRoutineChecker: async () => { checks++; if (checkerFails) throw new Error("checker offline"); return '{"findings":["missing item"]}'; },
 }));
-mock.module("../session-reader", () => ({ invalidateSessionListCache() {} }));
+mock.module("../session-reader", () => ({ invalidateSessionListCache() {}, resolveSessionPath: async () => null, readSessionHeader: () => null }));
 let failNextRunningWrite = false;
 mock.module("./state", () => ({
   readRoutineRunStates: () => Object.fromEntries(states),
@@ -38,18 +41,20 @@ mock.module("./store", () => ({
   expandHome: (path: string) => path,
   isExistingDirectory: () => true,
   readRoutine: () => currentRoutine,
+  readRoutines: () => [], readPost: () => null, readReplies: () => [], listPosts: () => [], writeReplyFile: () => { throw new Error("Unexpected reply"); },
   routinePaths: (dir: string) => ({ folder: dir, posts: dir }),
   thisRoutineHost: () => "test-pc",
   writePostFile: (_dir: string, _id: string, _stamp: string, _host: string, post: RoutinePost) => { posts.push(post); return "post.md"; },
 }));
-mock.module("../rpc-manager", () => ({ startNewRpcSession: async (_request: unknown, _cwd: string, options: { initialModel?: { provider: string; modelId: string } }) => {
+mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcSession: async () => { throw new Error("Unexpected resume"); }, startNewRpcSession: async (_request: unknown, _cwd: string, options: { initialModel?: { provider: string; modelId: string } }) => {
   expect(options.initialModel).toEqual(enabled && selected ? { provider: "anthropic", modelId: selected.split("/").slice(1).join("/") } : undefined);
   if (failStart) throw new Error(`Model is not available in the enabled scope: ${selected}`);
   let alive = true;
   return { realSessionId: "isolated", session: {
     send: async (command: { type: string; message?: string }) => {
       if (command.type === "prompt") {
-        prompts.push(command.message!); answer = prompts.length === 1 ? "original" : "revised";
+        prompts.push(command.message!);
+        answer = prompts.length > 1 && forcedRevision !== undefined ? forcedRevision : forcedAnswer ?? (prompts.length === 1 ? "original" : "revised");
         // 서버 종료: 프로세스가 신호를 받고 세션 레지스트리가 세션을 닫는다.
         if (stopOnPrompt) { process.emit("SIGTERM" as never); alive = false; }
       }
@@ -60,7 +65,7 @@ mock.module("../rpc-manager", () => ({ startNewRpcSession: async (_request: unkn
   } };
 } }));
 // Load after mock registration to exercise the runner's dependency boundary.
-const { startRoutineRun, recordInterruptedRuns } = await import("./runner");
+const { startRoutineRun, startManualRoutineRun, recordInterruptedRuns } = await import("./runner");
 const dir = mkdtempSync(join(tmpdir(), "routine-runner-smoke-"));
   test("runner publishes named model/PC failure, revised answer, original on checker failure, and disabled legacy answer", async () => {
     const cases = [
@@ -161,6 +166,53 @@ const dir = mkdtempSync(join(tmpdir(), "routine-runner-smoke-"));
     await settle();
     expect(posts.map((post) => post.status)).toEqual(["ok"]);
   }, 60_000);
+  test("waiting marker uses the raw first line, never the trimmed answer", async () => {
+    enabled = false; settingsFail = false; failStart = false; stopOnPrompt = false;
+    globalThis.__cueloRoutineServerStop = { since: null };
+    const routine = { id: "r-marker", name: "marker", enabled: true, host: "test-pc", prompt: "required", cwd: dir, timezone: "Asia/Seoul", schedule: { kind: "weekly" as const, days: [1], times: ["10:00"] }, createdAt: "", updatedAt: "" };
+    for (const [raw, status] of [["[답 필요]\nQuestion", "waiting"], [" [답 필요]\nQuestion", "ok"], ["\n[답 필요]\nQuestion", "ok"]] as const) {
+      forcedAnswer = raw;
+      expect(startRoutineRun(dir, routine, "manual")).toBe(true);
+      await globalThis.__cueloRoutineRuns!.get(routine.id);
+      expect(posts.at(-1)?.status).toBe(status);
+    }
+    forcedAnswer = undefined;
+  }, 30000);
+  test("waiting marker on a successful checker revision keeps its exact first-line meaning", async () => {
+    enabled = true; settingsFail = false; failStart = false; checkerFails = false; stopOnPrompt = false;
+    globalThis.__cueloRoutineServerStop = { since: null };
+    const routine = { id: "r-revision-marker", name: "marker", enabled: true, host: "test-pc", prompt: "required", cwd: dir, timezone: "Asia/Seoul", schedule: { kind: "weekly" as const, days: [1], times: ["10:00"] }, createdAt: "", updatedAt: "" };
+    forcedAnswer = "original";
+    for (const [revision, status] of [["[답 필요]\nQuestion\n", "waiting"], [" [답 필요]\nQuestion\n", "ok"]] as const) {
+      prompts = []; forcedRevision = revision; checks = 0;
+      expect(startRoutineRun(dir, routine, "manual")).toBe(true);
+      await globalThis.__cueloRoutineRuns!.get(routine.id);
+      expect(posts.at(-1)?.status).toBe(status);
+      if (status === "waiting") expect(posts.at(-1)?.body).toBe("Question");
+      expect(checks).toBe(1);
+      expect(prompts.length).toBe(2);
+    }
+    forcedAnswer = undefined; forcedRevision = undefined;
+    console.log("R5-ANT-1 successful checker revision: exact marker waiting; leading-space marker ok");
+  }, 30000);
+  test("지금 실행 consumes the slot due on this PC, so the scheduler does not run a one-off again", async () => {
+    enabled = false; settingsFail = false; failStart = false; stopOnPrompt = false; forcedAnswer = undefined; forcedRevision = undefined;
+    globalThis.__cueloRoutineServerStop = { since: null };
+    const now = new Date();
+    const at = localParts(now, "Asia/Seoul");
+    const once = { id: "r-once-now", name: "once", enabled: true, host: "test-pc", prompt: "required", cwd: dir, timezone: "Asia/Seoul", schedule: { kind: "once" as const, date: at.date, time: at.time }, createdAt: now.toISOString(), updatedAt: now.toISOString() };
+    currentRoutine = once;
+    expect(startManualRoutineRun(dir, once)).toBe(true);
+    await globalThis.__cueloRoutineRuns!.get(once.id);
+    expect(scheduledRun(once.schedule, once.timezone, once.createdAt, states.get(once.id)?.lastRunKey, new Date())).toBeNull();
+    expect(states.get(once.id)?.pendingOnceDisable).toBe(JSON.stringify(once.schedule));
+    // A slot that is not due yet stays for the scheduler.
+    const later = { ...once, id: "r-once-later", schedule: { kind: "once" as const, date: "2099-01-01", time: "09:00" } };
+    currentRoutine = later;
+    expect(startManualRoutineRun(dir, later)).toBe(true);
+    await globalThis.__cueloRoutineRuns!.get(later.id);
+    expect(states.get(later.id)?.lastRunKey).toBeUndefined();
+  }, 30000);
 afterAll(() => {
   // Only this test's empty workspace; no real repository or publisher is used.
   rmSync(dir, { recursive: true, force: true });
@@ -173,5 +225,5 @@ afterAll(() => {
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     console.log(stdout + stderr);
     expect(code).toBe(0);
-  }, 60_000);
+  }, 90_000);
 }

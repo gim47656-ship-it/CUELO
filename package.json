@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.266",
+  "version": "0.10.267",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -116,6 +116,7 @@
     "react-dom": "^19.2.8",
     "remark-frontmatter": "^5.0.0",
     "unpdf": "1.8.1",
+    "web-push": "^4.0.0",
     "yaml": "^2.9.0"
   },
   "optionalDependencies": {
@@ -131,6 +132,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/web-push": "^3.6.4",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.2.12",
     "jiti": "^2.7.0",

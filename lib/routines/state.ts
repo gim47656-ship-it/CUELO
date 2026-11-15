@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
+import type { RoutineReply } from "./reply";
 
 /**
  * 이 PC만의 루틴 실행 상태(공용 저장소에 올리지 않는다). 루틴마다 마지막으로 시작한 예약 회차 키와 지금 도는
@@ -12,15 +13,17 @@ export interface RoutineRunning {
   bootId: string;
   sessionId: string | null;
   startedAt: string;
-  trigger: "schedule" | "manual";
+  trigger: "schedule" | "manual" | "catch-up" | "reply";
   /** 몇 번째 시도인지(없으면 1). 서버 재시작으로 끊긴 회차를 다시 돌릴 때 늘린다. */
   attempt?: number;
+  replyPost?: string;
+  replyFiles?: string[];
 }
 
 export interface RoutineLastRun {
   finishedAt: string;
   /** quiet: 답이 `[알림 없음]`으로 시작해 글을 올리지 않은 회차. */
-  status: "ok" | "failed" | "timeout" | "quiet";
+  status: "ok" | "failed" | "timeout" | "waiting" | "quiet";
   sessionId: string | null;
 }
 
@@ -31,6 +34,8 @@ export interface RoutineRunState {
   lastRun?: RoutineLastRun;
   /** 시작한 1회 일정을 아직 enabled:false로 커밋하지 못했으면 그 일정(JSON). 다음 틱마다 다시 커밋한다. */
   pendingOnceDisable?: string;
+  handledReplyFiles?: Record<string, string[]>;
+  pendingReply?: { post: string; reply: RoutineReply; path?: string };
 }
 
 interface StateFile {

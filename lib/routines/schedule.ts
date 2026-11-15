@@ -1,7 +1,6 @@
 /**
- * 루틴 예약 시각 계산. 루틴의 시간대(저장 값, 기본 Asia/Seoul)로 지금을 읽어, 일정의 어느 회차(slot) 시각부터
- * 5분 안이면 그 회차 키(`YYYY-MM-DDTHH:mm`, 그 시간대의 날짜와 시각)를 돌려준다. 서버가 꺼져 그 5분을 놓친
- * 회차는 나중에 따라잡지 않는다. 분 단위까지만 다룬다(초는 없다).
+ * 루틴 예약 시각 계산. 5분 실행 창과 최근 2시간 안의 가장 늦은 놓친 회차를 계산한다.
+ * 분 단위까지만 다룬다(초는 없다).
  */
 
 export const ROUTINE_TIMEZONE = "Asia/Seoul";
@@ -118,6 +117,23 @@ export function dueRunKey(schedule: RoutineSchedule, timeZone: string, now: Date
   for (let elapsed = 0; elapsed < DUE_WINDOW_MINUTES; elapsed += 1) {
     const at = localParts(new Date(now.getTime() - elapsed * 60_000), timeZone);
     if (slotMatches(schedule, at)) return `${at.date}T${at.time}`;
+  }
+  return null;
+}
+
+export function scheduledRun(schedule: RoutineSchedule, timeZone: string, createdAt: string, lastRunKey: string | undefined, now: Date): { key: string; trigger: "schedule" | "catch-up" } | null {
+  const normal = dueRunKey(schedule, timeZone, now);
+  if (normal) return normal === lastRunKey ? null : { key: normal, trigger: "schedule" };
+  if (!isValidTimeZone(timeZone)) return null;
+  const minute = Math.floor(now.getTime() / 60_000) * 60_000;
+  for (let elapsed = DUE_WINDOW_MINUTES; elapsed <= 120; elapsed++) {
+    const instant = minute - elapsed * 60_000;
+    if (now.getTime() - instant > 2 * 60 * 60_000) break;
+    const at = localParts(new Date(instant), timeZone);
+    if (!slotMatches(schedule, at)) continue;
+    const key = `${at.date}T${at.time}`;
+    if (key === lastRunKey || (schedule.kind !== "once" && instant < Date.parse(createdAt))) return null;
+    return { key, trigger: "catch-up" };
   }
   return null;
 }

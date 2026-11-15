@@ -47,6 +47,7 @@ import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from 
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
 import { useTranslatorText } from "./translator/i18n";
 import { RoutinePanel, RoutineView } from "./routines/RoutineView";
+import { showRoutineScreen } from "./routines/board-store";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { RepoSyncIndicator } from "./RepoSyncIndicator";
 import { UpkeepNotice, UpkeepView } from "./upkeep/UpkeepView";
@@ -322,9 +323,18 @@ export function AppShell({
   // 홈 화면 앱의 「통역」 바로가기(`/?view=translator`, `app/manifest.ts`)로 열면 처음부터 통역 화면을 띄운다.
   // `/?view=routine`은 루틴 게시판을 띄운다.
   useEffect(() => {
-    const view = new URLSearchParams(window.location.search).get("view");
+    const url = new URL(window.location.href);
+    const view = url.searchParams.get("view");
+    const routine = url.searchParams.get("routine");
+    const post = url.searchParams.get("post");
     if (view === "translator") setTranslatorActive(true);
-    if (view === "routine") setRoutineActive(true);
+    if (routine) {
+      showRoutineScreen(post ? { kind: "post", id: routine, file: post } : { kind: "board", id: routine });
+      setRoutineActive(true);
+      url.searchParams.delete("routine");
+      url.searchParams.delete("post");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    } else if (view === "routine") setRoutineActive(true);
   }, [setTranslatorActive, setRoutineActive]);
   // 보수 점검판은 화면 전체를 덮는다. 뒤의 작업 화면은 마운트된 채 남고, 닫으면 입력창으로 초점을 돌려준다.
   const setUpkeepActive = useCallback((active: boolean) => {
@@ -2856,7 +2866,7 @@ export function AppShell({
             <TranslatorView visible={translatorOpen} onBack={() => setTranslatorActive(false)} />
           ) : null}
           {routineVisited ? (
-            <RoutineView visible={routineOpen} onBack={() => setRoutineActive(false)} />
+            <RoutineView visible={routineOpen} onBack={() => setRoutineActive(false)} requestNotificationPermission={notificationPermission.requestPermission} />
           ) : null}
           </div>
         </div>

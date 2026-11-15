@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
-import { readPost, routinesDir } from "@/lib/routines/store";
+import { readPost, readReplies, routinesDir } from "@/lib/routines/store";
 
 export const dynamic = "force-dynamic";
 
@@ -10,5 +10,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id, file } = await params;
   const post = readPost(routinesDir(), id, file);
   if (!post) return NextResponse.json({ error: "Post not found" }, { status: 404 });
-  return NextResponse.json({ post: { file, ...post } });
+  return NextResponse.json({ post: { file, ...post, replies: readReplies(routinesDir(), id, file) } });
 }
