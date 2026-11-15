@@ -640,11 +640,15 @@
   font-size: 13px;
 }
 
-/* 사이드바 패널 */
+/* 사이드바 패널. 목록 칸(.session-navigator)은 넘침을 자르므로 루틴이 많으면 패널이 스스로 스크롤한다. */
 .panel {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px 12px 12px;
   font-size: 12px;
   color: var(--text-muted);

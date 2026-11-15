@@ -791,10 +791,18 @@ export function RoutineView({ visible = true, onBack, requestNotificationPermiss
     return () => clearInterval(timer);
   }, [visible, syncing, running]);
 
+  // 뒤로가기는 한 단계씩 올라간다: 글 → 그 루틴 게시판, 게시판·설정 폼 → 갤러리, 갤러리에서만 대화로 나간다.
+  const screenId = "id" in screen ? screen.id : null;
+  const parentRoutine = screenId ? data?.routines.find((routine) => routine.id === screenId) ?? null : null;
+  const up: { label: string; go: () => void } =
+    screen.kind === "gallery" ? { label: t("routines.back"), go: onBack }
+      : (screen.kind === "post" || (screen.kind === "form" && screenId)) && parentRoutine ? { label: parentRoutine.name, go: () => showRoutineScreen({ kind: "board", id: parentRoutine.id }) }
+        : { label: t("routines.title"), go: () => showRoutineScreen({ kind: "gallery" }) };
+
   return (
     <section className={styles.view} hidden={!visible} aria-label={t("routines.tab")}>
       <div className={styles.topbar}>
-        <button type="button" className={styles.back} onClick={onBack}>‹ {t("routines.back")}</button>
+        <button type="button" className={styles.back} onClick={up.go}>‹ {up.label}</button>
         <h2>{t("routines.tab")}</h2>
       </div>
       <div className={styles.body}>
