@@ -25089,6 +25089,16 @@ function planSpawns(
 	});
 }
 
+// 18.20.2: the advisor transcript skip's minified helper name changed again (UHe -> oWe).
+{
+	const entries = EDITS.filter(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	if (entries.length !== 1) throw new Error(`18.20.2 candidate: ${entries.length}/1 entries for advisor filter`);
+	const advisor = entries[0];
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&oWe(c))continue';
+	for (const old of [advisor, ...(advisor.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), skip];
+	(advisor.alternates ??= []).push({ file: advisor.file, marker: skip, anchor: skip, patched: skip, requires: skip });
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면
