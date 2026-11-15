@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isSeanceConsultation, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isPhoneOperatorCall, isSeanceConsultation, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
@@ -1142,7 +1142,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       locksBefore.push(candidateLock);
       // seance 조회는 발주 계약이 없고 lock을 세우지 않는다. 여기서 빠져야 뒤 maker의 생략 필드가
       // 조회 브리프에 우연히 들어 있는 TASK_GUARD 값이 아니라 실제 요청 lock·기본값을 상속한다.
-      if (isSeanceConsultation(item)) return null;
+      if (isSeanceConsultation(item) || isPhoneOperatorCall(item, canonicalInput)) return null;
       const contract = dispatchContract(task, candidateLock, String(item.name ?? ""));
       if (!contract) return null;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
@@ -1167,6 +1167,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // 도구·비격리·비플랜과 sourceSession을 실제 실행 전에 검증하므로 발주 계약·후보·owner 판단을
       // 적용하지 않는다. 어긋난 seance는 여기서 면제하지 않고 아래 검사가 그대로 막는다.
       if (isSeanceConsultation(item)) continue;
+      // 폰 앱 조작 child는 정의 파일의 Sonnet 슬롯으로만 돌고(model 지정이 있으면 면제가 아니다) 파일을 쓰지 않는다.
+      if (isPhoneOperatorCall(item, canonicalInput)) continue;
       // core schema는 solutionSpace를 필수 string으로 두지만 task 도구가 lenientArgValidation이라 누락·다른 타입도 원 인자 그대로
       // 실행에 넘어오고, 공백은 schema를 통과한다. child auto 분류기는 trim 뒤 빈 값이면 brief 전문으로 강도를 고른다.
       if (typeof item.solutionSpace !== "string" || !item.solutionSpace.trim()) {

@@ -15,6 +15,7 @@ description: SubAgent 위임 판단, 병렬 실행, 검수 계약과 Git·통신
 | **Main** | 전체 | 요구·계약·승인·분할·라우팅·증거 판단·최종 판정. 위임하지 않은 작업은 구현과 검증까지 직접. |
 | `maker` | 브리프 경계 안 쓰기 | 조각 하나를 조사부터 구현·재작업·검증·실제 표면 확인까지 end-to-end. |
 | `seance` | 읽기 전용 조회 | 쓰기·격리·플랜·custom 도구가 없는 과거 세션 조회 하나. `sourceSession`이 필수이고 `TASK_GUARD`·`OWNED_PATHS`·모델 후보·owner 검사를 받지 않으며 `총 child` 한 자리만 쓴다(정본 rule://task-guard). |
+| `phone-operator` | 폰 앱 조작 | 폰 프로필에만 있는 앱 조작 child. 폰 도구와 읽기만 쓰고 파일을 쓰지 않으며 Sonnet 슬롯으로 돈다. `model`·격리 지정 없이 부를 때만 `TASK_GUARD` 없이 `총 child` 한 자리를 쓴다(정본 rule://task-guard). |
 
 - 위임은 `tasks[].agent:"maker"`와 후보 모델 selector로 표현한다. suffix 누락·concrete suffix는 `:auto`로 보정하고 coarse `effort`는 제거해 알리며, 후보 밖 모델은 거절한다.
   조사 전용 hop을 따로 두지 않고, 범위가 불명확하면 그 조사까지 그 조각의 Maker가 한 pass로 한다.

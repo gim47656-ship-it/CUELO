@@ -99,7 +99,7 @@ description: 사용자가 에이전트 실수를 바로잡았을 때, 또는 규
 | A9 | 할 일이 남았으면 혼자 턴을 닫지 않는다 | 안내 | `extensions/turn-end-guard.ts`, `extensions/lib/turn-publication.ts`, `extensions/tests/turn-end-guard.test.ts` | 게시 근거가 없는 소유 변경은 배포 대기와 별도로 확인한다. 보류 감지는 휴리스틱이며 권한을 부여하지 않는다 |
 | A10 | 같은 산출물 상태가 두 번이면 결과부터 확인 | 문서 | — | |
 | A11 | 원인 확인 뒤 예상 초과·같은 막힘이면 Main이 회수 | 문서 | — | 2026-10-18 사용자 결정 |
-| A12 | 역할은 Main·`maker` 둘 | 차단 | `extensions/command-guard/task-guard.ts`(허용 child `maker`, 예외는 `sourceSession`이 있는 번들 `seance` 읽기 전용 조회 하나), `patches/build-agents.mjs --check`, `patches/validate-harness-policy.mjs` | 예외의 실제 identity·도구·격리는 core `prepareSeance`가 실행 전에 검증한다 |
+| A12 | 역할은 Main·`maker` 둘 | 차단 | `extensions/command-guard/task-guard.ts`(허용 child `maker`, 예외는 `sourceSession`이 있는 번들 `seance` 읽기 전용 조회와 폰 프로필의 앱 조작 child `phone-operator` 둘), `patches/build-agents.mjs --check`, `patches/validate-harness-policy.mjs` | seance의 실제 identity·도구·격리는 core `prepareSeance`가 실행 전에 검증한다. `phone-operator`는 `model`·격리 지정이 없을 때만 면제되고 도구 범위는 폰 프로필의 정의 파일이 정한다(2026-11-15 사용자 결정) |
 | A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
 | A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내, 검사(부분) | `extensions/lib/maker-routing.ts` `delegationAdviceOf`, `extensions/tests/maker-routing.test.ts` | 기존 판단을 결과의 행동 권고로 보여 주고 기존 담당자를 우선한다. Main의 실제 위임 선택을 강제하는 새 차단은 없으며 요청당 child 상한과 소유권 가드는 그대로다 |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |

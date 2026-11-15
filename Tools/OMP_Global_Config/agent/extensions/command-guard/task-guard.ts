@@ -119,6 +119,8 @@ type SpawnItem = {
   isolated?: true;
   /** 번들 `seance`의 조회 대상 과거 세션. 면제 판정에만 쓰고 브리프·결과는 건드리지 않는다. */
   sourceSession?: string;
+  /** 원래 항목과 상위 입력으로 판정한 폰 앱 조작 child 면제(`isPhoneOperatorCall`). */
+  phoneOperator?: true;
 };
 
 export type TaskCallInput = Record<string, unknown>;
@@ -148,6 +150,24 @@ export function isSeanceConsultation(item: { agent?: unknown; sourceSession?: un
     agent === "seance" &&
     typeof item.sourceSession === "string" &&
     item.sourceSession.trim().length > 0
+  );
+}
+
+/**
+ * 폰 CUELO의 앱 조작 전용 child(2026-11-15 사용자 결정: 앱 조작만 Sonnet 자식에게 맡기도록 공용 하네스를 고친다).
+ * 정의 파일은 폰 프로필에만 있고(원본 `Tools/CUELO_Phone_Bridge/agents/phone-operator.md`) 폰 도구와 읽기 도구만
+ * 가져 파일을 쓰지 않으므로 maker 발주 계약(소유 경로·완료물 lock) 대상이 아니다. 정확한 이름이고 원래 입력에
+ * `model` 키가 없으며 항목과 상위 호출 어디에도 격리 지정이 없을 때만 child 슬롯 하나로 센다(값의 형식과 상관없이
+ * 키가 있으면 면제하지 않는다). 모델은 정의 파일의 Sonnet 슬롯이 정하며, 정의가 없는 PC에서는 코어가 모르는 agent로
+ * 거절한다. 정규화 전 원래 항목과 상위 입력으로 판정해 task 가드와 maker 라우팅이 같은 답을 낸다.
+ */
+export function isPhoneOperatorCall(item: Record<string, unknown>, parent?: Record<string, unknown>): boolean {
+  const agent = typeof item.agent === "string" ? item.agent.trim() : "";
+  return (
+    agent === "phone-operator" &&
+    !("model" in item) &&
+    !isolationRequested(item.isolated) &&
+    !(parent !== undefined && parent !== item && isolationRequested(parent.isolated))
   );
 }
 
@@ -405,6 +425,7 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
           ? { isolated: true as const }
           : {}),
         ...(typeof item.sourceSession === "string" ? { sourceSession: item.sourceSession } : {}),
+        ...(isPhoneOperatorCall(item, input) ? { phoneOperator: true as const } : {}),
       });
     }
     return items;
@@ -423,6 +444,7 @@ function normalizeSpawnItems(input: TaskCallInput): SpawnItem[] | string {
         : {}),
       ...(isolationRequested(input.isolated) ? { isolated: true as const } : {}),
       ...(typeof input.sourceSession === "string" ? { sourceSession: input.sourceSession } : {}),
+      ...(isPhoneOperatorCall(input) ? { phoneOperator: true as const } : {}),
     },
   ];
 }
@@ -526,13 +548,13 @@ export function reserveTaskCall(
   const notices: string[] = [];
 
   for (const [index, item] of normalized.entries()) {
-    // 번들 seance 과거 세션 조회. 코어가 번들 identity·read-only 도구·비격리·비플랜을 실제 실행
-    // 전에 검증하므로 이 항목은 lock·완료물·소유 경로 검사 없이 child 슬롯 하나로만 센다.
+    // 번들 seance 과거 세션 조회와 폰 앱 조작 child(phone-operator)는 파일을 쓰지 않는다. 이 항목은
+    // lock·완료물·소유 경로 검사 없이 child 슬롯 하나로만 센다.
     // 브리프를 다시 쓰지 않고 makers[]에도 넣지 않는다(쓰기 소유자·worktree 감시 대상이 아니다).
-    if (isSeanceConsultation(item)) {
-      const seanceDelta: Delta = { primaryMaker: 0, reworkMaker: 0, total: 1 };
-      addDelta(delta, seanceDelta);
-      children.push({ index, delta: seanceDelta, refundable: Boolean(item.name), state: "reserved" });
+    if (isSeanceConsultation(item) || item.phoneOperator) {
+      const exemptDelta: Delta = { primaryMaker: 0, reworkMaker: 0, total: 1 };
+      addDelta(delta, exemptDelta);
+      children.push({ index, delta: exemptDelta, refundable: Boolean(item.name), state: "reserved" });
       continue;
     }
 

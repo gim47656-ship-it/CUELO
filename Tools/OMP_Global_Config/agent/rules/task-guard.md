@@ -36,6 +36,7 @@ REPLAN_WHEN: <이 조각에서 Main의 가정이 깨졌다고 볼 조건 — 선
 - lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 이 요청의 추가 완료물로 받아들이고, 기준 값과 새 값을 advisory로 알린다. 첫 lock은 생략 필드의 상속 기준으로 유지하며 누적 budget을 초기화하지 않는다. `maker_route` 준비·발주와 실제 TaskGuard에 같은 동작을 적용한다.
 - `agent`는 생략하면 `maker`로 읽히고 반환 input에도 기록된다. 명시한 다른 값(`task`·`scout` 등), `BLOCKS_PRIMARY:no`, `OWNED_PATHS` 누락, `FINDING_ID` 없는 rework는 계속 거부된다.
 - 예외는 `agent: "seance"`에 빈 값이 아닌 `sourceSession`을 함께 주는 과거 세션 읽기 전용 조회 하나다. 이 호출은 파일을 쓰지 않으므로 `TASK_GUARD` 블록·`OWNED_PATHS`·완료물 lock·모델 후보·owner 검사를 요구하지 않고, `seance`가 아닌 agent나 `sourceSession`이 없거나 공백뿐인 `seance`는 위 거부 그대로다. 번들 `seance` identity·read-only 도구·비격리·비플랜과 `sourceSession` 해석은 core가 실제 실행 전에 검증하므로 가드가 다시 판정하지 않는다. 이 조회도 child 슬롯은 하나를 쓰고 취소·환급·요청 경계 초기화는 다른 child와 같은 회계를 따른다.
+- 두 번째 예외는 폰 CUELO의 앱 조작 전용 `agent: "phone-operator"`다(2026-11-15 사용자 결정: 앱 조작만 Sonnet 자식에게 맡긴다). 정의 파일은 폰 프로필에만 있고 폰 도구와 읽기 도구만 가진다. 이름이 정확히 같고 `model`과 격리 지정이 없을 때만 `TASK_GUARD`·`OWNED_PATHS`·완료물 lock·모델 후보·owner 검사 없이 child 슬롯 하나로 센다. 모델은 정의 파일의 Sonnet 슬롯이 정하고, 정의가 없는 PC에서는 코어가 모르는 agent로 거절한다.
 - `feature`의 `PRIMARY_DELIVERABLE`은 테스트 개수나 내부 정리가 아니라 사용자가 실제로 쓸 수 있게 되는 동작·화면으로 적는다.
 - child는 현재 `PRIMARY_DELIVERABLE`을 직접 진전시키거나 완료를 막는 일에만 쓴다. 아니면 `BLOCKS_PRIMARY:no`로 기록하고 backlog로 넘기며 spawn하지 않는다.
 - 첫 child의 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 생략 필드의 기본 lock이다. 사용자가 실행 중 방향을 바꾸면 runtime은 lock만 해제하고 누적 budget은 유지한다. 명시한 다른 완료물은 lock 해제나 별도 인용 없이도 추가 완료물로 받을 수 있다.

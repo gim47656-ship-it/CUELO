@@ -1417,6 +1417,43 @@ describe("TASK_GUARD 파생", () => {
   });
 });
 
+describe("폰 앱 조작 child 면제(2026-11-15)", () => {
+  const operate = (overrides: Record<string, unknown> = {}) => ({
+    agent: "phone-operator",
+    task: "계산기에서 1, 2, +, 3, = 를 눌러 결과를 알려 줘.",
+    ...overrides,
+  });
+
+  test("model·격리 지정 없는 phone-operator는 maker 계약 없이 child 1로 통과하고 lock을 세우지 않는다", () => {
+    const state = createTaskGuardState();
+    const decision = reserveTaskCall(state, "phone-op", operate());
+    expect(decision.ok).toBe(true);
+    expect(decision.ok && decision.input).toBeUndefined();
+    expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 1 });
+    expect(reservedMakers(state, "phone-op")).toBeUndefined();
+    expect(state.lock).toBeUndefined();
+  });
+
+  test("model이나 격리를 지정한 phone-operator, 다른 표기는 면제하지 않는다", () => {
+    for (const input of [
+      operate({ model: "anthropic/claude-opus-5-5" }),
+      // 형식이 틀린 model도 지정으로 본다(정규화가 버려도 면제되지 않는다).
+      operate({ model: null }),
+      operate({ model: 42 }),
+      operate({ isolated: true }),
+      { tasks: [operate()], isolated: true },
+      // 상위 격리는 항목의 격리 해제로 가려지지 않는다.
+      { tasks: [operate({ isolated: false })], isolated: true },
+      operate({ agent: "Phone-Operator" }),
+    ]) {
+      const state = createTaskGuardState();
+      const decision = reserveTaskCall(state, "phone-op-bad", input);
+      expect(decision.ok).toBe(false);
+      expect(getTaskGuardUsage(state)).toEqual({ primaryMaker: 0, reworkMaker: 0, total: 0 });
+    }
+  });
+});
+
 
 describe("seance 조회 면제(2026-11-11)", () => {
   const consult = (overrides: Record<string, unknown> = {}) => ({
