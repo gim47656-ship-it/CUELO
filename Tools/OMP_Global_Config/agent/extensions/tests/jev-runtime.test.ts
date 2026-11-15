@@ -3246,6 +3246,34 @@ describe("jev-runtime pre-review", () => {
     expect(lines[0]).not.toContain("hallmark[");
     expect(lines[0]).not.toContain(root);
   });
+
+  test("a REWORK attempt bound as soon as its job shows up keeps the source attempt's required skills", async () => {
+    const jobs: Array<Record<string, unknown>> = [{ id: "job-Ui", agentId: "agent-Ui", startTime: 100 }];
+    const harness = createHarness({ judgeAnswers: skillAnswers, asyncJobs: jobs });
+    await beginReviewTask(harness, "Ui", uiTask);
+    await finishReviewSpawn(harness, "Ui", uiTask);
+    await harness.emit("message_start", asyncResult("job-Ui", { agentId: "agent-Ui" }));
+    jobs.splice(0);
+    const write = {
+      toolName: "write", toolCallId: "rework-write",
+      input: { path: "agent://agent-Ui", content: "REWORK task_id=Ui role=maker previous_revision=r1 next_revision=r2\nKeep original scope." },
+    };
+    await harness.emit("tool_call", write);
+    // 전송 직후 snapshot에 새 job이 이미 있으면 그 자리에서 attempt를 바인딩한다(pending receipt 경로가 아니다).
+    jobs.push({ id: "job-Ui-2", agentId: "agent-Ui", startTime: Date.now() + 10 });
+    await harness.emit("tool_result", { ...write, isError: false, content: [] });
+    const dispatches = readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((record) => record.type === "dispatch");
+    expect(dispatches).toHaveLength(2);
+    expect(dispatches[1].attemptId).toEndWith("#a2");
+    expect(dispatches[0].requiredSkills).toMatchObject({ state: "selected", sets: ["web-ui"], modifiers: ["ko-copy"] });
+    expect(dispatches[1].requiredSkills).toEqual(dispatches[0].requiredSkills);
+
+    jobs.splice(0);
+    await harness.emit("message_start", asyncResult("job-Ui-2", { agentId: "agent-Ui" }));
+    const reworkLine = skillLines(harness).at(-1);
+    expect(reworkLine).toContain("필수(web-ui+ko-copy)");
+    expect(reworkLine).not.toContain("필수 세트 미관측");
+  });
 });
 
 describe("jev-runtime fail-open과 세션 격리", () => {

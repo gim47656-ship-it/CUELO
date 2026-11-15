@@ -2513,7 +2513,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             workClassConfidence: source?.workClassConfidence ?? null,
             workClassProbabilities: source?.workClassProbabilities ?? null,
             purpose: source?.purpose ?? null,
+            // 지연 바인딩과 같이 원 attempt의 소유 계약과 필수 스킬 기대값을 잇는다. 빠지면 재작업 attempt의 [skill-read]가 기대 세트 없이 나간다.
             ...(previous.ownership ? { ownership: previous.ownership } : {}),
+            ...(source?.requiredSkills ? { requiredSkills: source.requiredSkills } : {}),
           });
           observedAttempts.set(identity.attemptId, { ...identity, name: previous.name, status: "running", ownership: previous.ownership, restored: previous.restored, sourceRevision: null });
           const freshStart = snapshotRunStart(fresh[0]!, ctx);
