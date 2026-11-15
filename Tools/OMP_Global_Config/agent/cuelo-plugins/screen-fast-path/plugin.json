@@ -1,0 +1,9 @@
+{
+  "id": "screen-fast-path",
+  "name": "화면 조작 빠른 경로",
+  "description": "다른 앱 창을 조작할 때 빠른 경로를 쓰게 합니다. 그림뿐인 창(AnyDesk, RDP 화면)은 lab_screen_find가 로컬 OCR로 약 1초 만에 글자 위치를 찾고 누를 수 있으며, 화면 이미지의 클릭 좌표를 vision 모델에게 묻는 읽기는 그 대상에서 lab_screen_find가 실패한 뒤에만 통과시킵니다. 처음 쓸 때 OCR 실행 환경과 한국어 인식 모델(sha256 확인)을 스스로 준비하고, 화면이 없는 PC에서는 그 사실을 바로 알립니다.",
+  "createdAt": "2026-11-15T12:00:00+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": ["lab_screen_find"]
+}
