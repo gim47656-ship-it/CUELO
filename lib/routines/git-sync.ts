@@ -58,8 +58,19 @@ function errorText(error: unknown): string {
   return text.length > ERROR_LIMIT ? `${text.slice(0, ERROR_LIMIT)}…` : text;
 }
 
+/**
+ * 비대화식으로 돌린다. 환경 변수 `GIT_SSH_COMMAND`는 저장소의 `core.sshCommand`보다 앞서므로, 비어 있으면 저장소가
+ * 지정한 ssh 명령(폰처럼 루틴 배포 키를 거기에 둔 설치)에 `BatchMode`만 덧붙인다.
+ */
 async function git(dir: string, args: string[]): Promise<string> {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes" };
+  // `git config --get` exits 1 only when the key is unset; any other failure must not silently fall back to default ssh.
+  const configured = process.env.GIT_SSH_COMMAND
+    ? ""
+    : await exec("git", ["-C", dir, "config", "--get", "core.sshCommand"], { timeout: GIT_TIMEOUT_MS }).then(
+      (r) => r.stdout.trim(),
+      (error: { code?: unknown }) => { if (error.code === 1) return ""; throw error; },
+    );
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? `${configured || "ssh"} -o BatchMode=yes` };
   return (await exec("git", ["-C", dir, ...args], { timeout: GIT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env })).stdout;
 }
 
