@@ -2012,6 +2012,97 @@ describe("OwnershipGuard 쓰기 귀속", () => {
   });
 });
 
+describe("OwnershipGuard 취소 요청 직후의 종료 대기", () => {
+  // core cancel()은 status만 cancelled로 바꾸고 running에서 빼며, endTime(결과 행의 settledAtMs)은 abort가 풀려 실행이 실제로 끝날 때 찍힌다.
+  const killResult = (id: string) => ({
+    type: "tool_result",
+    toolName: "write",
+    toolCallId: `kill-${id}`,
+    input: { path: `proc://${id}/kill` },
+    isError: false,
+    content: [{ type: "text", text: `${id} cancelled` }],
+    details: {
+      proc: {
+        op: "cancel",
+        jobs: [{ id, type: "task", status: "cancelled", agentUrlId: id }],
+        cancelled: [{ id, status: "cancelled" }],
+      },
+    },
+  });
+  const assistantStart = { type: "message_start", message: { role: "assistant", content: [] } };
+  const guardReports = (harness: { sentMessages: Array<{ message: unknown }> }) =>
+    harness.sentMessages.map(({ message }) => renderedText(message)).filter((text) => text.includes("[OwnershipGuard]"));
+
+  test("실행이 끝나기 전의 취소 요청은 보고를 미루고, 실제 종료 뒤 요청 전후의 소유 밖 쓰기를 한 번에 보고한다", async () => {
+    const fixture = await createDelayedGitFixture();
+    // 이 테스트는 취소 경계만 본다. release를 미리 써 두지 않으면 snapshot마다 fsmonitor hook이 1.5초 deadline까지 기다린다.
+    await writeFile(fixture.releasePath, "release\n");
+    const cwd = fixture.workspace;
+    const running: Array<Record<string, unknown>> = [];
+    const recent: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({
+        cwd,
+        agent: { kind: "main", id: "Main-CK1", name: "main", depth: 0 },
+        runningJobs: running,
+        recentJobs: recent,
+      });
+      await spawnRunningMaker(main, running, "ck1-alpha", "Alpha", "owned/");
+      await writeFile(join(cwd, "outside", "before-kill.txt"), "written before the kill\n");
+
+      const [alpha] = running.splice(running.findIndex((job) => job.agentId === "Alpha"), 1);
+      const cancelled = { ...alpha, status: "cancelled", startTime: 1 };
+      recent.push(cancelled);
+      const kill = await main.emit("tool_result", killResult("Alpha"));
+      expect(renderedText(kill)).not.toContain("[OwnershipGuard]");
+
+      // abort가 풀리는 동안 child의 마지막 쓰기가 들어온다.
+      await writeFile(join(cwd, "outside", "late-unwind.txt"), "written while the run unwinds\n");
+      await main.emit("message_start", assistantStart);
+      expect(guardReports(main)).toEqual([]);
+
+      Object.assign(cancelled, { endTime: 2 });
+      await main.emit("message_start", assistantStart);
+      const reports = guardReports(main);
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toContain("child=Alpha");
+      expect(reports[0]).toContain("outside/before-kill.txt");
+      expect(reports[0]).toContain("outside/late-unwind.txt");
+
+      await main.emit("message_start", assistantStart);
+      expect(guardReports(main)).toHaveLength(1);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("요청 시점에 이미 실행 목록에 없는 child는 기다리지 않고 취소 결과에서 바로 보고한다", async () => {
+    const fixture = await createDelayedGitFixture();
+    await writeFile(fixture.releasePath, "release\n");
+    const cwd = fixture.workspace;
+    const running: Array<Record<string, unknown>> = [];
+    try {
+      const main = createGuardHarness({
+        cwd,
+        agent: { kind: "main", id: "Main-CK2", name: "main", depth: 0 },
+        runningJobs: running,
+        recentJobs: [],
+      });
+      await spawnRunningMaker(main, running, "ck2-alpha", "Alpha", "owned/");
+      await writeFile(join(cwd, "outside", "before-kill.txt"), "written before the kill\n");
+      running.splice(0, running.length);
+
+      const kill = await main.emit("tool_result", killResult("Alpha"));
+      expect(renderedText(kill)).toContain("[OwnershipGuard] child=Alpha");
+      expect(renderedText(kill)).toContain("outside/before-kill.txt");
+      await main.emit("message_start", assistantStart);
+      expect(guardReports(main)).toEqual([]);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SideQuestGuard USER_REQUEST", () => {
   test("사용자 인용은 선택 사항이며 steering 전후 추가 완료물을 받는다", async () => {
     const harness = createGuardHarness();

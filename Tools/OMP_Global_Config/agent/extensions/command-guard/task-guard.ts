@@ -1391,6 +1391,11 @@ type OwnershipEntry = {
   /** 등록 시점의 writes 길이. 그 뒤의 쓰기 기록만 이 child 실행 중의 쓰기다. */
   writeMark: number;
   reported: boolean;
+  /**
+   * `write proc://<id>/kill`로 취소를 요청받은 child를 가리키는 요청 id. core cancel()은 abort만 걸고 바로 돌아오므로
+   * 요청 직후는 child의 끝이 아니다. 이 값이 있는 child는 실행이 끝났다는 관측 뒤에 보고한다.
+   */
+  cancelIds?: string[];
 };
 
 /** edit·write 도구로 공유 작업 트리의 파일을 쓴 기록. path는 정규화한 부모 cwd 기준 상대경로다. */
@@ -1546,6 +1551,33 @@ export function unreportedOwnedChildIds(state: OwnershipState, ids: readonly str
     const entry = key ? state.entries.get(key) : undefined;
     return entry !== undefined && !entry.reported;
   });
+}
+
+/**
+ * 취소를 요청한 child에 요청 id를 남긴다. 이미 보고했거나 추적하지 않는 child는 건너뛴다.
+ * id는 `readCancelledChildIds`가 돌려준 canonical agent id다.
+ */
+export function noteCancelRequested(state: OwnershipState, ids: readonly string[]): void {
+  for (const id of ids) {
+    const key = findOwnedChildKey(state, id);
+    const entry = key ? state.entries.get(key) : undefined;
+    if (entry) entry.cancelIds = [...new Set([...(entry.cancelIds ?? []), id])];
+  }
+}
+
+/** 취소를 요청했지만 아직 보고하지 않은 child의 추적 key. 다음 관측 경계에서 종료 여부를 다시 본다. */
+export function cancelRequestedKeys(state: OwnershipState): string[] {
+  const keys: string[] = [];
+  for (const [key, entry] of state.entries) {
+    if (!entry.reported && entry.cancelIds) keys.push(key);
+  }
+  return keys;
+}
+
+/** key의 child가 취소를 요청받았으면 그 child를 가리키는 모든 id(요청 id와 별칭). 요청이 없으면 빈 배열이다. */
+export function cancelRequestedIds(state: OwnershipState, key: string): string[] {
+  const entry = state.entries.get(key);
+  return entry?.cancelIds ? [...entry.cancelIds, ...entry.aliases] : [];
 }
 
 /** child가 살아 있는 동안 겹친 다른 maker child. 완료 전에 끝난 sibling도 수정 출처 후보다. */

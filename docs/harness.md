@@ -618,6 +618,8 @@ WSL이 아닌 네이티브 Linux에서 `ego_browser`는 Windows ego lite 런타�
 
 Maker가 끝날 때 `[OwnershipGuard]` 줄은 소유 경로 밖 변경이 있을 때만 나옵니다. 소유 밖 변경이 없거나(`outside=none`) git으로 관측하지 못했으면(`unobserved`) 대화에 줄을 내지 않습니다. 해당 Maker가 실행되는 동안 다른 Maker나 Main이 `edit`·`write`로 쓴 경로는 그 Maker의 변경에서 빼고, bash로 쓴 파일처럼 쓴 사람 기록이 없는 경로도 같은 시간에 실행된 다른 Maker의 소유 경로 안이면 그 Maker 몫으로 뺍니다. 나머지는 동시에 실행된 Maker가 있으면 `unattributed=`, 없으면 `outside=`에 두고, 두 목록은 20개까지만 보인 뒤 `+N more`로 줄입니다. 소유 밖 변경·귀속 미상·관측 불가 보고는 `~/.omp/agent/ownership-outside.jsonl`에 전체 경로와 함께 한 줄씩 남습니다. 기록에는 시각·세션·Maker 이름과 id·소유 경로·범위 밖 경로·귀속 미상 경로·다른 사람이 쓴 경로·동시에 실행된 Maker가 들어가며, 빈도를 확인하는 진단 기록이라 작업을 막지 않습니다.
 
+Main이 실행 중인 Maker를 취소하면 그 작업의 상태는 곧바로 `cancelled`로 바뀌지만, 실제 실행은 중단 신호를 처리하느라 잠시 더 이어질 수 있습니다. 취소를 요청한 시점에 실행 목록에 아직 남아 있는 Maker는 `[OwnershipGuard]` 보고를 바로 내지 않고 미룹니다. 이후 메시지 경계마다 실행이 끝났는지 다시 확인하고, 끝났으면 취소 요청 전후에 소유 경로 밖에 쓴 파일을 한 보고에 모아 한 번만 알립니다. 실행 목록을 읽을 수 없는 환경이거나 이미 목록에서 사라진 Maker는 기다리지 않고 취소 결과에서 바로 보고합니다.
+
 취소 요청의 소유권 정산은 같은 작업 ID·시작 시각의 `cancelled` 상태와 종료 시각을 함께 확인합니다. 종료 기록이 남아 있는 동안 로컬 snapshot을 다시 확인하지만, 관측 전에 기록이 사라지면 종료를 추정해 잠금을 풀지 않습니다.
 
 `bash` 도구의 내장 셸은 PowerShell이 아니므로, 명령 위치의 cmdlet(`Test-Path`, `Set-Content` 등), 따옴표 밖의 `$env:NAME`, `$x = ...` 대입, `if (...) { }` 블록, `$`가 든 `powershell -Command` 인자는 실행 전에 막고 `write`로 만든 `.ps1`을 PowerShell 7(`pwsh -NoProfile -ExecutionPolicy Bypass -File`, WSL에서는 Windows `pwsh.exe`)로 실행하라고 안내합니다. 7이 없을 때만 `powershell.exe`(5.1)를 씁니다. 따옴표 안의 값과 heredoc 본문은 데이터로 보고 검사하지 않습니다.

@@ -33,6 +33,8 @@ import {
   bindTaskGuardSession,
   bindWriterOwners,
   claimSharedWriters,
+  cancelRequestedIds,
+  cancelRequestedKeys,
   createEgoLiteProbe,
   createLinuxEgoProbe,
   createOwnershipState,
@@ -46,6 +48,7 @@ import {
   matchUserEgoAppCdp,
   noteUserRedirect,
   noteUserRequestText,
+  noteCancelRequested,
   readCancelledChildIds,
   readSettledTaskIds,
   readSpawnProgress,
@@ -1120,7 +1123,14 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     ids: readonly string[],
     ctx: { cwd?: string; sessionManager?: { getSessionId?: () => string } } | undefined,
   ): Promise<string[]> => {
-    const pendingKeys = exactUnreportedOwnedChildKeys(ownership, ids);
+    // 취소를 요청한 child는 실행이 끝났다는 관측 뒤에 보고한다. 요청 직후에 닫으면 abort가 풀리는 동안의 쓰기가 빠진다.
+    // 실행 목록을 읽을 수 없는 host는 끝났는지 알 수 없어 기다리지 않는다.
+    const pendingKeys = exactUnreportedOwnedChildKeys(ownership, ids).filter((key) => {
+      const waitIds = cancelRequestedIds(ownership, key);
+      if (waitIds.length === 0) return true;
+      const live = readRunningTaskJobs(ctx);
+      return !live?.some((job) => waitIds.includes(job.id) || (job.agentId !== undefined && waitIds.includes(job.agentId)));
+    });
     if (pendingKeys.length === 0) return [];
     const generation = ownershipGeneration;
     const tree = await takeTreeSnapshot(eventSessionCwd(ctx));
@@ -1131,6 +1141,14 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     });
     if (stillPendingKeys.length === 0) return [];
     return reportOwnedChildren(ownership, stillPendingKeys, tree, (row) => recordOwnershipOutside(row, ctx));
+  };
+
+  /** 보고 줄을 다음 턴 경계에 aside로 흘려 모델이 그 턴에 보게 한다. */
+  const sendOwnershipLines = (lines: readonly string[]): void => {
+    pi.sendMessage(
+      { customType: "ownership-guard", content: lines.join("\n"), display: true, attribution: "agent" },
+      { deliverAs: "aside" },
+    );
   };
 
   // tool-capable child가 실제로 뜨지 못했으면 첫 행동 계약을 다시 요구한다.
@@ -1244,6 +1262,12 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       customType?: string;
       details?: unknown;
     };
+    // 취소를 요청한 child는 core가 async-result를 보내지 않는다. 메시지 경계마다 실행이 끝났는지 다시 보고, 끝난 child를 한 번 보고한다.
+    const cancelWaiting = cancelRequestedKeys(ownership);
+    if (cancelWaiting.length > 0) {
+      const lines = await reportPendingOwnedChildren(cancelWaiting, ctx);
+      if (lines.length > 0) sendOwnershipLines(lines);
+    }
     // async-result 주입은 task child의 완료가 Main에 도달하는 가장 이른 자동 관측점이다.
     // 여기서 만든 OwnershipGuard 줄은 다음 턴 경계에 aside로 흘러 모델이 그 턴에 본다.
     if (message.role === "custom" && message.customType === "async-result") {
@@ -1253,15 +1277,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       // 이미 보고된 child만 담긴 전달에는 git 스냅샷을 뜨지 않는다.
       const lines = await reportPendingOwnedChildren(settled, ctx);
       if (lines.length === 0) return;
-      pi.sendMessage(
-        {
-          customType: "ownership-guard",
-          content: lines.join("\n"),
-          display: true,
-          attribution: "agent",
-        },
-        { deliverAs: "aside" },
-      );
+      sendOwnershipLines(lines);
       return;
     }
     if (message.role !== "user" || message.steering !== true) return;
@@ -1562,7 +1578,10 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     let jobDetails: unknown;
     if (event.toolName === "write" && /^proc:\/\/[^/?#]+\/kill$/.test(path)) {
       cancelled = readCancelledChildIds(details);
-      if (cancelled.length > 0) releaseCancelledSpawns(taskGuard, cancelled);
+      if (cancelled.length > 0) {
+        releaseCancelledSpawns(taskGuard, cancelled);
+        noteCancelRequested(ownership, cancelled);
+      }
       jobDetails = proc;
     } else if (event.toolName === "wait") {
       jobDetails = details;
