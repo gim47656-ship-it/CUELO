@@ -79,6 +79,9 @@ export function buildPrelude(name: string, profile: EgoProfile, host: EgoHost = 
   const quoted = JSON.stringify(name);
   if (host === "linux") {
     // `page`는 SDK가 미리 넣은 전역(선택된 공간의 현재 탭)이라 다시 선언하지 않는다. Windows의 task 모양(handOff·finish·page)을 맞춘다.
+    // Linux 전역 page(ego index.js createPageFacade)에는 Windows TaskPage에 있는 click(selector, options)·fill(selector, value, options)이 없어
+    // 11-15 집 PC에서 page.click 6세션, page.fill 4세션이 스크립트 중간에 깨졌다. 둘 다 locator(selector)의 같은 내부 함수로 잇는다.
+    // 본문이 `const page = ...`를 선언하면 바인딩 `page`는 TDZ라 전역 객체로만 접근한다. 얼었거나 쓸 수 없는 page면 할당을 건너뛰어 예전과 같게 둔다.
     return `const __egoSpace = await taskSpaces.useOrCreate(${quoted});
 const task = {
   id: __egoSpace.id,
@@ -88,6 +91,11 @@ const task = {
   takeOver: () => taskSpaces.takeOver(__egoSpace.id),
   finish: (options = {}) => taskSpaces.complete(__egoSpace.id, { keep: Array.isArray(options.keep) ? options.keep.length > 0 : Boolean(options.keep) }),
 };
+const __egoPage = globalThis.page;
+if (__egoPage && typeof __egoPage.locator === "function") {
+  try { if (typeof __egoPage.click !== "function") __egoPage.click = (selector, options) => __egoPage.locator(selector).click(options); } catch {}
+  try { if (typeof __egoPage.fill !== "function") __egoPage.fill = (selector, value, options) => __egoPage.locator(selector).fill(value, options); } catch {}
+}
 `;
   }
   if (profile !== "verify") return `const task = await taskSpace(${quoted});\nconst page = task.page("p1");\n`;

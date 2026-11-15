@@ -266,6 +266,38 @@ describe("native Linux host", () => {
     expect(kept.log).toEqual(["use:n", "complete:3:true"]);
   });
 
+  test("the Linux global page gets the Windows page.click and page.fill shapes through its locator, without touching a script's own page", async () => {
+    // ego index.js와 같은 실행 모양: helper는 globalThis에만 있고 본문은 "use strict" async 함수다.
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    const calls: unknown[][] = [];
+    const locator = (selector: string) => ({
+      click: async (options?: unknown) => { calls.push(["click", selector, options]); },
+      fill: async (value: string, options?: unknown) => { calls.push(["fill", selector, value, options]); },
+    });
+    const taskSpaces = { useOrCreate: async (name: string) => ({ id: 1, name }), complete: async () => ({}) };
+    const run = async (page: object, body: string) => {
+      const saved = { page: (globalThis as Record<string, unknown>).page, taskSpaces: (globalThis as Record<string, unknown>).taskSpaces };
+      Object.assign(globalThis, { page, taskSpaces });
+      try {
+        await new AsyncFunction(`"use strict";\n${buildScript("n", "user", body, false, "linux")}`)();
+        return "ok";
+      } catch (error) {
+        return (error as Error).message;
+      } finally {
+        Object.assign(globalThis, saved);
+      }
+    };
+    expect(await run({ locator }, "await page.click('#go'); await page.click('@3', { force: true }); await page.fill('#q', 'hi');")).toBe("ok");
+    expect(calls).toEqual([["click", "#go", undefined], ["click", "@3", { force: true }], ["fill", "#q", "hi", undefined]]);
+    const own = async () => { calls.push(["own click"]); };
+    calls.length = 0;
+    expect(await run({ locator, click: own }, "await page.click('#go');")).toBe("ok");
+    expect(calls).toEqual([["own click"]]);
+    calls.length = 0;
+    expect(await run({ locator }, "const page = { click: async () => 'mine' }; if (await page.click() !== 'mine') throw new Error('shadowed');")).toBe("ok");
+    expect(await run(Object.freeze({ locator }), "if (page.click !== undefined) throw new Error('changed a frozen page');")).toBe("ok");
+  });
+
   test("verify is refused before launching anything; an unreachable ego browser points at browser.open", async () => {
     const { exec, calls } = fakeExec(ok(""));
     await expect(runEgoBrowser({ script: "1", profile: "verify" }, { exec, sessionId: "s", host: "linux" })).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
