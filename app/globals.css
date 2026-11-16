@@ -6899,6 +6899,12 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   z-index: 30;
 }
 
+/* 통역이 열린 동안 바깥 칸은 스크롤 칸이 아니게 한다. overflow:hidden 칸도 브라우저나 포커스가
+   스크롤시킬 수 있어, 폰에서 바깥 칸이 71px 밀린 채 남아 통역 위쪽 줄이 화면 밖으로 나갔다. */
+.chat-session-column[data-translator-open="true"] {
+  overflow: clip;
+}
+
 .chat-session-column[data-translator-open="true"] > :not(.translator-view) {
   visibility: hidden;
 }
