@@ -23,6 +23,7 @@ import {
   OWNERSHIP_MAIN_WRITER,
   parseOwnedPaths,
   readCancelledChildIds,
+  readGuardField,
   readSettledTaskIds,
   readSpawnProgress,
   registerSpawnedMakers,
@@ -765,6 +766,32 @@ describe("OWNED_PATHS", () => {
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.reason).toMatch(/OWNED_PATHS/);
     expect(getTaskGuardUsage(state).total).toBe(0);
+  });
+
+  test("비운 OWNED_PATHS 값 다음 줄의 필드를 소유 경로로 읽지 않는다", () => {
+    const state = createTaskGuardState();
+    const task = "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Arena 토론 실행\nOWNED_PATHS:\nFINDING_ID: F-1\n\n지적을 고쳐라.";
+    const decision = reserveTaskCall(state, "empty-owned", flat("maker", task));
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) expect(decision.reason).toMatch(/OWNED_PATHS가 필요/);
+    expect(getTaskGuardUsage(state).total).toBe(0);
+  });
+
+  test("비운 PRIMARY_DELIVERABLE 값 다음 줄을 완료물로 잠그지 않는다", () => {
+    const state = createTaskGuardState();
+    const task = "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE:\nOWNED_PATHS: src/a.ts\n\n보고서를 만든다.";
+    const decision = reserveTaskCall(state, "empty-deliverable", flat("maker", task));
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) expect(decision.reason).toMatch(/PRIMARY_DELIVERABLE이 비어/);
+    expect(state.lock).toBeUndefined();
+    expect(getTaskGuardUsage(state).total).toBe(0);
+  });
+
+  test("같은 줄의 값은 공백 종류와 줄바꿈 형식에 관계없이 읽고 줄은 넘지 않는다", () => {
+    expect(readGuardField("\u00a0OWNED_PATHS\u00a0:\u00a0src/a.ts\u00a0", "OWNED_PATHS")).toBe("src/a.ts");
+    expect(readGuardField("\tOWNED_PATHS:\tsrc/a.ts  ", "OWNED_PATHS")).toBe("src/a.ts");
+    expect(readGuardField("WORK_CLASS: feature\r\nOWNED_PATHS: src/a.ts\r\nFINDING_ID: F-1", "OWNED_PATHS")).toBe("src/a.ts");
+    expect(readGuardField("OWNED_PATHS:   \r\nFINDING_ID: F-1", "OWNED_PATHS")).toBeUndefined();
   });
 
   test("콤마로 나눈 소유 경로를 maker 항목별로 남긴다", () => {

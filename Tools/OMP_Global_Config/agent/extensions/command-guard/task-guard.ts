@@ -252,9 +252,16 @@ function isEscapingOwnedPath(value: string): boolean {
   );
 }
 
-/** guard 블록 안의 필드 한 줄을 읽는다. SpawnGuard와 maker_route 준비가 같은 reader를 쓴다. */
+/** 줄바꿈 문자(`\n`, `\r`, `\u2028`, `\u2029`)만 뺀 공백. `\s`와 달리 줄을 넘지 않고 NBSP, BOM 같은 같은 줄 공백은 그대로 받는다. */
+const SAME_LINE_SPACE = "[^\\S\\n\\r\\u2028\\u2029]";
+
+/**
+ * guard 블록 안의 필드 한 줄을 읽는다. SpawnGuard와 maker_route 준비가 같은 reader를 쓴다. 필드 이름 앞뒤와 값 앞뒤
+ * 공백은 같은 줄 안만 넘는다. `\s`면 값을 비운 줄(`OWNED_PATHS:`)의 개행을 건너 다음 필드 줄을 그 값으로 읽는다.
+ */
 export function readGuardField(block: string, name: string): string | undefined {
-  const match = block.match(new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "im"));
+  const space = `${SAME_LINE_SPACE}*`;
+  const match = block.match(new RegExp(`^${space}${name}${space}:${space}(.+?)${space}$`, "im"));
   const value = match?.[1]?.trim();
   return value || undefined;
 }
