@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, rmdirSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { routineCheckWarning } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 
 if (process.env.CUELO_REPLY_CHILD === "1") {
   const dir = process.env.CUELO_ROUTINES_DIR!;
@@ -10,7 +11,8 @@ if (process.env.CUELO_REPLY_CHILD === "1") {
   let prompts = 0;
   let resumes = 0;
   let live = false;
-  mock.module("./model", () => ({ routineModelSettings: async () => ({ enabled: false }), runRoutineChecker: async () => "{}" }));
+  let checkerOn = false;
+  mock.module("./model", () => ({ routineModelSettings: async () => ({ enabled: checkerOn }), runRoutineChecker: async () => { throw new Error("checker offline"); } }));
   // Preserve unrelated exports used by store/upkeep while replacing session resolution.
   const sessionReader = await import("../session-reader");
   mock.module("../session-reader", () => ({ ...sessionReader, invalidateSessionListCache() {}, resolveSessionPath: async () => "session.jsonl", readSessionHeader: () => ({ cwd: dir }) }));
@@ -126,6 +128,19 @@ if (process.env.CUELO_REPLY_CHILD === "1") {
     expect(readRoutineRunStates().test.running).toBeUndefined();
     expect(execFileSync("git", ["status", "--porcelain", "--", `routines/test/replies/${file.slice(0, -3)}`], { cwd: dir, encoding: "utf8" }).trim()).toBe("");
     console.log("R3-ANT-1 recovery reused pending filename; thread git status clean");
+  }, 20000);
+  test("reply published with a failed check ends with the fixed warning and keeps the original answer", async () => {
+    live = true; answer = "plain answer"; checkerOn = true;
+    try {
+      writeReplyFile(dir, "test", file, { author: "user", host: "phone", createdAt: new Date().toISOString(), body: "first answer" });
+      await commitFixtures();
+      expect(startRoutineReply(dir, routine, file)).toBe(true);
+      await settled();
+      const last = readReplies(dir, "test", file).at(-1);
+      expect(last?.status).toBe("ok");
+      expect(last?.body).toBe(`plain answer\n\n${routineCheckWarning("checker-unavailable")}`);
+      expect(last?.body).not.toContain("checker offline");
+    } finally { checkerOn = false; }
   }, 20000);
 } else {
   test("reply execution with real file and git boundaries in isolated process", async () => {

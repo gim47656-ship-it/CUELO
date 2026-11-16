@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RoutinePost } from "./post";
+import { routineCheckWarning } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
+import { splitPostDetails } from "./post";
 
 // Module mocks are process-wide in Bun; isolate them from every other test file.
 if (process.env.CUELO_ROUTINE_MODEL_CHILD === "1") {
@@ -46,6 +48,7 @@ mock.module("./store", () => ({
   thisRoutineHost: () => "test-pc",
   writePostFile: (_dir: string, _id: string, _stamp: string, _host: string, post: RoutinePost) => { posts.push(post); return "post.md"; },
 }));
+const listeners = new Set<(event: { type: string }) => void>();
 mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcSession: async () => { throw new Error("Unexpected resume"); }, startNewRpcSession: async (_request: unknown, _cwd: string, options: { initialModel?: { provider: string; modelId: string }; interactivePrompts?: false }) => {
   expect(options.initialModel).toEqual(enabled && selected ? { provider: "anthropic", modelId: selected.split("/").slice(1).join("/") } : undefined);
   // 아무도 보지 않는 세션이 답을 기다리는 질문(한도 리셋 사용 여부)에 60분 묶이지 않는다.
@@ -55,6 +58,8 @@ mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcS
   return { realSessionId: "isolated", session: {
     send: async (command: { type: string; message?: string }) => {
       if (command.type === "prompt") {
+        // 러너가 대기 루프에 들어간 다음 턴에 알린다: 이벤트 기반 깨움 경로를 그대로 탄다(시간 의존 없음).
+        setImmediate(() => { for (const listener of listeners) listener({ type: "prompt_done" }); });
         prompts.push(command.message!);
         answer = prompts.length > 1 && forcedRevision !== undefined ? forcedRevision : forcedAnswer ?? (prompts.length === 1 ? "original" : "revised");
         // 서버 종료: 프로세스가 신호를 받고 세션 레지스트리가 세션을 닫는다.
@@ -62,12 +67,14 @@ mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcS
       }
       if (command.type === "get_last_assistant_text") return { text: answer };
     },
-    onEvent: () => () => {}, isAlive: () => alive, isRunning: () => false, isSafelyIdle: () => true,
+    // 실제 세션처럼 프롬프트가 끝나면 prompt_done을 알린다(없으면 러너가 5초 폴링을 두 번 기다린다).
+    onEvent: (listener: (event: { type: string }) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    isAlive: () => alive, isRunning: () => false, isSafelyIdle: () => true,
     shutdown: async () => {},
   } };
 } }));
 // Load after mock registration to exercise the runner's dependency boundary.
-const { startRoutineRun, startManualRoutineRun, recordInterruptedRuns } = await import("./runner");
+const { startRoutineRun, startManualRoutineRun, recordInterruptedRuns, withCheckWarning } = await import("./runner");
 const dir = mkdtempSync(join(tmpdir(), "routine-runner-smoke-"));
   test("runner publishes named model/PC failure, revised answer, original on checker failure, and disabled legacy answer", async () => {
     const cases = [
@@ -92,6 +99,8 @@ const dir = mkdtempSync(join(tmpdir(), "routine-runner-smoke-"));
       if (!enabled && failStart) expect(posted?.body).not.toContain("루틴 모델");
       expect(checks).toBe(scenario.count);
       expect(prompts.length).toBeLessThanOrEqual(2);
+      if (scenario.expected === "ok" && scenario.enabled && scenario.checkerFails) expect(posted?.body).toEndWith(routineCheckWarning("checker-unavailable"));
+      else expect(posted?.body).not.toContain("> 게시 전 점검");
     }
   }, 60_000);
   test("a run cut by the server stopping posts nothing, the next boot reruns it once, then gives up", async () => {
@@ -197,6 +206,47 @@ const dir = mkdtempSync(join(tmpdir(), "routine-runner-smoke-"));
     forcedAnswer = undefined; forcedRevision = undefined;
     console.log("R5-ANT-1 successful checker revision: exact marker waiting; leading-space marker ok");
   }, 30000);
+  test("warning goes before 자세히 (visible summary), ignores fenced fake headings, keeps details intact", () => {
+    const w = routineCheckWarning("revision-failed");
+    const body = "# 제목\n요약\n\n```md\n## 자세히\n```\n\n## 자세히 보기\n숨은 상세";
+    expect(withCheckWarning(body, "revision-failed")).toBe(`# 제목\n요약\n\n\`\`\`md\n## 자세히\n\`\`\`\n\n${w}\n\n## 자세히 보기\n숨은 상세`);
+    // 가짜 제목뿐이면 본문 끝, 빈 상세면 요약 끝(경고가 상세로 숨지 않는다).
+    expect(withCheckWarning("요약\n```\n## 자세히\nx\n```", "checker-invalid")).toBe(`요약\n\`\`\`\n## 자세히\nx\n\`\`\`\n\n${routineCheckWarning("checker-invalid")}`);
+    expect(withCheckWarning("요약\n\n## 자세히\n", "checker-invalid")).toBe(`요약\n\n${routineCheckWarning("checker-invalid")}\n\n## 자세히\n`);
+    expect(splitPostDetails(withCheckWarning(body, "revision-failed")).summary).toContain(w);
+    // 잘려 닫히지 않은 코드 블록: 경고가 블록 안에 묻히지 않도록 블록을 먼저 닫는다.
+    const cw = routineCheckWarning("checker-invalid");
+    expect(withCheckWarning("# T\n\n```text\npartial", "checker-invalid")).toBe(`# T\n\n\`\`\`text\npartial\n\`\`\`\n\n${cw}`);
+    expect(withCheckWarning("~~~~\npartial\n```", "checker-invalid")).toBe(`~~~~\npartial\n\`\`\`\n~~~~\n\n${cw}`);
+    expect(withCheckWarning("```\n".repeat(500001), "checker-invalid")).toEndWith(cw);
+    expect(withCheckWarning(body)).toBe(body);
+  });
+  test("check failure warnings: fixed copy at the end of the real post, title and original intact", async () => {
+    enabled = true; settingsFail = false; failStart = false; stopOnPrompt = false;
+    globalThis.__cueloRoutineServerStop = { since: null };
+    const routine = { id: "r-warn", name: "warn", enabled: true, host: "test-pc", prompt: "required", cwd: dir, timezone: "Asia/Seoul", schedule: { kind: "weekly" as const, days: [1], times: ["10:00"] }, createdAt: "", updatedAt: "" };
+    const original = "# [말머리] 제목\n본문 첫 줄";
+    const run = async () => { prompts = []; checks = 0; posts.length = 0; expect(startRoutineRun(dir, routine, "manual")).toBe(true); await globalThis.__cueloRoutineRuns!.get(routine.id); return posts.at(-1)!; };
+    // 지적 뒤 수정 실패: 원문 + 수정 실패 경고, 점검 1회, 수정 1회.
+    forcedAnswer = original; forcedRevision = "[알림 없음]"; checkerFails = false;
+    let post = await run();
+    expect(post.body).toBe(`${original}\n\n${routineCheckWarning("revision-failed")}`);
+    expect(post.title).toBe("[말머리] 제목");
+    expect(checks).toBe(1); expect(prompts.length).toBe(2);
+    // 점검기 실패: 원문 + 점검 실패 경고, 수정 없음.
+    checkerFails = true;
+    post = await run();
+    expect(post.body).toBe(`${original}\n\n${routineCheckWarning("checker-unavailable")}`);
+    expect(post.body).not.toContain("checker offline");
+    expect(prompts.length).toBe(1);
+    // 상세 아래는 접히므로 경고는 보이는 요약 끝, 실제 게시 글에서도 ## 자세히 앞에 있다.
+    checkerFails = true; forcedAnswer = "# [말머리] 제목\n요약\n\n## 자세히\n상세";
+    post = await run();
+    expect(post.body).toBe(`# [말머리] 제목\n요약\n\n${routineCheckWarning("checker-unavailable")}\n\n## 자세히\n상세`);
+    expect(post.title).toBe("[말머리] 제목");
+    forcedAnswer = original;
+    forcedAnswer = undefined; forcedRevision = undefined; checkerFails = false;
+  }, 60000);
   test("지금 실행 consumes the slot due on this PC, so the scheduler does not run a one-off again", async () => {
     enabled = false; settingsFail = false; failStart = false; stopOnPrompt = false; forcedAnswer = undefined; forcedRevision = undefined;
     globalThis.__cueloRoutineServerStop = { since: null };

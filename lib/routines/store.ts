@@ -20,6 +20,8 @@ export interface Routine {
   id: string;
   name: string;
   enabled: boolean;
+  /** External producers opt in to board reception control; independent of scheduled execution. */
+  externalPostingEnabled?: boolean;
   schedule: RoutineSchedule;
   timezone: string;
   host: string;
@@ -103,7 +105,7 @@ export function newRoutineId(now: Date): string {
   return `r-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${randomBytes(4).toString("hex")}`;
 }
 
-export type RoutineInput = Pick<Routine, "name" | "enabled" | "schedule" | "host" | "prompt" | "cwd" | "model">;
+export type RoutineInput = Pick<Routine, "name" | "enabled" | "externalPostingEnabled" | "schedule" | "host" | "prompt" | "cwd" | "model">;
 
 const isAbsoluteCwd = (cwd: string) => cwd.startsWith("/") || cwd === "~" || cwd.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(cwd);
 
@@ -114,6 +116,7 @@ export function parseRoutineInput(raw: unknown): { input: RoutineInput } | { err
   const name = typeof value.name === "string" ? value.name.trim() : "";
   if (!name || name.length > NAME_LIMIT) return { error: `name must be 1-${NAME_LIMIT} characters` };
   if (typeof value.enabled !== "boolean") return { error: "enabled must be a boolean" };
+  if (value.externalPostingEnabled !== undefined && typeof value.externalPostingEnabled !== "boolean") return { error: "externalPostingEnabled must be a boolean" };
   const schedule = parseSchedule(value.schedule);
   if (typeof schedule === "string") return { error: schedule };
   const host = sanitizeSource(typeof value.host === "string" ? value.host : "");
@@ -130,7 +133,7 @@ export function parseRoutineInput(raw: unknown): { input: RoutineInput } | { err
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
-  return { input: { name, enabled: value.enabled, schedule, host, prompt, cwd: cwdRaw || null, model: model || null } };
+  return { input: { name, enabled: value.enabled, ...(typeof value.externalPostingEnabled === "boolean" ? { externalPostingEnabled: value.externalPostingEnabled } : {}), schedule, host, prompt, cwd: cwdRaw || null, model: model || null } };
 }
 
 function parseRoutineFile(text: string, id: string): Routine | null {
@@ -144,7 +147,9 @@ function parseRoutineFile(text: string, id: string): Routine | null {
   const value = raw as Record<string, unknown>;
   // Invalid shared model values must not hide a routine when this plugin is off.
   // Save-time validation stays strict; enabled execution reports the bad selector.
-  const parsed = parseRoutineInput({ ...value, model: null });
+  // Keep an invalid external switch visible and stopped so the board can correct it.
+  const parsed = parseRoutineInput({ ...value, model: null,
+    externalPostingEnabled: value.externalPostingEnabled === undefined ? undefined : value.externalPostingEnabled === true });
   if ("error" in parsed) return null;
   if (value.id !== id) return null;
   return {

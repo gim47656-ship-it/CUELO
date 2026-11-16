@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkRoutineAnswer, checkerContext, parseCheckerFindings, parseRoutineModel, selectRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
+import { checkRoutineAnswer, checkerContext, parseCheckerFindings, parseRoutineModel, routineCheckWarning, selectRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
 import { routineModelSettings } from "./model";
 import { parseRoutineInput, readRoutine, writeRoutineFile } from "./store";
 
@@ -79,7 +79,7 @@ describe("fresh pre-post checker", () => {
         expect(Object.keys(context).sort()).toEqual(["messages", "systemPrompt"]);
         return '{"findings":[]}';
       }, revise: async () => { throw new Error("must not revise"); }, log: () => {} });
-    expect(answer).toBe("Sonnet final"); expect(calls).toBe(1);
+    expect(answer).toEqual({ body: "Sonnet final" }); expect(calls).toBe(1);
     expect(checkerContext("p", "a").systemPrompt.join(" ")).toContain("no transcript or tools");
   });
   test("findings revise once, preserving instruction and full answer publication", async () => {
@@ -87,27 +87,38 @@ describe("fresh pre-post checker", () => {
     const answer = await checkRoutineAnswer({ instruction: "4 doses", answer: "2 doses", deadline: future(),
       check: async () => { checked++; return '{"findings":["missing 7.5 and 10 mg"]}'; },
       revise: async message => { revised++; expect(message).toContain("missing 7.5 and 10 mg"); return "4 doses"; }, log: () => {} });
-    expect(answer).toBe("4 doses"); expect(checked).toBe(1); expect(revised).toBe(1);
+    expect(answer).toEqual({ body: "4 doses" }); expect(checked).toBe(1); expect(revised).toBe(1);
   });
-  test.each(["provider", "malformed", "revision", "empty", "quiet revision"])("%s failure posts original", async kind => {
+  test.each([
+    ["provider", "checker-unavailable"], ["malformed", "checker-invalid"], ["revision", "revision-failed"], ["empty", "revision-failed"], ["quiet revision", "revision-failed"],
+  ] as const)("%s failure posts original with the %s stage", async (kind, stage) => {
     const logs: string[] = [];
+    let revisions = 0;
     const answer = await checkRoutineAnswer({ instruction: "p", answer: "original", deadline: future(),
       check: async () => { if (kind === "provider") throw new Error("provider failed"); return kind === "malformed" ? "nonsense" : '{"findings":["fix"]}'; },
-      revise: async () => { if (kind === "revision") throw new Error("revision failed"); return kind === "empty" ? "" : "[알림 없음]"; }, log: message => logs.push(message) });
-    expect(answer).toBe("original"); expect(logs.at(-1)).toContain("posting original");
+      revise: async () => { revisions++; if (kind === "revision") throw new Error("revision failed"); return kind === "empty" ? "" : "[알림 없음]"; }, log: message => logs.push(message) });
+    expect(answer).toEqual({ body: "original", failure: stage }); expect(logs.at(-1)).toContain("posting original");
+    expect(revisions).toBe(stage === "revision-failed" ? 1 : 0);
+    expect(answer.body).toBe("original");
+    expect(routineCheckWarning(stage)).not.toContain("provider failed"); expect(routineCheckWarning(stage)).not.toContain("fix");
   });
-  test("expired deadline and checker timeout cannot block original posting", async () => {
+  test("expired deadline and checker timeout cannot block original posting and are typed as timeouts", async () => {
     let aborted = false;
     const answer = await checkRoutineAnswer({ instruction: "p", answer: "original", deadline: Date.now() + 15,
       check: async (_context, signal) => { signal.addEventListener("abort", () => { aborted = true; }); return Promise.withResolvers<string>().promise; },
       revise: async () => "no", log: () => {} });
-    expect(answer).toBe("original"); expect(aborted).toBe(true);
-    expect(await checkRoutineAnswer({ instruction: "p", answer: "original", deadline: 0, check: async () => { throw new Error("not called"); }, revise: async () => "no", log: () => {} })).toBe("original");
+    expect(answer).toEqual({ body: "original", failure: "checker-timeout" }); expect(aborted).toBe(true);
+    expect(await checkRoutineAnswer({ instruction: "p", answer: "original", deadline: 0, check: async () => { throw new Error("not called"); }, revise: async () => "no", log: () => {} })).toEqual({ body: "original", failure: "checker-timeout" });
+  });
+  test("warning copy differs between checker and revision failures and ends a body without changing it", () => {
+    expect(routineCheckWarning("checker-invalid")).toBe(routineCheckWarning("checker-timeout"));
+    expect(routineCheckWarning("revision-failed")).not.toBe(routineCheckWarning("checker-unavailable"));
+    expect(routineCheckWarning("revision-failed").startsWith("> ")).toBe(true);
   });
   test("quiet first line is never checked (including CRLF and explanatory tail)", async () => {
     let called = false;
     const answer = "[알림 없음]\r\nexplanation";
-    expect(await checkRoutineAnswer({ instruction: "p", answer, deadline: future(), check: async () => { called = true; return ""; }, revise: async () => "", log: () => {} })).toBe(answer);
+    expect(await checkRoutineAnswer({ instruction: "p", answer, deadline: future(), check: async () => { called = true; return ""; }, revise: async () => "", log: () => {} })).toEqual({ body: answer });
     expect(called).toBe(false);
   });
   test("checker JSON rejects invalid findings instead of silently approving", () => {

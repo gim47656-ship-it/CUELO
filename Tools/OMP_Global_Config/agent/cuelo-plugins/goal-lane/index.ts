@@ -13,16 +13,18 @@ import { defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, s
  *    words in this session; an item the user never said is moved to `assumptions` in the tool result.
  * 2. Deliverables get evidence only from observations the plugin itself saw or can check: a file that
  *    exists and was written after framing, a bash command this session ran with exit 0, a URL that
- *    answers, or a vision `read` (`?q=`/`?ocr=`) of the deliverable file. Main's own description is
- *    recorded as a self-report, never as verification.
+ *    answers, or a vision `read` (`?q=`/`?ocr=`) of the deliverable file. Such an observation means
+ *    "evidence observed", never "requirement met": the plugin does not judge whether it is relevant to the
+ *    deliverable's check; Main assesses that. Main's own description is recorded as a self-report.
  * 3. After `generate_image`, `task` and `wait` results, and once per user input when Main stops without a
- *    tool call, the deliverables that still have no verified evidence are put in front of Main, with the
+ *    tool call, the deliverables that still have no observed evidence are put in front of Main, with the
  *    check each one needs. Nothing is blocked.
  * 4. Each user message is classified once by the native JEV judge in the background: a prompt and also a message the
  *    user sends while Main is working (steering, which never fires the `input` event in CUELO). Without a frame it asks
  *    whether the message needs one; the frame reminder then comes at the next substantive tool result instead of the
  *    eighth. With a frame it asks whether the message changes the goal or adds work the frame does not cover; then the
- *    next tool result asks Main to frame again (deliverables kept with the same id and check keep their evidence).
+ *    next tool result asks Main to frame again (evidence carries over only to a deliverable with the same id, trimmed
+ *    check, trimmed what and normalized optional path; any change there drops that deliverable's old evidence).
  *    A secret-looking message, a failure or a timeout keeps the eight-result rule and never asks for a reframe.
  * 5. JEV also clears two heuristic hits: a closing paragraph the confirmation regex matched but that does not ask the
  *    user (the turn-end check then runs), and an `explicit` item that matched the user's words but that the user
@@ -66,8 +68,8 @@ const SYSTEM_BLOCK = `# Goal lane (Main only)
 On a request whose result the user will judge (an image, a document, a site, a feature, a fix, an investigation), call \`lab_goal\` \`op: "frame"\` before the first substantive tool call: \`goal\` = the purpose behind the request, \`explicit\` = conditions in the user's own words, \`assumptions\` = conditions you added yourself, \`deliverables\` = what must exist at the end and the check that would convince an outside expert. A pure typo or one-line edit is \`size: "small"\` (the plugin then stays silent) or no frame at all.
 - Only what the user actually said is explicit; the tool moves anything else to assumptions. An assumption never outranks the goal: when it limits the result ("keep the exact pose" while the user asked for a natural hand), drop it or ask the user.
 - Work at the depth the goal needs: source material, the specialist tools and checks an expert would use, not a summary or your own impression.
-- Before reporting done or waiting, record \`op: "evidence"\` per deliverable. A file path only proves the file exists; the check itself needs a bash command you ran or one exact line of an eval cell you ran without error (\`command\`), a URL that answers (\`url\`) or a vision read of the file (\`observation\`, after \`read <file>?q=…\`). Your own look at an image is not a check. Delegating does not move a deliverable off your lane; while a child works, do your own deliverables.
-- When the user changes the request or adds work while you are on it, call \`op: "frame"\` again with the new goal and every deliverable still owed; a deliverable kept with the same id and check keeps its evidence.`;
+- Before reporting done or waiting, record \`op: "evidence"\` per deliverable. A file path only proves the file exists; the check itself needs a bash command you ran or one exact line of an eval cell you ran without error (\`command\`), a URL that answers (\`url\`) or a vision read of the file (\`observation\`, after \`read <file>?q=…\`). Your own look at an image is not a check. A successful command, URL or vision read only means evidence was observed; it never proves the requirement is met. You assess whether it is relevant to the deliverable's check. Delegating does not move a deliverable off your lane; while a child works, do your own deliverables.
+- When the user changes the request or adds work while you are on it, call \`op: "frame"\` again with the new goal and every deliverable still owed; a deliverable kept with the same id, check, what and path keeps its evidence, and a change to any of them drops it.`;
 
 // The system prompt carries only the fixed SYSTEM_BLOCK. The frame used to be appended there too, so every new frame
 // (and the restored one after a restart) changed the last system block on the next prompt and the provider re-wrote the
@@ -323,12 +325,24 @@ function excerpt(text: string): string {
   return flat.length > EXCERPT ? `${flat.slice(0, EXCERPT)}…` : flat;
 }
 
+/** Deliverable path as compared for evidence carry: trimmed, empty is absent, local paths resolved lexically against cwd. */
+function targetPath(path: string | undefined, cwd: string): string | undefined {
+  const text = path?.trim();
+  if (!text) return undefined;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : resolve(cwd, text);
+}
+
+function sameTarget(a: Deliverable, b: Deliverable, cwd: string): boolean {
+  return a.check.trim() === b.check.trim() && a.what.trim() === b.what.trim() && targetPath(a.path, cwd) === targetPath(b.path, cwd);
+}
+
 type DeliverableState = "checked" | "exists" | "self" | "none";
-const STATE_LABEL: Record<DeliverableState, string> = { checked: "확인됨", exists: "파일 존재만", self: "자기 보고만", none: "근거 없음" };
+const STATE_LABEL: Record<DeliverableState, string> = { checked: "근거 관측됨", exists: "파일 존재만", self: "자기 보고만", none: "근거 없음" };
 
 /**
- * A deliverable counts as checked only through an evidence kind that carries the check itself: a command this session
+ * A deliverable counts as observed only through an evidence kind that carries the check itself: a command this session
  * ran, a URL that answered, or a vision read of the file. File evidence proves existence, not the check in `check`.
+ * "Observed" says the observation happened, not that it is relevant to or satisfies the check; Main assesses that.
  * Only the latest record of each kind+value counts, in array order (timestamps can tie): a later failure of the same
  * check revokes its earlier success, while independent evidence for the deliverable stays.
  */
@@ -368,7 +382,7 @@ function pendingText(frame: Frame, lead: string): string | undefined {
   const open = unverified(frame);
   if (!open.length) return undefined;
   const ids = open.map((item) => `${item.id}[${STATE_LABEL[stateOf(frame, item.id)]}]`).join(", ");
-  return `${lead} 확인 방법대로 검증된 근거가 아직 없는 산출물: ${ids}. 확인 방법은 \`lab_goal\` \`op: "status"\`로 읽고 실제 검사 뒤 \`op: "evidence"\`에 남겨라. 파일 존재나 자기 인상은 검증이 아니다. 승인 또는 외부 대기라면 항목과 재개 조건을 밝혀라. 사용자가 말하지 않은 가정이 결과를 제한하면 버리거나 사용자에게 물어라. 이 안내는 승인이 아니며 권한을 더하지 않는다.`;
+  return `${lead} 근거가 관측되지 않은 산출물: ${ids}. 확인 방법은 \`lab_goal\` \`op: "status"\`로 읽고 실제 검사 뒤 \`op: "evidence"\`에 남겨라. 성공한 명령·URL·vision 관측은 근거가 관측됐다는 뜻일 뿐 요구 충족 증명이 아니며, 그 근거가 이 산출물의 확인 방법과 관련 있는지는 Main이 직접 판단한다. 파일 존재나 자기 인상은 근거가 아니다. 승인 또는 외부 대기라면 항목과 재개 조건을 밝혀라. 사용자가 말하지 않은 가정이 결과를 제한하면 버리거나 사용자에게 물어라. 이 안내는 승인이 아니며 권한을 더하지 않는다.`;
 }
 
 /** `resolveJudge` replaces the native JEV judge (probes); the extension loader passes only `pi`. */
@@ -633,7 +647,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     // Bookkeeping only: the core runs this call even when user steering arrived mid-response (apply-core-patch steeringSafe).
     steeringSafe: true,
     description:
-      "요청 뒤의 목표를 실행과 완료 판단에 연결한다. op frame: goal(목적), explicit(사용자가 한 말 그대로의 조건), assumptions(Main이 더한 조건), deliverables(끝에 있어야 할 것과 외부 전문가가 납득할 확인 방법), size(small|normal|deep). explicit 항목은 이 세션의 사용자 원문과 대조해(부정·인용한 말은 판정기가 가려) 사용자가 말하지 않은 것은 assumptions로 옮긴다. op evidence: id와 kind(file|command|url|observation)·value로 근거를 남기면 플러그인이 파일 존재·이 세션에서 실행한 bash 종료 코드·URL 응답·vision read 결과로 확인하고, 확인하지 못한 것은 자기 보고로 남긴다. op status: 현재 상태. 차단 없음.",
+      "요청 뒤의 목표를 실행과 완료 판단에 연결한다. op frame: goal(목적), explicit(사용자가 한 말 그대로의 조건), assumptions(Main이 더한 조건), deliverables(끝에 있어야 할 것과 외부 전문가가 납득할 확인 방법, 선택 path), size(small|normal|deep). 다시 frame을 부르면 id·check·what·정규화 path(둘 다 없으면 같음, 없음→있음은 다름; 로컬 경로는 cwd 기준 문자열 정규화)가 모두 같은 산출물만 이전 근거를 이어받고 하나라도 바뀌면 근거를 버린다. explicit 항목은 이 세션의 사용자 원문과 대조해(부정·인용한 말은 판정기가 가려) 사용자가 말하지 않은 것은 assumptions로 옮긴다. op evidence: id와 kind(file|command|url|observation)·value로 근거를 남기면 플러그인이 파일 존재·이 세션에서 실행한 bash 종료 코드·URL 응답·vision read 결과를 관측해 기록하고, 관측하지 못한 것은 자기 보고로 남긴다. 관측 성공은 근거가 관측됐다는 뜻이지 요구 충족 증명이 아니며 관련성은 Main이 판단한다. op status: 현재 상태. 차단 없음.",
     parameters: z.object({
       op: z.enum(["frame", "evidence", "status"]),
       size: z.enum(["small", "normal", "deep"]).optional(),
@@ -687,11 +701,11 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
           explicit.splice(0, explicit.length, ...explicit.filter((item) => !unstated.has(item)));
         }
         const assumptions = [...(params.assumptions ?? []).map((item) => item.trim()), ...ungrounded];
-        // A deliverable kept with the same id and check keeps the evidence it already has.
+        // Evidence carries over only to a deliverable whose id, trimmed check, trimmed what and normalized path are all unchanged.
         const carried = (before?.evidence ?? []).filter((item) => {
           const kept = deliverables.find((next) => next.id === item.id);
           const old = before?.deliverables.find((prev) => prev.id === item.id);
-          return !!kept && !!old && kept.check.trim() === old.check.trim();
+          return !!kept && !!old && sameTarget(kept, old, ctx.cwd);
         });
         frame = { at: new Date().toISOString(), size, goal, explicit, assumptions, ungrounded, deliverables, evidence: carried };
         reframeJudged = false;
@@ -700,7 +714,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         const saved = persist(ctx);
         shownAt = frame.at;
         const lines = [`frame 등록 (size ${size}).`, ...frameLines(frame), ...(saved ? [] : [PERSIST_WARNING])];
-        if (carried.length) lines.push(`이전 frame에서 같은 id·check의 근거 ${carried.length}건을 이어받았다.`);
+        if (carried.length) lines.push(`이전 frame에서 id·check·what·path가 모두 같은 산출물의 근거 ${carried.length}건을 이어받았다.`);
         if (ungrounded.length) {
           lines.push(`사용자 원문에 없는 조건을 assumptions로 옮겼다: ${ungrounded.join(" / ")}. 사용자가 실제로 한 말이면 그 말을 그대로 explicit에 다시 적어라.`);
         }
@@ -755,7 +769,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
       const open = unverified(current);
       const text = [
         `${id}: ${STATE_LABEL[stateOf(current, id)]} — ${detail}`,
-        open.length ? `확인 방법대로 검증되지 않은 산출물: ${open.map((item) => `${item.id}[${STATE_LABEL[stateOf(current, item.id)]}]`).join(", ")}` : "모든 산출물이 확인 방법대로 검증됐다.",
+        open.length ? `근거가 관측되지 않은 산출물: ${open.map((item) => `${item.id}[${STATE_LABEL[stateOf(current, item.id)]}]`).join(", ")}` : "모든 산출물에 근거가 관측됐다. 요구 충족 여부와 근거의 관련성은 Main이 직접 판단한다.",
         ...(saved ? [] : [PERSIST_WARNING]),
       ].join("\n");
       return { content: [{ type: "text" as const, text }] };

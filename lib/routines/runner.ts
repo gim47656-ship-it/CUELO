@@ -4,13 +4,41 @@ import { randomUUID } from "node:crypto";
 import { type AgentSessionWrapper, getRpcSession, startRpcSession, startNewRpcSession } from "@/lib/rpc-manager";
 import { invalidateSessionListCache, resolveSessionPath, readSessionHeader } from "@/lib/session-reader";
 import { commitRoutineChange } from "./git-sync";
-import { type RoutinePost, type RoutinePostStatus, extractPostTitle, waitingAnswer } from "./post";
+import { type RoutinePost, type RoutinePostStatus, extractPostTitle, splitPostDetails, waitingAnswer } from "./post";
 import { runStamp, scheduledRun } from "./schedule";
 import { type RoutineLastRun, type RoutineRunning, readRoutineRunStates, updateRoutineRunState } from "./state";
 import { type Routine, expandHome, isExistingDirectory, readRoutine, readRoutines, readPost, readReplies, listPosts, routinePaths, thisRoutineHost, writePostFile, writeReplyFile } from "./store";
 import { type RoutineReply, pendingReplies, pendingReplyWrites } from "./reply";
 import { routineModelSettings, runRoutineChecker } from "./model";
-import { checkRoutineAnswer, parseRoutineModel } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
+import { type RoutineCheckFailure, checkRoutineAnswer, parseRoutineModel, routineCheckWarning } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
+
+/**
+ * 점검 실패 경고를 보이는 요약의 끝에 붙인다. `## 자세히` 아래는 접혀 숨으므로 그 제목 바로 앞에 넣고, 제목이 없거나
+ * 그 아래가 비었으면 본문 끝에 붙인다. 제목 판별은 post.ts의 splitPostDetails(코드 블록 밖만 센다)를 그대로 쓴다.
+ */
+export function withCheckWarning(body: string, failure?: RoutineCheckFailure): string {
+  if (!failure) return body;
+  const text = body.replace(/\r\n/g, "\n");
+  const { summary } = splitPostDetails(text);
+  const warning = routineCheckWarning(failure);
+  if (summary === text) return `${closeOpenFence(text.trimEnd())}\n\n${warning}`;
+  return `${summary}\n\n${warning}${text.slice(summary.length).replace(/^\n*/, "\n\n")}`;
+}
+
+/**
+ * 끝까지 닫히지 않은 코드 블록(잘린 답)이면 경고가 블록 안에 묻히지 않게 닫는 줄을 붙인다. 열려 있는지는 splitPostDetails로
+ * 확인한다: 뒤에 붙인 `## 자세히`가 인식되면 블록이 닫힌 것이다.
+ */
+function closeOpenFence(text: string): string {
+  const closedAt = (candidate: string) => splitPostDetails(`${candidate}\n\n## 자세히\nx`).details !== null;
+  if (closedAt(text)) return text;
+  const longest = (text.match(/^\s{0,3}(?:`{3,}|~{3,})/gm) ?? []).reduce((max, run) => Math.max(max, run.trim().length), 3);
+  for (const char of ["`", "~"]) {
+    const closed = `${text}\n${char.repeat(longest)}`;
+    if (closedAt(closed)) return closed;
+  }
+  return text;
+}
 
 /**
  * 루틴 한 회차: 새 세션을 열어 지시문을 보내고, 세션이 끝날 때까지 서버 안에서 지켜본 뒤 마지막 답을 게시판 글로
@@ -276,7 +304,7 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
   }
   if (raw.split("\n", 1)[0].replace(/\r$/, "") === "[답 필요]") return { result: waitingAnswer(raw), closed };
   let revisionRaw: string | undefined;
-  const body = enabled ? await checkRoutineAnswer({
+  const checked = enabled ? await checkRoutineAnswer({
     instruction: continuation ? `${routine.prompt}\n\n사용자 답장:\n${continuation.pending.map((r) => r.body).join("\n\n")}` : routine.prompt, answer, deadline, check: runRoutineChecker,
     log: (message) => log(`${routine.id} ${message}`),
     revise: async (message, revisionDeadline) => {
@@ -292,9 +320,10 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
       revisionRaw = result.value;
       return result.value;
     },
-  }) : answer;
-  const marked = waitingAnswer(revisionRaw?.trim() === body ? revisionRaw : raw);
-  return { result: { status: marked.status, body: marked.status === "waiting" ? marked.body : body }, closed };
+  }) : { body: answer };
+  const marked = waitingAnswer(revisionRaw?.trim() === checked.body ? revisionRaw : raw);
+  // 경고는 표지를 읽은 뒤 실제 게시 본문 끝에 붙인다: 제목(첫 제목 줄)과 미리보기는 그대로다.
+  return { result: { status: marked.status, body: withCheckWarning(marked.status === "waiting" ? marked.body : checked.body, checked.failure) }, closed };
 }
 
 /** 글을 커밋해 올린다. 그사이 루틴이 지워졌으면 글을 쓰지 않는다(지운 폴더를 되살리지 않는다). */

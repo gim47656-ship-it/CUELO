@@ -136,7 +136,11 @@ function StatusBadge({ status, t }: { status: RoutinePostSummary["status"]; t: T
 }
 
 function EnabledBadge({ routine, t }: { routine: BoardRoutine; t: T }) {
-  return <span className={styles.badge} data-status={routine.enabled ? "on" : "off"}>{routine.enabled ? t("routines.on") : t("routines.off")}</span>;
+  const external = routine.externalPostingEnabled;
+  return <>
+    <span className={styles.badge} data-status={routine.enabled ? "on" : "off"}>{external === undefined ? (routine.enabled ? t("routines.on") : t("routines.off")) : (routine.enabled ? "예약 켜짐" : "예약 꺼짐")}</span>
+    {external !== undefined ? <span className={styles.badge} data-status={external ? "on" : "off"}>{external ? "외부 소식 수신 중" : "외부 소식 중지"}</span> : null}
+  </>;
 }
 
 function SyncLine({ data, t }: { data: BoardData; t: T }) {
@@ -156,20 +160,28 @@ function SyncLine({ data, t }: { data: BoardData; t: T }) {
 /** 확인 없이 바로 끄고 켜는 버튼. 끝나면 다른 PC에 언제 닿는지 알린다. */
 function ToggleButton({ routine, t, onMessage }: { routine: BoardRoutine; t: T; onMessage: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const toggle = async () => {
+  const toggle = async (key: "enabled" | "externalPostingEnabled") => {
     setBusy(true);
-    const enabled = !routine.enabled;
+    const enabled = !routine[key];
     const result = await request(`/api/routines/${encodeURIComponent(routine.id)}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [key]: enabled }),
     }, t);
-    onMessage(result.ok ? t(enabled ? "routines.toggledOn" : "routines.toggledOff", { name: routine.name }) : result.error);
-    await refreshRoutineBoard();
+    onMessage(result.ok ? (key === "externalPostingEnabled"
+      ? `${routine.name} 외부 소식 수신을 ${enabled ? "켰습니다" : "껐습니다"}. 폰이 설정을 동기화한 다음 회차부터 적용됩니다.`
+      : t(enabled ? "routines.toggledOn" : "routines.toggledOff", { name: routine.name })) : result.error);
+    await refreshRoutineBoard(true);
     setBusy(false);
   };
   return (
-    <button type="button" className={styles.button} data-variant={routine.enabled ? "off" : undefined} disabled={busy} onClick={() => void toggle()}>
-      {routine.enabled ? t("routines.turnOff") : t("routines.turnOn")}
-    </button>
+    <>
+      <button type="button" className={styles.button} data-variant={routine.enabled ? "off" : undefined} disabled={busy} onClick={() => void toggle("enabled")}>
+        {routine.externalPostingEnabled === undefined ? (routine.enabled ? t("routines.turnOff") : t("routines.turnOn")) : (routine.enabled ? "예약 끄기" : "예약 켜기")}
+      </button>
+      {routine.externalPostingEnabled !== undefined ? <button type="button" className={styles.button} data-variant={routine.externalPostingEnabled ? "off" : undefined} disabled={busy} onClick={() => void toggle("externalPostingEnabled")}
+        title="폰이 설정을 동기화한 다음 회차부터 적용됩니다. 이미 만들어진 글과 텔레그램 수집, 봇 전송은 그대로 유지됩니다.">
+        {routine.externalPostingEnabled ? "외부 소식 끄기" : "외부 소식 받기"}
+      </button> : null}
+    </>
   );
 }
 

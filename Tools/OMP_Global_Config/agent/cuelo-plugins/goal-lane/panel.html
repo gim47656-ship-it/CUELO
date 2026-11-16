@@ -183,8 +183,9 @@
   "use strict";
   // Reads the lines goal-lane's frameLines() writes (index.ts). Lines it does not recognise
   // are shown as plain text at the end, so a format change degrades instead of vanishing.
-  const STATES = { "확인됨": "checked", "파일 존재만": "exists", "자기 보고만": "self", "근거 없음": "none" };
-  const DELIVERABLE = /^\[(확인됨|파일 존재만|자기 보고만|근거 없음)\] ([^:]+): ([\s\S]*)$/;
+  // "확인됨" is the label older frames saved for an observed command/URL/vision check; it renders as an observation too.
+  const STATES = { "근거 관측됨": "checked", "확인됨": "checked", "파일 존재만": "exists", "자기 보고만": "self", "근거 없음": "none" };
+  const DELIVERABLE = /^\[(근거 관측됨|확인됨|파일 존재만|자기 보고만|근거 없음)\] ([^:]+): ([\s\S]*)$/;
   const PROOF = / — (file|command|url|observation): ([\s\S]*)$/;
   const PROOF_LABEL = { file: "파일", command: "명령", url: "URL", observation: "관측" };
 
@@ -208,7 +209,7 @@
         const cut = rest.indexOf(" — 확인: ");
         model.items.push({
           state: STATES[match[1]],
-          label: match[1],
+          label: match[1] === "확인됨" ? "근거 관측됨" : match[1],
           id: match[2],
           what: cut >= 0 ? rest.slice(0, cut) : rest,
           check: cut >= 0 ? rest.slice(cut + 7) : "",
@@ -255,7 +256,7 @@
       const progress = el("section", "progress");
       const head = el("div", "progress-head");
       const tally = el("p", "tally");
-      tally.append(el("strong", "", String(done)), document.createTextNode(` / ${model.items.length} 확인됨`));
+      tally.append(el("strong", "", String(done)), document.createTextNode(` / ${model.items.length} 근거 관측됨`));
       head.append(el("h2", "label", "산출물"), tally);
       const bar = el("div", "bar");
       bar.setAttribute("aria-hidden", "true");

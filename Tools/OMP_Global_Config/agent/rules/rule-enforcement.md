@@ -37,7 +37,7 @@ description: Read when correcting agent mistakes or changing rules; maps enforce
 
 | ID | 규칙 | 수준 | 근거 | 비고 |
 |---|---|---|---|---|
-| R1 | 가장 작은 변경, 범위 밖 미변경 | 차단(부분) | `extensions/command-guard/index.ts` `ownerWriteBlockReason`(OwnerWriteGuard), `evals/cases/routine/scope-protection.json` | Maker끼리 OWNED_PATHS 침범만 막는다. 최소성 자체는 문서 |
+| R1 | 가장 작은 변경, 범위 밖 미변경 | 차단(부분) | `extensions/command-guard/index.ts` `ownerWriteBlockReason`(OwnerWriteGuard), `evals/cases/routine/scope-protection.json` | Maker끼리 OWNED_PATHS 침범만 막는다. 최소성 자체는 문서. 공유 작업 트리 전체 stash 저장과 적용은 현재 matcher가 허용한다. `subagent.md`의 별도 사본 비교 규칙은 문서 수준이다(2026-11-16 공유 변경 임시 제거 사례). |
 | R2 | AI가 더하는 개선은 실패·최소·완료 관측을 먼저 밝힌다 | 문서 | — | 2026-10-28 지적(완료 뒤 자발 측정, "그걸왜함?") |
 | R3 | UX, DX, AX의 절충과 설계 및 수용 근거를 드러내고 AI 재평가를 독립 검증으로 보지 않는다 | eval(부분) | `evals/cases/security/missing-evidence.json` | AX는 에이전트 경험. 경험 간 균형 판단은 문서 수준이며 기존 eval이 이를 검증하지는 않는다 |
 | R4 | 테스트와 fallback 등은 규약이나 실제 실패 모드가 있을 때만 추가하고, helper는 추출 목적, 필드와 설정은 현재 요구나 소비자를 확인한다 | 문서 | — | helper는 재사용, 조합, 복잡한 경계, 호출부를 설명하는 이름이 기준이다. 도메인 사실을 만들지 않는다 |

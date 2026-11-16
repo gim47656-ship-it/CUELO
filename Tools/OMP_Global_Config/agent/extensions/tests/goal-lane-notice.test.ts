@@ -38,7 +38,7 @@ test("pending reminder retains IDs, status exposes full checks, and verified evi
  await call({ op: "evidence", id: "report", kind: "command", value: check });
  const checked = await emit("tool_result", { toolName: "task", input: {}, content: [], isError: false });
  expect(checked).toEqual([undefined]);
- expect((await call({ op: "status" })).content[0].text).toContain("[확인됨] report");
+ expect((await call({ op: "status" })).content[0].text).toContain("[근거 관측됨] report");
 });
 
 test("frames never change the system prompt; the frame is re-shown as a message only when the conversation lost it", async () => {
@@ -150,4 +150,132 @@ test("an ending that waits on the user's decision or input draws no turn-end rem
   await emit("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: `설치 창을 열었어요.\n\n${ending}` }] }] });
   expect({ ending, notices: notices.filter((notice) => notice.customType === "goal-lane").length }).toEqual({ ending, notices: 0 });
  }
+});
+
+type Deliverable = { id: string; what: string; check: string; path?: string };
+
+async function lane() {
+ const handlers = new Map<string, Handler[]>();
+ let tool: GoalTool;
+ const entries: { type: string; customType: string; data: unknown }[] = [];
+ const ctx = { cwd: process.cwd(), agent: { kind: "main" }, sessionManager: { getBranch: () => entries }, ui: { setWidget() {} } };
+ goalLane({
+  zod: z,
+  on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+  registerTool(value: GoalTool) { tool = value; },
+  sendMessage() {},
+  appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
+ } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
+ const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
+ const call = async (params: unknown) => (await tool.execute("goal-test", params, undefined, undefined, ctx)).content[0].text;
+ await emit("session_start", {});
+ await emit("input", { source: "rpc", text: "Check the output." });
+ const frame = (deliverables: Deliverable[]) => call({ op: "frame", goal: "Output", size: "normal", deliverables });
+ const ran = (command: string, exitCode: number) => emit("tool_result", { toolName: "bash", input: { command }, details: { exitCode }, content: [], isError: exitCode !== 0 });
+ const reminder = async () => ((await emit("tool_result", { toolName: "task", input: {}, content: [], isError: false }))[0] as ContextNotice)?.additionalContext;
+ return { call, frame, ran, reminder, ctx };
+}
+
+test("a successful but unrelated command is reported as observed evidence, never as a met requirement", async () => {
+ const { call, frame, ran, reminder } = await lane();
+ await frame([{ id: "out", what: "The report renders every section", check: "open the report and compare every section" }]);
+ expect(await reminder()).toContain("out[근거 없음]");
+ await ran("true", 0);
+ const text = await call({ op: "evidence", id: "out", kind: "command", value: "true" });
+ expect(text).toContain("out: 근거 관측됨");
+ expect(text).toContain("요구 충족 여부와 근거의 관련성은 Main이 직접 판단한다");
+ expect(text).not.toMatch(/검증됐다|확인됨|확인 방법대로 검증/);
+ expect((await call({ op: "status" }))).toContain("[근거 관측됨] out");
+ expect(await reminder()).toBeUndefined();
+});
+
+test("pending guidance says observed evidence is not acceptance and Main assesses relevance", async () => {
+ const { frame, reminder } = await lane();
+ await frame([{ id: "out", what: "w", check: "c" }]);
+ const text = await reminder();
+ expect(text).toContain("요구 충족 증명이 아니며");
+ expect(text).toContain("Main이 직접 판단한다");
+ expect(text).not.toContain("검증된 근거");
+});
+
+test("evidence carries over a re-frame only for an identical id, check, what and normalized path", async () => {
+ const { call, frame, ran, ctx } = await lane();
+ const base: Deliverable = { id: "out", what: "The report", check: "node check.js" };
+ const cwd = (ctx as { cwd: string }).cwd;
+ const state = async () => ((await call({ op: "status" })).match(/\[([^\]]+)\] out/) ?? [])[1];
+ const seed = async (item: Deliverable) => {
+  await frame([item]);
+  await ran(item.check, 0);
+  await call({ op: "evidence", id: "out", kind: "command", value: item.check });
+  expect(await state()).toBe("근거 관측됨");
+ };
+ const cases: [string, Deliverable, Deliverable, string][] = [
+  ["identical, both paths absent", base, { ...base }, "근거 관측됨"],
+  ["trim-equal check and what", base, { ...base, what: "  The report ", check: " node check.js " }, "근거 관측됨"],
+  ["what changed", base, { ...base, what: "A different report" }, "근거 없음"],
+  ["check changed", base, { ...base, check: "node other.js" }, "근거 없음"],
+  ["path absent to present", base, { ...base, path: "out.txt" }, "근거 없음"],
+  ["path present to absent", { ...base, path: "out.txt" }, base, "근거 없음"],
+  ["path changed", { ...base, path: "out.txt" }, { ...base, path: "other.txt" }, "근거 없음"],
+  ["relative and absolute path agree", { ...base, path: "out/../out.txt" }, { ...base, path: `${cwd}/./out.txt` }, "근거 관측됨"],
+ ];
+ for (const [name, before, after, expected] of cases) {
+  await seed(before);
+  await frame([after]);
+  expect({ name, state: await state() }).toEqual({ name, state: expected });
+ }
+});
+
+test("a later failure revokes the same command's success while independent evidence stays", async () => {
+ const { call, frame, ran } = await lane();
+ await frame([{ id: "out", what: "w", check: "c" }]);
+ await ran("first-check", 0);
+ await call({ op: "evidence", id: "out", kind: "command", value: "first-check" });
+ await ran("first-check", 1);
+ await call({ op: "evidence", id: "out", kind: "command", value: "first-check" });
+ expect(await call({ op: "status" })).toContain("[자기 보고만] out");
+ await ran("second-check", 0);
+ await call({ op: "evidence", id: "out", kind: "command", value: "second-check" });
+ expect(await call({ op: "status" })).toContain("[근거 관측됨] out");
+ await ran("second-check", 1);
+ await call({ op: "evidence", id: "out", kind: "command", value: "second-check" });
+ expect(await call({ op: "status" })).toContain("[자기 보고만] out");
+});
+
+test("panel parses and renders old and new observed labels with the same tally", async () => {
+ const html = await Bun.file(new URL("../../cuelo-plugins/goal-lane/panel.html", import.meta.url)).text();
+ const script = html.match(/<script>([\s\S]*)<\/script>/)![1];
+ type Node = { tag: string; className: string; text: string; dataset: Record<string, string>; children: Node[]; title?: string };
+ const make = (tag: string): Node & Record<string, unknown> => {
+  const node: Node & Record<string, unknown> = {
+   tag, className: "", text: "", dataset: {}, children: [],
+   set textContent(value: string) { node.text = value; },
+   append(...items: (Node | string)[]) { for (const item of items) node.children.push(typeof item === "string" ? { ...make("#text"), text: item } : item); },
+   replaceChildren(...items: Node[]) { node.children = items; },
+   setAttribute() {}, cloneNode() { return node; }, childNodes: [],
+  } as never;
+  return node;
+ };
+ const root = make("main");
+ let listener: (event: { data: unknown }) => void = () => {};
+ const document = {
+  documentElement: { dataset: {} },
+  getElementById: () => root,
+  createElement: make,
+  createTextNode: (text: string) => ({ ...make("#text"), text }),
+ };
+ new Function("document", "window", "parent", script)(document, { addEventListener: (_: string, fn: typeof listener) => { listener = fn; } }, { postMessage() {} });
+ const dump = (node: Node): string => `${node.text}${node.children.map(dump).join("|")}`;
+ const render = (state: string) => {
+  listener({ data: { type: "cuelo-lab:state", lines: ["목표: g", "크기: normal", `[${state}] a: What — 확인: check — command: ran`, "[파일 존재만] b: File — 확인: c2"] } });
+  return dump(root);
+ };
+ const modern = render("근거 관측됨");
+ const legacy = render("확인됨");
+ for (const out of [modern, legacy]) {
+  expect(out).toContain("1| / 2 근거 관측됨");
+  expect(out).toContain("근거 관측됨");
+ }
+ expect(legacy).not.toContain("|확인됨");
+ expect(legacy.replace(/확인됨/g, "")).toBe(modern.replace(/확인됨/g, ""));
 });

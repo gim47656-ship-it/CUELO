@@ -824,6 +824,7 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - 허용 경로는 저장소 루트가 아니라 정확한 프로젝트 폴더로 적는다.
 - SubAgent에게 staging·commit·push, raw Git fallback이나 파괴 명령을 맡기지 않는다. 마감은 증거를
   수용한 Main이 정확한 파일 목록과 message를 `git_finalize`에 넘기는 것이다.
+- 공유 작업 트리에서 비교 검사를 하려고 전체 `git stash`를 저장하거나 적용하지 않는다. 기준선은 별도 사본에서 실행하고, 프로세스 정리도 자신이 시작한 PID만 대상으로 한다.
 - `git_finalize` 입력은 상대경로 canonical target만 받는다. session cwd의 저장소를 먼저 찾고, 각
   target은 path namespace를 유지한 채 가장 가까운 기존 parent에서 저장소를 찾는다. 삭제 파일도
   같은 방식이며 모든 target은 같은 repoRoot와 `git common-dir`에 속해야 한다.

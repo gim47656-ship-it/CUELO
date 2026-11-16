@@ -64,21 +64,23 @@ export async function PATCH(req: Request, { params }: Params) {
   if (blocked) return blocked;
   const { id } = await params;
   if (!isRoutineId(id)) return NextResponse.json({ error: "Invalid routine id" }, { status: 400 });
-  let body: { enabled?: unknown };
+  let body: { enabled?: unknown; externalPostingEnabled?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  if (typeof body?.enabled !== "boolean") return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
-  const enabled = body.enabled;
+  const key = body?.externalPostingEnabled !== undefined ? "externalPostingEnabled" : "enabled";
+  if (body?.enabled !== undefined && body?.externalPostingEnabled !== undefined) return NextResponse.json({ error: "Change one switch at a time" }, { status: 400 });
+  const enabled = body?.[key];
+  if (typeof enabled !== "boolean") return NextResponse.json({ error: `${key} must be a boolean` }, { status: 400 });
   const dir = routinesDir();
   try {
-    const routine = await commitRoutineChange(dir, `routine(${id}): ${enabled ? "enable" : "disable"}`, () => {
+    const routine = await commitRoutineChange(dir, `routine(${id}): ${key} ${enabled ? "enable" : "disable"}`, () => {
       const current = readRoutine(dir, id);
       if (!current) throw new NotFound();
-      if (current.enabled === enabled && current.timezone === ROUTINE_TIMEZONE) return { paths: [], result: current };
-      const next: Routine = { ...current, enabled, timezone: ROUTINE_TIMEZONE, updatedAt: new Date().toISOString() };
+      if (current[key] === enabled && current.timezone === ROUTINE_TIMEZONE) return { paths: [], result: current };
+      const next: Routine = { ...current, [key]: enabled, timezone: ROUTINE_TIMEZONE, updatedAt: new Date().toISOString() };
       return { paths: [writeRoutineFile(dir, next)], result: next };
     });
     return NextResponse.json({ routine, sync: getRoutineSyncState() });
