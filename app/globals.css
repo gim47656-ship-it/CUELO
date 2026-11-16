@@ -7235,6 +7235,12 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   align-self: flex-start;
 }
 
+/* Original-line help belongs below its bubble, never beside the two transcript streams. */
+.translator-stream[data-role="user"] .translator-entry {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .translator-bubble {
   display: flex;
   flex-direction: column;
@@ -7629,6 +7635,10 @@ button.translator-bubble > .translator-translation {
   overscroll-behavior: contain;
 }
 
+.translator-card-box[data-overflow="true"] .translator-card-text {
+  overflow-wrap: anywhere;
+}
+
 .translator-card-text {
   margin: 0;
   max-inline-size: 100%;
@@ -7636,7 +7646,8 @@ button.translator-bubble > .translator-translation {
   font-weight: 700;
   line-height: 1.2;
   text-align: center;
-  overflow-wrap: anywhere;
+  /* 낱말을 쪼개지 않아야 맞춤이 긴 낱말의 가로 넘침을 보고 글자를 줄인다. 가장 작은 글자로도 넘칠 때만 쪼갠다. */
+  overflow-wrap: normal;
 }
 
 .translator-card-text:lang(ko) {

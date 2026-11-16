@@ -68,6 +68,45 @@ export type InterpreterTextEvent =
   | { type: "done"; text: string; source: string; target: string; reading?: string }
   | { type: "error"; error: "live-auth" | "live-upstream" };
 
+/** Optional help is separate from interpretation and may be omitted entirely. */
+export interface InterpreterAssistParts { replies: boolean; nuance: boolean; check: boolean }
+export interface InterpreterAssistResult {
+  replies?: { mine: string; theirs: string }[];
+  nuance?: string;
+  backTranslation?: string;
+  warning?: string;
+}
+
+/** Drop malformed or disabled fields independently, including responses from an older server. */
+export function cleanInterpreterAssist(value: unknown, parts: InterpreterAssistParts, speaker: "mine" | "theirs"): InterpreterAssistResult {
+  if (!value || typeof value !== "object") return {};
+  const raw = value as Record<string, unknown>;
+  const line = (text: unknown, max: number): string | undefined =>
+    typeof text === "string" && text.trim() && text.length <= max ? text.replace(/\s+/g, " ").trim() : undefined;
+  const result: InterpreterAssistResult = {};
+  if (speaker === "theirs") {
+    if (parts.replies && Array.isArray(raw.replies)) {
+      const replies = raw.replies.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const mine = line(item.mine, 180);
+        const theirs = line(item.theirs, 300);
+        return mine && theirs ? [{ mine, theirs }] : [];
+      }).filter((reply, index, all) => all.findIndex((item) => item.theirs === reply.theirs) === index).slice(0, 3);
+      if (replies.length >= 2) result.replies = replies;
+    }
+    if (parts.nuance) {
+      const nuance = line(raw.nuance, 240);
+      if (nuance) result.nuance = nuance;
+    }
+  } else if (parts.check) {
+    const warning = line(raw.warning, 300);
+    const backTranslation = line(raw.backTranslation, INTERPRETER_TEXT_OUTPUT_MAX_CHARS);
+    if (warning) result.warning = warning;
+    if (backTranslation) result.backTranslation = backTranslation;
+  }
+  return result;
+}
+
 export const EMPTY_INTERPRETER_CONTEXT: InterpreterContext = { profile: {}, history: [] };
 
 const pick = <T extends string>(allowed: readonly T[], value: unknown): T | undefined =>

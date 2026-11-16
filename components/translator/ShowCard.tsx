@@ -136,6 +136,8 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
     const text = textRef.current;
     if (!box || !text) return;
     const fit = () => {
+      // 앞 맞춤이 켠 낱말 쪼개기를 끄고 재야 긴 낱말이 다시 가로로 넘치는 것을 본다.
+      delete box.dataset.overflow;
       let low = FIT_MIN;
       let high = FIT_MAX;
       while (high - low > 1) {
@@ -145,8 +147,8 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
         else high = mid;
       }
       text.style.fontSize = `${low}px`;
-      // 가장 작은 글자로도 넘치는 긴 줄은 잘라 숨기지 않고 카드 안에서 위에서부터 스크롤한다.
-      const overflow = text.scrollHeight > box.clientHeight;
+      // 가장 작은 글자로도 넘치는 긴 줄(쪼갤 수 없는 긴 낱말 포함)은 잘라 숨기지 않고 쪼개서 카드 안에서 위에서부터 스크롤한다.
+      const overflow = text.scrollHeight > box.clientHeight || text.scrollWidth > box.clientWidth;
       if (overflow) box.dataset.overflow = "true";
       else delete box.dataset.overflow;
     };

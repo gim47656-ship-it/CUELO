@@ -6,10 +6,14 @@ import type { TranslatorLanguage } from "@/lib/translator-languages";
 import { useTranslatorText } from "./i18n";
 import styles from "./TypedInterpreter.module.css";
 import { readInterpreterTextEvents } from "./read-text-stream";
+import { LineAssist } from "./LineAssist";
+import { useLineAssist, type AssistSettings } from "./useLineAssist";
+import type { ShowCardContent } from "./ShowCard";
+import { hasNumericMismatch } from "@/lib/translator-numbers";
 
-interface Turn { source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string; /** Hangul reading of a ja/th/vi translation; display only. */ reading?: string }
+interface Turn { id: number; source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string; /** Hangul reading of a ja/th/vi translation; display only. */ reading?: string }
 
-export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile; visible: boolean }) {
+export function TypedInterpreter({ mine, theirs, profile, visible, assistSettings, onShow }: { mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile; visible: boolean; assistSettings: AssistSettings; onShow: (card: ShowCardContent) => void }) {
   const { tt } = useTranslatorText();
   const [source, setSource] = useState(mine.code);
   const [draft, setDraft] = useState("");
@@ -18,11 +22,15 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
   const [error, setError] = useState<"live-auth" | "live-upstream" | null>(null);
   const [provisional, setProvisional] = useState<Turn | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  const nextTurn = useRef(0);
   const composing = useRef(false);
   const latest = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const from = source === mine.code ? mine : theirs;
   const to = source === mine.code ? theirs : mine;
+  const assistLines = turns.map((turn) => ({ id: String(turn.id), mine: mine.code, theirs: theirs.code, speaker: turn.source.code === mine.code ? "mine" as const : "theirs" as const, text: turn.original, interpretation: turn.translation }));
+  const assists = useLineAssist(assistLines, assistSettings, { profile, history: turns.flatMap((turn) => [{ role: "user" as const, text: turn.original }, { role: "assistant" as const, text: turn.translation }]).slice(-INTERPRETER_TEXT_HISTORY_LINES) }, visible);
+  const latestOther = assistLines.findLast((line) => line.speaker === "theirs")?.id;
 
   useEffect(() => {
     if (!visible) { requestRef.current?.abort(); requestRef.current = null; setPending(false); setProvisional(null); }
@@ -40,7 +48,7 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
     const controller = new AbortController(); requestRef.current = controller;
     setPending(true); setError(null);
     const original = draft.trim();
-    setProvisional({ source: from, target: to, original, translation: "" });
+    setProvisional({ id: nextTurn.current, source: from, target: to, original, translation: "" });
     try {
       const response = await fetch("/api/live/interpret/text", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
@@ -61,7 +69,8 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
           setError(event.error);
         } else {
           if (event.source !== from.code || event.target !== to.code) throw new Error("Invalid translation direction");
-          setTurns((previous) => [...previous, { source: from, target: to, original, translation: event.text, ...(event.reading ? { reading: event.reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
+          const id = nextTurn.current++;
+          setTurns((previous) => [...previous, { id, source: from, target: to, original, translation: event.text, ...(event.reading ? { reading: event.reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
           setDraft("");
         }
       }
@@ -74,12 +83,15 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
 
   return <div className={styles.root} hidden={!visible}>
     <div className={styles.results} role="log" aria-label={tt("translator.conversation")}>
-      {turns.map((turn, index) => <article className={styles.turn} key={index}>
+      {turns.map((turn) => <article className={styles.turn} key={turn.id}>
         <p className={styles.label}>{tt("translator.original")} — {turn.source.nativeName}</p>
         <p className={styles.original} lang={turn.source.tag}>{turn.original}</p>
         <p className={styles.label}>{tt("translator.translation")} — {turn.target.nativeName}</p>
         <p className={styles.translation} lang={turn.target.tag}>{turn.translation}</p>
         {turn.reading ? <p className={styles.reading} lang="ko">{turn.reading}</p> : null}
+        <LineAssist result={assists.get(String(turn.id))} showReplies={assistSettings.replies && String(turn.id) === latestOther}
+          meaning={assistSettings.meaning} numericMismatch={assistSettings.meaning && turn.source.code === mine.code && hasNumericMismatch(turn.original, turn.translation)}
+          mine={mine} theirs={theirs} onShow={onShow} />
       </article>)}
       {provisional ? <article className={styles.turn} aria-busy="true">
         <p className={styles.label}>{tt("translator.original")} — {provisional.source.nativeName}</p>

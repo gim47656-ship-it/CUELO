@@ -1,5 +1,5 @@
 /**
- * 통역 화면이 덮어 띄우는 것(마주보기·보여주기 카드·자주 쓰는 문장)을 폰의 뒤로가기로 닫게 하는
+ * 통역 화면이 덮어 띄우는 것(마주보기·보여주기 카드·자주 쓰는 문장·사진 해설)을 폰의 뒤로가기로 닫게 하는
  * 기록 쌓기. 앱은 브라우저 기록을 쓰지 않으므로(doc/history/2026/11/15-routine-back-scroll) 이 화면은
  * 덮개 하나마다 같은 주소에 기록 한 칸을 얹고, 덮개를 닫으면 그 칸을 스스로 걷어 낸다. 뒤로가기가
  * 앱을 닫거나 통역 화면을 떠나는 일은 덮개가 열려 있는 동안 일어나지 않는다.
@@ -8,7 +8,7 @@
  * 덮개 목록만 넘기고, 여기서 몇 칸을 걷고 무엇을 얹을지 정한다.
  */
 
-export type OverlayMarker = "face" | "phrases" | "card";
+export type OverlayMarker = "face" | "phrases" | "scan" | "card";
 
 /** 이 화면이 얹은 기록 칸의 `history.state` 속 표시. 칸의 깊이(1부터)를 함께 둬 어디까지 돌아왔는지 안다. */
 export const HISTORY_MARKER_KEY = "cueloTranslator";

@@ -1,7 +1,7 @@
 "use client";
 
 import { ActionButton } from "@seed-design/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   HISTORY_MAX_LINES,
   PARTNER_AGES,
@@ -43,6 +43,9 @@ import { useStallLog } from "./useStallLog";
 import { useSpeech } from "./useSpeech";
 import { ShowCard, type ShowCardContent } from "./ShowCard";
 import { Phrasebook } from "./Phrasebook";
+import { CameraIcon, MenuScan } from "./MenuScan";
+import { LineAssist } from "./LineAssist";
+import { useLineAssist } from "./useLineAssist";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
@@ -80,6 +83,8 @@ interface Settings {
   noiseSuppression: boolean;
   /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
   fastDrafts: boolean;
+  assistReplies: boolean;
+  assistMeaning: boolean;
 }
 
 function readSettings(): Settings {
@@ -93,6 +98,8 @@ function readSettings(): Settings {
     echoGuard: true,
     noiseSuppression: false,
     fastDrafts: false,
+    assistReplies: true,
+    assistMeaning: true,
   };
   try {
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Record<string, unknown> | null;
@@ -112,6 +119,8 @@ function readSettings(): Settings {
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
+      assistReplies: saved.assistReplies !== false,
+      assistMeaning: saved.assistMeaning !== false,
     };
   } catch {
     return fallback;
@@ -322,13 +331,14 @@ interface StreamLogProps {
   /** 통역 흐름만 준다. 줄을 누르면 보여주기 카드로 띄운다. */
   onShow?: (card: ShowCardContent) => void;
   showLabel?: string;
+  renderAssist?: (line: Line) => ReactNode;
 }
 
 /**
  * 한 역할의 흐름(통역 또는 원문). 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는
  * 중이면 자리를 지키고 「최근 말로」 단추를 보인다.
  */
-function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, showLabel }: StreamLogProps) {
+function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, showLabel, renderAssist }: StreamLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
@@ -336,7 +346,7 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, 
   useEffect(() => {
     const log = logRef.current;
     if (log && stickRef.current) log.scrollTop = log.scrollHeight;
-  }, [lines, pending, layoutKey]);
+  }, [lines, pending, layoutKey, renderAssist]);
 
   const onScroll = () => {
     const log = logRef.current;
@@ -377,6 +387,7 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, 
                   </p>
                 </div>
               )}
+              {renderAssist?.(line)}
             </div>
           );
         })}
@@ -407,7 +418,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
   const [mode, setMode] = useState<"voice" | "text">("voice");
-  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts } = settings;
+  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistReplies, assistMeaning } = settings;
   const [restored] = useState(readConversation);
   const [segments, setSegments] = useState<TranscriptSegment[]>(restored.segments);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
@@ -421,6 +432,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   /** 크게 띄운 보여주기 카드. */
   const [card, setCard] = useState<ShowCardContent | null>(null);
   const [phrasesOpen, setPhrasesOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [shareNotice, setShareNotice] = useState<"copied" | "failed" | null>(null);
 
   useEffect(() => {
@@ -434,8 +446,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       echoGuard,
       noiseSuppression,
       fastDrafts,
+      assistReplies,
+      assistMeaning,
     }));
-  }, [echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
+  }, [assistMeaning, assistReplies, echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
 
   const reconcileDraftsRef = useRef<(segments: TranscriptSegment[]) => void>(() => {});
 
@@ -504,6 +518,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     if (visible) return;
     setCard(null);
     setPhrasesOpen(false);
+    setScanOpen(false);
   }, [visible]);
 
   // 대화는 조용해진 뒤, 그리고 앱이 가려지거나 닫힐 때 이 폰에 남긴다.
@@ -598,6 +613,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const displayLines = useMemo(() => mergeDisplay(segments, drafts.state), [segments, drafts.state]);
   const translations = useMemo(() => displayLines.filter((line) => line.segment.role === "assistant"), [displayLines]);
   const originals = useMemo(() => displayLines.filter((line) => line.segment.role === "user"), [displayLines]);
+  // Voice streams have no reliable pairing: help only known other-person originals.
+  const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
+    .slice(-HISTORY_MAX_LINES).map((segment) => ({ id: String(segment.id), mine: segment.mine.code, theirs: segment.theirs.code, speaker: "theirs" as const, text: segment.text }));
+  const voiceAssists = useLineAssist(voiceAssistLines, { replies: assistReplies, meaning: assistMeaning }, { profile, history: transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES) }, visible && mode === "voice" && !face);
+  const latestOtherOriginal = originals.findLast((line) => segmentSpeaker(line.segment) === "them")?.segment.id;
   const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
 
   const faceOn = face && mode === "voice";
@@ -609,11 +629,13 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   if (visible) {
     if (faceOn) overlays.push("face");
     if (phrasesOpen) overlays.push("phrases");
+    if (scanOpen) overlays.push("scan");
     if (card) overlays.push("card");
   }
   useOverlayHistory(overlays, (marker) => {
     if (marker === "card") setCard(null);
     else if (marker === "phrases") setPhrasesOpen(false);
+    else if (marker === "scan") setScanOpen(false);
     else {
       setSettings((previous) => ({ ...previous, face: false }));
       recordFace(false, "back");
@@ -841,6 +863,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               type="button"
               className="translator-icon-button"
               aria-haspopup="dialog"
+              aria-label={tt("translator.scan")}
+              title={tt("translator.scan")}
+              onClick={() => setScanOpen(true)}
+            >
+              <CameraIcon />
+            </button>
+            <button
+              type="button"
+              className="translator-icon-button"
+              aria-haspopup="dialog"
               aria-label={tt("translator.phrases")}
               title={tt("translator.phrases")}
               onClick={() => setPhrasesOpen(true)}
@@ -998,6 +1030,20 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               </label>
               <p id="translator-fast-drafts-hint" className="translator-options-note">{tt("translator.fastDraftsHint")}</p>
             </div> : null}
+            <div className="translator-options">
+              <label className="translator-toggle">
+                <input type="checkbox" checked={assistReplies} aria-describedby="translator-assist-replies-hint"
+                  onChange={(event) => setSettings({ ...settings, assistReplies: event.target.checked })} />
+                <span>{tt("translator.assistReplies")}</span>
+              </label>
+              <p id="translator-assist-replies-hint" className="translator-options-note">{tt("translator.assistRepliesHint")}</p>
+              <label className="translator-toggle">
+                <input type="checkbox" checked={assistMeaning} aria-describedby="translator-assist-meaning-hint"
+                  onChange={(event) => setSettings({ ...settings, assistMeaning: event.target.checked })} />
+                <span>{tt("translator.assistMeaning")}</span>
+              </label>
+              <p id="translator-assist-meaning-hint" className="translator-options-note">{tt("translator.assistMeaningHint")}</p>
+            </div>
             {segments.length > 0 ? (
               <ActionButton
                 variant="ghost"
@@ -1019,7 +1065,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           {tt(shareNotice === "copied" ? "translator.shareCopied" : "translator.shareFailed")}
         </p>
       ) : null}
-      <TypedInterpreter key={`${mine.code}>${theirs.code}`} mine={mine} theirs={theirs} profile={profile} visible={visible && mode === "text"} />
+      <TypedInterpreter key={`${mine.code}>${theirs.code}`} mine={mine} theirs={theirs} profile={profile} visible={visible && mode === "text"}
+        assistSettings={{ replies: assistReplies, meaning: assistMeaning }} onShow={setCard} />
       {mode === "voice" && (segments.length === 0 && !active ? (
         <div className="translator-log">
           <p className="translator-empty">{tt("translator.empty")}</p>
@@ -1043,6 +1090,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             pending={null}
             jumpLabel={tt("translator.jumpLatest")}
             layoutKey={layoutKey}
+            renderAssist={(line) => !line.draft && line.segment.final ? <LineAssist result={voiceAssists.get(String(line.segment.id))}
+              showReplies={assistReplies && line.segment.id === latestOtherOriginal} meaning={assistMeaning}
+              mine={line.segment.mine} theirs={line.segment.theirs} onShow={setCard} /> : null}
           />
         </div>
       ))}
@@ -1051,6 +1101,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
         {callButton(active)}
       </div> : null}
       {phrasesOpen ? <Phrasebook mine={mine} theirs={theirs} onShow={setCard} onClose={() => setPhrasesOpen(false)} /> : null}
+      {scanOpen ? <MenuScan mine={mine} theirs={theirs} onShow={setCard} onClose={() => setScanOpen(false)} /> : null}
       {cardLayer}
     </section>
   );

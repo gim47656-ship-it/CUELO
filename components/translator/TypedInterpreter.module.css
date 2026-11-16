@@ -37,3 +37,13 @@
   .field textarea { min-height: 70px; max-height: 24dvh; }
 }
 .reading { margin: -8px 0 12px; color: var(--text-muted); font-size: 14px; line-height: 1.4; word-break: keep-all; overflow-wrap: anywhere; }
+.assist { margin-top: 8px; max-width: 100%; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.nuance { margin: 0 0 8px; color: var(--text-muted); }
+.nuance span, .warning span { font-weight: 600; }
+.warning { color: var(--warning); margin-bottom: 8px; }
+.warning p { margin: 0; }
+.backTranslation { color: var(--text-muted); margin-top: 4px !important; }
+.replies { display: flex; flex-wrap: wrap; gap: 8px; }
+.replies button { border: 0; border-radius: var(--radius-control, 4px); padding: 8px 12px; min-height: 44px; max-width: 100%; background: var(--bg-hover); color: var(--text); font: inherit; text-align: start; word-break: keep-all; overflow-wrap: anywhere; cursor: pointer; }
+.replies button:hover, .replies button:focus-visible { background: var(--bg-selected); }
+.replies button:active { background: var(--bg-selected); }
