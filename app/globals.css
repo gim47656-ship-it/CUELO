@@ -7643,6 +7643,27 @@ button.translator-bubble > .translator-translation {
   word-break: keep-all;
 }
 
+/* 글과 발음을 한 묶음으로 키운다. 맞춤은 이 묶음의 글자 크기를 바꾸고 발음은 그 비율을 따른다. */
+.translator-card-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3em;
+  max-inline-size: 100%;
+}
+
+/* 한글 발음: 외국어 글 아래 작고 흐리게. 읽어 주기와 공유에는 쓰지 않는 보조 글이다. */
+.translator-card-reading {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: max(15px, 0.42em);
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: center;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
 .translator-card-note {
   margin: 0;
   color: var(--text-muted);
@@ -7855,6 +7876,14 @@ button.translator-bubble > .translator-translation {
   font-size: var(--seed-font-size-t5-static);
   font-weight: 600;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.translator-reading {
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  line-height: 1.4;
+  word-break: keep-all;
   overflow-wrap: anywhere;
 }
 

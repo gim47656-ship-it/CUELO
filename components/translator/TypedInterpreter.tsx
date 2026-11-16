@@ -7,7 +7,7 @@ import { useTranslatorText } from "./i18n";
 import styles from "./TypedInterpreter.module.css";
 import { readInterpreterTextEvents } from "./read-text-stream";
 
-interface Turn { source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string }
+interface Turn { source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string; /** Hangul reading of a ja/th/vi translation; display only. */ reading?: string }
 
 export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile; visible: boolean }) {
   const { tt } = useTranslatorText();
@@ -61,7 +61,7 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
           setError(event.error);
         } else {
           if (event.source !== from.code || event.target !== to.code) throw new Error("Invalid translation direction");
-          setTurns((previous) => [...previous, { source: from, target: to, original, translation: event.text }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
+          setTurns((previous) => [...previous, { source: from, target: to, original, translation: event.text, ...(event.reading ? { reading: event.reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
           setDraft("");
         }
       }
@@ -79,6 +79,7 @@ export function TypedInterpreter({ mine, theirs, profile, visible }: { mine: Tra
         <p className={styles.original} lang={turn.source.tag}>{turn.original}</p>
         <p className={styles.label}>{tt("translator.translation")} — {turn.target.nativeName}</p>
         <p className={styles.translation} lang={turn.target.tag}>{turn.translation}</p>
+        {turn.reading ? <p className={styles.reading} lang="ko">{turn.reading}</p> : null}
       </article>)}
       {provisional ? <article className={styles.turn} aria-busy="true">
         <p className={styles.label}>{tt("translator.original")} — {provisional.source.nativeName}</p>

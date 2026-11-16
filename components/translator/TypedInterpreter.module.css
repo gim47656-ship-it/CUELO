@@ -36,3 +36,4 @@
   .submit { grid-column: 2; grid-row: 2; align-self: end; }
   .field textarea { min-height: 70px; max-height: 24dvh; }
 }
+.reading { margin: -8px 0 12px; color: var(--text-muted); font-size: 14px; line-height: 1.4; word-break: keep-all; overflow-wrap: anywhere; }

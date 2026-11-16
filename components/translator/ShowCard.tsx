@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { READING_LANGUAGES } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
 import { useTranslatorText } from "./i18n";
 import type { Speech } from "./useSpeech";
@@ -8,6 +9,10 @@ import type { Speech } from "./useSpeech";
 export interface ShowCardContent {
   text: string;
   language: TranslatorLanguage;
+  /** 일본어·태국어·베트남어 줄의 한글 발음. 없으면 카드가 한 번 받아 온다. 읽어 주기에는 쓰지 않는다. */
+  reading?: string;
+  /** 카드가 받아 온 발음을 넘겨받는 곳(자주 쓰는 문장의 저장소). */
+  onReading?: (reading: string) => void;
   /** 카드 아래에 작게 보일 원문(자주 쓰는 문장). 통역 줄은 원문과 짝을 모르므로 없다. */
   note?: { text: string; language: TranslatorLanguage };
   /** 마주보기 위 칸(상대 쪽)에서 열었으면 상대가 읽게 뒤집는다. */
@@ -20,6 +25,32 @@ interface ShowCardProps {
   onClose: () => void;
   /** 숫자·단위를 강조해 그리는 함수. 통역 줄과 같은 강조를 쓴다. */
   renderText: (text: string) => ReactNode;
+}
+
+/** 이번 페이지에서 받아 온 발음(`null`은 물었지만 못 받음). 같은 줄을 다시 열면 다시 묻지 않는다. */
+const readingCache = new Map<string, string | null>();
+/** 아직 오는 중인 발음 요청. 카드를 닫았다 다시 열어도 같은 요청을 함께 기다린다. */
+const readingRequests = new Map<string, Promise<string | null>>();
+
+/** 줄 하나의 발음을 페이지마다 한 번만 묻는다. 카드를 닫아도 요청은 끝까지 가서 결과를 남긴다. */
+function loadReading(key: string, text: string, language: TranslatorLanguage): Promise<string | null> {
+  const running = readingRequests.get(key);
+  if (running) return running;
+  const request = fetch("/api/live/interpret/reading", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, language: language.code }),
+  }).then(async (response) => {
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    return body && typeof body === "object" && "reading" in body && typeof body.reading === "string" && body.reading.trim() ? body.reading : null;
+  }).catch(() => null).then((reading) => {
+    readingCache.set(key, reading);
+    readingRequests.delete(key);
+    return reading;
+  });
+  readingRequests.set(key, request);
+  return request;
 }
 
 const FIT_MIN = 20;
@@ -42,7 +73,39 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
   const { tt } = useTranslatorText();
   const dialogRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  const textRef = useRef<HTMLParagraphElement>(null);
+  const textRef = useRef<HTMLDivElement>(null);
+
+  // 발음: 받은 것이 있으면 그것, 없으면 이번 페이지에서 받아 둔 것, 그래도 없으면 한 번 받아 온다.
+  const readingKey = `${card.language.code}\u0000${card.text}`;
+  const wantsReading = READING_LANGUAGES.includes(card.language.code);
+  const [fetched, setFetched] = useState<{ key: string; reading: string } | null>(null);
+  const reading = wantsReading
+    ? card.reading ?? (fetched?.key === readingKey ? fetched.reading : readingCache.get(readingKey) ?? undefined)
+    : undefined;
+  const cardRef = useRef(card);
+  cardRef.current = card;
+  useEffect(() => {
+    const { text, language, reading: given } = cardRef.current;
+    if (!READING_LANGUAGES.includes(language.code) || given) return;
+    const known = readingCache.get(readingKey);
+    if (known !== undefined) {
+      // Already asked on this page: reuse it (and let an old phrase keep it), never ask again after a miss.
+      if (known) cardRef.current.onReading?.(known);
+      return;
+    }
+    // A failed or empty answer leaves the card as it is; the result (miss included) is remembered for this page.
+    let active = true;
+    const { onReading } = cardRef.current;
+    void loadReading(readingKey, text, language).then((value) => {
+      if (!value) return;
+      // Save it for the phrase that asked even if the card closed meanwhile; only the display needs the card.
+      onReading?.(value);
+      if (active) setFetched({ key: readingKey, reading: value });
+    });
+    return () => {
+      active = false;
+    };
+  }, [readingKey]);
   const onCloseRef = useRef(onClose);
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -91,7 +154,7 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
     const observer = new ResizeObserver(fit);
     observer.observe(box);
     return () => observer.disconnect();
-  }, [card.text]);
+  }, [card.text, reading]);
 
   // 카드 안에서만 Tab이 돈다.
   const trapTab = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -121,9 +184,12 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
       onKeyDown={trapTab}
     >
       <div ref={boxRef} className="translator-card-box">
-        <p ref={textRef} className="translator-card-text" lang={card.language.tag}>
-          {renderText(card.text)}
-        </p>
+        <div ref={textRef} className="translator-card-content">
+          <p className="translator-card-text" lang={card.language.tag}>
+            {renderText(card.text)}
+          </p>
+          {reading ? <p className="translator-card-reading" lang="ko">{reading}</p> : null}
+        </div>
       </div>
       {card.note ? (
         <p className="translator-card-note" lang={card.note.language.tag}>{card.note.text}</p>

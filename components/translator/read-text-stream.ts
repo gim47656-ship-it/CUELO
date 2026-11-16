@@ -17,7 +17,7 @@ export async function* readInterpreterTextEvents(body: ReadableStream<Uint8Array
         const event = JSON.parse(frame.slice(6)) as InterpreterTextEvent;
         if (!event || (event.type !== "delta" && event.type !== "done" && event.type !== "error")) throw new Error("Invalid interpreter stream event");
         if (event.type === "delta" && typeof event.text !== "string") throw new Error("Invalid interpreter delta");
-        if (event.type === "done" && (typeof event.text !== "string" || !event.text.trim() || typeof event.source !== "string" || typeof event.target !== "string")) throw new Error("Invalid interpreter completion");
+        if (event.type === "done" && (typeof event.text !== "string" || !event.text.trim() || typeof event.source !== "string" || typeof event.target !== "string" || (event.reading !== undefined && typeof event.reading !== "string"))) throw new Error("Invalid interpreter completion");
         if (event.type === "error" && event.error !== "live-auth" && event.error !== "live-upstream") throw new Error("Invalid interpreter failure");
         yield event;
         if (event.type !== "delta") return;

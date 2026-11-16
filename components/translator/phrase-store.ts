@@ -55,10 +55,16 @@ export interface CustomPhrase {
   lang: string;
 }
 
+/** 옮겨 둔 문장 하나. `reading`은 일본어·태국어·베트남어 번역의 한글 발음이며 화면 표시 전용이다. */
+export interface CachedPhrase {
+  translation: string;
+  reading?: string;
+}
+
 export interface PhrasebookData {
   custom: CustomPhrase[];
   /** 옮긴 문장. 키는 `phraseCacheKey`, 넣은 차례가 오래된 차례다. */
-  cache: Record<string, string>;
+  cache: Record<string, CachedPhrase>;
 }
 
 /** 옮겨 둔 결과의 키: 원문 언어·상대 언어·원문 글이 모두 같아야 같은 결과다. */
@@ -91,27 +97,40 @@ export function readPhrasebook(raw: string | null): PhrasebookData {
       }
     }
   }
-  const cache: Record<string, string> = {};
+  const cache: Record<string, CachedPhrase> = {};
   if ("cache" in parsed && parsed.cache && typeof parsed.cache === "object") {
     for (const [key, value] of Object.entries(parsed.cache)) {
-      if (typeof value === "string" && value.trim()) cache[key] = value;
+      // 발음을 붙이기 전(0.10.278까지)에는 번역 글만 저장했다.
+      if (typeof value === "string") {
+        if (value.trim()) cache[key] = { translation: value };
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("translation" in value) || typeof value.translation !== "string" || !value.translation.trim()) continue;
+      const reading = "reading" in value && typeof value.reading === "string" && value.reading.trim() ? value.reading : undefined;
+      cache[key] = reading ? { translation: value.translation, reading } : { translation: value.translation };
     }
   }
   return { custom, cache: trimCache(cache) };
 }
 
 /** 오래 전에 넣은 결과부터 버려 `PHRASE_CACHE_MAX`개 안으로 줄인다. */
-export function trimCache(cache: Record<string, string>): Record<string, string> {
+export function trimCache(cache: Record<string, CachedPhrase>): Record<string, CachedPhrase> {
   const entries = Object.entries(cache);
   return entries.length <= PHRASE_CACHE_MAX ? cache : Object.fromEntries(entries.slice(-PHRASE_CACHE_MAX));
 }
 
 /** 옮긴 결과 하나를 넣는다. 같은 키는 맨 뒤(가장 새것)로 옮긴다. */
-export function withCached(data: PhrasebookData, key: string, translation: string): PhrasebookData {
+export function withCached(data: PhrasebookData, key: string, phrase: CachedPhrase): PhrasebookData {
   const cache = { ...data.cache };
   delete cache[key];
-  cache[key] = translation;
+  cache[key] = phrase;
   return { ...data, cache: trimCache(cache) };
+}
+
+/** 나중에 받은 발음을 옮겨 둔 문장에 붙인다. 그 문장이 없으면 그대로다. */
+export function withReading(data: PhrasebookData, key: string, reading: string): PhrasebookData {
+  const entry = data.cache[key];
+  return entry ? { ...data, cache: { ...data.cache, [key]: { ...entry, reading } } } : data;
 }
 
 /**

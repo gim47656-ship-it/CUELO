@@ -14,6 +14,8 @@ import {
   phraseCacheKey,
   readPhrasebook,
   withCached,
+  withReading,
+  type CachedPhrase,
   type PhrasebookData,
 } from "./phrase-store";
 import { readInterpreterTextEvents } from "./read-text-stream";
@@ -23,7 +25,7 @@ import type { ShowCardContent } from "./ShowCard";
 const TRANSLATE_CONCURRENCY = 2;
 
 /** 문장 하나를 내 언어에서 상대 언어로 옮긴다. 타자 통역과 같은 구독 경로(`/api/live/interpret/text`)다. */
-async function translatePhrase(text: string, mine: TranslatorLanguage, theirs: TranslatorLanguage, signal: AbortSignal): Promise<string> {
+async function translatePhrase(text: string, mine: TranslatorLanguage, theirs: TranslatorLanguage, signal: AbortSignal): Promise<CachedPhrase> {
   const response = await fetch("/api/live/interpret/text", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -36,7 +38,7 @@ async function translatePhrase(text: string, mine: TranslatorLanguage, theirs: T
     // 다른 방향으로 옮긴 결과는 이 문장의 번역으로 저장하지 않는다(다시 시도할 수 있게 실패로 남긴다).
     if (event.type === "done") {
       if (event.source !== mine.code || event.target !== theirs.code) throw new Error("translate: wrong direction");
-      if (event.text.trim()) return event.text.trim();
+      if (event.text.trim()) return event.reading ? { translation: event.text.trim(), reading: event.reading } : { translation: event.text.trim() };
     }
   }
   throw new Error("translate: no result");
@@ -86,7 +88,7 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const limitRef = useRef(createLimiter(TRANSLATE_CONCURRENCY));
   /** 진행 중인 번역. 같은 문장을 두 번 보내지 않고 기다리던 쪽이 같은 결과를 받는다. */
-  const inflightRef = useRef(new Map<string, Promise<string | null>>());
+  const inflightRef = useRef(new Map<string, Promise<CachedPhrase | null>>());
   const dataRef = useRef(data);
   dataRef.current = data;
 
@@ -135,7 +137,7 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
   const allRows = useMemo(() => [...groups.flatMap(({ rows }) => rows), ...customRows], [customRows, groups]);
   const uncached = allRows.filter((row) => !data.cache[row.key]);
 
-  const translate = (row: Row): Promise<string | null> => {
+  const translate = (row: Row): Promise<CachedPhrase | null> => {
     const cached = dataRef.current.cache[row.key];
     if (cached) return Promise.resolve(cached);
     const running = inflightRef.current.get(row.key);
@@ -149,9 +151,9 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
     });
     const work = limitRef.current(async () => {
       try {
-        const translation = await translatePhrase(row.text, mine, theirs, signal);
-        setData((previous) => withCached(previous, row.key, translation));
-        return translation;
+        const phrase = await translatePhrase(row.text, mine, theirs, signal);
+        setData((previous) => withCached(previous, row.key, phrase));
+        return phrase;
       } catch {
         if (!signal.aborted) setFailed((previous) => new Set(previous).add(row.key));
         return null;
@@ -176,7 +178,14 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
   const open = (row: Row) => {
     const cached = dataRef.current.cache[row.key];
     if (cached) {
-      onShow({ text: cached, language: theirs, note: { text: row.text, language: mine } });
+      onShow({
+        text: cached.translation,
+        reading: cached.reading,
+        language: theirs,
+        note: { text: row.text, language: mine },
+        // 발음을 붙이기 전에 옮겨 둔 문장은 카드가 받아 온 발음을 여기에 함께 남긴다.
+        onReading: (reading) => setData((previous) => withReading(previous, row.key, reading)),
+      });
       return;
     }
     void translate(row);
@@ -205,17 +214,18 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
   };
 
   const renderRow = (row: Row) => {
-    const translation = data.cache[row.key];
+    const cached = data.cache[row.key];
     const busy = pending.has(row.key);
-    const state = translation ? undefined : busy ? "pending" : failed.has(row.key) ? "failed" : "uncached";
+    const state = cached ? undefined : busy ? "pending" : failed.has(row.key) ? "failed" : "uncached";
     const customId = row.customId;
     return (
       <li key={row.key} className="translator-phrase-item">
         <button type="button" className="translator-phrase" data-state={state} aria-busy={busy || undefined} onClick={() => open(row)}>
           <span className="translator-phrase-source" lang={mine.tag}>{row.text}</span>
-          <span className="translator-phrase-target" lang={translation ? theirs.tag : undefined}>
-            {translation ?? (busy ? tt("translator.typePending") : failed.has(row.key) ? tt("translator.phraseFailed") : tt("translator.phraseNotCached"))}
+          <span className="translator-phrase-target" lang={cached ? theirs.tag : undefined}>
+            {cached?.translation ?? (busy ? tt("translator.typePending") : failed.has(row.key) ? tt("translator.phraseFailed") : tt("translator.phraseNotCached"))}
           </span>
+          {cached?.reading ? <span className="translator-reading" lang="ko">{cached.reading}</span> : null}
         </button>
         {customId ? (
           <button

@@ -57,9 +57,15 @@ export const INTERPRETER_TEXT_MAX_CHARS = 2000;
 export const INTERPRETER_TEXT_OUTPUT_MAX_CHARS = 8000;
 export const INTERPRETER_TEXT_HISTORY_LINES = 24;
 
+/** 한글 발음(읽는 소리)을 붙이는 번역 언어. 한국어 사용자가 소리 내어 따라 읽는 데 쓴다. */
+export const READING_LANGUAGES: readonly string[] = ["ja", "th", "vi"];
+/** 한글 발음 한 개의 최대 길이. 넘으면 발음 없이 번역만 쓴다. */
+export const INTERPRETER_READING_MAX_CHARS = 600;
+
 export type InterpreterTextEvent =
   | { type: "delta"; text: string }
-  | { type: "done"; text: string; source: string; target: string }
+  /** `reading`은 번역 언어가 `READING_LANGUAGES`일 때만, 모델이 온전히 냈을 때만 있다. 화면 표시 전용이다. */
+  | { type: "done"; text: string; source: string; target: string; reading?: string }
   | { type: "error"; error: "live-auth" | "live-upstream" };
 
 export const EMPTY_INTERPRETER_CONTEXT: InterpreterContext = { profile: {}, history: [] };

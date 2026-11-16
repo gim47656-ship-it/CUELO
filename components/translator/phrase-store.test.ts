@@ -8,6 +8,7 @@ import {
   readPhrasebook,
   createLimiter,
   withCached,
+  withReading,
 } from "./phrase-store";
 
 describe("phrase cache keys", () => {
@@ -19,27 +20,37 @@ describe("phrase cache keys", () => {
     expect(phraseCacheKey("계산해 주세요.", "ko", "vi")).not.toBe(key);
   });
 
-  test("a cached translation survives a storage round trip and the newest entry wins", () => {
+  test("a cached translation and its reading survive a storage round trip and the newest entry wins", () => {
     const key = phraseCacheKey("계산해 주세요.", "ko", "vi");
-    let data = withCached(readPhrasebook(null), key, "Tính tiền giúp tôi.");
-    data = withCached(data, key, "Cho tôi thanh toán.");
-    expect(readPhrasebook(JSON.stringify(data)).cache[key]).toBe("Cho tôi thanh toán.");
+    let data = withCached(readPhrasebook(null), key, { translation: "Tính tiền giúp tôi." });
+    data = withCached(data, key, { translation: "Cho tôi thanh toán.", reading: "쩌 또이 타잉 또안" });
+    expect(readPhrasebook(JSON.stringify(data)).cache[key]).toEqual({ translation: "Cho tôi thanh toán.", reading: "쩌 또이 타잉 또안" });
+  });
+
+  test("entries saved before readings (plain strings) still load, and a later reading attaches in place", () => {
+    const key = phraseCacheKey("감사합니다", "ko", "vi");
+    const old = readPhrasebook(JSON.stringify({ custom: [], cache: { other: "Xin chào", [key]: "Cảm ơn" } }));
+    expect(old.cache[key]).toEqual({ translation: "Cảm ơn" });
+    const updated = withReading(old, key, "깜 언");
+    expect(updated.cache[key]).toEqual({ translation: "Cảm ơn", reading: "깜 언" });
+    expect(Object.keys(updated.cache)).toEqual(["other", key]);
+    expect(withReading(old, "missing", "깜 언")).toBe(old);
   });
 
   test("the cache keeps the newest PHRASE_CACHE_MAX entries", () => {
     let data = readPhrasebook(null);
-    for (let index = 0; index < PHRASE_CACHE_MAX + 5; index += 1) data = withCached(data, `k${index}`, `v${index}`);
+    for (let index = 0; index < PHRASE_CACHE_MAX + 5; index += 1) data = withCached(data, `k${index}`, { translation: `v${index}` });
     const keys = Object.keys(data.cache);
     expect(keys).toHaveLength(PHRASE_CACHE_MAX);
     expect(keys[0]).toBe("k5");
-    expect(data.cache[`k${PHRASE_CACHE_MAX + 4}`]).toBe(`v${PHRASE_CACHE_MAX + 4}`);
+    expect(data.cache[`k${PHRASE_CACHE_MAX + 4}`]).toEqual({ translation: `v${PHRASE_CACHE_MAX + 4}` });
   });
 
-  test("broken storage reads as empty, invalid custom phrases are dropped", () => {
+  test("broken storage reads as empty, invalid custom phrases and cache entries are dropped", () => {
     expect(readPhrasebook("{oops")).toEqual({ custom: [], cache: {} });
-    const data = readPhrasebook(JSON.stringify({ custom: [{ id: "a", text: "물 주세요", lang: "ko" }, { id: 3, text: "x", lang: "ko" }, { id: "b", text: "  ", lang: "ko" }], cache: { k: 5 } }));
+    const data = readPhrasebook(JSON.stringify({ custom: [{ id: "a", text: "물 주세요", lang: "ko" }, { id: 3, text: "x", lang: "ko" }, { id: "b", text: "  ", lang: "ko" }], cache: { k: 5, e: { reading: "깜" }, r: { translation: "Ok", reading: 3 } } }));
     expect(data.custom).toEqual([{ id: "a", text: "물 주세요", lang: "ko" }]);
-    expect(data.cache).toEqual({});
+    expect(data.cache).toEqual({ r: { translation: "Ok" } });
   });
 });
 
