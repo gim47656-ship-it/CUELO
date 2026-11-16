@@ -27,6 +27,8 @@ type FakeSession = {
   sendInternalPrompt: (message: string) => Promise<void>;
   inner: { messages: unknown[] };
   stopBackgroundWorkForDrain: (timeoutMs: number) => Promise<boolean>;
+  /** 도구 제한(`restrictTools`)을 쥔 wrapper만 갖는다. 제한 없는 세션은 undefined. */
+  restrictTools?: readonly string[];
 };
 
 const control = {
@@ -47,6 +49,10 @@ const control = {
   /** 세션 id별 저장 기록(없으면 빈 기록). 중단 판정과 재개 직전 재확인이 읽는다. */
   transcripts: new Map<string, unknown[]>(),
   startCalls: [] as string[],
+  /** `startRpcSession`이 받은 4번째 인자(옵션). 콜드 재개가 도구 제한을 다시 넘기는지 본다. */
+  startOptions: [] as Array<{ sessionId: string; options: unknown }>,
+  /** 세션 id별로 wrapper가 쥔 도구 제한. */
+  restricted: new Map<string, string[]>(),
   /** 실패한 업데이트 뒤 child 복원 호출(`<세션>@<그때까지 보낸 prompt 수>`)과, 복원이 실패하는 세션. */
   restores: [] as string[],
   failRestore: new Set<string>(),
@@ -70,6 +76,7 @@ function sessionFor(sessionId: string): FakeSession {
       control.fullPrompts.push(message);
     },
     inner: { messages: control.transcripts.get(sessionId) ?? [] },
+    restrictTools: control.restricted.get(sessionId),
     stopBackgroundWorkForDrain: async () => {
       control.drainCalls.push(`stop:${sessionId}`);
       return !control.unsettledChildren.has(sessionId);
@@ -624,6 +631,73 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     expect(control.prompts).toEqual([]);
     expect(readPendingFile()).toBeNull();
   },
+
+  "제한 세션은 drain 때 허용 도구를 목록에 적고 새 서버의 콜드 재개는 같은 제한으로 다시 띄운다": async (mod) => {
+    // 2026-11-16 재현: 루틴 비서(read, grep, glob, web_search 4개)가 업데이트 재개로 콜드 기동하면 제한이 풀려 도구 16개가 활성이었다.
+    const [limited, open, none] = [SID(120), SID(121), SID(125)];
+    const allowed = ["read", "grep", "glob", "web_search"];
+    for (const sessionId of [limited, open, none]) control.alive.add(sessionId);
+    control.running = [limited, open, none];
+    control.restricted.set(limited, allowed);
+    control.restricted.set(none, []);
+    seedRequest("probe-restrict");
+
+    expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(true);
+    // 제한이 없는 세션은 적지 않는다. 도구를 모두 끈 빈 목록은 제한이므로 적는다.
+    expect(readPendingFile()?.restrictTools).toEqual({ [limited]: allowed, [none]: [] });
+
+    // 새 서버: 목록은 옛 서버가 썼고 세션은 모두 내려간 상태다.
+    writeFileSync(pendingPath(), JSON.stringify({ ...readPendingFile(), writerPid: 999999 }), "utf8");
+    control.alive.clear();
+    control.running = [];
+    control.restricted.clear();
+
+    expect((await mod.resumeInterruptedSessions()).sort()).toEqual([limited, open, none].sort());
+    const optionsOf = (sessionId: string) => control.startOptions.filter((entry) => entry.sessionId === sessionId).map((entry) => entry.options);
+    expect(optionsOf(limited)).toEqual([{ restrictTools: allowed }]);
+    expect(optionsOf(none)).toEqual([{ restrictTools: [] }]);
+    expect(optionsOf(open)).toEqual([undefined]);
+    expect(existsSync(pendingPath())).toBe(false);
+  },
+
+  "실패한 재개와 갑작스러운 종료 병합이 도구 제한 기록을 잃지 않는다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    const [limited, abruptOnly, stray] = [SID(122), SID(123), SID(124)];
+    const allowed = ["read", "grep", "glob", "web_search"];
+    seedPending([limited], { requestId: "probe-restrict-keep", writerPid: 777 });
+    // 목록에 없는 세션의 기록은 읽을 때 버린다.
+    writeFileSync(pendingPath(), JSON.stringify({ ...readPendingFile(), restrictTools: { [limited]: allowed, [stray]: ["read"] } }), "utf8");
+    control.transcripts.set(abruptOnly, [{ role: "user", content: "q" }]);
+    writeActivity(4244, { origin, startedAtMs: 1_000, running: [abruptOnly] });
+
+    expect((await mod.recoverAbruptStop({ origin, probe: dead })).queued).toEqual([abruptOnly]);
+    expect(readPendingFile()?.restrictTools).toEqual({ [limited]: allowed });
+
+    // 첫 시도에서 제한 세션이 실패해도 목록에 남은 기록으로 다음 시도가 같은 제한으로 띄운다.
+    control.failStart.add(limited);
+    expect(await mod.resumeInterruptedSessions()).toEqual([abruptOnly]);
+    expect(readPendingFile()?.sessionIds).toEqual([limited]);
+    expect(readPendingFile()?.restrictTools).toEqual({ [limited]: allowed });
+
+    control.failStart.delete(limited);
+    expect(await mod.resumeInterruptedSessions()).toEqual([limited]);
+    const limitedStarts = control.startOptions.filter((entry) => entry.sessionId === limited).map((entry) => entry.options);
+    expect(limitedStarts).toEqual([{ restrictTools: allowed }, { restrictTools: allowed }]);
+    expect(existsSync(pendingPath())).toBe(false);
+  },
+
+  "다시 drain할 때 실행 중인 세션은 지금 wrapper의 제한이 정본이고 실행 중이 아닌 세션의 기록은 그대로 둔다": async (mod) => {
+    const [now, waiting] = [SID(126), SID(127)];
+    seedPending([now, waiting], { requestId: "probe-restrict-stale", writerPid: 777 });
+    writeFileSync(pendingPath(), JSON.stringify({ ...readPendingFile(), restrictTools: { [now]: ["read"], [waiting]: ["grep"] } }), "utf8");
+    // `now`는 앞 drain 뒤 제한 없이 다시 떠서 실행 중이다. `waiting`은 아직 재개 대기 중이다.
+    control.alive.add(now);
+    control.running = [now];
+    seedRequest("probe-restrict-stale-2");
+
+    expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(true);
+    expect(readPendingFile()?.restrictTools).toEqual({ [waiting]: ["grep"] });
+  },
 };
 
 const CASE_NAMES = Object.keys(CASES);
@@ -634,7 +708,8 @@ if (process.env.UPDATE_INTERRUPT_CASE) {
   mock.module("./rpc-manager", () => ({
     getRunningRpcSessionIds: () => [...control.running],
     getRpcSession: (sessionId: string) => (control.alive.has(sessionId) ? sessionFor(sessionId) : undefined),
-    startRpcSession: async (sessionId: string) => {
+    startRpcSession: async (sessionId: string, _file?: string, _cwd?: string, options?: unknown) => {
+      control.startOptions.push({ sessionId, options });
       control.startCalls.push(sessionId);
       control.onStart?.(sessionId);
       if (control.gate) await control.gate;

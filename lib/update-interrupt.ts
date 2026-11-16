@@ -22,6 +22,11 @@
  *   옛 snapshot으로 덮어쓰지 않는다. 남의 새 요청을 지우는 선삭제도 하지 않는다 — `<id>.ack.json`
  *   존재와 그 id의 `handled` 기억이 중복 처리를 이미 막는다.
  * - 실패 원인은 한 줄짜리 짧은 message만 남긴다(stack·원문 본문은 남기지 않는다).
+ *
+ * 도구 제한 보존(2026-11-17):
+ * - 제한 세션(`restrictTools`)의 허용 도구는 wrapper 메모리에만 있다. drain이 세션 목록과 함께 `restrictTools`로 적고,
+ *   새 서버의 콜드 재개가 같은 제한으로 `startRpcSession`을 부른다. 기록 없이 띄우면 제한 없는 도구 묶음이 열린다.
+ * - 서버가 갑자기 죽은 뒤의 복구(`recoverAbruptStop`)는 영수증에 제한이 없어 이 기록을 만들지 못한다.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -71,6 +76,11 @@ interface PendingResume {
   failures?: PendingFailure[];
   /** 갑작스러운 종료로 복구 대기열에 든 세션(선택, 새 필드). 재개 prompt 문구와 재확인 대상을 가른다. */
   abruptSessionIds?: string[];
+  /**
+   * drain 때 도구 제한(`restrictTools`)을 쥐고 있던 세션의 허용 도구(선택, 새 필드). 제한은 wrapper 메모리에만 있어서,
+   * 새 서버가 재개로 콜드 기동할 때 이 기록이 없으면 제한 없이 다시 떠 `bash`·`write` 같은 도구가 열린다.
+   */
+  restrictTools?: Record<string, string[]>;
 }
 
 function interruptsRoot(): string {
@@ -131,6 +141,12 @@ function readPending(): PendingResume | null {
   const abruptSessionIds = Array.isArray(raw.abruptSessionIds)
     ? raw.abruptSessionIds.filter((id): id is string => typeof id === "string" && SESSION_ID_PATTERN.test(id) && sessionIds.includes(id))
     : [];
+  const restrictTools: Record<string, string[]> = {};
+  if (raw.restrictTools && typeof raw.restrictTools === "object" && !Array.isArray(raw.restrictTools)) {
+    for (const [sessionId, names] of Object.entries(raw.restrictTools)) {
+      if (sessionIds.includes(sessionId) && Array.isArray(names) && names.every((name) => typeof name === "string")) restrictTools[sessionId] = names;
+    }
+  }
   return {
     schemaVersion: 1,
     writerPid: Number(raw.writerPid),
@@ -139,7 +155,14 @@ function readPending(): PendingResume | null {
     updatedAtUtc: String(raw.updatedAtUtc ?? ""),
     ...(failures.length > 0 ? { failures } : {}),
     ...(abruptSessionIds.length > 0 ? { abruptSessionIds } : {}),
+    ...(Object.keys(restrictTools).length > 0 ? { restrictTools } : {}),
   };
+}
+
+/** 남는 세션의 도구 제한만 돌려준다. 하나도 없으면 undefined라 파일에 필드를 쓰지 않는다. */
+function restrictionsKept(restrictTools: Record<string, string[]> | undefined, sessionIds: readonly string[]): Record<string, string[]> | undefined {
+  const kept = Object.entries(restrictTools ?? {}).filter(([sessionId]) => sessionIds.includes(sessionId));
+  return kept.length > 0 ? Object.fromEntries(kept) : undefined;
 }
 
 /**
@@ -164,6 +187,15 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
     const merged = [...new Set([...(previous?.sessionIds ?? []), ...running])].sort();
     const carried = (previous?.failures ?? []).filter((failure) => merged.includes(failure.sessionId));
     const carriedAbrupt = (previous?.abruptSessionIds ?? []).filter((sessionId) => merged.includes(sessionId));
+    // 이 서버가 아직 쥐고 있는 제한은 지금만 읽을 수 있다. 새 서버의 콜드 재개가 같은 제한으로 띄우도록 목록과 함께 적는다.
+    // 실행 중인 세션은 지금 wrapper가 정본이다: 제한이 없으면 앞 요청이 적은 옛 기록을 지우고, 실행 중이 아닌 세션의 기록은 둔다.
+    const restricted: Record<string, string[]> = { ...previous?.restrictTools };
+    for (const sessionId of running) {
+      const tools = getRpcSession(sessionId)?.restrictTools;
+      if (tools === undefined) delete restricted[sessionId];
+      else restricted[sessionId] = [...tools];
+    }
+    const restrictTools = restrictionsKept(restricted, merged);
     writeJsonAtomic(pendingPath(), {
       schemaVersion: 1,
       writerPid: process.pid,
@@ -172,6 +204,7 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
       updatedAtUtc: new Date().toISOString(),
       ...(carried.length > 0 ? { failures: carried } : {}),
       ...(carriedAbrupt.length > 0 ? { abruptSessionIds: carriedAbrupt } : {}),
+      ...(restrictTools ? { restrictTools } : {}),
     } satisfies PendingResume);
 
     const aborted: string[] = [];
@@ -287,6 +320,8 @@ function commitResumeProgress(snapshot: PendingResume, failures: Map<string, Pen
   if (kept.size > 0) next.failures = [...kept.values()];
   const abrupt = (current.abruptSessionIds ?? []).filter((sessionId) => remaining.includes(sessionId));
   if (abrupt.length > 0) next.abruptSessionIds = abrupt;
+  const restrictTools = restrictionsKept(current.restrictTools, remaining);
+  if (restrictTools) next.restrictTools = restrictTools;
   writeJsonAtomic(pendingPath(), next);
 }
 
@@ -347,7 +382,9 @@ async function runResumePass(): Promise<string[]> {
         : await (async () => {
           const filePath = await resolveSessionPath(sessionId);
           if (!filePath) throw new Error(`session record not found: ${sessionId}`);
-          return (await startRpcSession(sessionId, filePath, undefined)).session;
+          // 제한 세션은 drain 때 적어 둔 허용 도구로 다시 띄운다. 옵션 없이 띄우면 wrapper가 제한 없는 도구 묶음으로 열린다.
+          const restrictTools = snapshot.restrictTools?.[sessionId];
+          return (await startRpcSession(sessionId, filePath, undefined, restrictTools === undefined ? undefined : { restrictTools: [...restrictTools] })).session;
         })();
       if (session.isRunning()) {
         // 사용자가 직접 이어 갔거나 앞선 prompt가 처리 중이다. 다시 보내지 않고 목록에서만 뺀다.
@@ -470,6 +507,7 @@ function queueAbruptResume(sessionIds: string[], prior: PriorGenerationActivity)
   const merged = [...new Set([...known, ...sessionIds])].sort();
   const abrupt = [...new Set([...(previous?.abruptSessionIds ?? []), ...sessionIds.filter((sessionId) => !known.has(sessionId))])].sort();
   const failures = (previous?.failures ?? []).filter((failure) => merged.includes(failure.sessionId));
+  const restrictTools = restrictionsKept(previous?.restrictTools, merged);
   writeJsonAtomic(pendingPath(), {
     schemaVersion: 1,
     // `runResumePass`는 이 프로세스가 쓴 목록을 건너뛴다. 옛 세대 pid가 우연히 같아도 건너뛰지 않게 한다.
@@ -478,6 +516,7 @@ function queueAbruptResume(sessionIds: string[], prior: PriorGenerationActivity)
     sessionIds: merged,
     updatedAtUtc: new Date().toISOString(),
     ...(failures.length > 0 ? { failures } : {}),
+    ...(restrictTools ? { restrictTools } : {}),
     abruptSessionIds: abrupt,
   } satisfies PendingResume);
 }
