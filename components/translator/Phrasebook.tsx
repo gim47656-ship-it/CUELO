@@ -170,9 +170,16 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
     return work;
   };
 
-  const open = async (row: Row) => {
-    const translation = await translate(row);
-    if (translation && !abortRef.current.signal.aborted) onShow({ text: translation, language: theirs, note: { text: row.text, language: mine } });
+  // 카드는 번역해 둔 문장을 누를 때만 연다. 번역을 기다렸다가 저절로 열면 그 기록 칸이 탭 없이 생겨
+  // 폰 Chrome의 뒤로가기 키가 그 칸을 건너뛰고 아래 덮개까지 함께 닫는다(11-16 폰 실측). 번역 전
+  // 문장은 눌러서 번역만 하고, 줄에 결과가 보이면 한 번 더 눌러 연다.
+  const open = (row: Row) => {
+    const cached = dataRef.current.cache[row.key];
+    if (cached) {
+      onShow({ text: cached, language: theirs, note: { text: row.text, language: mine } });
+      return;
+    }
+    void translate(row);
   };
 
   const translateAll = async () => {
@@ -204,7 +211,7 @@ export function Phrasebook({ mine, theirs, onShow, onClose }: PhrasebookProps) {
     const customId = row.customId;
     return (
       <li key={row.key} className="translator-phrase-item">
-        <button type="button" className="translator-phrase" data-state={state} aria-busy={busy || undefined} onClick={() => void open(row)}>
+        <button type="button" className="translator-phrase" data-state={state} aria-busy={busy || undefined} onClick={() => open(row)}>
           <span className="translator-phrase-source" lang={mine.tag}>{row.text}</span>
           <span className="translator-phrase-target" lang={translation ? theirs.tag : undefined}>
             {translation ?? (busy ? tt("translator.typePending") : failed.has(row.key) ? tt("translator.phraseFailed") : tt("translator.phraseNotCached"))}
