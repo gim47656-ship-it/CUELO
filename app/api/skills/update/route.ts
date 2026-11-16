@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
-import { runNpx, getSafeNpxEnv, redactNpxOutput } from "@/lib/npx";
-import type { SkillInstallScope } from "@/lib/api-types";
+import type { SkillInstallScope, SkillScanConfirmation } from "@/lib/api-types";
 import { buildSkillUpdateArgs } from "@/lib/skill-updates";
+import { parseConfirmedScan, runSkillGate } from "@/lib/skill-scan";
 import { loadSkillsWithInstallInfo } from "@/lib/skills-service";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
@@ -22,6 +22,8 @@ export async function POST(req: Request) {
       cwd?: unknown;
       package?: unknown;
       scope?: unknown;
+      confirmed?: unknown;
+      scanned?: unknown;
     };
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
     const pkg = typeof body.package === "string" ? body.package.trim() : "";
@@ -53,27 +55,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "This skill cannot be updated automatically" }, { status: 400 });
     }
 
-    const { stdout, stderr } = await runNpx(buildSkillUpdateArgs(skill.install), {
-      timeout: 60_000,
-      cwd: scope === "project" ? cwd : undefined,
-      env: getSafeNpxEnv({ FORCE_COLOR: "0" }),
-    });
+    const confirmedScan = parseConfirmedScan(body.confirmed, body.scanned);
+    if (confirmedScan === null) {
+      return NextResponse.json({ error: "confirmed requires the scanned value from the check" }, { status: 400 });
+    }
+    const outcome = await runSkillGate({ args: buildSkillUpdateArgs(skill.install), scope, cwd, confirmedScan });
+    if (outcome.kind === "error") return NextResponse.json({ error: outcome.message }, { status: outcome.status });
+    if (outcome.kind === "confirm") {
+      return NextResponse.json({
+        needsConfirmation: true,
+        scanned: outcome.scanned,
+        scan: outcome.scan,
+      } satisfies SkillScanConfirmation);
+    }
 
     const refreshed = await loadSkillsWithInstallInfo(cwd);
     const updatedSkill = refreshed.skills.find(
       (item) => item.install?.package === pkg && item.install.scope === scope,
     );
-    return NextResponse.json({
-      success: true,
-      skill: updatedSkill,
-      output: redactNpxOutput(`${stdout}${stderr}`).slice(-1000),
-    });
+    return NextResponse.json({ success: true, skill: updatedSkill, output: outcome.output });
   } catch (error: unknown) {
-    const detail = error as { stdout?: string; stderr?: string; message?: string };
-    const output = redactNpxOutput(`${detail.stdout ?? ""}${detail.stderr ?? ""}`).slice(-1000);
-    return NextResponse.json(
-      { error: output || "Skill update failed" },
-      { status: 500 },
-    );
+    console.error("[skills/update] failed:", error);
+    return NextResponse.json({ error: "Skill update failed" }, { status: 500 });
   }
 }

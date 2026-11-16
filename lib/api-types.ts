@@ -25,6 +25,36 @@ export interface SkillInstallInfo {
   canCheckForUpdates: boolean;
 }
 
+export type SkillScanReason =
+  | "not-installed"
+  | "timed-out"
+  | "scan-failed"
+  | "unreadable-report"
+  | "partial-analysis";
+
+export interface SkillScanIssue {
+  ruleId: string;
+  severity: string;
+  file: string;
+  message: string;
+}
+
+/** Why an install or update stopped for confirmation instead of being applied. */
+export interface SkillScanSummary {
+  status: "risk" | "unavailable" | "incomplete";
+  score?: number;
+  recommendation?: string;
+  reason?: SkillScanReason;
+  issues: SkillScanIssue[];
+}
+
+export interface SkillScanConfirmation {
+  needsConfirmation: true;
+  /** Hash of every scanned skill folder; send it back with `confirmed: true`. */
+  scanned: string;
+  scan: SkillScanSummary;
+}
+
 export type SkillUpdateState =
   | "up-to-date"
   | "update-available"

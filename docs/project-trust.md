@@ -17,6 +17,8 @@ CUELO는 브라우저 세션에서 omp를 실행합니다. 프로젝트를 열 �
 
 Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYSTEM.md`는 이 신뢰 확인으로 실행을 차단하는 대상이 아닙니다. 일부는 prompt 입력으로 처리되므로, 이 문서는 prompt injection을 막는다고 보장하지 않습니다. 신뢰할 수 없는 프로젝트의 지시문도 검토 없이 따라서는 안 됩니다.
 
+다만 프로젝트 범위(`project`)의 스킬 설치와 업데이트는 프로젝트 신뢰를 요구합니다. 신뢰하기 전에는 `.claude/skills`와 `skills-lock.json`에 쓰는 `/api/skills/install`, `/api/skills/update` 요청이 403 오류로 거부됩니다. 전역 범위(`global`) 설치는 프로젝트 신뢰와 무관합니다. 자세한 내용은 [스킬 설치와 업데이트](skills.md)를 참고하세요.
+
 해당 실행 자원이 없는 프로젝트는 별도 신뢰 단계가 필요하지 않습니다.
 
 ## 신뢰하지 않은 프로젝트의 세션

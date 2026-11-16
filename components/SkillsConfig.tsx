@@ -9,6 +9,8 @@ import type {
   SkillInstallScope,
   SkillSearchResult,
   SkillsResponse,
+  SkillScanReason,
+  SkillScanSummary,
   SkillUpdateResult,
 } from "@/lib/api-types";
 
@@ -69,6 +71,69 @@ function Toggle({
   );
 }
 
+function ScanConfirm({
+  scan,
+  actionLabel,
+  onConfirm,
+  onCancel,
+}: {
+  scan: SkillScanSummary;
+  actionLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const reasonText: Record<SkillScanReason, string> = {
+    "not-installed": t("skillScan.reason.not-installed"),
+    "timed-out": t("skillScan.reason.timed-out"),
+    "scan-failed": t("skillScan.reason.scan-failed"),
+    "unreadable-report": t("skillScan.reason.unreadable-report"),
+    "partial-analysis": t("skillScan.reason.partial-analysis"),
+  };
+  const title =
+    scan.status === "risk"
+      ? t("skillScan.titleRisk", { recommendation: scan.recommendation ?? "?", score: scan.score ?? "?" })
+      : scan.status === "unavailable"
+        ? t("skillScan.titleUnavailable")
+        : t("skillScan.titleIncomplete");
+  return (
+    <div role="alert" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--warning)" }}>{title}</span>
+      {scan.status !== "risk" && scan.reason && (
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{reasonText[scan.reason]}</span>
+      )}
+      {scan.status === "incomplete" && (scan.recommendation || scan.score !== undefined) && (
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {t("skillScan.titleRisk", { recommendation: scan.recommendation ?? "?", score: scan.score ?? "?" })}
+        </span>
+      )}
+      {scan.issues.map((issue, index) => (
+        <span
+          key={`${issue.ruleId}-${issue.file}-${index}`}
+          style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-muted)", wordBreak: "break-word" }}
+        >
+          {issue.severity} {issue.ruleId} {issue.file}
+          {issue.message ? ` — ${issue.message}` : ""}
+        </span>
+      ))}
+      <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t("skillScan.notApplied")}</span>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          type="button"
+          onClick={onConfirm}
+          className={scan.status === "risk" ? shared.btnDanger : shared.btn}
+          style={{ fontSize: 11 }}
+        >
+          {actionLabel}
+        </button>
+        <button type="button" onClick={onCancel} className={shared.btn} style={{ fontSize: 11 }}>
+          {t("i18n.cancel")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SkillDetail({
   skill,
   cwd,
@@ -79,8 +144,12 @@ function SkillDetail({
   checkingUpdate,
   updating,
   updateError,
+  updateScanning,
+  updateConfirm,
   onCheckUpdate,
   onUpdate,
+  onConfirmUpdate,
+  onCancelUpdate,
 }: {
   skill: Skill;
   cwd: string;
@@ -91,8 +160,12 @@ function SkillDetail({
   checkingUpdate: boolean;
   updating: boolean;
   updateError: string | null;
+  updateScanning: boolean;
+  updateConfirm: SkillScanSummary | null;
   onCheckUpdate: () => void;
   onUpdate: () => void;
+  onConfirmUpdate: () => void;
+  onCancelUpdate: () => void;
 }) {
   const { t } = useI18n();
   const label = sourceLabel(skill);
@@ -268,7 +341,7 @@ function SkillDetail({
             {updateStatus?.state === "update-available" && (
               <button
                 onClick={onUpdate}
-                disabled={updating || checkingUpdate}
+                disabled={updating || checkingUpdate || updateConfirm !== null}
                 className={shared.btnPrimary}
                 style={{ fontSize: 11 }}
               >
@@ -276,6 +349,17 @@ function SkillDetail({
               </button>
             )}
           </div>
+          {updateScanning && (
+            <span style={{ fontSize: 12, color: "var(--accent)" }}>{t("skillScan.scanning")}</span>
+          )}
+          {updateConfirm && (
+            <ScanConfirm
+              scan={updateConfirm}
+              actionLabel={t("skillScan.updateAnyway")}
+              onConfirm={onConfirmUpdate}
+              onCancel={onCancelUpdate}
+            />
+          )}
           {updateError && (
             <span style={{ fontSize: 12, color: "var(--danger)" }}>{updateError}</span>
           )}
@@ -333,6 +417,8 @@ function AddSkillPanel({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [installConfirm, setInstallConfirm] = useState<{ pkg: string; scanned: string; scan: SkillScanSummary } | null>(null);
   const [newlyInstalledPkgs, setNewlyInstalledPkgs] = useState<Set<string>>(
     new Set(),
   );
@@ -372,16 +458,33 @@ function AddSkillPanel({
   }, []);
 
   const install = useCallback(
-    async (pkg: string) => {
+    async (pkg: string, confirmedScan?: string) => {
       setInstalling(pkg);
+      setScanning(!confirmedScan);
+      setInstallConfirm(null);
       setInstallError(null);
       try {
         const res = await fetch("/api/skills/install", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ package: pkg, scope, cwd }),
+          body: JSON.stringify({
+            package: pkg,
+            scope,
+            cwd,
+            ...(confirmedScan ? { confirmed: true, scanned: confirmedScan } : {}),
+          }),
         });
-        const d = (await res.json()) as { success?: boolean; error?: string };
+        const d = (await res.json()) as {
+          success?: boolean;
+          error?: string;
+          needsConfirmation?: boolean;
+          scanned?: string;
+          scan?: SkillScanSummary;
+        };
+        if (d.needsConfirmation && d.scanned && d.scan) {
+          setInstallConfirm({ pkg, scanned: d.scanned, scan: d.scan });
+          return;
+        }
         if (!res.ok || d.error) {
           setInstallError(d.error ?? `HTTP ${res.status}`);
           return;
@@ -394,6 +497,7 @@ function AddSkillPanel({
         setInstallError(String(e));
       } finally {
         setInstalling(null);
+        setScanning(false);
       }
     },
     [onInstalled, scope, cwd],
@@ -486,6 +590,22 @@ function AddSkillPanel({
             style={{ fontSize: 12, color: "var(--danger)", wordBreak: "break-word" }}
           >
             {installError}
+          </div>
+        )}
+        {scanning && (
+          <div style={{ fontSize: 12, color: "var(--accent)" }}>{t("skillScan.scanning")}</div>
+        )}
+        {installConfirm && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              {installConfirm.pkg}
+            </span>
+            <ScanConfirm
+              scan={installConfirm.scan}
+              actionLabel={t("skillScan.installAnyway")}
+              onConfirm={() => void install(installConfirm.pkg, installConfirm.scanned)}
+              onCancel={() => setInstallConfirm(null)}
+            />
           </div>
         )}
       </div>
@@ -631,6 +751,8 @@ export function SkillsConfig({
   const [checkingAll, setCheckingAll] = useState(false);
   const [updatingSkill, setUpdatingSkill] = useState<string | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateScanning, setUpdateScanning] = useState(false);
+  const [updateConfirm, setUpdateConfirm] = useState<{ key: string; scanned: string; scan: SkillScanSummary } | null>(null);
   const [projectResourcesLoaded, setProjectResourcesLoaded] = useState(true);
   const [dormantGroupsOpen, setDormantGroupsOpen] = useState<Record<string, boolean>>({});
 
@@ -715,10 +837,12 @@ export function SkillsConfig({
     }
   }, [cwd, skills]);
 
-  const updateInstalledSkill = useCallback(async (skill: Skill) => {
+  const updateInstalledSkill = useCallback(async (skill: Skill, confirmedScan?: string) => {
     if (!skill.install) return;
     const key = updateKey(skill)!;
     setUpdatingSkill(key);
+    setUpdateScanning(!confirmedScan);
+    setUpdateConfirm(null);
     setUpdateError(null);
     try {
       const res = await fetch("/api/skills/update", {
@@ -728,13 +852,21 @@ export function SkillsConfig({
           cwd,
           package: skill.install.package,
           scope: skill.install.scope,
+          ...(confirmedScan ? { confirmed: true, scanned: confirmedScan } : {}),
         }),
       });
       const data = (await res.json()) as {
         success?: boolean;
         skill?: Skill;
         error?: string;
+        needsConfirmation?: boolean;
+        scanned?: string;
+        scan?: SkillScanSummary;
       };
+      if (data.needsConfirmation && data.scanned && data.scan) {
+        setUpdateConfirm({ key, scanned: data.scanned, scan: data.scan });
+        return;
+      }
       if (!res.ok || data.error || !data.success) {
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
@@ -754,6 +886,7 @@ export function SkillsConfig({
       setUpdateError(e instanceof Error ? e.message : String(e));
     } finally {
       setUpdatingSkill(null);
+      setUpdateScanning(false);
     }
   }, [cwd, loadSkills]);
 
@@ -1184,8 +1317,12 @@ export function SkillsConfig({
                 }
                 updating={updatingSkill === updateKey(selectedSkill)}
                 updateError={updateError}
+                updateScanning={updateScanning && updatingSkill === updateKey(selectedSkill)}
+                updateConfirm={updateConfirm?.key === updateKey(selectedSkill) ? updateConfirm.scan : null}
                 onCheckUpdate={() => void checkForUpdates(selectedSkill)}
                 onUpdate={() => void updateInstalledSkill(selectedSkill)}
+                onConfirmUpdate={() => updateConfirm && void updateInstalledSkill(selectedSkill, updateConfirm.scanned)}
+                onCancelUpdate={() => setUpdateConfirm(null)}
               />
             ) : (
               <div

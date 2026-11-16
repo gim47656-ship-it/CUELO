@@ -419,7 +419,7 @@ bun run test:coverage  # 앱·설치기 테스트 + 커버리지 표
 
 의존성을 다시 설치하거나 갱신한 뒤에는 `bun run prepare:source`를 다시 실행하세요. 이미 설치된 작업 사본에서도 `bun install`은 패치된 SDK 패키지를 원본으로 다시 깔기 때문에, 준비 단계를 빼면 호환 패치가 빠진 채로 실행됩니다. 이 준비 단계는 작업 사본의 SDK만 다루며 사용자 프로필이나 실행 중인 설치본을 변경하지 않습니다.
 
-참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md) · [Maker 코드 품질 평가](./docs/maker-quality.md)
+참고 문서: [OMP 하네스](./docs/harness.md) · [인증](./docs/authentication.md) · [프로젝트 신뢰](./docs/project-trust.md) · [스킬 설치와 업데이트](./docs/skills.md) · [worktree](./docs/worktrees.md) · [다국어](./docs/i18n.md) · [Docker](./docs/docker.md) · [Windows·WSL 도구 속도 비교](./docs/wsl-tool-speed.md) · [Maker 코드 품질 평가](./docs/maker-quality.md)
 
 평가 자료: [한국어 소개 페이지](https://gim47656-ship-it.github.io/CUELO/ko/evals/) · [English Evals](https://gim47656-ship-it.github.io/CUELO/evals/) · [skim 후보 비교](./docs/evals/skim-2026-10-27.md)
 

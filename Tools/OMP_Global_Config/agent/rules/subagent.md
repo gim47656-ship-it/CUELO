@@ -660,6 +660,9 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
 - Main은 owner의 수용 조건별 증거 연결(`routing.reviewPacket.acceptanceEvidenceMap`)을 실제 변경
   내역과 대조해, 요구 자체가 빠진 경우를 "발주대로 고쳤다"로 통과시키지 않는다. 조건과 증거의
   연결이 없으면 그 자체가 gap이고, 형식보다 실질 증거가 우선한다.
+- Main은 Maker 완료 보고 맨 앞의 `Brief as understood:` 재진술과 Maker가 직접 정한 설계 선택을 자기
+  의도와 먼저 대조한다. 재진술이 의도와 다르거나 브리프가 정했어야 할 선택을 Maker가 대신 내렸으면
+  브리프 결함이다. 그 차이는 재작업 이유와 다음 브리프에 반영하고 Maker의 실패로 세지 않는다.
 - 중간 검수의 시점·범위·경계는 `AGENTS.md`의 「역할과 위임」과 `harness-policy.json`의
   `mainLane.workerReview`가 정본이다. 확정 delta와 그 증거만 보고, 소유 경로를 중복 수정하지
   않으며 owner의 검사를 반복하지 않는다. 아직 실행 중인 필수 검사는 gap이 아니라 pending이고 그

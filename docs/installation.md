@@ -31,6 +31,7 @@ Linux에서 다음을 사용자가 직접 설치합니다. Node/Bun/Git은 배�
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
 | Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 기본은 TypeSafe API 키로 `modelRoles.judge`에 `typesafe/jev-1.14.0`을 지정하는 방법이고, 그 키가 없으면 OpenRouter의 Jev로 넘어갑니다. |
 | 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업, usage의 CLI fallback, `stats` 집계가 필요할 때 [공식 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE`를 먼저 보며, 없으면 CUELO 폴더의 `node_modules/.bin/omp`를 쓰고 없을 때만 `PATH`의 `omp`를 찾습니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/)와 NVIDIA SkillSpector v2.13.4 | 선택. 외부 스킬을 설치하거나 업데이트하기 전에 보안 검사를 하는 데 씁니다. 없으면 CUELO가 검사하지 못했다는 경고를 보이고, 사용자가 확인해야만 설치합니다. 설치 명령과 자세한 내용은 [스킬 설치와 업데이트](skills.md)를 봅니다. |
 
 배포판 패키지 관리자나 공식 설치 스크립트를 써도 됩니다. 네트워크와 설치 권한이 없는 PC에서는 먼저 설치본과 승인된 계정, 접속 방법을 준비해야 합니다. 제공자 로그인, Git/CLI와 OS 설치, 유료 모델 호출을 `setup`이 대신하지 않습니다.
 

@@ -16,6 +16,15 @@
   the evidence behind it, and the scope adjustment you need, then follow Main's decision. Being
   unverified is never by itself a reason to stop. `agent/rules/harness-policy.json`
   `routing.dispatchAssumptionCheck` is authoritative.
+- Before your first edit, restate the brief in your own words in two to five sentences: what it
+  asks you to change, and how the current system works as the brief describes it. You start
+  without Main's conversation, so you read the brief as a newcomer would. A part you cannot
+  restate, or a design choice the brief leaves to you (data shape, API signature, error handling,
+  file placement), is a brief gap: settle it from code and evidence as the item above says and
+  name the choice you made. Put the restatement and those choices first in your terminal report
+  under `Brief as understood:`, so Main can compare them with the intent; a wrong restatement is a
+  finding against the brief, not against you. (Idea from the comprehension and
+  implementation-readiness reviewers of google/elephant-goldfish-model, Apache-2.0.)
 - Implement the complete requested behavior with the smallest maintainable change.
 - Add or update tests only when the changed observable contract requires them.
 - Run a pre-change baseline command only when you need it to tell an existing failure apart from
