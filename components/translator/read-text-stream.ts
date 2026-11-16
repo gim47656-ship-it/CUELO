@@ -15,12 +15,13 @@ export async function* readInterpreterTextEvents(body: ReadableStream<Uint8Array
         buffer = buffer.slice(end + 2);
         if (!frame.startsWith("data: ")) throw new Error("Invalid interpreter stream frame");
         const event = JSON.parse(frame.slice(6)) as InterpreterTextEvent;
-        if (!event || (event.type !== "delta" && event.type !== "done" && event.type !== "error")) throw new Error("Invalid interpreter stream event");
+        if (!event || (event.type !== "delta" && event.type !== "translation" && event.type !== "done" && event.type !== "error")) throw new Error("Invalid interpreter stream event");
+        if (event.type === "translation" && (typeof event.text !== "string" || !event.text.trim() || typeof event.source !== "string" || typeof event.target !== "string")) throw new Error("Invalid interpreter translation");
         if (event.type === "delta" && typeof event.text !== "string") throw new Error("Invalid interpreter delta");
         if (event.type === "done" && (typeof event.text !== "string" || !event.text.trim() || typeof event.source !== "string" || typeof event.target !== "string" || (event.reading !== undefined && typeof event.reading !== "string"))) throw new Error("Invalid interpreter completion");
         if (event.type === "error" && event.error !== "live-auth" && event.error !== "live-upstream") throw new Error("Invalid interpreter failure");
         yield event;
-        if (event.type !== "delta") return;
+        if (event.type === "done" || event.type === "error") return;
       }
       if (chunk.done) throw new Error("Interpreter stream ended before completion");
     }

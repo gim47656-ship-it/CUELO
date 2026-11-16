@@ -119,6 +119,7 @@ export async function streamInterpreterText(request: InterpreterTextRequest, sig
     let chars = 0;
     const splitter = reads ? createReadingSplitter() : null;
     let shown = "";
+    let announced = false;
     for await (const event of stream) {
       if (event.type === "text_delta") {
         const visible = splitter ? splitter.push(event.delta) : event.delta;
@@ -126,6 +127,11 @@ export async function streamInterpreterText(request: InterpreterTextRequest, sig
         if (chars > INTERPRETER_TEXT_OUTPUT_MAX_CHARS) throw new InterpreterTextError("Interpreter output too long", "live-upstream", 502);
         shown += visible;
         if (!splitter || visible) yield { type: "delta", text: visible } as const;
+        if (splitter?.marked && !announced && shown.trim()) {
+          // The translation is complete; the Hangul reading still follows. Let the screen commit it now.
+          announced = true;
+          yield { type: "translation", text: shown, source: request.source.code, target: request.target.code } as const;
+        }
         if (splitter && splitter.readingChars > INTERPRETER_READING_MAX_CHARS * 2) {
           // The reading ran away: keep the finished translation and stop reading the provider.
           if (!shown.trim()) throw new InterpreterTextError("Incomplete interpreter translation", "live-upstream", 502);

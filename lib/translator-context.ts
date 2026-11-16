@@ -64,6 +64,11 @@ export const INTERPRETER_READING_MAX_CHARS = 600;
 
 export type InterpreterTextEvent =
   | { type: "delta"; text: string }
+  /**
+   * 번역 글이 끝났다는 알림. 발음을 붙이는 번역에서 발음 줄을 만들기 전에 한 번 온다. 화면은 이때 번역을
+   * 확정하고, 발음은 뒤따르는 `done`에서 붙인다. 이 뒤의 실패는 이미 확정한 번역을 무르지 않는다.
+   */
+  | { type: "translation"; text: string; source: string; target: string }
   /** `reading`은 번역 언어가 `READING_LANGUAGES`일 때만, 모델이 온전히 냈을 때만 있다. 화면 표시 전용이다. */
   | { type: "done"; text: string; source: string; target: string; reading?: string }
   | { type: "error"; error: "live-auth" | "live-upstream" };

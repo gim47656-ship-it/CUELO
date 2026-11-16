@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { interpreterAssistPrompt, parseInterpreterAssistRequest } from "./interpreter-assist";
+import { interpreterAssistPrompt, keepReplyLanguages, parseInterpreterAssistRequest } from "./interpreter-assist";
+import { findTranslatorLanguage } from "./translator-languages";
 import { cleanInterpreterAssist, HISTORY_MAX_LINES, INTERPRETER_TEXT_MAX_CHARS, INTERPRETER_TEXT_OUTPUT_MAX_CHARS } from "./translator-context";
 import { cachedLineAssist, lineAssistKey, lineAssistParts, type AssistLine } from "../components/translator/useLineAssist";
 import { POST } from "../app/api/live/interpret/assist/route";
@@ -44,6 +45,21 @@ test("model JSON drops malformed fields without losing valid assistance", () => 
   expect(cleanInterpreterAssist({ warning: "x".repeat(301), backTranslation: raw.backTranslation }, parts, "mine")).toEqual({ backTranslation: raw.backTranslation });
   expect(cleanInterpreterAssist(null, parts, "theirs")).toEqual({});
   expect(cleanInterpreterAssist({ replies: [{ mine: "네", theirs: "はい" }, { mine: "예", theirs: "はい" }] }, parts, "theirs")).toEqual({});
+});
+
+test("a reply whose button text is in the other person's language never reaches the screen", () => {
+  const ko = findTranslatorLanguage("ko")!, vi = findTranslatorLanguage("vi")!;
+  const good = [{ mine: "안에 앉을게요.", theirs: "Tôi ngồi trong nhà." }, { mine: "밖에 앉을게요.", theirs: "Tôi ngồi ngoài sân." }];
+  // Seen from the model on 2026-11-16: the "mine" side came back in Vietnamese.
+  const swapped = { mine: "Mình ngồi trong nhà.", theirs: "Mình ngồi trong nhà." };
+  expect(keepReplyLanguages({ replies: [...good, swapped], nuance: "x" }, ko, vi)).toEqual({ replies: good, nuance: "x" });
+  expect(keepReplyLanguages({ replies: [good[0], swapped], nuance: "x" }, ko, vi)).toEqual({ nuance: "x" });
+  // The sent side in my own language would hand the other person words they cannot read.
+  const untranslated = { mine: "마당에 앉을게요.", theirs: "마당에 앉을게요." };
+  expect(keepReplyLanguages({ replies: [...good, untranslated] }, ko, vi)).toEqual({ replies: good });
+  // A side the script cannot place (numbers only) is not treated as the wrong language.
+  const numbers = [{ mine: "2", theirs: "2" }, { mine: "3", theirs: "3" }];
+  expect(keepReplyLanguages({ replies: numbers }, ko, vi)).toEqual({ replies: numbers });
 });
 
 test("each independent toggle changes only its parts and cache identity", () => {

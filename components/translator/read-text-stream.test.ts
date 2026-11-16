@@ -36,3 +36,15 @@ test("leaving a stream after partial output cancels its pending body", async () 
   for await (const event of readInterpreterTextEvents(body)) { expect(event.type).toBe("delta"); break; }
   expect(cancelled).toBe(true);
 });
+
+test("a committed translation keeps the stream open for the reading that follows", async () => {
+  const body = new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(frame({ type: "delta", text: "Cho tôi phở bò." }));
+    controller.enqueue(frame({ type: "translation", text: "Cho tôi phở bò.", source: "ko", target: "vi" }));
+    controller.enqueue(frame({ type: "done", text: "Cho tôi phở bò.", source: "ko", target: "vi", reading: "쪼 또이 퍼 보" }));
+    controller.close();
+  } });
+  const types = [];
+  for await (const event of readInterpreterTextEvents(body)) types.push(event.type);
+  expect(types).toEqual(["delta", "translation", "done"]);
+});

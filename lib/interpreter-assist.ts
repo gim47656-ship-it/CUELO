@@ -2,7 +2,7 @@ import { streamSimple } from "@oh-my-pi/pi-ai";
 import { getOmpRuntime } from "./omp-runtime";
 import { InterpreterTextError } from "./interpreter-travel";
 import { cleanInterpreterAssist, parseInterpreterContext, INTERPRETER_TEXT_MAX_CHARS, INTERPRETER_TEXT_OUTPUT_MAX_CHARS, HISTORY_MAX_LINES, type InterpreterContext, type InterpreterAssistParts, type InterpreterAssistResult } from "./translator-context";
-import { findTranslatorLanguage, type TranslatorLanguage } from "./translator-languages";
+import { findTranslatorLanguage, guessTranslatorLanguage, type TranslatorLanguage } from "./translator-languages";
 
 export interface InterpreterAssistRequest {
   mine: TranslatorLanguage;
@@ -51,9 +51,22 @@ export function interpreterAssistPrompt(request: InterpreterAssistRequest): stri
   return instructions.join("\n");
 }
 
+/**
+ * A reply button shows the `mine` side and sends the `theirs` side, so a reply whose sides are written in the
+ * opposite languages would say something other than what the button reads. Drop those replies (and the list
+ * when fewer than two remain). Pairs the script cannot tell apart are kept as they are.
+ */
+export function keepReplyLanguages(result: InterpreterAssistResult, mine: TranslatorLanguage, theirs: TranslatorLanguage): InterpreterAssistResult {
+  if (!result.replies) return result;
+  const replies = result.replies.filter((reply) => guessTranslatorLanguage(reply.mine, mine, theirs) !== theirs && guessTranslatorLanguage(reply.theirs, mine, theirs) !== mine);
+  return { ...result, replies: replies.length >= 2 ? replies : undefined };
+}
+
 export async function fetchInterpreterAssist(request: InterpreterAssistRequest, signal?: AbortSignal): Promise<InterpreterAssistResult> {
   const { modelRegistry } = await getOmpRuntime();
-  const model = modelRegistry.find("openai-codex", "gpt-6.1-sol");
+  // User decision 2026-11-16: optional help runs on the faster Luna (reasoning cannot be turned off on Sol;
+  // measured 4 runs each, median 3.3 s on Luna vs 7.9 s on Sol). Interpretation itself stays on Sol.
+  const model = modelRegistry.find("openai-codex", "gpt-6-luna");
   if (!model) throw new InterpreterTextError("Codex text model unavailable", "live-upstream", 502);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) throw new InterpreterTextError("Codex sign-in required", "live-auth", 401);
@@ -66,7 +79,7 @@ export async function fetchInterpreterAssist(request: InterpreterAssistRequest, 
       if (event.reason !== "stop") return {};
       const text = event.message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
       if (text.length > 16_000) return {};
-      try { return cleanInterpreterAssist(JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "")), request.parts, request.speaker); }
+      try { return keepReplyLanguages(cleanInterpreterAssist(JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "")), request.parts, request.speaker), request.mine, request.theirs); }
       catch { return {}; }
     }
     if (event.type === "error") throw new InterpreterTextError("Interpreter provider stopped", event.error.errorStatus === 401 ? "live-auth" : "live-upstream", event.error.errorStatus === 401 ? 401 : 502);

@@ -115,3 +115,30 @@ test("cancelling the response after partial output aborts the provider signal", 
     expect(aborted).toBe(true);
   });
 });
+
+test("the translation is announced as soon as the Hangul reading starts, before the reading finishes", async () => {
+  const text = "Đừng cho đậu phộng.\n[[HANGUL]]\n등 쪼 다우 퐁";
+  const { promise: readingHeld, resolve: release } = Promise.withResolvers<void>();
+  await withProviderStream(() => {
+    const stream = createAssistantMessageEventStream();
+    const delta = (piece: string) => stream.push({ type: "text_delta", contentIndex: 0, delta: piece, partial: { role: "assistant", content: [] } as unknown as AssistantMessage });
+    void (async () => {
+      delta("Đừng cho đậu phộng.");
+      delta("\n[[HANGUL]]\n등 쪼");
+      await readingHeld;
+      delta(" 다우 퐁");
+      stream.push({ type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } as unknown as AssistantMessage });
+    })();
+    return stream;
+  }, async (response) => {
+    const events = readInterpreterTextEvents(response.body!);
+    const seen = [];
+    for await (const event of events) {
+      seen.push(event);
+      if (event.type === "translation") break;
+    }
+    // The reading is still held by the provider, yet the translation is already final.
+    expect(seen.at(-1)).toEqual({ type: "translation", text: "Đừng cho đậu phộng.", source: "ko", target: "vi" });
+    release();
+  });
+});

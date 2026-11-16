@@ -22,19 +22,31 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
   const [error, setError] = useState<"live-auth" | "live-upstream" | null>(null);
   const [provisional, setProvisional] = useState<Turn | null>(null);
   const requestRef = useRef<AbortController | null>(null);
+  /** Requests whose line is already committed and only the Hangul reading is still arriving. */
+  const readingRef = useRef(new Set<AbortController>());
   const nextTurn = useRef(0);
   const composing = useRef(false);
   const latest = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const from = source === mine.code ? mine : theirs;
   const to = source === mine.code ? theirs : mine;
-  const assistLines = turns.map((turn) => ({ id: String(turn.id), mine: mine.code, theirs: theirs.code, speaker: turn.source.code === mine.code ? "mine" as const : "theirs" as const, text: turn.original, interpretation: turn.translation }));
+  // The other person's lines need no interpretation for replies or nuance, so their help starts the moment
+  // the line is sent, under the same key the committed turn keeps. My lines wait for the interpretation to check.
+  const assistLine = (id: number, source: TranslatorLanguage, original: string, translation?: string) => {
+    const speaker = source.code === mine.code ? "mine" as const : "theirs" as const;
+    return { id: String(id), mine: mine.code, theirs: theirs.code, speaker, text: original, ...(speaker === "mine" ? { interpretation: translation } : {}) };
+  };
+  const assistLines = [
+    ...turns.map((turn) => assistLine(turn.id, turn.source, turn.original, turn.translation)),
+    ...(provisional && provisional.source.code === theirs.code ? [assistLine(provisional.id, provisional.source, provisional.original)] : []),
+  ];
   const assists = useLineAssist(assistLines, assistSettings, { profile, history: turns.flatMap((turn) => [{ role: "user" as const, text: turn.original }, { role: "assistant" as const, text: turn.translation }]).slice(-INTERPRETER_TEXT_HISTORY_LINES) }, visible);
   const latestOther = assistLines.findLast((line) => line.speaker === "theirs")?.id;
 
   useEffect(() => {
-    if (!visible) { requestRef.current?.abort(); requestRef.current = null; setPending(false); setProvisional(null); }
-    return () => { requestRef.current?.abort(); requestRef.current = null; };
+    const stopReadings = () => { for (const reading of readingRef.current) reading.abort(); readingRef.current.clear(); };
+    if (!visible) { requestRef.current?.abort(); requestRef.current = null; stopReadings(); setPending(false); setProvisional(null); }
+    return () => { requestRef.current?.abort(); requestRef.current = null; stopReadings(); };
   }, [visible]);
   useEffect(() => { if (visible) latest.current?.scrollIntoView({ block: "nearest" }); }, [turns, visible, provisional?.translation]);
 
@@ -49,6 +61,8 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
     setPending(true); setError(null);
     const original = draft.trim();
     setProvisional({ id: nextTurn.current, source: from, target: to, original, translation: "" });
+    // Set once the translation is committed; the Hangul reading may still follow and is attached later.
+    let committed: number | null = null;
     try {
       const response = await fetch("/api/live/interpret/text", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
@@ -62,21 +76,35 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
       }
       if (!response.body || !response.headers.get("Content-Type")?.includes("text/event-stream")) throw new Error("Invalid translation response");
       for await (const event of readInterpreterTextEvents(response.body)) {
-        if (requestRef.current !== controller || controller.signal.aborted) return;
+        // After the commit this request no longer owns the form; only leaving the screen (abort) stops the reading.
+        if (controller.signal.aborted || (committed === null && requestRef.current !== controller)) return;
         if (event.type === "delta") {
-          setProvisional((previous) => previous ? { ...previous, translation: previous.translation + event.text } : null);
+          if (committed === null) setProvisional((previous) => previous ? { ...previous, translation: previous.translation + event.text } : null);
         } else if (event.type === "error") {
-          setError(event.error);
+          if (committed === null) setError(event.error);
         } else {
           if (event.source !== from.code || event.target !== to.code) throw new Error("Invalid translation direction");
-          const id = nextTurn.current++;
-          setTurns((previous) => [...previous, { id, source: from, target: to, original, translation: event.text, ...(event.reading ? { reading: event.reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
-          setDraft("");
+          const reading = event.type === "done" ? event.reading : undefined;
+          if (committed === null) {
+            const id = nextTurn.current++;
+            committed = id;
+            setTurns((previous) => [...previous, { id, source: from, target: to, original, translation: event.text, ...(reading ? { reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
+            setProvisional(null);
+            setDraft("");
+            // The form is free for the next line while the Hangul reading is still on its way.
+            readingRef.current.add(controller);
+            requestRef.current = null; setPending(false); textarea.current?.focus();
+          } else if (reading) {
+            const id = committed;
+            setTurns((previous) => previous.map((turn) => turn.id === id ? { ...turn, reading } : turn));
+          }
         }
       }
     } catch {
-      if (requestRef.current === controller && !controller.signal.aborted) setError("live-upstream");
+      // A failure after the translation was committed only loses the optional reading.
+      if (requestRef.current === controller && !controller.signal.aborted && committed === null) setError("live-upstream");
     } finally {
+      readingRef.current.delete(controller);
       if (requestRef.current === controller) { requestRef.current = null; setPending(false); setProvisional(null); textarea.current?.focus(); }
     }
   };
