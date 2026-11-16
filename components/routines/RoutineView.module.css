@@ -826,19 +826,18 @@
 }
 
 /* New interactions stay in the board's normal scroll flow, including above a phone keyboard. */
-.quickTask {
+.assistant {
   margin-block: 16px 28px;
+  min-inline-size: 0;
 }
 
-.taskInput,
-.draftFields {
+.taskInput {
   display: grid;
   min-inline-size: 0;
   gap: 8px;
 }
 
-.taskInput > label,
-.draft .field {
+.taskInput > label {
   font-size: 13px;
   font-weight: 500;
 }
@@ -859,7 +858,6 @@
 }
 
 .composerActions,
-.draftMeta,
 .notificationRow,
 .replyMeta {
   display: flex;
@@ -877,7 +875,7 @@
   margin-inline-end: auto;
 }
 
-.quickTask .button,
+.assistant .button,
 .thread .button,
 .pushSwitch,
 .notifications .button,
@@ -886,39 +884,19 @@
   min-block-size: 44px;
 }
 
-.draft {
-  margin-block-start: 16px;
-  padding: 16px;
-  border-radius: var(--radius-surface);
-  background: var(--bg-subtle);
-}
-
-.draft h2,
 .thread h3 {
   margin: 0 0 12px;
   font-size: 16px;
   font-weight: 600;
 }
 
-.formFields,
-.draftFields {
+.formFields {
   min-inline-size: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
 
-.draftMeta {
-  justify-content: space-between;
-  font-size: 13px;
-}
-
-.draft .field input,
-.draft .field select,
-.draft .field textarea {
-  min-block-size: 44px;
-  font-size: 16px;
-}
 
 .thread {
   margin-block: 24px 32px;
@@ -1035,31 +1013,18 @@
   outline-offset: 3px;
 }
 
-.taskInput textarea:disabled,
-.draftFields:disabled {
+.taskInput textarea:disabled {
   opacity: 0.6;
 }
 
-.quickTask .button:active:not(:disabled),
+.assistant .button:active:not(:disabled),
 .thread .button:active:not(:disabled),
 .notifications .button:active:not(:disabled) {
   opacity: 0.8;
 }
 
-.draft > .composerActions {
-  margin-block-start: 12px;
-}
 
 @media (max-width: 720px) {
-  .draft {
-    padding: 12px;
-  }
-
-  .draft .field input,
-  .draft .field select,
-  .draft .field textarea {
-    font-size: 16px;
-  }
 
   .panelBadges {
     flex-wrap: wrap;
@@ -1069,8 +1034,63 @@
 }
 
 @media (pointer: coarse) {
-  .view :global(#routine-task-hint),
   .view :global(#routine-reply-hint) {
     display: none;
   }
+}
+
+.assistantHead,
+.assistantProposalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--seed-dimension-x2);
+}
+
+.assistantHead h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.assistantHistory {
+  max-block-size: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  margin-block: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  padding-inline-end: var(--seed-dimension-x2);
+}
+
+.assistantHistory:empty { display: none; }
+.assistantHistory[data-expanded="true"] { max-block-size: min(60dvh, 640px); }
+.assistantMessage { padding-block: var(--seed-dimension-x3); min-inline-size: 0; }
+.assistantMessage[data-role="user"] { padding-inline: var(--seed-dimension-x3); background: var(--bg-subtle); border-radius: var(--radius-control); }
+.assistantSpeaker { font-size: 12px; color: var(--text-muted); }
+.assistantMessage :global(.markdown-body) { font-size: 14px; }
+.assistantMessage p { margin-block: var(--seed-dimension-x1) var(--seed-dimension-x2); }
+.assistantPrompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
+.assistantProposal { padding: var(--seed-dimension-x4); margin-block-start: var(--seed-dimension-x3); background: var(--bg-panel); color: var(--text); border-radius: var(--radius-surface); }
+.assistantProposalHead { align-items: flex-start; font-size: 14px; }
+.assistantProposalHead > span { flex-shrink: 0; font-size: 12px; color: var(--text-muted); }
+.assistantProposal[data-status="cancelled"] { opacity: 0.65; }
+.assistantMeta { font-size: 13px; color: var(--text-muted); }
+.assistantComparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--seed-dimension-x4); margin-block: var(--seed-dimension-x3); font-size: 13px; }
+.assistantComparison summary { cursor: pointer; min-block-size: 44px; display: flex; align-items: center; }
+.assistantComparison summary::before { content: "›"; margin-inline-end: var(--seed-dimension-x2); }
+.assistantComparison details[open] summary::before { content: "⌄"; }
+.assistant .taskInput textarea { max-block-size: 200px; }
+.assistantFeedback { min-block-size: 1.5em; font-size: 13px; color: var(--text-muted); }
+.assistantFeedback p { margin: 0; }
+
+@media (hover: hover) {
+  .assistant .taskInput textarea:hover { background: var(--bg-hover); }
+  .assistantComparison summary:hover { color: var(--text-muted); }
+}
+
+@media (max-width: 480px) {
+  .assistantComparison { grid-template-columns: minmax(0, 1fr); }
+  .assistantProposal { padding: var(--seed-dimension-x3); }
+  .assistantHistory { max-block-size: 220px; }
+  .assistantHistory[data-expanded="true"] { max-block-size: 60dvh; }
 }

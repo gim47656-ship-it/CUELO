@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { threadState, pendingReplies, parseReplyBody, reserveReplyWrite, releaseReplyWrite, pendingReplyWrites } from "./reply";
 import { waitingAnswer, parseRoutinePost, serializeRoutinePost, type RoutinePost } from "./post";
 import { scheduledRun, dueRunKey, ROUTINE_TIMEZONE } from "./schedule";
-import { parseRoutineDraft, defaultRoutineHost } from "./draft";
 import { listPosts, readReplies, writePostFile, writeReplyFile, writeRoutineFile, type Routine } from "./store";
 
 import { routinePushItems } from "./notifications";
@@ -74,19 +73,6 @@ test("catch-up picks only latest missed slot inside two hours and after creation
   assert.equal(scheduledRun(schedule, ROUTINE_TIMEZONE, created, undefined, at("10:04:59"))?.trigger, "schedule");
 });
 
-test("draft validates model JSON and computes host defaults, never accepts model host", () => {
-  const routines = [routine, { ...routine, id: "two" }, { ...routine, host: "home", enabled: false }];
-  assert.equal(defaultRoutineHost([], "here"), "here");
-  const raw = { name: "Task", prompt: "Only what I said", schedule: routine.schedule, host: "invented", oneOff: false };
-  assert.equal(parseRoutineDraft(JSON.stringify(raw), routines, "here").draft.host, "cloud");
-  const once = parseRoutineDraft(JSON.stringify({ ...raw, oneOff: true }), routines, "here", new Date("2026-11-15T00:23:00Z"));
-  assert.equal(once.draft.host, "here");
-  assert.deepEqual(once.draft.schedule, { kind: "once", date: "2026-11-15", time: "09:23" });
-  assert.equal(once.draft.prompt, raw.prompt);
-  for (const value of ["no json", "{}", JSON.stringify({ ...raw, schedule: { kind: "invalid" } }), JSON.stringify({ ...raw, prompt: "" })]) {
-    assert.throws(() => parseRoutineDraft(value, routines, "here"));
-  }
-});
 
 test("concurrent POST reservations are process-global and reference counted", () => {
   assert.equal(pendingReplyWrites, globalThis.__cueloPendingReplyWrites);

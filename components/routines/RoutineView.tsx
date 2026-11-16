@@ -6,9 +6,10 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TranslationParams } from "@/lib/i18n/types";
 import { type RoutinePost, findTitleHeading, splitPostDetails } from "@/lib/routines/post";
 import type { RoutineSchedule } from "@/lib/routines/schedule";
+import { localParts } from "@/lib/routines/schedule";
 import type { RoutinePostSummary } from "@/lib/routines/store";
 import type { RoutineReply } from "@/lib/routines/reply";
-import { QuickTask } from "./QuickTask";
+import { RoutineAssistant } from "./RoutineAssistant";
 import { RoutineThread } from "./RoutineThread";
 import { RoutineNotifications } from "./RoutineNotifications";
 import {
@@ -552,7 +553,8 @@ function RoutineForm({ routine, draft, oneOff = false, data, t }: { routine: Boa
   const submit = async (event: { preventDefault: () => void }) => {
     event.preventDefault();
     if (savedId || submitting.current) return;
-    const built = schedule();
+    const immediate = oneOff && !routine && kind === "once" ? localParts(new Date(), KST) : null;
+    const built = immediate ? { kind: "once" as const, date: immediate.date, time: immediate.time } : schedule();
     if (typeof built === "string") {
       setError(built);
       return;
@@ -563,7 +565,7 @@ function RoutineForm({ routine, draft, oneOff = false, data, t }: { routine: Boa
     const result = await request<{ routine: { id: string } }>(routine ? `/api/routines/${encodeURIComponent(routine.id)}` : "/api/routines", {
       method: routine ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled, schedule: built, host, prompt, cwd, model }),
+      body: JSON.stringify({ name, enabled: immediate ? true : enabled, schedule: built, host, prompt, cwd, model }),
     }, t);
     if (!result.ok) {
       setError(result.error);
@@ -807,7 +809,7 @@ export function RoutineView({ visible = true, onBack, requestNotificationPermiss
       </div>
       <div className={styles.body}>
         {loadError && !data ? <div className={styles.notice} data-tone="danger">{t("routines.loadFailed", { error: loadError })}</div> : null}
-        {data && !data.setup && (screen.kind === "gallery" || screen.kind === "board") ? <><RoutineNotifications requestPermission={requestNotificationPermission} /><QuickTask data={data} formatSchedule={(draft) => scheduleLabel(draft.schedule, t)} /></> : null}
+        {data && !data.setup && (screen.kind === "gallery" || screen.kind === "board") ? <><RoutineNotifications requestPermission={requestNotificationPermission} /><RoutineAssistant data={data} visible={visible} routineId={screen.kind === "board" ? screen.id : undefined} formatSchedule={(draft) => scheduleLabel(draft.schedule, t)} /></> : null}
         {data ? <Screen data={data} screen={screen} t={t} /> : null}
       </div>
     </section>

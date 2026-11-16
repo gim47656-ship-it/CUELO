@@ -18,6 +18,7 @@ import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-comm
 import { resolveRpcSkillInvocation } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import { BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 import { readPlanFile } from "@oh-my-pi/pi-coding-agent/plan-mode/plan-files";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
@@ -352,6 +353,8 @@ export function resolveForkEntryId(
 
 export interface RpcSessionStartOptions {
   toolNames?: string[];
+  /** Hard builtin-only admission policy, unlike the UI's toolNames preset. Re-pass on cold resume. */
+  restrictTools?: string[];
   initialModel?: { provider: string; modelId: string };
   thinkingLevel?: ConfiguredThinkingLevel;
   /**
@@ -878,6 +881,7 @@ export class AgentSessionWrapper {
     public readonly inner: AgentSessionLike,
     eventBus: ConstructorParameters<typeof RpcSubagentRegistry>[0],
     private readonly stopResumeToolReplay?: () => void,
+    readonly restrictTools?: readonly string[],
   ) {
     this.subagents = new RpcSubagentRegistry(eventBus, (frame) => {
       const event = frame as unknown as AgentEvent;
@@ -1478,7 +1482,7 @@ export class AgentSessionWrapper {
     // the start: if this start fails, the next request that revives the id still picks the streams up.
     getListenerHandovers().set(sessionId, { from: this, keepAlive: new Set(this.keepAliveListeners) });
     await this.shutdown();
-    await startRpcSession(sessionId, sessionFile, undefined);
+    await startRpcSession(sessionId, sessionFile, undefined, this.restrictTools === undefined ? {} : { restrictTools: [...this.restrictTools] });
     return true;
   }
 
@@ -1534,6 +1538,10 @@ export class AgentSessionWrapper {
     this.resetIdleTimer();
     const type = command.type as string;
     if (this.shouldWaitForExtensions(type)) await this.waitForExtensionsBound();
+    if (this.restrictTools !== undefined &&
+      (type === "execute_slash_command" || (type === "bash" && !this.restrictTools.includes("bash")))) {
+      throw new Error("Command is unavailable in this restricted session");
+    }
     // 확장 바인딩을 기다리는 동안 삭제가 예약될 수 있으므로 그 await 뒤에서 판정한다.
     // 여기를 통과한 prompt는 동기적으로 실행 중이 된다(genuine 입력은 input hook 동안
     // pendingInputAdmissions로, 그 뒤 promptRunning으로). 반대로 예약이 먼저 잡혔다면
@@ -2067,7 +2075,9 @@ export class AgentSessionWrapper {
         this.stopResumeToolReplay?.();
         this.setForceEmptySystemPrompt(toolNames.length === 0);
         await this.inner.setActiveToolsByName(
-          this.goalMode.reconcileToolNames(withExtensionTools(this.inner, toolNames)),
+          this.restrictTools === undefined
+            ? this.goalMode.reconcileToolNames(withExtensionTools(this.inner, toolNames))
+            : toolNames.filter((name) => this.restrictTools!.includes(name)),
         );
         this.applyForcedEmptySystemPrompt();
         return null;
@@ -2919,6 +2929,10 @@ export async function startRpcSession(
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
   const { toolNames, initialModel, thinkingLevel, accountOauthPosition, interactivePrompts } = options;
+  const restrictTools = options.restrictTools === undefined ? undefined : [...new Set(options.restrictTools)];
+  if (restrictTools?.some((name) => !(BUILTIN_TOOL_NAMES as readonly string[]).includes(name))) {
+    throw new Error("restrictTools accepts builtin tool names only");
+  }
   const registry = getRegistry();
   const locks = getLocks();
 
@@ -2929,10 +2943,25 @@ export async function startRpcSession(
   }
 
   const existing = registry.get(sessionId);
-  if (existing?.isAlive()) return { session: existing, realSessionId: sessionId };
+  if (existing?.isAlive()) {
+    if (restrictTools !== undefined && (existing.restrictTools === undefined ||
+      restrictTools.length !== existing.restrictTools.length ||
+      restrictTools.some((name) => !existing.restrictTools!.includes(name)))) {
+      throw new Error("Cannot change a live session's tool admission policy");
+    }
+    return { session: existing, realSessionId: sessionId };
+  }
 
   const inflight = locks.get(sessionId);
-  if (inflight) return inflight;
+  if (inflight) {
+    const result = await inflight;
+    if (restrictTools !== undefined && (result.session.restrictTools === undefined ||
+      restrictTools.length !== result.session.restrictTools.length ||
+      restrictTools.some((name) => !result.session.restrictTools!.includes(name)))) {
+      throw new Error("Cannot change a live session's tool admission policy");
+    }
+    return result;
+  }
 
   const starting = (async () => {
     // Some extensions access the SDK's global theme even outside the terminal UI.
@@ -2969,6 +2998,7 @@ export async function startRpcSession(
         // tools (and activate extension tools); we narrow the ACTIVE set below.
         toolsOption = toolNames.length === 0 ? [] : undefined;
       }
+      if (restrictTools !== undefined) toolsOption = restrictTools;
 
       // Gate untrusted project code so opening a repository in a browser tab does
       // not run its `.omp/extensions`, `.omp/tools`, `.mcp.json` servers, or the
@@ -3069,16 +3099,16 @@ export async function startRpcSession(
 
       const session = inner as unknown as AgentSessionLike;
       restoreThinkingCeiling(session);
-      const stopResumeToolReplay = await restoreRpcSessionTools(inner, toolNames);
+      const stopResumeToolReplay = await restoreRpcSessionTools(inner, restrictTools ?? toolNames);
 
       // If specific tool names were requested (non-empty), set the active tools to the
       // requested builtin coding tools PLUS all extension/package tools, so installed
       // extensions stay usable in CUELO just like in the `omp` CLI.
-      if (toolNames && toolNames.length > 0) {
+      if (restrictTools === undefined && toolNames && toolNames.length > 0) {
         await session.setActiveToolsByName(withExtensionTools(session, toolNames));
       }
 
-      const wrapper = new AgentSessionWrapper(session, eventBus, stopResumeToolReplay);
+      const wrapper = new AgentSessionWrapper(session, eventBus, stopResumeToolReplay, restrictTools);
       wrapper.projectCodeLoaded = untrusted === undefined;
       // The runtime's shared Settings instance must never carry a per-session takeover override.
       wrapper.sharesRuntimeSettings = sessionSettings === runtime.settings;
