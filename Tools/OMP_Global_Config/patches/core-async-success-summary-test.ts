@@ -75,7 +75,13 @@ if (process.argv[2] !== "--worker") {
   }, { ownerId: session.getAgentId(), process: type === "bash" ? { command: "printf async-success-command-tail", cwd: fixture, pids: () => [] } : undefined });
   if (state === "cancelled") manager.cancel(id);
   gate.resolve();
-  await session.settleAsyncWork();
+  if ("waitForRunEnd" in session) {
+   // These jobs are injected before any run exists. waitForRunEnd deliberately
+   // waits for runs, not arbitrary future deliveries; fixture setup owns this drain.
+   await manager.waitForAll();
+   await manager.drainDeliveries();
+  }
+  await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.settleAsyncWork());
   const messages = session.messages.filter((message: { customType?: string; content?: unknown }) => message.customType === "async-result" && JSON.stringify(message.content).includes(id));
   let content: unknown;
   if (state === "cancelled") {
@@ -163,7 +169,7 @@ if (process.argv[2] !== "--worker") {
    const before = new Set(manager.getAllJobs().map((job: AsyncJob) => job.id));
    pendingCall = { type: "toolCall", id: `real-${name}`, name: "bash", arguments: { command, timeout, async: true } };
    await session.prompt(`Run local ${name} bash fixture.`);
-   await session.settleAsyncWork();
+   await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.settleAsyncWork());
    const job = manager.getAllJobs().find((job: AsyncJob) => !before.has(job.id) && job.type === "bash");
    assert.ok(job, `${name}: actual BashTool registered a job`);
    assert.equal(job.status, name === "success" ? "completed" : "failed");

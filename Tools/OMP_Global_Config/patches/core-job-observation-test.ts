@@ -188,7 +188,7 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
     if (session) {
       session.agent.clearAllQueues();
       if (session.isStreaming) await session.abort();
-      await session.settleAsyncWork();
+      await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.settleAsyncWork());
       await session.dispose();
       session.modelRegistry.authStorage.close();
     }

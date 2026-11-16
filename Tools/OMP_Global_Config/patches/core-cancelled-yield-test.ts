@@ -94,6 +94,9 @@ class FakeSession {
 	getToolByName() { return undefined; }
 	hasPendingAsyncWork() { return false; }
 	async settleAsyncWork() {}
+	get isRunActive() { return this.isStreaming; }
+	get wakeSources() { return undefined; }
+	async waitForRunEnd() { await this.waitForIdle(); }
 	getAsyncJobSnapshot() { return undefined; }
 	getLastAssistantMessage() { return undefined; }
 	trackIrcReply() {}

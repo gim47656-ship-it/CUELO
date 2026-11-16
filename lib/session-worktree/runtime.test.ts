@@ -31,7 +31,7 @@ test("live snapshot includes idle sessions, actual job cwd, Maker cwd and starti
   const root = "/tmp/cu-worktree-helper";
   globalThis.__ompSessions = new Map([["parent", wrapper("parent", "/tmp/elsewhere", [{ id: "job", process: { cwd: `${root}/build` } }, { id: "fallback-job" }]) as never]]);
   const registry = AgentRegistry.global(); const id = `worktree-maker-${randomUUID()}`;
-  const ref = registry.register({ id, displayName: id, kind: "sub", status: "running", session: { sessionManager: { getCwd: () => root }, isStreaming: true } as never });
+  const ref = registry.register({ id, displayName: id, kind: "sub", status: "running", session: { sessionManager: { getCwd: () => root }, isStreaming: true, isRunActive: true, runStartedAt: Date.now() } as never });
   try {
     const uses = getLiveSessionWorktreeUses();
     expect(uses).toContainEqual({ id: "parent", cwd: "/tmp/elsewhere" });

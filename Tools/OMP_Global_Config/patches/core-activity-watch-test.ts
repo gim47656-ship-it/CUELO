@@ -23,6 +23,7 @@ import { createSettingsTestScope } from "./core-test-settings";
 const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required");
 const core = resolve(target, "src");
+const runLifecycle = (await Bun.file(`${core}/session/agent-session.ts`).text()).includes("get isRunActive(): boolean {");
 // The SDK keeps process-global stores under the first profile. Let OS process
 // teardown release them before the parent removes its fixture tree on Windows.
 if (process.argv[2] !== "--fixture-worker") {
@@ -92,7 +93,12 @@ function fixture(assignment?: string) {
     addDisposer: (fn: () => void) => disposers.push(fn),
     getAsyncJobSnapshot: () => ({ running: jobs.running }),
   };
-  const emit = (event: FixtureEvent) => { for (const fn of events) fn(event); };
+  const emit = (event: FixtureEvent) => {
+    const mapped = runLifecycle && event.type === "agent_end" && event.isTerminal === false
+      ? { ...event, type: "agent_pause", awaiting: Reflect.get(event, "awaitingAsyncWork") === true }
+      : event;
+    for (const fn of events) fn(mapped);
+  };
   const stopQueue = agent.onQueueChange(() => emit({ type: "queue_update" }));
   registry.register({ id: "Main", displayName: "Main", kind: "main", status: "idle", session: {
     isStreaming: false, deliverIrcMessage: async (msg: ReceivedMessage) => { messages.push(msg); return "woken"; },
@@ -658,7 +664,7 @@ await check("actual SDK task producer preserves long terminal evidence through a
     assert.equal(job.completion.startTime, job.startTime, "original completion is untouched");
     console.log(`SDK terminal evidence: ${job.completion.output.length} chars; exact identity; preview truncated; async/wait/proc preserve validation; other owner denied`);
   } finally {
-    await session.settleAsyncWork();
+    await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.settleAsyncWork());
     for (const ref of AgentRegistry.global().list()) if (ref.session && ref.session !== session) await ref.session.dispose();
     await session.dispose(); session.modelRegistry.authStorage.close(); closeModelCache(); local.stop(true);
   }

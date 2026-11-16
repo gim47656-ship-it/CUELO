@@ -280,6 +280,7 @@ type ExtensionBindingOptions = {
 const RUNNING_STATE_EVENT_TYPES = new Set([
   "agent_start",
   "agent_end",
+  "agent_pause",
   "agent_settled",
   "auto_compaction_start",
   "auto_compaction_end",
@@ -1001,6 +1002,7 @@ export class AgentSessionWrapper {
       || this.pendingInputAdmissions > 0
       || this.handoffRunning
       || this.inner.isStreaming
+      || this.inner.isRunActive
       || this.inner.isCompacting
       || this.inner.isBashRunning
       || this.subagents.getSubagents().length > 0
@@ -1017,8 +1019,7 @@ export class AgentSessionWrapper {
     const manager = backgroundJobManagerOf(this.inner);
     if (manager && (manager.getRunningJobs().length > 0 || manager.hasPendingDeliveries())) return false;
     // 배달됐지만 아직 턴에 주입되지 않은 결과(코어 yield queue)도 곧 턴을 다시 깨운다.
-    const pendingWake = "hasPendingAsyncWork" in this.inner ? this.inner.hasPendingAsyncWork : undefined;
-    if (typeof pendingWake === "function" && pendingWake.call(this.inner) === true) return false;
+    if (this.inner.wakeSources !== undefined) return false;
     const goal = this.inner.getGoalModeState?.();
     return !(goal?.enabled && goal.goal.status === "active");
   }

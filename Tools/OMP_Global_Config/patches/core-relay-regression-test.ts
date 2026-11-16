@@ -14,7 +14,7 @@
  * 실행: OMP_CORE_PATCH_TARGET=<사본> bun run patches/core-relay-regression-test.ts
  * 미패치 사본에서는 RED, 패치 사본에서는 GREEN 이다.
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,18 +68,6 @@ const artifactsDir = mkdtempSync(join(tmpdir(), "omp-relay-artifacts-"));
 // 더미 키(비밀 아님).
 const FIXTURE_PROVIDER = "b-ai";
 const FIXTURE_MODEL_ID = "deepseek-v4.1-flash";
-// ModelRegistry 는 models.db 핸들을 닫는 API 가 없어 이 프로세스가 살아 있는 동안
-// agentDir 삭제가 Windows 에서 EBUSY 로 실패할 수 있다. 그래서 이전 실행이 남긴 것을
-// 시작할 때 한 번 쓸어 낸다(핸들이 이미 없으므로 지워진다). 새 이름은 계속 고유하게
-// 잡아 동시 실행끼리 서로의 디렉터리를 지우지 않는다.
-for (const entry of readdirSync(tmpdir())) {
-	if (!entry.startsWith("omp-relay-agentdir-")) continue;
-	try {
-		rmSync(join(tmpdir(), entry), { recursive: true, force: true });
-	} catch {
-		// 다른 실행이 아직 쥐고 있는 디렉터리다. 그 실행이 정리한다.
-	}
-}
 const agentDir = mkdtempSync(join(tmpdir(), "omp-relay-agentdir-"));
 writeFileSync(
 	join(agentDir, "models.yml"),
@@ -144,7 +132,7 @@ const registry = AgentRegistry.global();
 const bus = IrcBus.global();
 
 console.log(`[env] core=${CORE}`);
-const created = await sdk.createAgentSession({ cwd: workdir, agentDir, disableExtensionDiscovery: true });
+const created = await sdk.createAgentSession({ cwd: workdir, agentDir, agentId: "Sol", agentKind: "sub", disableExtensionDiscovery: true });
 const session = created.session;
 
 // 실제 배선: 부모는 top-level main, 서브는 그 자식이며 세션은 진짜 AgentSession 이다.
@@ -427,16 +415,18 @@ phase = "strand";
 const beforeRaceParent = relays().length;
 const beforeRaceNova = novaRelays().length;
 const raceAgent = session.agent as unknown as { continue: (...args: unknown[]) => Promise<unknown> };
-const raceHost = session as unknown as { settleAsyncWork?: () => Promise<void> };
+const settleMethod = "waitForRunEnd" in session ? "waitForRunEnd" : "settleAsyncWork";
+const raceHost = session as unknown as Partial<Record<typeof settleMethod, () => Promise<void>>>;
 const originalContinue = raceAgent.continue;
-const originalSettle = raceHost.settleAsyncWork;
+const originalSettle = raceHost[settleMethod];
+let settleCalls = 0;
 raceAgent.continue = async function (this: unknown, ...args: unknown[]) {
 	await settle(1200);
 	return await originalContinue.apply(this, args);
 };
 if (originalSettle) {
 	// `if (!manager || !this.#agentId) return;` 와 같은 조기 반환.
-	raceHost.settleAsyncWork = async () => {};
+	raceHost[settleMethod] = async () => { settleCalls++; };
 }
 await bus.send({ from: "Nova", to: "Sol", body: "형제 wake 3" });
 const raceDeadline = Date.now() + 20_000;
@@ -446,7 +436,8 @@ while (Date.now() < raceDeadline && (relays().length < beforeRaceParent + 1 || n
 // 늦게 오는 중복까지 본다.
 await settle(2500);
 Reflect.deleteProperty(raceAgent, "continue");
-if (originalSettle) Reflect.deleteProperty(raceHost, "settleAsyncWork");
+if (originalSettle) Reflect.deleteProperty(raceHost, settleMethod);
+check("조기 반환 settle 대역을 실제 wake 경로가 호출한다", !originalSettle || settleCalls > 0, `method=${settleMethod} calls=${settleCalls}`);
 check(
 	"형제는 이번 turn 에서 정확히 1건 받는다",
 	novaRelays().length === beforeRaceNova + 1,

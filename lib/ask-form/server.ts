@@ -12,7 +12,7 @@ import {
   isArrayChoice as coreIsArrayChoice,
   textValue as coreTextValue,
 } from "@oh-my-pi/pi-tui/html-form/data";
-import { loadFormImage, MAX_FORM_IMAGE_BYTES, svgMedia, type FormMedia } from "@oh-my-pi/pi-tui/html-form/media";
+import { loadMedia as loadFormImage, MAX_MEDIA_BYTES as MAX_FORM_IMAGE_BYTES, svgMedia, type Media as FormMedia } from "@oh-my-pi/pi-tui/media";
 import { type FormField, type HtmlForm, parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
 import { ASK_FORM_ORDERED_ACTIVITY_TAG, type AskFormBlock, type AskFormData, type AskFormModel, type AskFormValue } from "./types";
 

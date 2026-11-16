@@ -452,7 +452,7 @@ function startDelegation(call: LiveCall, wrapper: AgentSessionWrapper, itemId: s
 /** Main session events during a call. Exported so the relay to the live model can be tested without a socket. */
 export function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void {
   if (!call.activeDelegationId) {
-    if (event.type === "agent_end" && event.isTerminal !== false) relayMainAnswer(call, event.messages);
+    if (event.type === "agent_end") relayMainAnswer(call, event.messages);
     return;
   }
   if (event.type === "message_end") {
@@ -463,7 +463,7 @@ export function handleAgentEvent(call: LiveCall, event: AgentSessionEvent): void
     if (progress) appendDelegationContext(call, progress, true);
     return;
   }
-  if (event.type !== "agent_end" || event.isTerminal === false) return;
+  if (event.type !== "agent_end") return;
   for (let index = event.messages.length - 1; index >= 0; index -= 1) {
     const message = event.messages[index];
     if (!message || message.role !== "assistant") continue;

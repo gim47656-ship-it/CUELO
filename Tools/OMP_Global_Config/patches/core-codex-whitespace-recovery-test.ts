@@ -293,7 +293,8 @@ async function runCase(name: string, opts: { behaviors: Behavior[]; flag: boolea
 	const agentEnds: boolean[] = [];
 	const unsubscribe = session.subscribe((event: { type: string; attempt?: number; success?: boolean; message?: Msg; assistantMessageEvent?: { type: string }; isTerminal?: boolean }) => {
 		if (event.type === "auto_retry_start" || event.type === "auto_retry_end") events.push({ type: event.type, attempt: event.attempt, success: event.success });
-		if (event.type === "agent_end") agentEnds.push(event.isTerminal === true);
+		if (event.type === "agent_pause") agentEnds.push(false);
+		if (event.type === "agent_end") agentEnds.push("isRunActive" in session || event.isTerminal === true);
 		if (event.type === "message_end" && event.message?.role === "assistant") ends.push(event.message);
 		if (opts.abortAfterText && event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
 			void session.abort();
@@ -301,7 +302,7 @@ async function runCase(name: string, opts: { behaviors: Behavior[]; flag: boolea
 	});
 	const settle = (async () => {
 		await session.prompt("prepare the report data");
-		await session.waitForIdle();
+		await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.waitForIdle());
 	})();
 	let timedOut = false;
 	await Promise.race([settle, Bun.sleep(30_000).then(() => { timedOut = true; })]);

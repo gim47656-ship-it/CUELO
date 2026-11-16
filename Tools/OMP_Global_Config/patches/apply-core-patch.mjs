@@ -25497,6 +25497,65 @@ function planSpawns(
 	noop(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')), skip);
 }
 
+// 18.21.0 (ADAPT): raw session events now distinguish a paused loop from a
+// terminal run. Preserve older candidate bodies and the browser wire contract.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.21.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.21.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const observation = one(entry => entry.marker.startsWith("this.#endInFlight(async () => {"));
+	const priorObservation = observation.alternates.at(-1);
+	const runWait = text => swap(swap(text, "await this.settleAsyncWork();", "await this.waitForRunEnd();"),
+		"Turn observation async-work settle failed", "Turn observation run-end wait failed");
+	alternate(observation, {
+		marker: priorObservation.marker,
+		anchor: runWait(priorObservation.anchor),
+		patched: runWait(priorObservation.patched),
+	}, "get isRunActive(): boolean {");
+
+	// The lifecycle host file is unchanged between versions. A supplemental edit
+	// adapts only our inserted guard; old sessions retain their original predicate.
+	const parkAnchor = "\t\t\t\tif (session.hasPendingAsyncWork()) {";
+	const parkPatched = '\t\t\t\tif ("isRunActive" in session ? session.isRunActive || session.wakeSources !== undefined : session.hasPendingAsyncWork()) {';
+	const park = one(entry => entry.file === "src/registry/agent-lifecycle.ts" && entry.marker === "// HANSE: keep sessions with pending async work");
+	for (const candidate of [park, ...(park.alternates ?? [])]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = swap(candidate.patched, parkAnchor, parkPatched);
+		candidate.marker = parkPatched;
+	}
+
+	const watcher = one(entry => entry.file === "src/task/executor.ts" && entry.patched.includes("class SubagentActivityWatch"));
+	const oldWatcher = watcher.alternates?.at(-1) ?? watcher;
+	alternate(watcher, {
+		marker: oldWatcher.marker,
+		anchor: oldWatcher.anchor,
+		patched: swap(swap(swap(oldWatcher.patched,
+			'if (event.type === "agent_end") {', 'if (event.type === "agent_end" || event.type === "agent_pause") {'),
+			"event.isTerminal === false && event.yielded !== true", 'event.type === "agent_pause" && event.yielded !== true'),
+			"event.isTerminal === false && event.awaitingAsyncWork === true", 'event.type === "agent_pause" && event.awaiting === true'),
+	}, 'type MonitoredEvent = AgentEvent | Extract<AgentSessionEvent, { type: "agent_pause" }>;');
+
+	const ask = one(entry => entry.marker === "\t\t\t\tconst richResult = await waitForUser(showRichDialog);");
+	const askOld = ask.alternates.at(-1);
+	const acceptImages = text => swap(text, "{ timeout, signal: dialogSignal }", "{ timeout, signal: dialogSignal, acceptImages: true }");
+	alternate(ask, {
+		marker: askOld.marker, anchor: acceptImages(askOld.anchor), patched: acceptImages(askOld.patched),
+	}, "acceptImages: true");
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&qWe(c))continue';
+	alternate(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')),
+		{ marker: skip, anchor: skip, patched: skip }, skip);
+}
+
 // 2026-11-16 (doc/history/2026/11/16-quiet-advisories): the auto-learn notice is display-only (dropped from model
 // context), yet sent as an aside while streaming it ended a running `wait` or extended a finished turn — 42 extra
 // model calls in 7 days. Park it for the next turn instead. r1 and r2 bodies both upgrade to this one.

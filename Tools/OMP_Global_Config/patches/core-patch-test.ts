@@ -3773,13 +3773,19 @@ console.log("\n[32] extension async job snapshot — options 를 끝까지 전�
 // job 완료 알림과 남은 작업이 사라졌다. 진짜 AgentRegistry·AgentLifecycleManager 의 타이머 → park 경로를 태우고,
 // 세션은 park 가 읽는 hasPendingAsyncWork·dispose 만 있는 fixture 다.
 console.log("\n[33] 서브에이전트 idle TTL — 대기 중인 async 작업이 있으면 park(dispose)하지 않는다");
-{
+for (const shape of ["legacy", "run", "wake"] as const) {
 	const { AgentLifecycleManager } = await import(`${CORE}/registry/agent-lifecycle.ts`);
 	const lifeReg = new AgentRegistry();
 	const life = new AgentLifecycleManager(lifeReg);
 	let pendingWork = true;
 	let disposed = 0;
-	const session = { hasPendingAsyncWork: () => pendingWork, dispose: async () => { disposed += 1; } };
+	const session = shape === "legacy"
+		? { hasPendingAsyncWork: () => pendingWork, dispose: async () => { disposed += 1; } }
+		: {
+			get isRunActive() { return shape === "run" && pendingWork; },
+			get wakeSources() { return pendingWork ? { jobs: ["bg_1"], agents: [], queued: false } : undefined; },
+			dispose: async () => { disposed += 1; },
+		};
 	const ref = lifeReg.register({ id: "Worker", displayName: "Worker", kind: "sub", parentId: MAIN_AGENT_ID, status: "idle", session });
 	const ttl = 30;
 	life.adopt("Worker", { idleTtlMs: ttl }, ref);

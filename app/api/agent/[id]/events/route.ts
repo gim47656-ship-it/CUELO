@@ -2,6 +2,8 @@ import { buildSessionContext, resolveSessionPath } from "@/lib/session-reader";
 import { createMessageUpdateCoalescer, getRpcSession, startRpcSession, toToolProgressEvent, type AgentEvent } from "@/lib/rpc-manager";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
+import { toWireEvent } from "@oh-my-pi/pi-coding-agent/session/loop-end-wire";
+import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +18,16 @@ function toClientEvent(event: AgentEvent): AgentEvent | null {
     delete clientEvent.assistantMessageEvent;
     return clientEvent;
   }
-  if (event.type === "agent_end") return { type: "agent_end" };
+  if (event.type === "agent_end" || event.type === "agent_pause") {
+    const wire = toWireEvent(event as AgentSessionEvent);
+    const end = wire as Extract<typeof wire, { type: "agent_end" }>;
+    return {
+      type: end.type,
+      isTerminal: end.isTerminal,
+      yielded: end.yielded,
+      ...(end.awaitingAsyncWork ? { awaitingAsyncWork: true } : {}),
+    };
+  }
   return event;
 }
 

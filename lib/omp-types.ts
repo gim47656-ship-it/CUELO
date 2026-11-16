@@ -192,6 +192,8 @@ export interface AgentSessionLike {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
   readonly isStreaming: boolean;
+  readonly isRunActive: boolean;
+  readonly wakeSources: { jobs: string[]; agents: string[]; queued: boolean } | undefined;
   readonly isCompacting: boolean;
   readonly autoCompactionEnabled: boolean;
   readonly autoRetryEnabled: boolean;
