@@ -6920,6 +6920,16 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   word-break: keep-all;
 }
 
+/* 위 규칙은 상속되므로, 화면이 한국어인 동안 일본어, 중국어, 태국어 글에도 걸린다. 띄어쓰기가 없는 이 글은
+   keep-all이면 글자 사이에서 끊지 못해 「今日は本当にしんどいよ」 덩어리 뒤로 「。」만 홀로 내려갔다(11-17 폰).
+   이 언어들은 글자 사이 줄바꿈을 되살리고, 문장부호는 줄 맨 앞에 오지 않게 한다. */
+.translator-view :lang(ja),
+.translator-view :lang(zh),
+.translator-view :lang(th) {
+  word-break: normal;
+  line-break: strict;
+}
+
 .translator-header {
   position: relative;
   z-index: 2;
