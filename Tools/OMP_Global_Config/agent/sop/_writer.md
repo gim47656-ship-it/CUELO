@@ -169,11 +169,16 @@
   `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (plus the non-blocking `crossReviewAdvisory` inside
   `cross_review`, and `slopReviewOpenAI` for `slop_check` only);
   never name another model for cost or speed, and route changes need the user first.
-- Report `validation` as an acceptance-condition map, not only a per-file or per-command result:
-  for each acceptance condition in the brief give `met` with the observed behavior and the raw
-  log or screen evidence locator, or `unverified` with the blocker and the check still needed,
-  plus the revision it covers. Point at evidence that already exists; never re-copy the same log,
-  rerun a check that already passed, or invent a new report format.
+- Report `validation` as an acceptance-condition map, not only a per-file or per-command result.
+  Give one row per item, in brief order with its number or verbatim text: every `# Acceptance`
+  condition plus every evidence or procedure the brief explicitly requests (screenshots, a named
+  Skill, impact analysis). Never merge, reword, or drop a row. Each row is `met` with the observed
+  behavior and the raw log or screen evidence locator, or `unverified` with the blocker and the
+  check still needed, plus the revision it covers. Never move a brief condition out of scope,
+  optional, or later on your own: keep that row `unverified` with your reason and ask Main through
+  the steering DM. A screenshot row is `met` only after you checked that the image itself shows the
+  named screen and state, not merely that a capture succeeded. Point at evidence that already
+  exists; never re-copy the same log, rerun a check that already passed, or invent a new report format.
   `routing.reviewPacket.acceptanceEvidenceMap` is authoritative.
   Steps the brief assigns to Main (combined review resolution, commit, CI, deploy, live checks after
   publication) are not conditions of your slice: list them as Main-owned follow-up, and never set the
