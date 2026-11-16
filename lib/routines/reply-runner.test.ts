@@ -24,7 +24,10 @@ if (process.env.CUELO_REPLY_CHILD === "1") {
   };
   mock.module("../rpc-manager", () => ({ getRpcSession: () => live ? session : undefined,
     startNewRpcSession: async () => { throw new Error("Must resume existing session"); },
-    startRpcSession: async (id: string) => { resumes++; expect(id).toBe("original-session"); return { session, realSessionId: session.sessionId }; },
+    startRpcSession: async (id: string, _file: string, _cwd: string | undefined, options: { interactivePrompts?: false }) => {
+      resumes++; expect(id).toBe("original-session"); expect(options.interactivePrompts).toBe(false);
+      return { session, realSessionId: session.sessionId };
+    },
   }));
   // Register process-wide mocks before loading the runner's module dependencies.
   const { writeRoutineFile, writePostFile, writeReplyFile, readReplies, thisRoutineHost } = await import("./store");

@@ -231,9 +231,12 @@ async function runSession(routine: Routine, cwd: string, inRoutineFolder: boolea
   const header = sessionFile ? readSessionHeader(sessionFile) : null;
   const resumed = !!(live || sessionFile);
   if (live && !live.isSafelyIdle()) throw new Error("이 글의 세션이 다른 작업을 처리 중입니다. 작업이 끝난 뒤 다시 답장해 주세요.");
+  // 루틴 세션은 아무도 보지 않으므로 답을 기다리는 질문을 띄우지 않는다. 계정 한도에서 코어가 리셋 사용을 물으면 그 질문이
+  // 60분 내내 열려 있었고, 같은 계정의 다른 세션도 그 질문에 줄을 서서 멈췄다(11-16 클라우드 timeout 4건).
+  const unattended = { interactivePrompts: false } as const;
   const starting = live ? Promise.resolve({ session: live, realSessionId: live.sessionId })
-    : sessionFile && priorId ? startRpcSession(priorId, sessionFile, header?.cwd ?? cwd)
-    : startNewRpcSession(undefined, cwd, model ? { initialModel: parseRoutineModel(model) } : {});
+    : sessionFile && priorId ? startRpcSession(priorId, sessionFile, header?.cwd ?? cwd, unattended)
+    : startNewRpcSession(undefined, cwd, { ...unattended, ...(model ? { initialModel: parseRoutineModel(model) } : {}) });
   let startedSession;
   try {
     startedSession = await untilDeadline(starting, deadline);

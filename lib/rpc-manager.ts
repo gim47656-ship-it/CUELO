@@ -359,6 +359,11 @@ export interface RpcSessionStartOptions {
    * pin이 걸리므로 첫 명령이 provider에 닿을 때부터 그 계정이 쓰인다.
    */
   accountOauthPosition?: number;
+  /**
+   * false면 코어가 사람의 답을 기다리는 질문(저장된 한도 리셋을 쓸지 묻는 선택 창, `ask` 도구)을 띄우지 않는다.
+   * 아무도 보지 않는 예약 루틴 세션용이다. 그 질문에는 제한 시간이 없어, 띄우면 세션이 닫힐 때까지 멈춘다.
+   */
+  interactivePrompts?: false;
 }
 
 type ProviderOAuthAccount = SessionOAuthAccountList["accounts"][number];
@@ -2913,7 +2918,7 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
-  const { toolNames, initialModel, thinkingLevel, accountOauthPosition } = options;
+  const { toolNames, initialModel, thinkingLevel, accountOauthPosition, interactivePrompts } = options;
   const registry = getRegistry();
   const locks = getLocks();
 
@@ -3031,6 +3036,7 @@ export async function startRpcSession(
         sessionManager,
         modelRegistry,
         hasUI: true,
+        ...(interactivePrompts === false ? { interactivePrompts } : {}),
         ...(initial.model ? { model: initial.model } : {}),
         ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
         ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),

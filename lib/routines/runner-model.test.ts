@@ -46,8 +46,10 @@ mock.module("./store", () => ({
   thisRoutineHost: () => "test-pc",
   writePostFile: (_dir: string, _id: string, _stamp: string, _host: string, post: RoutinePost) => { posts.push(post); return "post.md"; },
 }));
-mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcSession: async () => { throw new Error("Unexpected resume"); }, startNewRpcSession: async (_request: unknown, _cwd: string, options: { initialModel?: { provider: string; modelId: string } }) => {
+mock.module("../rpc-manager", () => ({ getRpcSession: () => undefined, startRpcSession: async () => { throw new Error("Unexpected resume"); }, startNewRpcSession: async (_request: unknown, _cwd: string, options: { initialModel?: { provider: string; modelId: string }; interactivePrompts?: false }) => {
   expect(options.initialModel).toEqual(enabled && selected ? { provider: "anthropic", modelId: selected.split("/").slice(1).join("/") } : undefined);
+  // 아무도 보지 않는 세션이 답을 기다리는 질문(한도 리셋 사용 여부)에 60분 묶이지 않는다.
+  expect(options.interactivePrompts).toBe(false);
   if (failStart) throw new Error(`Model is not available in the enabled scope: ${selected}`);
   let alive = true;
   return { realSessionId: "isolated", session: {
