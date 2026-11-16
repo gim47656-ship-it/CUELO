@@ -25301,6 +25301,202 @@ function planSpawns(
 	(advisor.alternates ??= []).push({ file: advisor.file, marker: skip, anchor: skip, patched: skip, requires: skip });
 }
 
+// 18.20.3 (ADAPT): upstream removed historical-child APIs and reshaped recall.
+// Older candidate bodies remain untouched so 18.20.2 still applies and reverts.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.20.3 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = marker => one(entry => entry.marker === marker);
+	const latest = entry => entry.alternates?.at(-1) ?? entry;
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.20.3 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const noop = (entry, text, discriminator = text) =>
+		alternate(entry, { marker: text, anchor: text, patched: text }, discriminator);
+
+	// Removing seance also removed a shared disk-scan restriction. CUELO still
+	// needs it for root isolation: never scan another top-level session's files.
+	const historyShape = "function diskIdsForCompletion(): Promise<string[]> {";
+	const versionEdit = (file, anchor, patched, discriminator, fallback) => EDITS.push({
+		file, requires: discriminator, marker: patched, anchor, patched,
+		alternates: [{ file, excludes: discriminator, marker: fallback, anchor: fallback, patched: fallback }],
+	});
+	const history = byMarker("rootScopedAgentId(agentId, callerRootId(AgentRegistry.global(), context?.session))");
+	const historyOld = latest(history);
+	alternate(history, {
+		marker: history.marker,
+		anchor: "\t\tconst { visible, preferredArtifactDir } = await this.#roster(context);\n" +
+			swap(historyOld.anchor, "onlyPreferred ? undefined : AgentRegistry.global().get(agentId)", "AgentRegistry.global().get(agentId)"),
+		patched: "\t\tconst { visible, preferredArtifactDir, onlyPreferred } = await this.#roster(context);\n" + historyOld.patched,
+	}, historyShape);
+	for (const [anchor, patched] of [
+		["\tpreferredArtifactDir?: string;\n}", "\tpreferredArtifactDir?: string;\n\tonlyPreferred?: boolean;\n}"],
+		["\t\tconst { ref, preferredArtifactDir } = await this.#lookup(agentId, context);", "\t\tconst { ref, preferredArtifactDir, onlyPreferred } = await this.#lookup(agentId, context);"],
+		["this.#findOnDisk(ref?.id ?? agentId, preferredArtifactDir)", "this.#findOnDisk(ref?.id ?? agentId, preferredArtifactDir, onlyPreferred)"],
+		["\t\treturn { ref, visible, preferredArtifactDir };", "\t\treturn { ref, visible, preferredArtifactDir, onlyPreferred };"],
+		["\t\t\tconst { visible, preferredArtifactDir } = await this.#roster(context);\n\t\t\tconst content = await this.#renderIndex(visible, preferredArtifactDir);",
+		 "\t\t\tconst { visible, preferredArtifactDir, onlyPreferred } = await this.#roster(context);\n\t\t\tconst content = await this.#renderIndex(visible, preferredArtifactDir, onlyPreferred);"],
+		["\t\tconst { ref, visible, preferredArtifactDir } = await this.#lookup(agentId, context);", "\t\tconst { ref, visible, preferredArtifactDir, onlyPreferred } = await this.#lookup(agentId, context);"],
+		["this.#resolveFromDisk(agentId, preferredArtifactDir)", "this.#resolveFromDisk(agentId, preferredArtifactDir, onlyPreferred)"],
+		["this.#resolveFromDisk(ref.id, preferredArtifactDir)", "this.#resolveFromDisk(ref.id, preferredArtifactDir, onlyPreferred)"],
+		["\tasync #resolveFromDisk(agentId: string, preferredArtifactDir?: string): Promise<InternalResource | undefined> {\n\t\tconst match = await this.#findOnDisk(agentId, preferredArtifactDir);",
+		 "\tasync #resolveFromDisk(agentId: string, preferredArtifactDir?: string, onlyPreferred = false): Promise<InternalResource | undefined> {\n\t\tconst match = await this.#findOnDisk(agentId, preferredArtifactDir, onlyPreferred);"],
+		["\t\tpreferredArtifactDir?: string,\n\t): Promise<{ id: string; file: string } | undefined> {\n\t\tconst files = await sessionFilesFromDisk(preferredArtifactDir);",
+		 "\t\tpreferredArtifactDir?: string,\n\t\tonlyPreferred = false,\n\t): Promise<{ id: string; file: string } | undefined> {\n\t\tconst files = await sessionFilesFromDisk(preferredArtifactDir, { onlyPreferred });"],
+		["\tasync #renderIndex(refs: AgentRef[], preferredArtifactDir: string | undefined): Promise<string> {", "\tasync #renderIndex(refs: AgentRef[], preferredArtifactDir: string | undefined, onlyPreferred = false): Promise<string> {"],
+		["\t\tconst disk = await sessionFilesFromDisk(preferredArtifactDir);", "\t\tconst disk = await sessionFilesFromDisk(preferredArtifactDir, { onlyPreferred });"],
+	]) versionEdit("src/internal-urls/history-protocol.ts", anchor, patched, historyShape, 'readonly scheme = "history";');
+	const diskShape = " * depth-first pass so first-hit order is unaffected.\n";
+	const diskHead = "export function sessionFilesFromDisk(\n\tpreferredDir: string | undefined,\n\toptions: { preserveDuplicates: true },\n): Promise<Map<string, string[]>>;\nexport function sessionFilesFromDisk(\n\tpreferredDir?: string,\n\toptions?: { preserveDuplicates?: false },\n): Promise<Map<string, string>>;\nexport async function sessionFilesFromDisk(\n\tpreferredDir?: string,\n\toptions?: { preserveDuplicates?: boolean },\n): Promise<Map<string, string> | Map<string, string[]>> {\n\tconst dirs = artifactsDirsFromRegistry();\n";
+	versionEdit("src/internal-urls/registry-helpers.ts", diskHead,
+		diskHead.replaceAll("{ preserveDuplicates", "{ onlyPreferred?: boolean; preserveDuplicates")
+			.replace("const dirs = artifactsDirsFromRegistry();", "const dirs = options?.onlyPreferred ? [] : artifactsDirsFromRegistry();"),
+		diskShape, "export async function sessionFilesFromDisk(");
+	const scanHead = "\t\tconst entries = await list(dir, depth);\n\t\tif (!entries) return;\n";
+	versionEdit("src/internal-urls/registry-helpers.ts", scanHead,
+		scanHead + "\t\tif (options?.onlyPreferred) {\n\t\t\t// Keep a direct transcript ahead of nested same-id copies.\n\t\t\tfor (const entry of entries) recordFile(dir, entry);\n\t\t\tfor (const entry of entries) {\n\t\t\t\tif (entry.isDirectory()) await scan(path.join(dir, entry.name), depth + 1);\n\t\t\t}\n\t\t\treturn;\n\t\t}\n",
+		diskShape, "export async function sessionFilesFromDisk(");
+
+	// #89: one string model remains visible; the removed seance schema no longer widens it.
+	const schema = "function keepItemModelKey<";
+	const modelSchema = one(entry => entry.file === "src/task/types.ts" && entry.marker.startsWith('"model?": "string",\n\t\t\t\t...effortField,'));
+	alternate(modelSchema, {
+		marker: "// CUELO: declare model for Maker routing;",
+		anchor: '\tconst gatedFields = options.perCallModel ? { "model?": "string" } : {};',
+		patched: '\t// CUELO: declare model for Maker routing; preflight still gates non-Maker per-call selectors.\n\tconst gatedFields = { "model?": "string" };',
+	}, schema);
+	noop(one(entry => entry.file === "src/task/types.ts" && entry.marker.startsWith('"model?": "string",\n\t\t\t...effortField,')), schema);
+	noop(one(entry => entry.file === "src/task/index.ts" && entry.marker.startsWith("\tconst item: TaskItem = { name: params.name,")),
+		'\tif ("model" in params) item.model = params.model;', 'Top-level `model` is not part of the batch shape.');
+	const optional = byMarker("// CUELO: task schema agent is optional on the wire.");
+	const optionalOld = latest(optional);
+	const withoutHistoricalTypes = text => {
+		const start = text.indexOf("/** Task fields the seance schema");
+		const end = text.indexOf("function createTaskSchema(", start);
+		if (start < 0 || end < 0) throw new Error("18.20.3 optional agent type boundary");
+		return swap(text.slice(0, start) + text.slice(end), "\tseanceFields: SeanceTaskSchemaFields;\n", "");
+	};
+	alternate(optional, {
+		marker: optional.marker,
+		anchor: withoutHistoricalTypes(optionalOld.anchor),
+		patched: withoutHistoricalTypes(optionalOld.patched),
+	}, schema);
+
+	const task = 'Top-level `model` is not part of the batch shape.';
+	const model = byMarker("// CUELO: the Maker carries its routed candidate");
+	const modelOld = latest(model);
+	const validateHead = "function validateModel(item: TaskItem | TaskParams, label: string, settings: Settings): string | undefined {\n";
+	const returnGate = 'invalidModelSelectorReason(item.model, label, { settings, invocationKind: "task" });';
+	const spawnHead = 'function spawnModelFields(params: TaskParams): Pick<StructuredSubagentRequest, "perCallModel"> {\n';
+	alternate(model, {
+		file: "src/task/index.ts",
+		marker: model.marker,
+		anchor: validateHead + "\treturn " + returnGate + "\n}\n\n" + spawnHead,
+		patched: swap(swap(modelOld.patched,
+			"\treturn agent === SEANCE_AGENT_NAME\n\t\t? undefined\n\t\t: " + returnGate,
+			"\treturn " + returnGate),
+			' | "seanceModel"', "").replace('\tif (params.agent === SEANCE_AGENT_NAME) return { seanceModel: params.model };\n', ""),
+	}, task);
+	// The old default-agent parameter disappeared together with seance. Thread it
+	// back only for Maker routing; ordinary selectors retain the upstream gate.
+	for (const [anchor, patched] of [
+		["\tstepsEnabled: boolean,\n\tsettings: Settings,\n): string | undefined {", "\tstepsEnabled: boolean,\n\tdefaultAgent: string,\n\tsettings: Settings,\n): string | undefined {"],
+		["validateModel(item, label, settings)", "validateModel(item, label, defaultAgent, settings)"],
+		['validateModel(params, "The call", settings)', 'validateModel(params, "The call", defaultAgent, settings)'],
+		["validateSpawnParams(params, batchEnabled, stepsEnabled, settings)", "validateSpawnParams(params, batchEnabled, stepsEnabled, defaultAgent, settings)"],
+	]) EDITS.push({
+		file: "src/task/index.ts", requires: task, marker: patched, anchor, patched,
+		alternates: [{
+			file: "src/task/index.ts", excludes: task,
+			marker: "function validateSpawnParams(", anchor: "function validateSpawnParams(", patched: "function validateSpawnParams(",
+		}],
+	});
+	for (const indent of ["\t\t\t", "\t\t\t\t"]) {
+		const entry = one(entry => entry.file === "src/task/index.ts" &&
+			entry.marker.startsWith("...(params.model !== undefined ? { model: params.model } : {}),") &&
+			entry.anchor.startsWith(`${indent}...(params.effort`));
+		alternate(entry, {
+			marker: `\n${indent}...spawnModelFields(params, this.#defaultAgent()),`,
+			anchor: `\n${indent}...spawnModelFields(params),`,
+			patched: `\n${indent}...spawnModelFields(params, this.#defaultAgent()),`,
+		}, task);
+	}
+	const normalize = one(entry => entry.file === "src/task/index.ts" && entry.marker === "function validateModel(");
+	const normalizeOld = latest(normalize);
+	alternate(normalize, {
+		marker: normalizeOld.marker,
+		anchor: swap(normalizeOld.anchor, "\tseanceAdvertised: boolean,\n", ""),
+		patched: swap(normalizeOld.patched, "\tseanceAdvertised: boolean,\n", ""),
+	}, task);
+	// RETIRE: the selected-definition historical-source guard has no consumer.
+	noop(byMarker("// CUELO: bind historical consultation to the resolved read-only agent."),
+		"\n\tassertPlanControlsAllowed(request, planMode);");
+	const historical = "function validateShapeParams(";
+	alternate(byMarker("// CUELO: historical sources require the bundled read-only agent."), {
+		file: "src/task/index.ts", marker: historical, anchor: historical, patched: historical,
+	}, task);
+
+	const recall = "type RecallCandidate = RecallResult & { cut?: boolean };";
+	const ids = byMarker("// HANSE: recall line carries memory id");
+	const idsOld = latest(ids);
+	const cut = text => swap(text, "${recalledText(result.content)}", '${recalledText(result.content)}${result.cut ? "…" : ""}');
+	alternate(ids, { marker: ids.marker, anchor: cut(idsOld.anchor), patched: cut(idsOld.patched) }, recall);
+	const provenance = byMarker("// HANSE: recall fact citation metadata is typed");
+	const provenanceOld = latest(provenance);
+	const format = text => swap(swap(text,
+		'starts in it. */', 'starts in it; a cut result ends in "…". */'),
+		"function formatRecallBlock(results: RecallResult[])", "function formatRecallBlock(results: readonly RecallCandidate[])");
+	const provenancePatched = format(provenanceOld.patched);
+	const provenanceHelpers = provenancePatched.slice(0, provenancePatched.indexOf("/** Renders a recall block"));
+	// This candidate is newer than the shared representation registration above.
+	// Only the exact helper prefix was emitted escaped; retain the cooked upstream doc/signature.
+	const escapedProvenance = provenanceHelpers.replace(/[^\x00-\x7f]/g,
+		char => "\\u" + char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0"));
+	alternate(provenance, {
+		marker: provenance.marker, anchor: format(provenanceOld.anchor), patched: provenancePatched,
+		legacyPatched: swap(provenancePatched, provenanceHelpers, escapedProvenance),
+	}, recall);
+
+	// Retain the existing local dense gate without replacing the new budget or
+	// opt-in relevance path. Explicit recall still bypasses the automatic gate.
+	const dense = byMarker("// HANSE: turn-level dense gate");
+	const denseOld = latest(dense);
+	const denseHelpers = denseOld.patched.slice(0, denseOld.patched.indexOf('\t/** Recalls `query`'));
+	const recallHead = "\tasync recallForContext(query: string, signal?: AbortSignal): Promise<string | undefined> {\n\t\treturn (await this.#recallBlock(query, signal))?.text || undefined;\n\t}\n";
+	const recallDoc = "\n\t/**\n\t * Recalls `query` into a prompt block plus the memories it holds; undefined when aborted or when a\n\t * required relevance check failed. With `budget`, the relevance judge reads only what that budget\n\t * would show; without it (compaction), every recalled memory is judged and kept uncut.\n\t */\n";
+	const recallBody = "\tasync #recallBlock(\n\t\tquery: string,\n\t\tsignal?: AbortSignal,\n\t\tbudget?: (block: string) => string,\n\t): Promise<RecallBlock | undefined> {\n\t\tconst recalled = await this.collectScopedRecallResults(query);\n\t\tif (signal?.aborted) return undefined;\n";
+	alternate(dense, {
+		marker: dense.marker,
+		anchor: recallHead + recallDoc + recallBody,
+		patched: swap(denseHelpers, "query, signal, autoInjection)", "query, signal, undefined, autoInjection)") +
+			recallDoc.trimStart().replace(/^\/\*\*/, "\t/**") +
+			swap(recallBody, "\t\tbudget?: (block: string) => string,\n", "\t\tbudget?: (block: string) => string,\n\t\tautoInjection = false,\n") +
+			'\t\tif (autoInjection && this.#recallGated(recalled)) return { text: "", memories: [] };\n',
+	}, recall);
+	for (const [marker, anchor, patched] of [
+		["await this.#recallBlock(truncated, signal, true);", "\t\tconst recall = await this.#recallBlock(truncated, signal, budget);\n", "\t\tconst recall = await this.#recallBlock(truncated, signal, budget, true);\n"],
+		["await this.#recallBlock(truncated, undefined, true);", "\t\t\t\tconst recall = await this.#recallBlock(truncated, undefined, budget);\n", "\t\t\t\tconst recall = await this.#recallBlock(truncated, undefined, budget, true);\n"],
+	]) alternate(byMarker(marker), { marker: patched.trim(), anchor, patched }, recall);
+
+	// Explicit queryPrefix owns the query text. Only the unset local-E5 case
+	// gets CUELO's default prefix; keep upstream's query role and cache key.
+	alternate(byMarker('await embed(e5Prefixed("query", [text]))'), {
+		marker: '\tconst input = (activeEmbeddingOptions()?.queryPrefix ?? $env.MNEMOPI_EMBEDDING_QUERY_PREFIX ?? (usesE5Prefix() ? "query: " : "")) + text;',
+		anchor: '\tconst input = (activeEmbeddingOptions()?.queryPrefix ?? $env.MNEMOPI_EMBEDDING_QUERY_PREFIX ?? "") + text;\n',
+		patched: '\tconst input = (activeEmbeddingOptions()?.queryPrefix ?? $env.MNEMOPI_EMBEDDING_QUERY_PREFIX ?? (usesE5Prefix() ? "query: " : "")) + text;\n',
+	}, "const input = (activeEmbeddingOptions()?.queryPrefix");
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&wWe(c))continue';
+	noop(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')), skip);
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면
