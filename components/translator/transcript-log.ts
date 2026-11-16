@@ -23,6 +23,10 @@ export interface TranscriptSegment {
   theirs: TranslatorLanguage;
   /** 이 조각을 만든 통화 번호. 다른 통화의 전사는 이 조각을 이어 쓰지 않는다. */
   call: number;
+  /** 이 조각이 생긴 시각(ms). 대화를 공유할 때 줄마다 시각을 붙인다. */
+  at: number;
+  /** 지난번 화면에서 저장해 둔 조각. 새 통화의 앞 맥락으로는 넘기지 않는다. */
+  restored?: boolean;
 }
 
 export interface TranscriptUpdate {
@@ -70,6 +74,7 @@ export function addTranscript(
   log: TranscriptLog,
   transcript: TranscriptUpdate,
   pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage },
+  now = Date.now(),
 ): TranscriptLog {
   const text = spaceSentences(transcript.text);
   let { segments, nextId } = log;
@@ -77,7 +82,7 @@ export function addTranscript(
   if (id === null) {
     if (!text.trim()) return log;
     id = nextId++;
-    segments = [...segments, { id, role: transcript.role, text, final: transcript.final, ...pair, call: log.call }];
+    segments = [...segments, { id, role: transcript.role, text, final: transcript.final, ...pair, call: log.call, at: now }];
   } else {
     segments = segments.map((segment) => (segment.id === id ? { ...segment, text, final: transcript.final } : segment));
   }
@@ -112,10 +117,10 @@ export interface HistoryLine extends InterpreterLine {
   id: number;
 }
 
-/** 새 통화에 넘길 앞선 대화: 글이 있는 조각을 말해진 차례대로 조각 id·역할·글만 남겨 최근 `max`줄. 서버는 id를 버린다. */
+/** 새 통화에 넘길 앞선 대화: 글이 있는 조각을 말해진 차례대로 조각 id·역할·글만 남겨 최근 `max`줄. 서버는 id를 버린다. 저장해 두었다 되살린 조각은 지난 대화라 넘기지 않는다. */
 export function transcriptHistory(log: TranscriptLog, max: number): HistoryLine[] {
   return log.segments
-    .filter((segment) => segment.text.trim())
+    .filter((segment) => !segment.restored && segment.text.trim())
     .slice(-max)
     .map(({ id, role, text }) => ({ id, role, text }));
 }

@@ -7562,6 +7562,364 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   color: var(--danger);
 }
 
+/* 덮개(자주 쓰는 문장)가 통역 화면 안에 겹칠 자리. 대화 칸 위·마주보기의 자리 지정이 더 구체적이라 그쪽이 이긴다. */
+.translator-view {
+  position: relative;
+}
+
+/* 누르면 보여주기 카드가 뜨는 줄. 모양은 원래 줄 그대로 두고 단추 기본 모양만 걷는다. */
+button.translator-face-line {
+  display: block;
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button.translator-bubble {
+  border: 0;
+  color: inherit;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button.translator-bubble > .translator-translation {
+  display: block;
+}
+
+/* 보여주기 카드: 한 줄을 화면 가득. 마주보기(260)보다 위, 명령 팔레트(270)보다 아래다. */
+.translator-card {
+  position: fixed;
+  inset: 0;
+  z-index: 265;
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x3);
+  padding: calc(var(--seed-dimension-x4) + env(safe-area-inset-top, 0px)) var(--seed-dimension-x4)
+    calc(var(--seed-dimension-x4) + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+}
+
+.translator-card:focus {
+  outline: none;
+}
+
+.translator-card[data-flipped="true"] {
+  transform: rotate(180deg);
+}
+
+.translator-card-box {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.translator-card-box[data-overflow="true"] {
+  align-items: flex-start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.translator-card-text {
+  margin: 0;
+  max-inline-size: 100%;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.translator-card-text:lang(ko) {
+  word-break: keep-all;
+}
+
+.translator-card-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t4-static);
+  text-align: center;
+}
+
+.translator-card-notice {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--seed-font-size-t3-static);
+  text-align: center;
+}
+
+.translator-card-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--seed-dimension-x2);
+  inline-size: 100%;
+  max-inline-size: 560px;
+  margin-inline: auto;
+}
+
+.translator-card-speak,
+.translator-card-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--seed-dimension-x2);
+  min-block-size: 56px;
+  padding: 0 var(--seed-dimension-x3);
+  border: 0;
+  border-radius: var(--radius-surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--seed-font-size-t4-static);
+  font-weight: 600;
+  touch-action: manipulation;
+}
+
+.translator-card-speak {
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
+}
+
+.translator-card-speak:hover:not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted-pressed);
+}
+
+.translator-card-speak[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  color: var(--text);
+}
+
+.translator-card-speak:disabled {
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.translator-card-close {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.translator-card-close:hover {
+  background: var(--bg-hover);
+}
+
+/* 자주 쓰는 문장: 통역 화면을 덮는 목록. 묶음은 간격과 제목 크기로만 나눈다. */
+.translator-phrases {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.translator-phrases-head {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x2) var(--seed-dimension-x2) var(--seed-dimension-x4);
+}
+
+.translator-phrases-head h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--seed-font-size-t5-static);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.translator-phrases-head h2:focus {
+  outline: none;
+}
+
+.translator-phrases-pair {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.translator-phrases-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--seed-dimension-x6);
+  min-block-size: 0;
+  padding: var(--seed-dimension-x2) max(var(--seed-dimension-x4), calc((100% - 860px) / 2))
+    calc(var(--seed-dimension-x6) + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.translator-phrases-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--seed-dimension-x2) var(--seed-dimension-x3);
+}
+
+.translator-phrases-all {
+  min-block-size: 44px;
+  padding: 0 var(--seed-dimension-x4);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--seed-font-size-t4-static);
+  font-weight: 600;
+}
+
+.translator-phrases-all:hover:not(:disabled) {
+  background: var(--seed-color-bg-neutral-inverted-pressed);
+}
+
+.translator-phrases-all:disabled {
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: progress;
+}
+
+.translator-phrases-status,
+.translator-phrases-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.translator-phrase-group h3 {
+  margin: 0 0 var(--seed-dimension-x2);
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: 600;
+}
+
+.translator-phrase-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.translator-phrase-item {
+  display: flex;
+  align-items: stretch;
+  gap: var(--seed-dimension-x1);
+}
+
+.translator-phrase {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--seed-dimension-x1);
+  min-inline-size: 0;
+  min-block-size: 56px;
+  padding: var(--seed-dimension-x2_5) var(--seed-dimension-x3);
+  border: 0;
+  border-radius: var(--radius-surface);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+  touch-action: manipulation;
+}
+
+.translator-phrase:hover {
+  background: var(--bg-hover);
+}
+
+.translator-phrase-source {
+  color: var(--text-muted);
+  font-size: var(--seed-font-size-t3-static);
+  overflow-wrap: anywhere;
+}
+
+.translator-phrase-target {
+  color: var(--text);
+  font-size: var(--seed-font-size-t5-static);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.translator-phrase:not([data-state]) .translator-phrase-target {
+  font-size: calc(var(--seed-font-size-t5-static) * var(--translator-scale));
+}
+
+.translator-phrase[data-state] .translator-phrase-target {
+  color: var(--text-dim);
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: 400;
+}
+
+.translator-phrase[data-state="failed"] .translator-phrase-target {
+  color: var(--danger);
+}
+
+.translator-phrase-delete {
+  min-inline-size: 44px;
+  align-self: center;
+}
+
+.translator-phrase-add {
+  display: flex;
+  gap: var(--seed-dimension-x2);
+  margin-block-start: var(--seed-dimension-x2);
+}
+
+.translator-phrase-add label {
+  display: flex;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.translator-phrase-add input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: 44px;
+  padding: 0 var(--seed-dimension-x3);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.translator-phrase-add button {
+  flex: 0 0 auto;
+  min-inline-size: 64px;
+  min-block-size: 44px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-hover);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.translator-phrase-add button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
 @media (max-width: 640px) {
   .translator-header {
     padding-inline: var(--seed-dimension-x3);

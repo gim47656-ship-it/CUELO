@@ -14,6 +14,7 @@ import {
 import {
   TRANSLATOR_LANGUAGES,
   findTranslatorLanguage,
+  partnerHint,
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
 import { splitNumberSpans } from "@/lib/translator-numbers";
@@ -23,7 +24,7 @@ import {
   addTranscript,
   beginTranscriptCall,
   clearTranscripts,
-  emptyTranscriptLog,
+  type TranscriptLog,
   segmentLanguage,
   speakerOf,
   segmentSpeaker,
@@ -35,14 +36,24 @@ import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreter
 import { useDraftCaptions } from "./useDraftCaptions";
 import { TypedInterpreter } from "./TypedInterpreter";
 import typedStyles from "./TypedInterpreter.module.css";
+import { CONVERSATION_KEY, formatConversation, restoreConversation, serializeConversation } from "./conversation-store";
+import type { OverlayMarker } from "./overlay-history";
+import { useOverlayHistory } from "./useOverlayHistory";
+import { useStallLog } from "./useStallLog";
+import { useSpeech } from "./useSpeech";
+import { ShowCard, type ShowCardContent } from "./ShowCard";
+import { Phrasebook } from "./Phrasebook";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
  * Codex 라이브 통화(`/api/live/interpret`)를 열고, 두 사람이 번갈아 말하면 통화 모델이 상대 언어로
  * 바로 소리 내어 옮긴다. 화면은 그 통화의 전사를 들은 말(원문)과 모델이 말한 것(통역)의 두 흐름으로
  * 따로 보인다. 통화는 어느 통역이 어느 원문의 것인지 알려 주지 않으므로 둘을 짝짓지 않는다. 기록은
- * 이 화면이 떠 있는 동안만 메모리에 두며 서버·세션에 저장하지 않는다. 통화를 새로 열 때(재연결·언어
- * 변경)만 최근 줄을 그 통화의 지시에 실어 앞 맥락을 잇는다.
+ * 이 폰의 localStorage에만 남기고(`conversation-store.ts`) 서버·세션에 저장하지 않는다. 통화를 새로
+ * 열 때(재연결·언어 변경)만 이번 화면에서 생긴 최근 줄을 그 통화의 지시에 실어 앞 맥락을 잇는다.
+ *
+ * 마주보기·보여주기 카드·자주 쓰는 문장은 기록 칸을 하나씩 얹어 폰의 뒤로가기로 닫힌다
+ * (`overlay-history.ts`).
  *
  * 「마주보기」는 화면을 위아래로 나눠 위쪽을 뒤집어 보인다. 폰을 탁자에 두면 맞은편 사람은 위쪽에서
  * 자기 언어로, 나는 아래쪽에서 내 언어로 대화를 읽는다.
@@ -107,6 +118,29 @@ function readSettings(): Settings {
   }
 }
 
+function readConversation(): TranscriptLog {
+  try {
+    return restoreConversation(window.localStorage.getItem(CONVERSATION_KEY));
+  } catch {
+    return restoreConversation(null);
+  }
+}
+
+/** 대화를 이 폰에 남긴다. 글이 없으면 저장한 것을 지운다. 저장소가 막혀도 통역은 그대로 간다. */
+function writeConversation(segments: readonly TranscriptSegment[]) {
+  try {
+    if (segments.some((segment) => segment.text.trim())) window.localStorage.setItem(CONVERSATION_KEY, serializeConversation(segments));
+    else window.localStorage.removeItem(CONVERSATION_KEY);
+  } catch {
+    // Storage full or blocked: the conversation stays in memory for this visit.
+  }
+}
+
+/** 전사가 쏟아지는 동안 매번 저장하면 화면이 버벅인다. 마지막 변경 뒤 이만큼(ms) 조용하면 저장한다. */
+const CONVERSATION_SAVE_DELAY_MS = 800;
+/** 공유·복사 결과 안내를 보이는 시간(ms). */
+const SHARE_NOTICE_MS = 4000;
+
 function MicIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -158,6 +192,25 @@ function CloseIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 15V4M8 8l4-4 4 4" />
+      <path d="M6 12v6.5A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V12" />
+    </svg>
+  );
+}
+
+/** 자주 쓰는 문장: 말풍선 안의 줄. */
+function PhrasesIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-7l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z" />
+      <path d="M8 9h8M8 12.5h5" />
+    </svg>
+  );
+}
+
 /** 화면이 보이는 통역 단계. 색 점과 글로 함께 보인다. */
 type Phase = "idle" | "connecting" | "reconnecting" | "listening" | "translating" | "error";
 
@@ -192,8 +245,11 @@ interface FacePaneProps {
   /** 언어를 가를 수 없는 조각(숫자·이름만 있는 말)에 붙이는 표시. */
   unknownLabel: string;
   flipped?: boolean;
-  /** 아직 말이 없을 때 이 칸에 보일 안내. 화면 언어로 쓰므로 내 쪽 칸에만 준다. */
+  /** 아직 말이 없을 때 이 칸에 보일 안내. 내 쪽 칸은 화면 언어, 상대 쪽 칸은 상대 언어로 쓴다. */
   emptyHint?: string;
+  /** 줄을 누르면 그 줄을 보여주기 카드로 띄운다. */
+  onShow: (card: ShowCardContent) => void;
+  showLabel: string;
 }
 
 /**
@@ -201,7 +257,7 @@ interface FacePaneProps {
  * 조각의 글자로만 가르고, 가를 수 없으면 두 칸 모두에 「언어 모름」을 붙여 보인다. 초안 자막은
  * 어느 언어로 옮긴 것인지 알고 있어 그 칸에만 보인다.
  */
-function FacePane({ lines: allLines, language, unknownLabel, flipped, emptyHint }: FacePaneProps) {
+function FacePane({ lines: allLines, language, unknownLabel, flipped, emptyHint, onShow, showLabel }: FacePaneProps) {
   // 언어를 가를 수 없는 조각은 그 조각의 언어 짝과 상관없이 두 칸 모두에 보인다.
   const lines = allLines
     .map((line) => ({ line, known: lineLanguage(line) }))
@@ -213,18 +269,21 @@ function FacePane({ lines: allLines, language, unknownLabel, flipped, emptyHint 
       <div className="translator-face-lines">
         {lines.length === 0 && emptyHint ? <p className="translator-face-empty">{emptyHint}</p> : null}
         {lines.map(({ line, known }, index) => (
-          <p
+          <button
+            type="button"
             key={line.key}
             className="translator-face-line"
+            title={showLabel}
             data-latest={index === lines.length - 1 ? "true" : undefined}
             data-side={lineSpeaker(line) ?? "them"}
             data-draft={line.draft ? "true" : undefined}
             data-language={known ? undefined : "unknown"}
             lang={known ? undefined : ""}
+            onClick={() => onShow({ text: line.segment.text, language: known ?? language, flipped })}
           >
             {known ? null : <span className="translator-face-unknown">{unknownLabel}</span>}
             <NumberMarked text={line.segment.text} />
-          </p>
+          </button>
         ))}
       </div>
     </div>
@@ -260,13 +319,16 @@ interface StreamLogProps {
   jumpLabel: string;
   /** 글자 크기·설정 칸처럼 칸 높이를 바꾸는 값. 바뀌면 맨 아래를 보던 칸은 다시 맨 아래로 간다. */
   layoutKey: string;
+  /** 통역 흐름만 준다. 줄을 누르면 보여주기 카드로 띄운다. */
+  onShow?: (card: ShowCardContent) => void;
+  showLabel?: string;
 }
 
 /**
  * 한 역할의 흐름(통역 또는 원문). 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는
  * 중이면 자리를 지키고 「최근 말로」 단추를 보인다.
  */
-function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey }: StreamLogProps) {
+function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, showLabel }: StreamLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
@@ -297,11 +359,24 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey }: Stream
               data-latest={index === lines.length - 1 ? "true" : undefined}
               data-draft={line.draft ? "true" : undefined}
             >
-              <div className="translator-bubble">
-                <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
-                  <NumberMarked text={line.segment.text} />
-                </p>
-              </div>
+              {onShow ? (
+                <button
+                  type="button"
+                  className="translator-bubble"
+                  title={showLabel}
+                  onClick={() => onShow({ text: line.segment.text, language: language ?? line.segment.theirs })}
+                >
+                  <span className="translator-translation" lang={language?.tag}>
+                    <NumberMarked text={line.segment.text} />
+                  </span>
+                </button>
+              ) : (
+                <div className="translator-bubble">
+                  <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
+                    <NumberMarked text={line.segment.text} />
+                  </p>
+                </div>
+              )}
             </div>
           );
         })}
@@ -333,15 +408,20 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const [settings, setSettings] = useState(readSettings);
   const [mode, setMode] = useState<"voice" | "text">("voice");
   const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts } = settings;
-  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [restored] = useState(readConversation);
+  const [segments, setSegments] = useState<TranscriptSegment[]>(restored.segments);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
   const [setupOpen, setSetupOpen] = useState(false);
   /** 두 흐름의 조각과 역할별 열린 턴. 전사가 올 때마다 고쳐 쓰고 조각 목록만 화면 상태로 넘긴다. */
-  const transcriptRef = useRef(emptyTranscriptLog());
+  const transcriptRef = useRef(restored);
   /** 지금 통화의 번호. 이 통화에서 들은 말이 통역을 기다릴 때만 「옮기는 중」이다. */
   const [currentCall, setCurrentCall] = useState(0);
   /** 지금 통화를 연 언어 짝. 새 조각에 붙인다. */
   const pairRef = useRef<Settings>(settings);
+  /** 크게 띄운 보여주기 카드. */
+  const [card, setCard] = useState<ShowCardContent | null>(null);
+  const [phrasesOpen, setPhrasesOpen] = useState(false);
+  const [shareNotice, setShareNotice] = useState<"copied" | "failed" | null>(null);
 
   useEffect(() => {
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
@@ -420,6 +500,38 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   useEffect(() => {
     if (!visible) stopRef.current();
   }, [visible]);
+  useEffect(() => {
+    if (visible) return;
+    setCard(null);
+    setPhrasesOpen(false);
+  }, [visible]);
+
+  // 대화는 조용해진 뒤, 그리고 앱이 가려지거나 닫힐 때 이 폰에 남긴다.
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  useEffect(() => {
+    const timer = window.setTimeout(() => writeConversation(segments), CONVERSATION_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [segments]);
+  useEffect(() => {
+    const flush = () => writeConversation(segmentsRef.current);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flush();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!shareNotice) return;
+    const timer = window.setTimeout(() => setShareNotice(null), SHARE_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [shareNotice]);
 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
@@ -487,6 +599,87 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const translations = useMemo(() => displayLines.filter((line) => line.segment.role === "assistant"), [displayLines]);
   const originals = useMemo(() => displayLines.filter((line) => line.segment.role === "user"), [displayLines]);
   const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
+
+  const faceOn = face && mode === "voice";
+  const speech = useSpeech();
+  const { recordFace } = useStallLog({ visible, phase, face: faceOn, segmentCount: segments.length });
+
+  // 덮개마다 기록 칸을 하나씩 얹어 폰의 뒤로가기가 맨 위 덮개부터 닫게 한다.
+  const overlays: OverlayMarker[] = [];
+  if (visible) {
+    if (faceOn) overlays.push("face");
+    if (phrasesOpen) overlays.push("phrases");
+    if (card) overlays.push("card");
+  }
+  useOverlayHistory(overlays, (marker) => {
+    if (marker === "card") setCard(null);
+    else if (marker === "phrases") setPhrasesOpen(false);
+    else {
+      setSettings((previous) => ({ ...previous, face: false }));
+      recordFace(false, "back");
+    }
+  });
+
+  // 저장해 둔 마주보기로 화면이 열리면(단추를 누르지 않고 켜짐) 그것도 남긴다.
+  const faceOnRef = useRef(faceOn);
+  faceOnRef.current = faceOn;
+  useEffect(() => {
+    if (visible && faceOnRef.current) recordFace(true, "restore");
+  }, [recordFace, visible]);
+
+  const setFace = (on: boolean) => {
+    setSettings({ ...settings, face: on });
+    recordFace(on, "button");
+  };
+
+  // 키보드에서는 Escape로도 마주보기를 끈다. 카드가 떠 있으면 카드가 먼저 받아 닫힌다. 기록에는 화면 안
+  // 조작으로 끈 것(`button`)으로 남긴다(기록 형식의 계기는 button·back·restore 셋뿐이다).
+  useEffect(() => {
+    if (!visible || !faceOn || card) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setSettings((previous) => ({ ...previous, face: false }));
+      recordFace(false, "button");
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [card, faceOn, recordFace, visible]);
+
+  const clearConversation = () => {
+    transcriptRef.current = clearTranscripts(transcriptRef.current);
+    setSegments([]);
+    drafts.reset();
+    writeConversation([]);
+  };
+
+  const shareConversation = async () => {
+    const text = formatConversation(
+      segments,
+      { title: tt("translator.shareTitle"), original: tt("translator.original"), translation: tt("translator.translation") },
+      (at) => new Date(at).toLocaleString(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+    );
+    if (typeof navigator.share === "function") {
+      try {
+        await navigator.share({ title: tt("translator.shareTitle"), text });
+        return;
+      } catch (error) {
+        // The person closed the share sheet; anything else falls back to copying.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setShareNotice("copied");
+    } catch {
+      setShareNotice("failed");
+    }
+  };
+
+  const showLabel = tt("translator.cardTitle");
+  const cardLayer = card ? (
+    <ShowCard card={card} speech={speech} onClose={() => setCard(null)} renderText={(text) => <NumberMarked text={text} />} />
+  ) : null;
   const toggleCall = () => {
     if (active) {
       call.stop();
@@ -527,7 +720,15 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       <section className="translator-view" data-face="true" aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
         <h2 className="sr-only">{tt("translator.title")}</h2>
         <div className="translator-face" role="log" aria-label={tt("translator.conversation")}>
-          <FacePane lines={displayLines} language={theirs} unknownLabel={tt("translator.unknownLanguage")} flipped />
+          <FacePane
+            lines={displayLines}
+            language={theirs}
+            unknownLabel={tt("translator.unknownLanguage")}
+            flipped
+            emptyHint={partnerHint(theirs, mine)}
+            onShow={setCard}
+            showLabel={showLabel}
+          />
           <div className="translator-face-bar">
             {notice ? (
               <p className="translator-face-notice" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
@@ -538,7 +739,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               <button
                 type="button"
                 className="translator-face-exit"
-                onClick={() => setSettings({ ...settings, face: false })}
+                onClick={() => setFace(false)}
               >
                 <CloseIcon />
                 {tt("translator.faceExit")}
@@ -550,8 +751,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             language={mine}
             unknownLabel={tt("translator.unknownLanguage")}
             emptyHint={active ? undefined : tt("translator.empty")}
+            onShow={setCard}
+            showLabel={showLabel}
           />
         </div>
+        {cardLayer}
       </section>
     );
   }
@@ -618,10 +822,31 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               aria-pressed={false}
               aria-label={tt("translator.face")}
               title={tt("translator.faceHint")}
-              onClick={() => setSettings({ ...settings, face: true })}
+              onClick={() => setFace(true)}
             >
               <FaceIcon />
             </button> : null}
+            {mode === "voice" && segments.length > 0 ? (
+              <button
+                type="button"
+                className="translator-icon-button"
+                aria-label={tt("translator.share")}
+                title={tt("translator.share")}
+                onClick={() => void shareConversation()}
+              >
+                <ShareIcon />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="translator-icon-button"
+              aria-haspopup="dialog"
+              aria-label={tt("translator.phrases")}
+              title={tt("translator.phrases")}
+              onClick={() => setPhrasesOpen(true)}
+            >
+              <PhrasesIcon />
+            </button>
           </div>
         </div>
         {showSetup ? (
@@ -778,11 +1003,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 variant="ghost"
                 size="small"
                 className="translator-clear"
-                onClick={() => {
-                  transcriptRef.current = clearTranscripts(transcriptRef.current);
-                  setSegments([]);
-                  drafts.reset();
-                }}
+                onClick={clearConversation}
               >
                 {tt("translator.clear")}
               </ActionButton>
@@ -792,6 +1013,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       </header>
       {mode === "voice" && notice ? (
         <p className="translator-banner" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
+      ) : null}
+      {shareNotice ? (
+        <p className="translator-banner" data-tone={shareNotice === "failed" ? "danger" : undefined} role="status">
+          {tt(shareNotice === "copied" ? "translator.shareCopied" : "translator.shareFailed")}
+        </p>
       ) : null}
       <TypedInterpreter key={`${mine.code}>${theirs.code}`} mine={mine} theirs={theirs} profile={profile} visible={visible && mode === "text"} />
       {mode === "voice" && (segments.length === 0 && !active ? (
@@ -807,6 +1033,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             pending={phase === "translating" ? tt("translator.translationPending") : null}
             jumpLabel={tt("translator.jumpLatest")}
             layoutKey={layoutKey}
+            onShow={setCard}
+            showLabel={showLabel}
           />
           <StreamLog
             role="user"
@@ -822,6 +1050,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
         {statusLine}
         {callButton(active)}
       </div> : null}
+      {phrasesOpen ? <Phrasebook mine={mine} theirs={theirs} onShow={setCard} onClose={() => setPhrasesOpen(false)} /> : null}
+      {cardLayer}
     </section>
   );
 }

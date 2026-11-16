@@ -25,6 +25,32 @@ export function findTranslatorLanguage(code: unknown): TranslatorLanguage | unde
   return typeof code === "string" ? TRANSLATOR_LANGUAGES.find((language) => language.code === code) : undefined;
 }
 
+/** 각 언어로 쓴 언어 이름. `LANGUAGE_NAMES[읽는 사람 언어][가리키는 언어]`. */
+const LANGUAGE_NAMES: Record<string, Record<string, string>> = {
+  ko: { ko: "한국어", en: "영어", vi: "베트남어", ja: "일본어", th: "태국어", zh: "중국어" },
+  en: { ko: "Korean", en: "English", vi: "Vietnamese", ja: "Japanese", th: "Thai", zh: "Chinese" },
+  vi: { ko: "tiếng Hàn", en: "tiếng Anh", vi: "tiếng Việt", ja: "tiếng Nhật", th: "tiếng Thái", zh: "tiếng Trung" },
+  ja: { ko: "韓国語", en: "英語", vi: "ベトナム語", ja: "日本語", th: "タイ語", zh: "中国語" },
+  th: { ko: "ภาษาเกาหลี", en: "ภาษาอังกฤษ", vi: "ภาษาเวียดนาม", ja: "ภาษาญี่ปุ่น", th: "ภาษาไทย", zh: "ภาษาจีน" },
+  zh: { ko: "韩语", en: "英语", vi: "越南语", ja: "日语", th: "泰语", zh: "中文" },
+};
+
+/** 마주보기 위 칸(상대 쪽) 안내. 상대 언어로 쓰고, 옮겨 줄 내 언어 이름을 그 언어로 넣는다. */
+const PARTNER_HINTS: Record<string, (name: string) => string> = {
+  ko: (name) => `말씀하시면 ${name}로 옮겨 드려요.`,
+  en: (name) => `Go ahead and speak. I'll interpret it into ${name} for you.`,
+  vi: (name) => `Bạn cứ nói, tôi sẽ dịch sang ${name} cho bạn.`,
+  ja: (name) => `話しかけてください。${name}に通訳します。`,
+  th: (name) => `พูดได้เลย ระบบจะแปลเป็น${name}ให้`,
+  zh: (name) => `请直接说话，我会帮您翻译成${name}。`,
+};
+
+/** 상대(`partner`)가 읽는 안내: 말하면 내 언어(`mine`)로 옮겨 준다는 말을 상대 언어로. */
+export function partnerHint(partner: TranslatorLanguage, mine: TranslatorLanguage): string {
+  const name = LANGUAGE_NAMES[partner.code]?.[mine.code] ?? mine.englishName;
+  return (PARTNER_HINTS[partner.code] ?? PARTNER_HINTS.en)(name);
+}
+
 /** 베트남어에만 있는 글자(성조·모음 부호, đ). 라틴 문자만 보고는 영어와 가를 수 없어 이것으로 가른다. */
 const VIETNAMESE_LETTERS = /[ăâđêôơưàáạảãằắặẳẵầấậẩẫèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/giu;
 
