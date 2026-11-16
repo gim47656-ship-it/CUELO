@@ -3,7 +3,7 @@
  * `wt/*` 브랜치, worktree용 기억 bank(`wt-*`). 지금 상태를 보는 값이라 기간 비교도 고침 표시도 하지 않는다.
  */
 import { execFile } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { listWorktrees } from "../worktree";
@@ -12,7 +12,7 @@ import { nightlyBranchRetained, STALE_WORKTREE_MS } from "./criteria";
 const exec = promisify(execFile);
 
 export type WorkspaceLeftovers = {
-  /** 세션 기록이 STALE_WORKTREE_MS 넘게 없는 worktree. `lastActive`는 마지막 기록 시각(ms), 14일 안에 없으면 null */
+  /** 마지막 사용이 STALE_WORKTREE_MS보다 오래된 worktree. `lastActive`는 마지막 세션 기록 시각(ms), 14일 안에 없으면 null */
   worktrees: { path: string; branch: string | null; lastActive: number | null }[] | null;
   /** origin/main에 병합된 원격 `wt/*` 브랜치 */
   branches: string[] | null;
@@ -23,6 +23,9 @@ export type WorkspaceLeftovers = {
 
 /**
  * `cwdActivity`는 세션 스캔이 모은 세션 cwd별 마지막 기록 시각이다. 그 worktree나 하위 폴더에서 연 세션을 사용으로 본다.
+ * 다른 cwd의 세션이 만들거나 고친 worktree는 세션 기록이 없으므로 그 worktree의 git 활동 시각(HEAD, reflog)도 사용으로 본다.
+ * index는 `git status`만으로도 바뀌어 뺀다.
+ * 그래야 방금 만든 worktree를 「3일 넘게 기록 없음」으로 세지 않는다(2026-11-16 점검: 11:43에 만든 worktree가 16:29에 잡혔다).
  * 세션 기록을 다 읽지 못했으면 null을 받아 worktree는 확인하지 않는다(쓰이는 worktree를 남은 것으로 세지 않게).
  * 원격 브랜치는 받아 둔 origin 참조로만 본다(fetch 안 함). 보존 기간 안의 야간 브랜치는 아침 보고가 쓰므로 세지 않는다.
  */
@@ -36,10 +39,15 @@ export async function inspectWorkspace(repo: string | null, agentDir: string, cw
         const activity = Object.entries(cwdActivity);
         const lastActive = (path: string) => activity.reduce<number | null>((last, [cwd, at]) =>
           (cwd === path || cwd.startsWith(`${path}/`)) && at > (last ?? -Infinity) ? at : last, null);
-        worktrees = (await listWorktrees(repo))
+        const candidates = (await listWorktrees(repo))
           .filter((w) => !w.isMain)
           .map((w) => ({ path: w.path, branch: w.branch, lastActive: lastActive(w.path) }))
           .filter((w) => w.lastActive === null || now - w.lastActive > STALE_WORKTREE_MS);
+        worktrees = [];
+        for (const w of candidates) {
+          const at = await gitActivity(w.path);
+          if (at === null || now - at > STALE_WORKTREE_MS) worktrees.push(w);
+        }
       } catch {
         warnings.push("worktree 목록을 읽지 못했습니다.");
       }
@@ -59,4 +67,17 @@ export async function inspectWorkspace(repo: string | null, agentDir: string, cw
     else warnings.push("기억 bank 목록을 읽지 못했습니다.");
   }
   return { worktrees, branches, banks, warnings };
+}
+
+/** worktree 전용 HEAD와 reflog 중 더 늦은 수정 시각. 둘 다 못 읽으면 null(남은 것으로 센다). */
+async function gitActivity(path: string): Promise<number | null> {
+  let latest: number | null = null;
+  for (const name of ["HEAD", "logs/HEAD"]) {
+    try {
+      const { stdout } = await exec("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-path", name], { timeout: 10000 });
+      const at = (await stat(stdout.trim())).mtimeMs;
+      if (latest === null || at > latest) latest = at;
+    } catch { /* 없는 파일은 건너뛴다 */ }
+  }
+  return latest;
 }
