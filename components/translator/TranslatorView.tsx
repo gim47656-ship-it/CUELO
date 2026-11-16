@@ -24,6 +24,7 @@ import {
   addTranscript,
   beginTranscriptCall,
   clearTranscripts,
+  conversationOrder,
   type TranscriptLog,
   segmentLanguage,
   speakerOf,
@@ -319,26 +320,28 @@ function NumberMarked({ text }: { text: string }) {
 /** 맨 아래에서 이만큼(px) 안이면 맨 아래를 보고 있는 것으로 친다. */
 const STICK_THRESHOLD = 32;
 
-interface StreamLogProps {
-  role: TranscriptSegment["role"];
+interface ConversationLogProps {
   label: string;
+  /** 들은 말과 통역을 생긴 차례대로 섞은 줄. */
   lines: Line[];
-  /** 이 흐름 맨 끝에 보일 진행 표시. */
+  /** 대화 맨 끝에 보일 진행 표시. */
   pending: string | null;
   jumpLabel: string;
   /** 글자 크기·설정 칸처럼 칸 높이를 바꾸는 값. 바뀌면 맨 아래를 보던 칸은 다시 맨 아래로 간다. */
   layoutKey: string;
-  /** 통역 흐름만 준다. 줄을 누르면 보여주기 카드로 띄운다. */
-  onShow?: (card: ShowCardContent) => void;
-  showLabel?: string;
-  renderAssist?: (line: Line) => ReactNode;
+  /** 통역 줄을 누르면 보여주기 카드로 띄운다. */
+  onShow: (card: ShowCardContent) => void;
+  showLabel: string;
+  renderAssist: (line: Line) => ReactNode;
 }
 
 /**
- * 한 역할의 흐름(통역 또는 원문). 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는
- * 중이면 자리를 지키고 「최근 말로」 단추를 보인다.
+ * 대화 한 줄기. 들은 말(원문)과 통역을 생긴 차례대로 말한 사람 쪽에 놓고, 같은 사람 쪽으로 이어지는 줄은
+ * 붙여 한 턴처럼 보인다. 원문과 통역을 짝지어 글을 옮기지는 않는다(제공자가 짝을 알려 주지 않는다).
+ * 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는 중이면 자리를 지키고 「최근 말로」
+ * 단추를 보인다.
  */
-function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, showLabel, renderAssist }: StreamLogProps) {
+function ConversationLog({ label, lines: arrived, pending, jumpLabel, layoutKey, onShow, showLabel, renderAssist }: ConversationLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
@@ -346,7 +349,7 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, 
   useEffect(() => {
     const log = logRef.current;
     if (log && stickRef.current) log.scrollTop = log.scrollHeight;
-  }, [lines, pending, layoutKey, renderAssist]);
+  }, [arrived, pending, layoutKey, renderAssist]);
 
   const onScroll = () => {
     const log = logRef.current;
@@ -355,21 +358,31 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, 
     setBehind(!stickRef.current);
   };
 
+  const lines = useMemo(() => conversationOrder(arrived, (line) => line.segment.role, lineSpeaker), [arrived]);
+  const sides = lines.map((line) => lineSpeaker(line) ?? "them");
+  // 맨 끝에서 같은 사람 쪽으로 이어진 줄(방금 한 말과 그 통역)을 크게 보인다.
+  let latestFrom = sides.length - 1;
+  while (latestFrom > 0 && sides[latestFrom - 1] === sides[latestFrom]) latestFrom--;
+
   return (
-    <section className="translator-stream" data-role={role} aria-label={label}>
-      <h3 className="translator-stream-label">{label}</h3>
+    <section className="translator-conversation" aria-label={label}>
       <div ref={logRef} className="translator-log" role="log" aria-label={label} onScroll={onScroll}>
         {lines.map((line, index) => {
           const language = lineLanguage(line);
+          const role = line.segment.role;
+          const side = sides[index];
           return (
             <div
               key={line.key}
               className="translator-entry"
-              data-side={lineSpeaker(line) ?? "them"}
-              data-latest={index === lines.length - 1 ? "true" : undefined}
+              data-role={role}
+              data-side={side}
+              data-joined={index > 0 && sides[index - 1] === side ? "true" : undefined}
+              data-continues={index < lines.length - 1 && sides[index + 1] === side ? "true" : undefined}
+              data-latest={index >= latestFrom ? "true" : undefined}
               data-draft={line.draft ? "true" : undefined}
             >
-              {onShow ? (
+              {role === "assistant" ? (
                 <button
                   type="button"
                   className="translator-bubble"
@@ -382,12 +395,12 @@ function StreamLog({ role, label, lines, pending, jumpLabel, layoutKey, onShow, 
                 </button>
               ) : (
                 <div className="translator-bubble">
-                  <p className={role === "assistant" ? "translator-translation" : "translator-original"} lang={language?.tag}>
+                  <p className="translator-original" lang={language?.tag}>
                     <NumberMarked text={line.segment.text} />
                   </p>
                 </div>
               )}
-              {renderAssist?.(line)}
+              {role === "user" ? renderAssist(line) : null}
             </div>
           );
         })}
@@ -611,7 +624,6 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const sizeGlyph = locale === "ko" ? "가" : "A";
   const canStart = active || !(unsupported || insecure || call.supported === null);
   const displayLines = useMemo(() => mergeDisplay(segments, drafts.state), [segments, drafts.state]);
-  const translations = useMemo(() => displayLines.filter((line) => line.segment.role === "assistant"), [displayLines]);
   const originals = useMemo(() => displayLines.filter((line) => line.segment.role === "user"), [displayLines]);
   // Voice streams have no reliable pairing: help only known other-person originals.
   const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
@@ -1072,29 +1084,18 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           <p className="translator-empty">{tt("translator.empty")}</p>
         </div>
       ) : (
-        <div className="translator-streams" aria-label={tt("translator.conversation")}>
-          <StreamLog
-            role="assistant"
-            label={tt("translator.translation")}
-            lines={translations}
-            pending={phase === "translating" ? tt("translator.translationPending") : null}
-            jumpLabel={tt("translator.jumpLatest")}
-            layoutKey={layoutKey}
-            onShow={setCard}
-            showLabel={showLabel}
-          />
-          <StreamLog
-            role="user"
-            label={tt("translator.original")}
-            lines={originals}
-            pending={null}
-            jumpLabel={tt("translator.jumpLatest")}
-            layoutKey={layoutKey}
-            renderAssist={(line) => !line.draft && line.segment.final ? <LineAssist result={voiceAssists.get(String(line.segment.id))}
-              showReplies={assistReplies && line.segment.id === latestOtherOriginal} meaning={assistMeaning}
-              mine={line.segment.mine} theirs={line.segment.theirs} onShow={setCard} /> : null}
-          />
-        </div>
+        <ConversationLog
+          label={tt("translator.conversation")}
+          lines={displayLines}
+          pending={phase === "translating" ? tt("translator.translationPending") : null}
+          jumpLabel={tt("translator.jumpLatest")}
+          layoutKey={layoutKey}
+          onShow={setCard}
+          showLabel={showLabel}
+          renderAssist={(line) => !line.draft && line.segment.final ? <LineAssist result={voiceAssists.get(String(line.segment.id))}
+            showReplies={assistReplies && line.segment.id === latestOtherOriginal} meaning={assistMeaning}
+            mine={line.segment.mine} theirs={line.segment.theirs} onShow={setCard} /> : null}
+        />
       ))}
       {mode === "voice" ? <div className="translator-dock">
         {statusLine}

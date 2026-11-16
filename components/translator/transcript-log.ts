@@ -112,6 +112,29 @@ export function speakerOf(segment: Pick<TranscriptSegment, "role" | "mine">, lan
   return (segment.role === "user") === mineLanguage ? "me" : "them";
 }
 
+/**
+ * 한 대화 줄기에 놓을 차례. 생긴 차례를 따르되, 통역 줄이 바로 앞에 놓인 다른 사람의 원문만 건너뛰면 그 말을
+ * 한 사람의 줄 바로 뒤로 올린다. 통역이 오기 전에 상대가 다음 말을 해도 한 사람의 원문과 통역이 한 턴으로
+ * 붙는다. 글은 옮기지 않고, 말한 사람을 모르는 줄은 건너뛰지도 건너뛰어지지도 않는다.
+ */
+export function conversationOrder<T>(
+  items: readonly T[],
+  roleOf: (item: T) => TranscriptRole,
+  speakerOfItem: (item: T) => "me" | "them" | undefined,
+): T[] {
+  const ordered: T[] = [];
+  for (const item of items) {
+    const speaker = speakerOfItem(item);
+    let at = ordered.length;
+    if (roleOf(item) === "assistant" && speaker) {
+      while (at > 0 && roleOf(ordered[at - 1]) === "user" && speakerOfItem(ordered[at - 1]) === (speaker === "me" ? "them" : "me")) at--;
+      if (at === 0 || speakerOfItem(ordered[at - 1]) !== speaker) at = ordered.length;
+    }
+    ordered.splice(at, 0, item);
+  }
+  return ordered;
+}
+
 /** A history line with the id of the segment it came from, so one turn can be told from the same words said again. */
 export interface HistoryLine extends InterpreterLine {
   id: number;

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   addTranscript,
+  conversationOrder,
   beginTranscriptCall,
   clearTranscripts,
   emptyTranscriptLog,
@@ -156,5 +157,29 @@ describe("interpreter transcript streams", () => {
     const log = replayLog([["u", "안녕하세요", 1], ["a", "Xin ch", 0], ["u", "근처", 0]]);
     expect(transcriptHistory(log, 2)).toEqual([{ id: 1, role: "assistant", text: "Xin ch" }, { id: 2, role: "user", text: "근처" }]);
     expect(transcriptHistory(log, 24)).toHaveLength(3);
+  });
+});
+
+describe("conversation order", () => {
+  /** 생긴 차례로 쌓은 조각을 한 줄기 차례로 놓은 글. */
+  const ordered = (events) => conversationOrder(replayLog(events).segments, (s) => s.role, segmentSpeaker).map((s) => s.text);
+
+  test("an interpretation that arrives after the other person's next words joins its own speaker's turn", () => {
+    expect(ordered([
+      ["u", "Dạ, phở bò hay phở gà ạ?", 1],
+      ["u", "소고기로 주세요.", 1],
+      ["a", "네, 소고기 쌀국수요, 닭고기 쌀국수요?", 1],
+      ["a", "Cho tôi phở bò.", 1],
+    ])).toEqual(["Dạ, phở bò hay phở gà ạ?", "네, 소고기 쌀국수요, 닭고기 쌀국수요?", "소고기로 주세요.", "Cho tôi phở bò."]);
+  });
+
+  test("an interpretation never jumps over another interpretation", () => {
+    // Their words, my late interpretation, my next words, then their interpretation: it would have to pass mine.
+    const events = [["u", "Dạ, được.", 1], ["a", "Cho tôi phở bò.", 1], ["u", "네.", 1], ["a", "네, 알겠습니다.", 1]];
+    expect(ordered(events)).toEqual(events.map(([, text]) => text));
+  });
+
+  test("a line whose speaker cannot be told keeps its arrival place", () => {
+    expect(ordered([["u", "Dạ, được.", 1], ["u", "네.", 1], ["a", "123", 1]])).toEqual(["Dạ, được.", "네.", "123"]);
   });
 });
