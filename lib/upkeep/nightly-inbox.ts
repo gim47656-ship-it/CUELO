@@ -555,14 +555,15 @@ function skillBlock(source: string, candidates: readonly SkillCandidate[], excer
     );
   }
   if (observed.length) {
+    // 발췌는 바로 위 「실패 발췌」 절에 이미 모두 실린다(excerptBlock과 같은 목록). 여기서 다시 붙이면 같은 묶음이
+    // 요청문에 두 번 들어가므로 후보마다 발췌가 있는지만 적는다.
+    const excerptKeys = new Set(excerpts.map((g) => clip(`${g.tool}: ${g.key}`, SAMPLE_LIMIT)));
     lines.push(
       "",
       "### 세션 기록에서 찾은 넘김 방법",
-      `같은 실패 뒤 같은 턴에서 같은 모양의 호출로 넘어간 흔적이 \`${source}\`의 서로 다른 세션 두 곳 이상에 있는 것입니다(세션 수는 PC와 이 클라우드에서 코드로 확인함). 아래 「실패 발췌」의 인자·오류·넘김과 대조해, 넘긴 방법이 실제로 실패를 피한 근거가 있을 때만 절차서로 만듭니다. 우연히 다시 시도해 된 것이면 만들지 않습니다. 발췌가 없는 후보는 대조할 근거가 없으므로 만들지 않고 아침 요약에 이름만 적습니다.`,
-      ...observed.map(candidateLine),
+      `같은 실패 뒤 같은 턴에서 같은 모양의 호출로 넘어간 흔적이 \`${source}\`의 서로 다른 세션 두 곳 이상에 있는 것입니다(세션 수는 PC와 이 클라우드에서 코드로 확인함). 위 「실패 발췌」의 같은 제목 묶음에서 인자·오류·넘김과 대조해, 넘긴 방법이 실제로 실패를 피한 근거가 있을 때만 절차서로 만듭니다. 우연히 다시 시도해 된 것이면 만들지 않습니다. 발췌가 없는 후보는 대조할 근거가 없으므로 만들지 않고 아침 요약에 이름만 적습니다.`,
+      ...observed.map((c) => `${candidateLine(c)} ${c.signature && excerptKeys.has(c.signature) ? "발췌: 위 「실패 발췌」에 있음." : "발췌 없음."}`),
     );
-    const matched = excerpts.filter((g) => observed.some((c) => c.signature === clip(`${g.tool}: ${g.key}`, SAMPLE_LIMIT)));
-    if (matched.length) lines.push("", ...excerptLines(matched));
   }
   return lines.join("\n");
 }
