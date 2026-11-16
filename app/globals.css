@@ -7236,6 +7236,15 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 .translator-entry[data-side="me"] { align-self: flex-end; align-items: flex-end; }
 .translator-entry[data-side="them"] { align-self: flex-start; }
+/* 말한 사람이 바뀌는 첫 말풍선: 간격을 한 번 더 두고 「나」, 「상대」 이름표를 단다. */
+.translator-entry[data-speaker-start="true"]:not(:first-child) { margin-block-start: var(--seed-dimension-x3); }
+.translator-speaker {
+  padding-inline: 4px;
+  color: var(--text-muted);
+  font-size: calc(13px * var(--translator-scale));
+  font-weight: 650;
+  line-height: 1.3;
+}
 .translator-bubble {
   display: flex;
   flex-direction: column;

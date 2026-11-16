@@ -48,7 +48,8 @@ export function ConversationBubble({ turn, latest, visible, speech, onShow, rend
   const content = translation ?? turn.originals.at(-1);
   const language = content?.language ?? content?.fallbackLanguage;
   const card = content && language ? { text: content.text, language, reading: content.reading } : null;
-  return <article className="translator-entry" data-side={turn.side} data-latest={latest ? "true" : undefined} aria-busy={turn.pending || undefined}>
+  return <article className="translator-entry" data-side={turn.side} data-latest={latest ? "true" : undefined} data-speaker-start={turn.speakerStart ? "true" : undefined} aria-busy={turn.pending || undefined}>
+    {turn.speakerStart ? <span className="translator-speaker">{tt(turn.side === "me" ? "translator.me" : "translator.them")}</span> : null}
     <button type="button" className="translator-bubble" title={tt("translator.cardTitle")} onClick={() => { if (card) onShow(card); }}>
       <span className="sr-only">{tt("translator.cardTitle")}</span>
       {turn.translations.map((line) => <Translation key={line.key} line={line} renderText={renderText} load={visible} />)}

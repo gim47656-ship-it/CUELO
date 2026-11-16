@@ -16,24 +16,35 @@ export interface ConversationTurn {
   voiceLines: ConversationLine[];
   typed?: TypedTurn;
   pending?: boolean;
+  /** The first bubble after the other person spoke (or the first bubble at all): it carries the speaker label. */
+  speakerStart?: boolean;
 }
 
-/** Keep canonical voice adjacency, splitting a new original only at an intervening typed turn. */
+/**
+ * One bubble per utterance: an original and an interpretation that sit next to each other, never two of either.
+ * A second original or interpretation from the same person opens the next bubble, so consecutive utterances
+ * read as alternating original/interpretation pairs instead of all interpretations above all originals.
+ * Text is never moved between lines (providers do not pair them); a typed turn in between also splits.
+ */
 export function conversationTurns(lines: readonly ConversationLine[], typed: readonly TypedTurn[], mine: TranslatorLanguage, provisional: TypedTurn | null = null): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const typedTurns = provisional ? [...typed, provisional] : typed;
   for (const line of conversationOrder(lines, (item) => item.segment.role, lineSpeaker)) {
     const side = lineSpeaker(line) ?? "them";
+    const translation = line.segment.role === "assistant";
     let turn = turns.at(-1);
     const previousAt = turn?.at;
-    const startsAfterTyped = previousAt !== undefined && line.segment.role === "user" && typedTurns.some((item) => item.at > previousAt && item.at <= line.segment.at);
-    if (!turn || turn.side !== side || startsAfterTyped) {
-      turn = { key: `voice-${line.key}`, at: line.segment.at, side, originals: [], translations: [], voiceLines: [] };
+    const startsAfterTyped = previousAt !== undefined && !translation && typedTurns.some((item) => item.at > previousAt && item.at <= line.segment.at);
+    const full = turn !== undefined && (translation ? turn.translations : turn.originals).length > 0;
+    if (!turn || turn.side !== side || startsAfterTyped || full) {
+      // A draft standing in for an interpretation has no time of its own; it follows the bubble before it.
+      const at = Number.isFinite(line.segment.at) ? line.segment.at : (previousAt ?? 0);
+      turn = { key: `voice-${line.key}`, at, side, originals: [], translations: [], voiceLines: [] };
       turns.push(turn);
     }
     turn.voiceLines.push(line);
     const text = { key: line.key, text: line.segment.text, language: lineLanguage(line), fallbackLanguage: line.segment.theirs, final: line.segment.final && !line.draft, loadReading: true };
-    (line.segment.role === "assistant" ? turn.translations : turn.originals).push(text);
+    (translation ? turn.translations : turn.originals).push(text);
   }
   for (const turn of typedTurns) {
     turns.push({ key: `typed-${turn.id}`, at: turn.at, side: turn.source.code === mine.code ? "me" : "them", typed: turn,
@@ -41,5 +52,7 @@ export function conversationTurns(lines: readonly ConversationLine[], typed: rea
       translations: turn.translation ? [{ key: `translation-${turn.id}`, text: turn.translation, language: turn.target, reading: turn.reading, final: turn !== provisional }] : [],
       voiceLines: [], pending: turn === provisional });
   }
-  return turns.sort((a, b) => a.at - b.at);
+  turns.sort((a, b) => a.at - b.at);
+  turns.forEach((turn, index) => { turn.speakerStart = index === 0 || turns[index - 1].side !== turn.side; });
+  return turns;
 }

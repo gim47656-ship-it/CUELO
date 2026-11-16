@@ -3,16 +3,37 @@ import { conversationTurns, type ConversationLine } from "./conversation-display
 import { findTranslatorLanguage } from "@/lib/translator-languages";
 import type { TypedTurn } from "./TypedInterpreter";
 
-const mine = findTranslatorLanguage("ko")!, theirs = findTranslatorLanguage("vi")!;
-const line = (id: number, role: "user" | "assistant", text: string, at = id): ConversationLine => ({ key: String(id), draft: false, segment: { id, role, text, at, final: true, mine, theirs, call: 1 } });
+const mine = findTranslatorLanguage("ko")!, theirs = findTranslatorLanguage("vi")!, japanese = findTranslatorLanguage("ja")!;
+const line = (id: number, role: "user" | "assistant", text: string, at = id, other = theirs): ConversationLine => ({ key: String(id), draft: false, segment: { id, role, text, at, final: true, mine, theirs: other, call: 1 } });
+const ja = (id: number, role: "user" | "assistant", text: string) => line(id, role, text, id, japanese);
+const shape = (lines: ConversationLine[]) => conversationTurns(lines, [], mine).map((turn) => [turn.side, turn.originals.map((text) => text.text), turn.translations.map((text) => text.text), turn.speakerStart === true]);
 
-test("adjacent voice lines use one bubble without changing text or crossing speaker runs", () => {
-  const lines = [line(1, "user", "쌀국수 주세요"), line(2, "user", "고수는 빼 주세요"), line(3, "assistant", "Cho tôi phở, không rau mùi."), line(4, "user", "Phở bò hay phở gà?"), line(5, "assistant", "소고기인가요, 닭고기인가요?")];
-  const turns = conversationTurns(lines, [], mine);
-  expect(turns.map((turn) => turn.side)).toEqual(["me", "them"]);
-  expect(turns[0].originals.map((text) => text.text)).toEqual([lines[0].segment.text, lines[1].segment.text]);
-  expect(turns[0].translations.map((text) => text.text)).toEqual([lines[2].segment.text]);
-  expect(turns.flatMap((turn) => turn.voiceLines).length).toBe(lines.length);
+test("consecutive utterances by one person read as alternating original/interpretation bubbles", () => {
+  // The phone conversation of 11-17: five Korean utterances in a row had been one bubble, all Japanese above all Korean.
+  const lines = [ja(1, "user", "음 저는"), ja(2, "assistant", "うーん、私は…"), ja(3, "user", "모르겠어요"), ja(4, "assistant", "わかりません。"), ja(5, "user", "안녕하세요"), ja(6, "assistant", "こんにちは。")];
+  expect(shape(lines)).toEqual([
+    ["me", ["음 저는"], ["うーん、私は…"], true],
+    ["me", ["모르겠어요"], ["わかりません。"], false],
+    ["me", ["안녕하세요"], ["こんにちは。"], false],
+  ]);
+});
+
+test("an interpretation arriving before its heard words still splits per utterance, both directions", () => {
+  const lines = [ja(1, "assistant", "どこに行きますか?"), ja(2, "user", "어디 가세요?"), ja(3, "user", "駅です。"), ja(4, "assistant", "역이에요."), ja(5, "user", "감사합니다"), ja(6, "assistant", "ありがとうございます。")];
+  expect(shape(lines)).toEqual([
+    ["me", ["어디 가세요?"], ["どこに行きますか?"], true],
+    ["them", ["駅です。"], ["역이에요."], true],
+    ["me", ["감사합니다"], ["ありがとうございます。"], true],
+  ]);
+});
+
+test("lines are never moved or dropped: a merged interpretation stays where it arrived", () => {
+  const lines = [ja(1, "user", "쌀국수 주세요"), ja(2, "user", "고수는 빼 주세요"), ja(3, "assistant", "フォーをください、パクチー抜きで。")];
+  expect(shape(lines)).toEqual([
+    ["me", ["쌀국수 주세요"], [], true],
+    ["me", ["고수는 빼 주세요"], ["フォーをください、パクチー抜きで。"], false],
+  ]);
+  expect(conversationTurns(lines, [], mine).flatMap((turn) => turn.voiceLines).length).toBe(lines.length);
 });
 
 test("late interpretation joins only the canonical adjacent voice run before merging typed turns", () => {
