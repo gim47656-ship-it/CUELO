@@ -447,8 +447,13 @@ function rewriteCause(usage: Usage, request: MainRequest, previous: MainRequest 
   return "prefix";
 }
 
+/** `<세션 디렉터리>/<cwd>/<파일>`보다 깊은 파일은 Maker·seance 같은 하위 세션이다. */
+function isChildSession(dir: string, path: string): boolean {
+  return relative(dir, path).split(sep).length > 2;
+}
+
 async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
-  const files: { path: string; created: number; modified: number }[] = [];
+  const files: { path: string; child: boolean; created: number; modified: number }[] = [];
   const walk = async (d: string) => {
     for (const entry of await readdir(d, { withFileTypes: true })) {
       const path = join(d, entry.name);
@@ -456,7 +461,7 @@ async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
         if (entry.isDirectory()) await walk(path);
         else if (entry.name.endsWith(".jsonl")) {
           const info = await stat(path);
-          if (info.mtimeMs >= cutoff) files.push({ path, created: info.birthtimeMs, modified: info.mtimeMs });
+          if (info.mtimeMs >= cutoff) files.push({ path, child: isChildSession(dir, path), created: info.birthtimeMs, modified: info.mtimeMs });
         }
       } catch {
         continue;
@@ -464,8 +469,12 @@ async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
     }
   };
   await walk(dir);
-  // 먼저 만들어진 파일부터 읽어야 fork·fixture 사본보다 원본이 중복 제거에서 이긴다.
-  return files.sort((a, b) => a.created - b.created || a.modified - b.modified || a.path.localeCompare(b.path)).map((f) => f.path);
+  // 먼저 만들어진 파일부터 읽어야 fork·fixture 사본보다 원본이 중복 제거에서 이긴다. 하위 세션은 최상위 세션을 모두 읽은 뒤에
+  // 읽는다: 원본 파일이 통째로 다시 쓰이면 생성 시각이 늦어져, seance 하위 세션이 그 기록을 복사해 둔 사본이 먼저 읽혀
+  // 원본의 사용자 요청을 지웠다(11-16 점검에서 최근 7일 요청 52건 누락).
+  return files
+    .sort((a, b) => Number(a.child) - Number(b.child) || a.created - b.created || a.modified - b.modified || a.path.localeCompare(b.path))
+    .map((f) => f.path);
 }
 
 /** 세션별 비용을 키마다 모아 상위 세션을 고른다(최근 7일만). */
@@ -578,7 +587,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
       compacted = promptChanged = false;
       return cause ? { cause, cost: Number(usage.cost?.cacheWrite) || 0 } : null;
     };
-    const childSession = relative(dir, path).split(sep).length > 2;
+    const childSession = isChildSession(dir, path);
     let lastYield = performance.now();
 
     try {
