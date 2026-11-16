@@ -106,6 +106,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 
 type ToolDef = { execute: (callId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown) => Promise<{ content: Array<{ text: string }> }> };
 type Dispatched = { block?: boolean; reason?: string } | undefined;
+type Returned = { content?: Array<{ type: string; text: string }> } | undefined;
 
 /** One Main session on `mainModel` with `restored` user turns already on its saved branch. */
 async function mainSession(restored: string[] = [], mainModel = "openai-codex/gpt-main", kind: "main" | "sub" = "main", routing = true) {
@@ -152,7 +153,9 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
       await fire("message_start", { message: { role: "user", content: [{ type: "text", text }] } });
     },
     dispatch: (brief = "Generate the requested export.") => fire("tool_call", { toolName: "task", input: { tasks: [{ name: "Export", task: brief }] } }) as Promise<Dispatched>,
-    call: (toolName: string, input: unknown) => fire("tool_call", { toolName, input }) as Promise<Dispatched>,
+    call: (toolName: string, input: unknown, toolCallId = "call-1") => fire("tool_call", { toolName, toolCallId, input }) as Promise<Dispatched>,
+    /** The host's tool_result event for a maker_route call that ran; returns what the plugin replaced its content with. */
+    routed: (toolCallId: string) => fire("tool_result", { toolName: "maker_route", toolCallId, input: {}, content: [{ type: "text", text: "routes" }], isError: false }) as Promise<Returned>,
     steer: (text: string) => fire("message_start", { message: { role: "user", content: text } }),
     switchSession: () => fire("session_switch", {}),
     endTurn: () => fire("agent_end", {}),
@@ -629,15 +632,15 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
   test("new user input waits for the current plan instead of checking the previous one", async () => {
     await withGemini(async () => {
       const s = await mainSession();
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
-      await s.call("maker_route", guarded());
+      expect((await s.call("task", guarded()))?.block).toBe(true);
+      await s.call("task", guarded());
       await s.say("Change the export to Excel only.");
-      expect((await s.call("maker_route", guarded("\nExport Excel only")))?.block).toBe(true);
+      expect((await s.call("task", guarded("\nExport Excel only")))?.block).toBe(true);
       expect(served).toEqual([GEMINI_ID, GEMINI_ID]);
       expect(s.messages).toEqual([]);
       expect(prompts[1]).toContain("Export Excel only");
       await s.steer("Only include the active worksheet.");
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
+      expect((await s.call("task", guarded()))?.block).toBe(true);
       expect(served).toHaveLength(3);
     });
   });
@@ -645,14 +648,14 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
   test("one correction survives elapsed time, is remembered, then a changed plan is checked", async () => {
     await withGemini(async () => {
       const s = await mainSession();
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
+      expect((await s.call("task", guarded()))?.block).toBe(true);
       const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 21 * 60_000);
       try {
         const corrected = guarded("\nCSV with header");
-        expect((await s.call("maker_route", corrected))?.block).toBeUndefined();
-        expect((await s.call("maker_route", corrected))?.block).toBeUndefined();
+        expect((await s.call("task", corrected))?.block).toBeUndefined();
+        expect((await s.call("task", corrected))?.block).toBeUndefined();
         expect(served).toHaveLength(1);
-        expect((await s.call("maker_route", guarded("\nCSV without header")))?.block).toBe(true);
+        expect((await s.call("task", guarded("\nCSV without header")))?.block).toBe(true);
         expect(served).toHaveLength(2);
       } finally { clock.mockRestore(); }
     });
@@ -706,32 +709,40 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
     await withGemini(async () => {
       const s = await mainSession();
       const release = gate();
-      const first = s.call("maker_route", guarded("\nOld"));
+      const first = s.call("task", guarded("\nOld"));
       await until(() => served.length === 1);
       behavior.delete(GEMINI_ID);
       const current = guarded("\nCurrent");
-      expect((await s.call("maker_route", current))?.block).toBe(true);
+      expect((await s.call("task", current))?.block).toBe(true);
       release();
       expect((await first)?.block).toBe(true);
-      expect((await s.call("maker_route", current))?.block).toBeUndefined();
+      expect((await s.call("task", current))?.block).toBeUndefined();
       expect(served).toHaveLength(2);
     });
   });
 
-  test("prepared dispatch reuses its corrected full brief but a new ownership contract is checked", async () => {
+  test("maker_route runs unheld with the advice on its own result; one corrected dispatch passes and a new contract is checked", async () => {
     await withGemini(async () => {
       const s = await mainSession();
       const body = "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: CSV export\nOWNED_PATHS: src/export.ts\n# Change\nWrite CSV.";
       const input = { context: "Export only", tasks: [{ name: "Export", task: body }] };
-      expect((await s.call("maker_route", input))?.block).toBe(true);
+      expect(await s.call("maker_route", input, "route-1")).toBeUndefined();
+      const advice = (await s.routed("route-1"))?.content ?? [];
+      expect(advice[0]?.text).toBe("routes");
+      expect(advice.at(-1)?.text).toContain("maker_route는 막지 않았다");
+      expect(advice.at(-1)?.text).toContain(GEMINI);
+      // The advice is attached once: a later result for the same id is left alone.
+      expect(await s.routed("route-1")).toBeUndefined();
       const corrected = { ...input, tasks: [{ name: "Export", task: `${body}\nKeep headers.` }] };
-      expect((await s.call("maker_route", corrected))?.block).toBeUndefined();
       expect((await s.call("task", corrected))?.block).toBeUndefined();
-      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: "PREPARED_TASK: b1.1" }] }))?.block).toBeUndefined();
+      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: "PREPARED_TASK: b1.1\nKeep headers." }] }))?.block).toBeUndefined();
       expect(served).toHaveLength(1);
-      const changed = { ...input, tasks: [{ name: "Export", task: body.replace("src/export.ts", "src/other.ts") }] };
-      expect((await s.call("maker_route", changed))?.block).toBe(true);
+      expect((await s.call("task", { ...input, tasks: [{ name: "Export", task: `${body}\nDrop headers.` }] }))?.block).toBe(true);
       expect(served).toHaveLength(2);
+      const changed = { ...input, tasks: [{ name: "Export", task: body.replace("src/export.ts", "src/other.ts") }] };
+      expect(await s.call("maker_route", changed, "route-2")).toBeUndefined();
+      expect(served).toHaveLength(3);
+      expect((await s.routed("route-2"))?.content?.at(-1)?.text).toContain("[사전 점검]");
     });
   });
 
@@ -741,17 +752,17 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
       const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
       expect(await s.call("lab_goal", frame)).toBeUndefined();
       await until(() => s.messages.length === 1);
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
+      expect((await s.call("task", guarded()))?.block).toBe(true);
       const corrected = { ...frame, assumptions: ["Keep headers"] };
       expect(await s.call("lab_goal", corrected)).toBeUndefined();
-      expect((await s.call("maker_route", guarded()))?.block).toBeUndefined();
+      expect((await s.call("task", guarded()))?.block).toBeUndefined();
       expect(await s.call("lab_goal", corrected)).toBeUndefined();
       expect(served).toHaveLength(2);
       expect(s.messages).toHaveLength(1);
     });
   });
 
-  test("new user steering holds an in-flight successful dispatch check without granting a retry", async () => {
+  test("new user steering still refuses an in-flight successful maker_route check without granting a retry", async () => {
     await withGemini(async () => {
       const s = await mainSession();
       const release = gate();
@@ -761,7 +772,7 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
       release();
       expect((await pending)?.block).toBe(true);
       behavior.delete(GEMINI_ID);
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
+      expect((await s.call("task", guarded()))?.block).toBe(true);
       expect(served).toHaveLength(2);
       expect(s.messages).toEqual([]);
     });
@@ -828,12 +839,12 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
     await withGemini(async () => {
       const s = await mainSession();
       const release = gate();
-      const both = Promise.all([s.call("maker_route", guarded()), s.call("maker_route", guarded())]);
+      const both = Promise.all([s.call("task", guarded()), s.call("task", guarded())]);
       await until(() => served.length === 1);
       release();
       expect((await both).map((result) => result?.block)).toEqual([true, true]);
       expect(served).toHaveLength(1);
-      expect((await s.call("maker_route", guarded()))?.block).toBeUndefined();
+      expect((await s.call("task", guarded()))?.block).toBeUndefined();
       const frame = { op: "frame", goal: "Export", deliverables: [{ id: "export" }] };
       const releaseGoal = gate();
       expect(await Promise.all([s.call("lab_goal", frame), s.call("lab_goal", frame)])).toEqual([undefined, undefined]);
@@ -844,11 +855,25 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
     });
   });
 
+  test("identical concurrent maker_route calls share one check and both results carry its advice", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const release = gate();
+      const both = Promise.all([s.call("maker_route", guarded(), "route-a"), s.call("maker_route", guarded(), "route-b")]);
+      await until(() => served.length === 1);
+      release();
+      expect(await both).toEqual([undefined, undefined]);
+      expect(served).toHaveLength(1);
+      for (const id of ["route-a", "route-b"]) expect((await s.routed(id))?.content?.at(-1)?.text).toContain("maker_route는 막지 않았다");
+    });
+  });
+
   test("exact unkeyed dispatch content is reused across preparation and dispatch", async () => {
     await withGemini(async () => {
       const s = await mainSession();
       const input = { context: "Export", tasks: [{ name: "Export", task: "Write CSV." }] };
-      expect((await s.call("maker_route", input))?.block).toBe(true);
+      expect(await s.call("maker_route", input, "route-1")).toBeUndefined();
+      expect((await s.routed("route-1"))?.content?.at(-1)?.text).toContain("작업 식별 정보가 부족해 수정 발주 허용을 묶을 수 없다");
       expect((await s.call("task", input))?.block).toBeUndefined();
       expect(served).toHaveLength(1);
       expect((await s.call("task", { ...input, context: "Write Excel instead" }))?.block).toBe(true);
@@ -1149,7 +1174,7 @@ describe("argon-preflight dual participants (Argon + Fable 5.2)", () => {
       expect(await pending).toMatchObject({ block: true });
       behavior.delete(GEMINI_ID);
       behavior.delete("claude-fable-5-2");
-      expect((await s.call("maker_route", guarded()))?.block).toBe(true);
+      expect((await s.call("task", guarded()))?.block).toBe(true);
       // Two staled requests, then one fresh pair: still one call per participant per check.
       expect(served.filter((id) => id === GEMINI_ID)).toHaveLength(2);
       expect(served.filter((id) => id === "claude-fable-5-2")).toHaveLength(2);
@@ -1236,10 +1261,10 @@ describe("argon-preflight dual participants (Argon + Fable 5.2)", () => {
     behavior.set("claude-fable-5-2", { delayMs: 60 });
     await withBoth(async () => {
       const s = await mainSession([], "openai-codex/gpt-main");
-      const results = await Promise.all([s.call("maker_route", guarded()), s.call("maker_route", guarded())]);
+      const results = await Promise.all([s.call("task", guarded()), s.call("task", guarded())]);
       expect(results.map((r) => r?.block)).toEqual([true, true]);
       expect(served.sort()).toEqual(["claude-fable-5-2", GEMINI_ID]);
-      expect((await s.call("maker_route", guarded()))?.block).toBeUndefined();
+      expect((await s.call("task", guarded()))?.block).toBeUndefined();
     });
   });
 });

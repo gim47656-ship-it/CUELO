@@ -21,6 +21,9 @@ const BLOCK_TIMEOUT_MS = 25_000;
 
 type Verdict = { block: true; reason: string; stale?: true };
 
+/** A dispatch correction may be resent through either dispatch tool; a goal correction only through lab_goal. */
+const DISPATCH = "dispatch";
+
 type Check = {
   plan: string;
   tool: string;
@@ -85,7 +88,9 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
   // Installed plugins resolve host SDK packages through the loader's lazy-import bridge.
   const { getAgentDir } = await import("@oh-my-pi/pi-utils");
   const checks = new Map<string, Check>();
-  const state = createPreflightCheck(pi, () => checks.clear());
+  /** Advice for a maker_route call that ran unheld, keyed by its tool call id until its result arrives. */
+  const advised = new Map<string, string>();
+  const state = createPreflightCheck(pi, () => { checks.clear(); advised.clear(); });
   const { ask, note, inflight } = state;
   // 조언은 wait를 끊거나 끝난 턴을 다시 열지 않고 다음 모델 호출 전에 닿는다(2026-11-16, lib/quiet-delivery).
   const quiet = createQuietDelivery(pi);
@@ -119,7 +124,8 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       note(ctx, `${what} 통과(이미 점검한 계획)`);
       return;
     }
-    if (identity && previous?.correctionTool === name) {
+    const correctionScope = name === "lab_goal" ? name : DISPATCH;
+    if (identity && previous?.correctionTool === correctionScope) {
       checks.set(key, { plan, tool: name, checked: true });
       note(ctx, `${what} 통과(같은 작업의 조언 반영 뒤 재호출)`);
       return;
@@ -127,8 +133,20 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
     // 2026-11-12 user decision: a goal frame is never held. Its check runs behind the call and the advice arrives as an
     // aside; dispatches stay held because a wrong dispatch costs a whole Maker run.
     const background = name === "lab_goal";
+    // 2026-11-17 user decision (「둘 다 고치기」): maker_route only prepares, the Maker starts at task. Holding it made Main
+    // resend the whole brief (45 of 101 maker_route calls in 7 days), so its check still runs before it executes but the
+    // advice rides on its result instead of refusing it. The Maker still never starts before the advice is read.
+    const advisory = name === "maker_route";
     // A goal frame resent after steering starts a fresh check instead of sharing one the steering already made stale.
-    if (previous?.plan === plan && previous.pending && (!background || previous.gen === state.gen)) return background ? undefined : previous.pending;
+    if (previous?.plan === plan && previous.pending && (!background || previous.gen === state.gen)) {
+      if (background) return;
+      const verdict = await previous.pending;
+      if (advisory && verdict && !verdict.stale) {
+        advised.set(event.toolCallId, verdict.reason);
+        return;
+      }
+      return verdict;
+    }
     const check: Check = { plan, tool: name, checked: false, gen: myGen };
     // Only one goal is current: a new frame retires every other frame's check, so its late advice is dropped.
     if (background) for (const [other, entry] of checks) if (entry.tool === "lab_goal" && other !== key) checks.delete(other);
@@ -154,21 +172,27 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       // Every participant that answered found nothing to change: that is a pass. A participant that gave no advice
       // stays named in the panel and never counts as having reviewed the plan.
       if (advice.opinions.every((o) => CLEAN.test(o.text))) { note(ctx, `${what} 통과(빠진 것 없음${failedLanes ? `; ${failedLanes}` : ""})`); return; }
-      if (identity) check.correctionTool = name;
+      if (identity) check.correctionTool = correctionScope;
       return {
         block: true,
         reason: [
           background
             ? `[사전 점검] 오류가 아니다. 작업 목표는 이미 등록됐고 도구는 막지 않았다. ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 그 목표를 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
-            : `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
+            : advisory
+              ? `[사전 점검] maker_route는 막지 않았다. ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 발주 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
+              : `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
           ...(failedLanes ? [failedLanes] : []),
           background
             ? identity
               ? "맞는 것이 있으면 같은 산출물 id와 경로로 lab_goal frame을 다시 불러 반영하라. 그 재호출은 한 번 점검 없이 통과하고, 산출물이 바뀌면 다시 점검한다. 반영할 것이 없으면 그대로 진행한다."
               : "맞는 것이 있으면 lab_goal frame을 다시 불러 반영하라. 내용을 바꾸면 새 목표로 다시 점검한다. 반영할 것이 없으면 그대로 진행한다."
-            : identity
-              ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 같은 작업 이름과 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다.`
-              : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
+            : advisory
+              ? identity
+                ? "맞는 것은 task 발주에 반영하라: `PREPARED_TASK: <preparedId>` 다음 줄에 덧붙이거나 고친 발주문 전체를 보낸다. maker_route는 다시 부르지 않는다. 같은 작업 이름과 범위의 수정 발주는 한 번 통과하며, TASK_GUARD 범위가 바뀌면 다시 점검한다. 반영할 것이 없으면 준비 참조로 그대로 발주한다."
+                : "작업 식별 정보가 부족해 수정 발주 허용을 묶을 수 없다. task에서 내용을 바꾸면 새 계획으로 점검하고, 준비 참조나 같은 내용으로 발주하면 통과한다."
+              : identity
+                ? `맞는 것은 계획에 반영하고, 같은 도구(${name})를 다시 불러라. 같은 작업 이름과 범위의 수정 재호출은 한 번 통과하며, 범위가 바뀌면 다시 점검한다.`
+                : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
           "사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.",
           "",
           opinionText(advice.opinions),
@@ -191,9 +215,22 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
     }
     try {
       const verdict = await check.pending;
-      return verdict && { block: verdict.block, reason: verdict.reason };
+      if (!verdict) return;
+      // A stale answer still refuses: steering changed the work, so the prepared plan must not run on old advice.
+      if (advisory && !verdict.stale) {
+        advised.set(event.toolCallId, verdict.reason);
+        return;
+      }
+      return { block: verdict.block, reason: verdict.reason };
     } finally {
       settle();
     }
+  });
+
+  pi.on("tool_result", (event) => {
+    const advice = advised.get(event.toolCallId);
+    if (advice === undefined) return;
+    advised.delete(event.toolCallId);
+    return { content: [...event.content, { type: "text", text: advice }] };
   });
 }

@@ -119,7 +119,7 @@ description: For SubAgent delegation, parallel execution, review contracts and G
   발주를 session-local `name`과 `TASK_GUARD` 의미 필드(`WORK_CLASS`·`PRIMARY_DELIVERABLE`·
   `OWNED_PATHS`·`FINDING_ID`)로 연결하고 정본 기준·후보·owner revision을 확인한다 — 산문·`context`
   표현 차이는 허용되고 이름이나 의미 필드가 바뀌면 다시 준비한다. 다시 판정하거나 자율 선택하지 않는다.
-  실제 발주는 `maker_route`가 돌려준 session-local `preparedId`로 원문을 재사용할 수 있다 —
+  실제 발주는 기본으로 `maker_route`가 돌려준 session-local `preparedId` 참조로 보낸다(2026-11-17 사용자 결정: 발주문 전체를 다시 보내면 같은 원문이 맥락에 한 번 더 남아, 7일 발주 53번 중 47번이 그랬다) —
   `context='PREPARED_CONTEXT'`와 각 task 문자열 `'PREPARED_TASK: <preparedId>'`에 `model:'<후보 selector>:auto'`와 `solutionSpace`는 Main이 반드시 명시하고
   `name`·`agent`는 생략할 수 있다(생략한 name은 준비한 이름으로 복원되고 명시하면 일치해야 하며, 생략한 agent는 maker이고 명시한 다른 agent는 거절) — hook이 원문 context·guard·task·title·TODO를
   기존 guard 앞에서 복원한다. 참조 다음 줄에 추가 지시나 `ROUTING_REASON: <근거>`를 붙이면 복원한 brief 뒤에 붙인다.
