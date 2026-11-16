@@ -10,8 +10,10 @@ import type { Locale, TranslationParams } from "@/lib/i18n/types";
  * 공용 `translateMessage`를 그대로 쓴다.
  */
 const ko = {
-  "translator.modeVoice": "대화",
-  "translator.modeType": "타자",
+  "translator.more": "더보기",
+  "translator.keyboard": "글자로 입력",
+  "translator.keyboardClose": "글자 입력 닫기",
+  "translator.volumeHint": "소리가 안 나면 폰의 미디어 음량을 올려 주세요.",
   "translator.source": "입력 언어",
   "translator.swapDirection": "방향 바꾸기",
   "translator.typeLabel": "번역할 문장",
@@ -20,8 +22,6 @@ const ko = {
   "translator.typePending": "번역 중…",
   "translator.typeError": "번역하지 못했어요. 다시 시도해 주세요.",
   "translator.typeAuth": "Codex 로그인 상태를 확인해 주세요.",
-  "translator.assistReplies": "답 추천",
-  "translator.assistRepliesHint": "상대가 질문하면 고를 수 있는 답을 보여 줍니다.",
   "translator.assistMeaning": "속뜻과 전달 확인",
   "translator.assistMeaningHint": "대화 속 숨은 뜻과 타자 통역의 전달 내용을 확인합니다.",
   "translator.assistNuance": "속뜻",
@@ -101,7 +101,7 @@ const ko = {
   "translator.noiseSuppressionHint": "시끄러운 곳에서 마이크 소음을 줄여 통역이 말을 더 잘 알아듣게 합니다. 목소리가 뭉개지면 꺼 두세요.",
   "translator.cardTitle": "크게 보여 주기",
   "translator.cardClose": "닫기",
-  "translator.speak": "다시 듣기",
+  "translator.speak": "들려주기",
   "translator.speakStop": "그만 읽기",
   "translator.speakFailed": "이 폰에서 소리 내어 읽지 못했어요. 폰의 음성 출력 설정을 확인해 주세요.",
   "translator.share": "대화 공유",
@@ -152,8 +152,10 @@ const ko = {
 type TranslatorMessageKey = keyof typeof ko;
 
 const en: Record<TranslatorMessageKey, string> = {
-  "translator.modeVoice": "Voice",
-  "translator.modeType": "Type",
+  "translator.more": "More",
+  "translator.keyboard": "Type a message",
+  "translator.keyboardClose": "Close text input",
+  "translator.volumeHint": "If you hear nothing, turn up your phone's media volume.",
   "translator.source": "Input language",
   "translator.swapDirection": "Swap direction",
   "translator.typeLabel": "Text to translate",
@@ -162,8 +164,6 @@ const en: Record<TranslatorMessageKey, string> = {
   "translator.typePending": "Translating…",
   "translator.typeError": "Translation failed. Try again.",
   "translator.typeAuth": "Check your Codex sign-in.",
-  "translator.assistReplies": "Reply suggestions",
-  "translator.assistRepliesHint": "Shows answer choices when the other person asks a question.",
   "translator.assistMeaning": "Implied meaning and delivery check",
   "translator.assistMeaningHint": "Shows implied meaning in conversation and checks how typed interpretation comes across.",
   "translator.assistNuance": "Implied meaning",

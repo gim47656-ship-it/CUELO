@@ -17,14 +17,14 @@ import {
   partnerHint,
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
-import { splitNumberSpans } from "@/lib/translator-numbers";
+import { hasNumericMismatch, splitNumberSpans } from "@/lib/translator-numbers";
 import { mergeDisplay, type DisplayLine } from "@/lib/translator-draft";
+import { Keyboard, MoreVertical, Settings2, Trash2 } from "lucide-react";
 import { useTranslatorText, type TranslatorTranslate } from "./i18n";
 import {
   addTranscript,
   beginTranscriptCall,
   clearTranscripts,
-  conversationOrder,
   type TranscriptLog,
   segmentLanguage,
   speakerOf,
@@ -35,8 +35,10 @@ import {
 } from "./transcript-log";
 import { useInterpreterCall, type InterpreterTranscript } from "./useInterpreterCall";
 import { useDraftCaptions } from "./useDraftCaptions";
-import { TypedInterpreter } from "./TypedInterpreter";
-import typedStyles from "./TypedInterpreter.module.css";
+import { useTypedInterpreter } from "./TypedInterpreter";
+import { ConversationBubble } from "./ConversationBubble";
+import { conversationTurns, type ConversationTurn } from "./conversation-display";
+import type { Speech } from "./useSpeech";
 import { CONVERSATION_KEY, formatConversation, restoreConversation, serializeConversation } from "./conversation-store";
 import type { OverlayMarker } from "./overlay-history";
 import { useOverlayHistory } from "./useOverlayHistory";
@@ -84,7 +86,6 @@ interface Settings {
   noiseSuppression: boolean;
   /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
   fastDrafts: boolean;
-  assistReplies: boolean;
   assistMeaning: boolean;
 }
 
@@ -99,7 +100,6 @@ function readSettings(): Settings {
     echoGuard: true,
     noiseSuppression: false,
     fastDrafts: false,
-    assistReplies: true,
     assistMeaning: true,
   };
   try {
@@ -120,7 +120,6 @@ function readSettings(): Settings {
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
-      assistReplies: saved.assistReplies !== false,
       assistMeaning: saved.assistMeaning !== false,
     };
   } catch {
@@ -323,7 +322,8 @@ const STICK_THRESHOLD = 32;
 interface ConversationLogProps {
   label: string;
   /** 들은 말과 통역을 생긴 차례대로 섞은 줄. */
-  lines: Line[];
+  turns: ConversationTurn[];
+  visible: boolean;
   /** 대화 맨 끝에 보일 진행 표시. */
   pending: string | null;
   jumpLabel: string;
@@ -331,8 +331,8 @@ interface ConversationLogProps {
   layoutKey: string;
   /** 통역 줄을 누르면 보여주기 카드로 띄운다. */
   onShow: (card: ShowCardContent) => void;
-  showLabel: string;
-  renderAssist: (line: Line) => ReactNode;
+  speech: Speech;
+  renderAssist: (turn: ConversationTurn) => ReactNode;
 }
 
 /**
@@ -341,15 +341,21 @@ interface ConversationLogProps {
  * 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는 중이면 자리를 지키고 「최근 말로」
  * 단추를 보인다.
  */
-function ConversationLog({ label, lines: arrived, pending, jumpLabel, layoutKey, onShow, showLabel, renderAssist }: ConversationLogProps) {
+function ConversationLog({ label, turns, visible, pending, jumpLabel, layoutKey, onShow, speech, renderAssist }: ConversationLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
 
   useEffect(() => {
     const log = logRef.current;
-    if (log && stickRef.current) log.scrollTop = log.scrollHeight;
-  }, [arrived, pending, layoutKey, renderAssist]);
+    if (!log) return;
+    const pin = () => { if (stickRef.current) log.scrollTop = log.scrollHeight; };
+    pin();
+    // Readings and streamed text can resize existing bubbles without a new turn.
+    const observer = new ResizeObserver(pin);
+    for (const child of log.children) observer.observe(child);
+    return () => observer.disconnect();
+  }, [turns, pending, layoutKey]);
 
   const onScroll = () => {
     const log = logRef.current;
@@ -358,52 +364,14 @@ function ConversationLog({ label, lines: arrived, pending, jumpLabel, layoutKey,
     setBehind(!stickRef.current);
   };
 
-  const lines = useMemo(() => conversationOrder(arrived, (line) => line.segment.role, lineSpeaker), [arrived]);
-  const sides = lines.map((line) => lineSpeaker(line) ?? "them");
-  // 맨 끝에서 같은 사람 쪽으로 이어진 줄(방금 한 말과 그 통역)을 크게 보인다.
-  let latestFrom = sides.length - 1;
-  while (latestFrom > 0 && sides[latestFrom - 1] === sides[latestFrom]) latestFrom--;
 
   return (
     <section className="translator-conversation" aria-label={label}>
       <div ref={logRef} className="translator-log" role="log" aria-label={label} onScroll={onScroll}>
-        {lines.map((line, index) => {
-          const language = lineLanguage(line);
-          const role = line.segment.role;
-          const side = sides[index];
-          return (
-            <div
-              key={line.key}
-              className="translator-entry"
-              data-role={role}
-              data-side={side}
-              data-joined={index > 0 && sides[index - 1] === side ? "true" : undefined}
-              data-continues={index < lines.length - 1 && sides[index + 1] === side ? "true" : undefined}
-              data-latest={index >= latestFrom ? "true" : undefined}
-              data-draft={line.draft ? "true" : undefined}
-            >
-              {role === "assistant" ? (
-                <button
-                  type="button"
-                  className="translator-bubble"
-                  title={showLabel}
-                  onClick={() => onShow({ text: line.segment.text, language: language ?? line.segment.theirs })}
-                >
-                  <span className="translator-translation" lang={language?.tag}>
-                    <NumberMarked text={line.segment.text} />
-                  </span>
-                </button>
-              ) : (
-                <div className="translator-bubble">
-                  <p className="translator-original" lang={language?.tag}>
-                    <NumberMarked text={line.segment.text} />
-                  </p>
-                </div>
-              )}
-              {role === "user" ? renderAssist(line) : null}
-            </div>
-          );
-        })}
+        {turns.map((turn, index) => <ConversationBubble key={turn.key} turn={turn} latest={index === turns.length - 1}
+          visible={visible} speech={speech} onShow={onShow} renderText={(text) => <NumberMarked text={text} />}>
+          {renderAssist(turn)}
+        </ConversationBubble>)}
         {pending ? <p className="translator-pending">{pending}</p> : null}
       </div>
       {behind ? (
@@ -412,7 +380,7 @@ function ConversationLog({ label, lines: arrived, pending, jumpLabel, layoutKey,
           className="translator-jump"
           onClick={() => {
             const log = logRef.current;
-            if (log) log.scrollTop = log.scrollHeight;
+            if (log) { stickRef.current = true; setBehind(false); log.scrollTop = log.scrollHeight; }
           }}
         >
           {jumpLabel}
@@ -430,8 +398,19 @@ interface TranslatorViewProps {
 export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) {
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
-  const [mode, setMode] = useState<"voice" | "text">("voice");
-  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistReplies, assistMeaning } = settings;
+  const [typingOpen, setTypingOpen] = useState(false);
+  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistMeaning } = settings;
+  const typed = useTypedInterpreter({ mine, theirs, profile, visible, open: typingOpen, assistSettings: { meaning: assistMeaning } });
+  const menuRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!visible) return;
+    const dismiss = (event: PointerEvent) => {
+      const menu = menuRef.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [visible]);
   const [restored] = useState(readConversation);
   const [segments, setSegments] = useState<TranscriptSegment[]>(restored.segments);
   /** 통역 중에 접어 둔 언어·상황 설정을 다시 펼쳤는지. 통역을 시작하면 접는다. */
@@ -459,10 +438,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       echoGuard,
       noiseSuppression,
       fastDrafts,
-      assistReplies,
       assistMeaning,
     }));
-  }, [assistMeaning, assistReplies, echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
+  }, [assistMeaning, echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
 
   const reconcileDraftsRef = useRef<(segments: TranscriptSegment[]) => void>(() => {});
 
@@ -564,9 +542,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
   useEffect(() => {
-    if (visible && mode === "voice" && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, mine, mode, prepare, profile, supported, theirs, visible]);
-  useEffect(() => { if (mode === "text") stopRef.current(); }, [mode]);
+    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
+  }, [active, mine, prepare, profile, supported, theirs, visible]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -616,23 +593,19 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     : phase === "error" ? tt("translator.errorStatus")
     : "";
 
-  // 대화가 남아 있으면 통역 중처럼 설정을 언어 짝 단추 뒤로 접는다. 펼쳐 둔 설정 묶음이
-  // 폰 화면을 거의 다 차지해 통역·원문 칸이 한 줄 높이로 눌렸다.
-  const collapsible = mode === "text" || active || segments.length > 0;
-  const showSetup = !collapsible || setupOpen;
+  const showSetup = setupOpen;
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
   const canStart = active || !(unsupported || insecure || call.supported === null);
   const displayLines = useMemo(() => mergeDisplay(segments, drafts.state), [segments, drafts.state]);
-  const originals = useMemo(() => displayLines.filter((line) => line.segment.role === "user"), [displayLines]);
   // Voice streams have no reliable pairing: help only known other-person originals.
   const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
     .slice(-HISTORY_MAX_LINES).map((segment) => ({ id: String(segment.id), mine: segment.mine.code, theirs: segment.theirs.code, speaker: "theirs" as const, text: segment.text }));
-  const voiceAssists = useLineAssist(voiceAssistLines, { replies: assistReplies, meaning: assistMeaning }, { profile, history: transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES) }, visible && mode === "voice" && !face);
-  const latestOtherOriginal = originals.findLast((line) => segmentSpeaker(line.segment) === "them")?.segment.id;
-  const layoutKey = `${size}|${showSetup ? "setup" : ""}|${active ? "active" : ""}`;
+  const voiceAssists = useLineAssist(voiceAssistLines, { meaning: assistMeaning }, { profile, history: transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES) }, visible && !face);
+  const turns = useMemo(() => conversationTurns(displayLines, typed.turns, mine, typed.provisional), [displayLines, typed.turns, mine, typed.provisional]);
+  const layoutKey = `${size}|${typingOpen}|${active}`;
 
-  const faceOn = face && mode === "voice";
+  const faceOn = face;
   const speech = useSpeech();
   const { recordFace } = useStallLog({ visible, phase, face: faceOn, segmentCount: segments.length });
 
@@ -685,6 +658,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setSegments([]);
     drafts.reset();
     writeConversation([]);
+    typed.clear();
   };
 
   const shareConversation = async () => {
@@ -749,7 +723,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     </button>
   );
 
-  if (face && mode === "voice") {
+  if (face) {
     return (
       <section className="translator-view" data-face="true" aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
         <h2 className="sr-only">{tt("translator.title")}</h2>
@@ -797,104 +771,38 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   return (
     <section className="translator-view" data-active={active ? "true" : undefined} aria-label={tt("translator.title")} hidden={!visible} style={scaleStyle}>
       <header className="translator-header">
-        <div className={`translator-bar ${typedStyles.toolbar}`}>
+        <div className="translator-bar">
           {onBack ? (
             <button type="button" className="translator-icon-button" aria-label={tt("translator.back")} title={tt("translator.back")} onClick={onBack}>
               <BackIcon />
             </button>
           ) : null}
-          <div className={typedStyles.modes} role="group" aria-label={tt("translator.title")}>
-            <button type="button" aria-pressed={mode === "voice"} onClick={() => setMode("voice")}>{tt("translator.modeVoice")}</button>
-            <button type="button" aria-pressed={mode === "text"} onClick={() => { call.stop(); setSetupOpen(false); setMode("text"); }}>{tt("translator.modeType")}</button>
-          </div>
-          {collapsible ? (
-            <>
-              <h2 className="sr-only">{tt("translator.title")}</h2>
-              <button
-                type="button"
-                className="translator-pair"
-                aria-expanded={setupOpen}
-                aria-controls="translator-setup"
-                aria-label={`${tt("translator.setup")}: ${mine.nativeName} ⇄ ${theirs.nativeName}`}
-                onClick={() => setSetupOpen((open) => !open)}
-              >
-                <span className="translator-pair-text">
-                  <span lang={mine.tag}>{mine.nativeName}</span>
-                  <span aria-hidden="true"> ⇄ </span>
-                  <span lang={theirs.tag}>{theirs.nativeName}</span>
-                </span>
-                <ChevronIcon />
-              </button>
-            </>
-          ) : (
-            <h2 className="translator-title">{tt("translator.title")}</h2>
-          )}
-          <div className="translator-tools">
-            <button
-              type="button"
-              className="translator-icon-button translator-size-button"
-              aria-label={tt("translator.sizeDown")}
-              title={tt("translator.sizeDown")}
-              disabled={size <= 0}
-              onClick={() => setSettings({ ...settings, size: Math.max(0, size - 1) })}
-            >
-              <span aria-hidden="true" data-size="down">{sizeGlyph}</span>
-            </button>
-            <button
-              type="button"
-              className="translator-icon-button translator-size-button"
-              aria-label={tt("translator.sizeUp")}
-              title={tt("translator.sizeUp")}
-              disabled={size >= TEXT_SCALES.length - 1}
-              onClick={() => setSettings({ ...settings, size: Math.min(TEXT_SCALES.length - 1, size + 1) })}
-            >
-              <span aria-hidden="true" data-size="up">{sizeGlyph}</span>
-            </button>
-            {mode === "voice" ? <button
-              type="button"
-              className="translator-icon-button"
-              aria-pressed={false}
-              aria-label={tt("translator.face")}
-              title={tt("translator.faceHint")}
-              onClick={() => setFace(true)}
-            >
-              <FaceIcon />
-            </button> : null}
-            {mode === "voice" && segments.length > 0 ? (
-              <button
-                type="button"
-                className="translator-icon-button"
-                aria-label={tt("translator.share")}
-                title={tt("translator.share")}
-                onClick={() => void shareConversation()}
-              >
-                <ShareIcon />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="translator-icon-button"
-              aria-haspopup="dialog"
-              aria-label={tt("translator.scan")}
-              title={tt("translator.scan")}
-              onClick={() => setScanOpen(true)}
-            >
-              <CameraIcon />
-            </button>
-            <button
-              type="button"
-              className="translator-icon-button"
-              aria-haspopup="dialog"
-              aria-label={tt("translator.phrases")}
-              title={tt("translator.phrases")}
-              onClick={() => setPhrasesOpen(true)}
-            >
-              <PhrasesIcon />
-            </button>
-          </div>
+          <h2 className="sr-only">{tt("translator.title")}</h2>
+          <button type="button" className="translator-pair" aria-expanded={setupOpen} aria-controls="translator-setup"
+            aria-label={`${tt("translator.setup")}: ${mine.nativeName} ⇄ ${theirs.nativeName}`} onClick={() => setSetupOpen((open) => !open)}>
+            <span className="translator-pair-text"><span lang={mine.tag}>{mine.nativeName}</span><span aria-hidden="true"> ⇄ </span><span lang={theirs.tag}>{theirs.nativeName}</span></span>
+            <ChevronIcon />
+          </button>
+          <details className="translator-more" ref={menuRef} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}
+            onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
+            <summary className="translator-icon-button" aria-label={tt("translator.more")}><MoreVertical size={22} aria-hidden="true" /></summary>
+            <div className="translator-more-menu">
+              <div className="translator-menu-size">
+                <button type="button" disabled={size <= 0} onClick={() => setSettings({ ...settings, size: Math.max(0, size - 1) })}><span aria-hidden="true">{sizeGlyph}−</span>{tt("translator.sizeDown")}</button>
+                <button type="button" disabled={size >= TEXT_SCALES.length - 1} onClick={() => setSettings({ ...settings, size: Math.min(TEXT_SCALES.length - 1, size + 1) })}><span aria-hidden="true">{sizeGlyph}+</span>{tt("translator.sizeUp")}</button>
+              </div>
+              <button type="button" onClick={() => { if (menuRef.current) menuRef.current.open = false; setFace(true); }}><FaceIcon />{tt("translator.face")}</button>
+              <button type="button" disabled={!segments.length} onClick={() => { if (menuRef.current) menuRef.current.open = false; void shareConversation(); }}><ShareIcon />{tt("translator.share")}</button>
+              <button type="button" onClick={() => { if (menuRef.current) menuRef.current.open = false; setScanOpen(true); }}><CameraIcon />{tt("translator.scan")}</button>
+              <button type="button" onClick={() => { if (menuRef.current) menuRef.current.open = false; setPhrasesOpen(true); }}><PhrasesIcon />{tt("translator.phrases")}</button>
+              <button type="button" onClick={() => { if (menuRef.current) menuRef.current.open = false; setSetupOpen(true); }}><Settings2 size={20} aria-hidden="true" />{tt("translator.setup")}</button>
+              <button type="button" disabled={!turns.length} onClick={() => { clearConversation(); if (menuRef.current) menuRef.current.open = false; }}><Trash2 size={20} aria-hidden="true" />{tt("translator.clear")}</button>
+            </div>
+          </details>
         </div>
         {showSetup ? (
           <div id="translator-setup" className="translator-setup">
+            <button type="button" className="translator-setup-close translator-icon-button" aria-label={tt("translator.cardClose")} onClick={() => setSetupOpen(false)}><CloseIcon /></button>
             <div className="translator-languages">
               <label className="translator-language">
                 <span>{tt("translator.me")}</span>
@@ -996,7 +904,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 </select>
               </label>
             </div>
-            {mode === "voice" ? <div className="translator-options">
+            <div className="translator-options">
               <label className="translator-toggle">
                 <input
                   type="checkbox"
@@ -1041,14 +949,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <span>{tt("translator.fastDrafts")}</span>
               </label>
               <p id="translator-fast-drafts-hint" className="translator-options-note">{tt("translator.fastDraftsHint")}</p>
-            </div> : null}
+            </div>
             <div className="translator-options">
-              <label className="translator-toggle">
-                <input type="checkbox" checked={assistReplies} aria-describedby="translator-assist-replies-hint"
-                  onChange={(event) => setSettings({ ...settings, assistReplies: event.target.checked })} />
-                <span>{tt("translator.assistReplies")}</span>
-              </label>
-              <p id="translator-assist-replies-hint" className="translator-options-note">{tt("translator.assistRepliesHint")}</p>
               <label className="translator-toggle">
                 <input type="checkbox" checked={assistMeaning} aria-describedby="translator-assist-meaning-hint"
                   onChange={(event) => setSettings({ ...settings, assistMeaning: event.target.checked })} />
@@ -1056,7 +958,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
               </label>
               <p id="translator-assist-meaning-hint" className="translator-options-note">{tt("translator.assistMeaningHint")}</p>
             </div>
-            {segments.length > 0 ? (
+            {turns.length > 0 ? (
               <ActionButton
                 variant="ghost"
                 size="small"
@@ -1069,7 +971,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           </div>
         ) : null}
       </header>
-      {mode === "voice" && notice ? (
+      {notice ? (
         <p className="translator-banner" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
       ) : null}
       {shareNotice ? (
@@ -1077,30 +979,25 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           {tt(shareNotice === "copied" ? "translator.shareCopied" : "translator.shareFailed")}
         </p>
       ) : null}
-      <TypedInterpreter key={`${mine.code}>${theirs.code}`} mine={mine} theirs={theirs} profile={profile} visible={visible && mode === "text"}
-        assistSettings={{ replies: assistReplies, meaning: assistMeaning }} onShow={setCard} />
-      {mode === "voice" && (segments.length === 0 && !active ? (
-        <div className="translator-log">
-          <p className="translator-empty">{tt("translator.empty")}</p>
-        </div>
-      ) : (
-        <ConversationLog
-          label={tt("translator.conversation")}
-          lines={displayLines}
+      {turns.length === 0 && !active ? <div className="translator-log"><p className="translator-empty">{tt("translator.empty")}</p></div> : (
+        <ConversationLog label={tt("translator.conversation")} turns={turns} visible={visible}
           pending={phase === "translating" ? tt("translator.translationPending") : null}
-          jumpLabel={tt("translator.jumpLatest")}
-          layoutKey={layoutKey}
-          onShow={setCard}
-          showLabel={showLabel}
-          renderAssist={(line) => !line.draft && line.segment.final ? <LineAssist result={voiceAssists.get(String(line.segment.id))}
-            showReplies={assistReplies && line.segment.id === latestOtherOriginal} meaning={assistMeaning}
-            mine={line.segment.mine} theirs={line.segment.theirs} onShow={setCard} /> : null}
+          jumpLabel={tt("translator.jumpLatest")} layoutKey={layoutKey} onShow={setCard} speech={speech}
+          renderAssist={(turn) => turn.typed ? <LineAssist result={typed.assists.get(String(turn.typed.id))}
+            meaning={assistMeaning} mine={mine} numericMismatch={assistMeaning && !turn.pending && turn.side === "me" && hasNumericMismatch(turn.typed.original, turn.typed.translation)} />
+            : turn.voiceLines.filter((line) => line.segment.role === "user" && !line.draft && line.segment.final).map((line) =>
+              <LineAssist key={line.key} result={voiceAssists.get(String(line.segment.id))} meaning={assistMeaning} mine={line.segment.mine} />)}
         />
-      ))}
-      {mode === "voice" ? <div className="translator-dock">
-        {statusLine}
-        {callButton(active)}
-      </div> : null}
+      )}
+      {typed.composer}
+      <div className="translator-dock">
+        {phase !== "idle" ? statusLine : null}
+        <div className="translator-dock-row">
+          <button type="button" className="translator-keyboard" aria-label={tt(typingOpen ? "translator.keyboardClose" : "translator.keyboard")} aria-expanded={typingOpen}
+            onClick={() => setTypingOpen((open) => !open)}><Keyboard size={24} aria-hidden="true" /></button>
+          {callButton(true)}
+        </div>
+      </div>
       {phrasesOpen ? <Phrasebook mine={mine} theirs={theirs} onShow={setCard} onClose={() => setPhrasesOpen(false)} /> : null}
       {scanOpen ? <MenuScan mine={mine} theirs={theirs} onShow={setCard} onClose={() => setScanOpen(false)} /> : null}
       {cardLayer}

@@ -1,37 +1,33 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { INTERPRETER_TEXT_MAX_CHARS, INTERPRETER_TEXT_HISTORY_LINES, type InterpreterProfile } from "@/lib/translator-context";
 import type { TranslatorLanguage } from "@/lib/translator-languages";
 import { useTranslatorText } from "./i18n";
 import styles from "./TypedInterpreter.module.css";
 import { readInterpreterTextEvents } from "./read-text-stream";
-import { LineAssist } from "./LineAssist";
+import { Send } from "lucide-react";
 import { useLineAssist, type AssistSettings } from "./useLineAssist";
-import type { ShowCardContent } from "./ShowCard";
-import { hasNumericMismatch } from "@/lib/translator-numbers";
 
-interface Turn { id: number; source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string; /** Hangul reading of a ja/th/vi translation; display only. */ reading?: string }
+export interface TypedTurn { id: number; at: number; source: TranslatorLanguage; target: TranslatorLanguage; original: string; translation: string; /** Display only; never spoken. */ reading?: string }
 
-export function TypedInterpreter({ mine, theirs, profile, visible, assistSettings, onShow }: { mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile; visible: boolean; assistSettings: AssistSettings; onShow: (card: ShowCardContent) => void }) {
+export function useTypedInterpreter({ mine, theirs, profile, visible, open, assistSettings }: { mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile; visible: boolean; open: boolean; assistSettings: AssistSettings }) {
   const { tt } = useTranslatorText();
   const [source, setSource] = useState(mine.code);
   const [draft, setDraft] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurns] = useState<TypedTurn[]>([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<"live-auth" | "live-upstream" | null>(null);
-  const [provisional, setProvisional] = useState<Turn | null>(null);
+  const [provisional, setProvisional] = useState<TypedTurn | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   /** Requests whose line is already committed and only the Hangul reading is still arriving. */
   const readingRef = useRef(new Set<AbortController>());
   const nextTurn = useRef(0);
   const composing = useRef(false);
-  const latest = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const from = source === mine.code ? mine : theirs;
   const to = source === mine.code ? theirs : mine;
-  // The other person's lines need no interpretation for replies or nuance, so their help starts the moment
-  // the line is sent, under the same key the committed turn keeps. My lines wait for the interpretation to check.
+  // The other person's nuance starts as soon as the line is sent.
   const assistLine = (id: number, source: TranslatorLanguage, original: string, translation?: string) => {
     const speaker = source.code === mine.code ? "mine" as const : "theirs" as const;
     return { id: String(id), mine: mine.code, theirs: theirs.code, speaker, text: original, ...(speaker === "mine" ? { interpretation: translation } : {}) };
@@ -41,14 +37,21 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
     ...(provisional && provisional.source.code === theirs.code ? [assistLine(provisional.id, provisional.source, provisional.original)] : []),
   ];
   const assists = useLineAssist(assistLines, assistSettings, { profile, history: turns.flatMap((turn) => [{ role: "user" as const, text: turn.original }, { role: "assistant" as const, text: turn.translation }]).slice(-INTERPRETER_TEXT_HISTORY_LINES) }, visible);
-  const latestOther = assistLines.findLast((line) => line.speaker === "theirs")?.id;
 
   useEffect(() => {
     const stopReadings = () => { for (const reading of readingRef.current) reading.abort(); readingRef.current.clear(); };
     if (!visible) { requestRef.current?.abort(); requestRef.current = null; stopReadings(); setPending(false); setProvisional(null); }
     return () => { requestRef.current?.abort(); requestRef.current = null; stopReadings(); };
   }, [visible]);
-  useEffect(() => { if (visible) latest.current?.scrollIntoView({ block: "nearest" }); }, [turns, visible, provisional?.translation]);
+  useEffect(() => { if (open) textarea.current?.focus(); }, [open]);
+
+  const clear = useCallback(() => {
+    requestRef.current?.abort(); requestRef.current = null;
+    for (const reading of readingRef.current) reading.abort();
+    readingRef.current.clear();
+    setTurns([]); setProvisional(null); setPending(false); setError(null); setDraft("");
+  }, []);
+  useEffect(() => { clear(); setSource(mine.code); }, [clear, mine.code, theirs.code]);
 
   const changeDirection = (code: string) => {
     requestRef.current?.abort(); requestRef.current = null;
@@ -60,7 +63,8 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
     const controller = new AbortController(); requestRef.current = controller;
     setPending(true); setError(null);
     const original = draft.trim();
-    setProvisional({ id: nextTurn.current, source: from, target: to, original, translation: "" });
+    const at = Date.now();
+    setProvisional({ id: nextTurn.current, at, source: from, target: to, original, translation: "" });
     // Set once the translation is committed; the Hangul reading may still follow and is attached later.
     let committed: number | null = null;
     try {
@@ -88,7 +92,7 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
           if (committed === null) {
             const id = nextTurn.current++;
             committed = id;
-            setTurns((previous) => [...previous, { id, source: from, target: to, original, translation: event.text, ...(reading ? { reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
+            setTurns((previous) => [...previous, { id, at, source: from, target: to, original, translation: event.text, ...(reading ? { reading } : {}) }].slice(-INTERPRETER_TEXT_HISTORY_LINES / 2));
             setProvisional(null);
             setDraft("");
             // The form is free for the next line while the Hangul reading is still on its way.
@@ -109,41 +113,22 @@ export function TypedInterpreter({ mine, theirs, profile, visible, assistSetting
     }
   };
 
-  return <div className={styles.root} hidden={!visible}>
-    <div className={styles.results} role="log" aria-label={tt("translator.conversation")}>
-      {turns.map((turn) => <article className={styles.turn} key={turn.id}>
-        <p className={styles.label}>{tt("translator.original")} — {turn.source.nativeName}</p>
-        <p className={styles.original} lang={turn.source.tag}>{turn.original}</p>
-        <p className={styles.label}>{tt("translator.translation")} — {turn.target.nativeName}</p>
-        <p className={styles.translation} lang={turn.target.tag}>{turn.translation}</p>
-        {turn.reading ? <p className={styles.reading} lang="ko">{turn.reading}</p> : null}
-        <LineAssist result={assists.get(String(turn.id))} showReplies={assistSettings.replies && String(turn.id) === latestOther}
-          meaning={assistSettings.meaning} numericMismatch={assistSettings.meaning && turn.source.code === mine.code && hasNumericMismatch(turn.original, turn.translation)}
-          mine={mine} theirs={theirs} onShow={onShow} />
-      </article>)}
-      {provisional ? <article className={styles.turn} aria-busy="true">
-        <p className={styles.label}>{tt("translator.original")} — {provisional.source.nativeName}</p>
-        <p className={styles.original} lang={provisional.source.tag}>{provisional.original}</p>
-        <p className={styles.label}>{tt("translator.typePending")} — {provisional.target.nativeName}</p>
-        <p className={styles.translation} lang={provisional.target.tag}>{provisional.translation}</p>
-      </article> : null}
-      <div ref={latest} />
+  const composer = open ? <form className={styles.composer} onSubmit={submit} aria-label={tt("translator.keyboard")}>
+    <div className={styles.direction}>
+      <button type="button" aria-label={tt("translator.swapDirection")} onClick={() => changeDirection(to.code)}>
+        <span lang={from.tag}>{from.nativeName}</span> → <span lang={to.tag}>{to.nativeName}</span>
+      </button>
     </div>
-    <form className={styles.composer} onSubmit={submit}>
-      <div className={styles.direction}>
-        <label>{tt("translator.source")}<select value={source} onChange={(event) => changeDirection(event.target.value)}>
-          <option value={mine.code}>{mine.nativeName}</option><option value={theirs.code}>{theirs.nativeName}</option>
-        </select></label>
-        <button type="button" onClick={() => changeDirection(to.code)}>{tt("translator.swapDirection")}</button>
-        <span aria-live="polite">→ {to.nativeName}</span>
-      </div>
-      <label className={styles.field}>{tt("translator.typeLabel")}
-        <textarea ref={textarea} value={draft} lang={from.tag} maxLength={INTERPRETER_TEXT_MAX_CHARS} rows={3} readOnly={pending} aria-busy={pending}
+    <div className={styles.inputRow}>
+      <label className={styles.field}>
+        <span className="sr-only">{tt("translator.typeLabel")}</span>
+        <textarea ref={textarea} value={draft} lang={from.tag} maxLength={INTERPRETER_TEXT_MAX_CHARS} rows={2} readOnly={pending} aria-busy={pending}
           placeholder={tt("translator.typePlaceholder")} onChange={(event) => setDraft(event.target.value)}
           onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} />
       </label>
-      {error ? <p className={styles.error} role="alert">{tt(error === "live-auth" ? "translator.typeAuth" : "translator.typeError")}</p> : null}
-      <button className={styles.submit} type="submit" data-focus-halo disabled={pending || !draft.trim()}>{tt(pending ? "translator.typePending" : "translator.typeSubmit")}</button>
-    </form>
-  </div>;
+      <button className={styles.submit} type="submit" aria-label={tt(pending ? "translator.typePending" : "translator.typeSubmit")} disabled={pending || !draft.trim()}><Send size={20} aria-hidden="true" /></button>
+    </div>
+    {error ? <p className={styles.error} role="alert">{tt(error === "live-auth" ? "translator.typeAuth" : "translator.typeError")}</p> : null}
+  </form> : null;
+  return { turns, provisional, assists, composer, clear };
 }

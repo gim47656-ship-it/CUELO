@@ -29,28 +29,59 @@ interface ShowCardProps {
 
 /** 이번 페이지에서 받아 온 발음(`null`은 물었지만 못 받음). 같은 줄을 다시 열면 다시 묻지 않는다. */
 const readingCache = new Map<string, string | null>();
-/** 아직 오는 중인 발음 요청. 카드를 닫았다 다시 열어도 같은 요청을 함께 기다린다. */
-const readingRequests = new Map<string, Promise<string | null>>();
+interface ReadingJob {
+  key: string;
+  priority: "foreground" | "background";
+  promise: Promise<string | null>;
+  resolve: (reading: string | null) => void;
+  load: () => Promise<string | null>;
+}
+const readingRequests = new Map<string, ReadingJob>();
+const readingQueue: ReadingJob[] = [];
+let readingActive = false;
 
-/** 줄 하나의 발음을 페이지마다 한 번만 묻는다. 카드를 닫아도 요청은 끝까지 가서 결과를 남긴다. */
-function loadReading(key: string, text: string, language: TranslatorLanguage): Promise<string | null> {
-  const running = readingRequests.get(key);
-  if (running) return running;
-  const request = fetch("/api/live/interpret/reading", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, language: language.code }),
-  }).then(async (response) => {
-    if (!response.ok) return null;
-    const body: unknown = await response.json();
-    return body && typeof body === "object" && "reading" in body && typeof body.reading === "string" && body.reading.trim() ? body.reading : null;
-  }).catch(() => null).then((reading) => {
-    readingCache.set(key, reading);
-    readingRequests.delete(key);
-    return reading;
+/** One model request at a time; an explicitly opened card goes ahead of queued history. */
+function nextReading() {
+  if (readingActive || !readingQueue.length) return;
+  const foreground = readingQueue.findIndex((job) => job.priority === "foreground");
+  const [job] = readingQueue.splice(foreground < 0 ? 0 : foreground, 1);
+  readingActive = true;
+  void job.load().then((reading) => {
+    readingCache.set(job.key, reading);
+    readingRequests.delete(job.key);
+    readingActive = false;
+    job.resolve(reading);
+    nextReading();
   });
-  readingRequests.set(key, request);
-  return request;
+}
+
+/** A pending or completed reading is shared; a failed optional reading never blocks the next one. */
+export function loadReading(key: string, text: string, language: TranslatorLanguage, priority: "foreground" | "background" = "foreground"): Promise<string | null> {
+  if (readingCache.has(key)) return Promise.resolve(readingCache.get(key) ?? null);
+  const running = readingRequests.get(key);
+  if (running) {
+    if (priority === "foreground") running.priority = priority;
+    return running.promise;
+  }
+  const { promise, resolve } = Promise.withResolvers<string | null>();
+  const load = async () => {
+    try {
+      const response = await fetch("/api/live/interpret/reading", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, language: language.code }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) return null;
+      const body: unknown = await response.json();
+      return body && typeof body === "object" && "reading" in body && typeof body.reading === "string" && body.reading.trim() ? body.reading : null;
+    } catch { return null; }
+  };
+  const job: ReadingJob = { key, priority, promise, resolve, load };
+  readingRequests.set(key, job);
+  readingQueue.push(job);
+  nextReading();
+  return promise;
 }
 
 const FIT_MIN = 20;
@@ -213,6 +244,7 @@ export function ShowCard({ card, speech, onClose, renderText }: ShowCardProps) {
           {tt("translator.cardClose")}
         </button>
       </div>
+      <p className="translator-volume-hint" aria-live="polite">{speech.speaking ? tt("translator.volumeHint") : "\u00a0"}</p>
     </div>
   );
 }

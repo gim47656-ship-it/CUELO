@@ -6915,10 +6915,10 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--seed-dimension-x2);
-  padding: var(--seed-dimension-x2) var(--seed-dimension-x4);
+  position: relative;
+  z-index: 2;
+  flex: none;
+  padding: var(--seed-dimension-x2) var(--seed-dimension-x3);
 }
 
 /* 맨 윗줄: 뒤로 · 제목(통역 중에는 언어 짝) · 글자 크기와 마주보기. 늘 한 줄이다. */
@@ -6929,30 +6929,14 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   min-inline-size: 0;
 }
 
-.translator-title {
-  flex: 1 1 auto;
-  margin: 0;
-  color: var(--text);
-  font-size: var(--seed-font-size-t5-static);
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.translator-tools {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: var(--seed-dimension-x1);
-  margin-inline-start: auto;
-}
 
 .translator-icon-button {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  min-inline-size: 40px;
-  min-block-size: 40px;
+  min-inline-size: 44px;
+  min-block-size: 44px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-control);
@@ -6998,7 +6982,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   padding: 0 var(--seed-dimension-x2);
   border: 0;
   border-radius: var(--radius-control);
-  background: var(--bg-panel);
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -7023,11 +7007,58 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-setup {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline: 12px;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--seed-dimension-x2) var(--seed-dimension-x3);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  max-block-size: min(70dvh, 640px);
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
 }
+
+.translator-setup-close { align-self: flex-end; }
+.translator-more { flex: none; }
+.translator-more summary { list-style: none; }
+.translator-more summary::-webkit-details-marker { display: none; }
+.translator-more-menu {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-end: 12px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  inline-size: min(330px, calc(100vw - 24px));
+  max-block-size: 72dvh;
+  overflow-y: auto;
+  border-radius: var(--radius-surface);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+}
+.translator-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-block-size: 44px;
+  min-inline-size: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+.translator-more-menu button:hover:not(:disabled), .translator-more-menu button:active:not(:disabled) { background: var(--bg-hover); }
+.translator-more-menu button:disabled { opacity: .45; cursor: default; }
+.translator-menu-size { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
 
 .translator-languages {
   display: flex;
@@ -7044,7 +7075,7 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-language select {
-  min-block-size: 32px;
+  min-block-size: 44px;
   padding: 0 var(--seed-dimension-x2);
   border: 0;
   border-radius: var(--radius-control);
@@ -7055,8 +7086,8 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 }
 
 .translator-swap {
-  min-inline-size: 32px;
-  min-block-size: 32px;
+  min-inline-size: 44px;
+  min-block-size: 44px;
   border: 0;
   border-radius: var(--radius-control);
   background: var(--bg-panel);
@@ -7142,9 +7173,6 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   background: var(--bg-hover);
 }
 
-.translator-entry[data-joined="true"] {
-  margin-block-start: calc(var(--seed-dimension-x1) - var(--seed-dimension-x3));
-}
 
 /* 통역 음성이 나올 때 마이크 끄기. 통역 중에도 바로 바뀐다. */
 .translator-options {
@@ -7194,78 +7222,82 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
 
 .translator-entry {
   display: flex;
-  align-items: flex-end;
-  gap: var(--seed-dimension-x1_5);
-  max-inline-size: min(88%, 640px);
-}
-
-.translator-entry[data-side="me"] {
-  flex-direction: row-reverse;
-  align-self: flex-end;
-}
-
-.translator-entry[data-side="them"] {
-  align-self: flex-start;
-}
-
-/* Original-line help belongs below its bubble. */
-.translator-entry[data-role="user"] {
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
+  gap: 6px;
+  flex: none;
+  max-inline-size: min(86%, 640px);
 }
-
-.translator-entry[data-side="me"][data-role="user"] {
-  align-items: flex-end;
-}
-
+.translator-entry[data-side="me"] { align-self: flex-end; align-items: flex-end; }
+.translator-entry[data-side="them"] { align-self: flex-start; }
 .translator-bubble {
   display: flex;
   flex-direction: column;
-  gap: var(--seed-dimension-x1);
+  gap: 6px;
   min-inline-size: 0;
-  padding: var(--seed-dimension-x2_5) var(--seed-dimension-x3);
-  border-radius: var(--radius-surface);
-  background: var(--bg-hover);
+  max-inline-size: 100%;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
+.translator-bubble {
+  border: 0;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
 .translator-entry[data-side="me"] .translator-bubble {
-  background: var(--user-bg);
+  background: var(--lamp-ink);
+  color: var(--seed-color-palette-static-white);
+  border-end-end-radius: 6px;
 }
-
-/* 한 턴 안에서 맞닿는 모서리는 덜 둥글게 해 원문과 통역이 한 덩어리로 읽히게 한다. */
-.translator-entry[data-side="them"][data-continues="true"] .translator-bubble {
-  border-end-start-radius: var(--seed-radius-r1, 4px);
-}
-
-.translator-entry[data-side="them"][data-joined="true"] .translator-bubble {
-  border-start-start-radius: var(--seed-radius-r1, 4px);
-}
-
-.translator-entry[data-side="me"][data-continues="true"] .translator-bubble {
-  border-end-end-radius: var(--seed-radius-r1, 4px);
-}
-
-.translator-entry[data-side="me"][data-joined="true"] .translator-bubble {
-  border-start-end-radius: var(--seed-radius-r1, 4px);
-}
-
-/* 지난 말은 작고 흐리게, 방금 한 말은 팔 길이에서 읽히게 크게. */
+.translator-entry[data-side="them"] .translator-bubble { border-end-start-radius: 6px; }
 .translator-translation {
   margin: 0;
-  color: var(--text-muted);
-  font-size: calc(var(--seed-font-size-t5-static) * var(--translator-scale));
-  font-weight: 600;
+  color: inherit;
+  font-size: calc(18px * var(--translator-scale));
+  font-weight: 650;
   line-height: 1.4;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-
 .translator-original {
   margin: 0;
-  color: var(--text-dim);
-  font-size: calc(var(--seed-font-size-t3-static) * var(--translator-scale));
-  line-height: 1.45;
+  color: inherit;
+  opacity: .76;
+  font-size: calc(14px * var(--translator-scale));
+  line-height: 1.4;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.translator-original[data-only="true"] { opacity: 1; font-size: calc(18px * var(--translator-scale)); }
+.translator-bubble .translator-reading { margin: 0; color: inherit; opacity: .8; font-size: calc(14px * var(--translator-scale)); line-height: 1.4; overflow-wrap: anywhere; }
+.translator-bubble-controls { max-inline-size: 100%; }
+.translator-bubble-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.translator-bubble-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-block-size: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.translator-bubble-actions button:hover:not(:disabled), .translator-bubble-actions button:active:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.translator-bubble-actions button[aria-pressed="true"] { background: var(--seed-color-bg-neutral-inverted); color: var(--seed-color-fg-neutral-inverted); }
+.translator-bubble-actions button:disabled { opacity: .5; cursor: default; }
+.translator-volume-hint { min-block-size: 2.8em; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.4; max-inline-size: 340px; }
+.translator-card > .translator-volume-hint { inline-size: 100%; margin-inline: auto; text-align: center; }
 
 /* 숫자·금액·전화번호는 받아쓰기가 틀리기 쉬워 한눈에 확인하도록 옅게 칠한다. 줄 굵기와 색은 그대로 따른다. */
 .translator-number {
@@ -7283,33 +7315,25 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   font-size: calc(var(--seed-font-size-t4-static) * var(--translator-scale));
 }
 
-.translator-entry[data-latest="true"] {
-  max-inline-size: min(100%, 720px);
-}
-
-.translator-entry[data-latest="true"] .translator-bubble {
-  padding: var(--seed-dimension-x3) var(--seed-dimension-x4);
-}
-
 .translator-entry[data-latest="true"] .translator-translation {
-  color: var(--text);
-  font-size: calc(var(--seed-font-size-t11-static) * var(--translator-scale));
-  font-weight: 700;
+  font-size: calc(26px * var(--translator-scale));
+  font-weight: 650;
   line-height: 1.3;
-}
-
-.translator-entry[data-latest="true"] .translator-original {
-  color: var(--text-muted);
-  font-size: calc(var(--seed-font-size-t5-static) * var(--translator-scale));
 }
 
 .translator-dock {
   display: flex;
   flex-direction: column;
   gap: var(--seed-dimension-x2);
-  padding: var(--seed-dimension-x3) max(var(--seed-dimension-x4), calc((100% - 860px) / 2))
-    calc(var(--seed-dimension-x3) + env(safe-area-inset-bottom, 0px));
+  padding: 8px max(12px, calc((100% - 860px) / 2))
+    calc(12px + env(safe-area-inset-bottom, 0px));
 }
+
+.translator-dock-row { display: flex; gap: 8px; align-items: stretch; }
+.translator-dock-row .translator-call-button { flex: 1; min-inline-size: 0; min-block-size: 56px; }
+.translator-keyboard { display: grid; place-items: center; inline-size: 56px; min-block-size: 56px; flex: none; border: 0; border-radius: var(--radius-surface); background: var(--bg-subtle); color: var(--text); cursor: pointer; }
+.translator-keyboard:hover, .translator-keyboard:active { background: var(--bg-hover); }
+.translator-keyboard[aria-expanded="true"] { background: var(--bg-selected); }
 
 /* 지금 단계: 색 점과 글이 함께 간다(색만으로 알리지 않는다). */
 .translator-status {
@@ -7580,18 +7604,6 @@ button.translator-face-line {
   touch-action: manipulation;
 }
 
-button.translator-bubble {
-  border: 0;
-  color: inherit;
-  font-family: inherit;
-  text-align: start;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-button.translator-bubble > .translator-translation {
-  display: block;
-}
 
 /* 보여주기 카드: 한 줄을 화면 가득. 마주보기(260)보다 위, 명령 팔레트(270)보다 아래다. */
 .translator-card {
@@ -7714,13 +7726,16 @@ button.translator-bubble > .translator-translation {
   color: var(--seed-color-fg-neutral-inverted);
 }
 
-.translator-card-speak:hover:not(:disabled) {
+.translator-card-speak:hover:not(:disabled),
+.translator-card-speak:active:not(:disabled) {
   background: var(--seed-color-bg-neutral-inverted-pressed);
+  color: var(--seed-color-fg-neutral-inverted);
 }
 
+/* Speaking keeps the same contrasting ink pair; only its label and icon change. */
 .translator-card-speak[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
-  color: var(--text);
+  background: var(--seed-color-bg-neutral-inverted);
+  color: var(--seed-color-fg-neutral-inverted);
 }
 
 .translator-card-speak:disabled {
@@ -7955,6 +7970,8 @@ button.translator-bubble > .translator-translation {
 }
 
 @media (max-width: 640px) {
+  /* The interpreter has its own back/language/menu row; chat chrome remains reachable via Back. */
+  .workspace-session-region:has(.translator-view:not([hidden])) .workspace-header-stack { display: none; }
   .translator-header {
     padding-inline: var(--seed-dimension-x3);
   }
@@ -8015,13 +8032,6 @@ button.translator-bubble > .translator-translation {
     min-block-size: 44px;
   }
 
-  .translator-entry {
-    max-inline-size: 94%;
-  }
-
-  .translator-entry[data-latest="true"] {
-    max-inline-size: 100%;
-  }
 
   /* 시작 전에는 크게, 통역 중에는 대화 칸에 자리를 내준다. */
   .translator-call-button {

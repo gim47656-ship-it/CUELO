@@ -74,9 +74,8 @@ export type InterpreterTextEvent =
   | { type: "error"; error: "live-auth" | "live-upstream" };
 
 /** Optional help is separate from interpretation and may be omitted entirely. */
-export interface InterpreterAssistParts { replies: boolean; nuance: boolean; check: boolean }
+export interface InterpreterAssistParts { nuance: boolean; check: boolean }
 export interface InterpreterAssistResult {
-  replies?: { mine: string; theirs: string }[];
   nuance?: string;
   backTranslation?: string;
   warning?: string;
@@ -90,15 +89,6 @@ export function cleanInterpreterAssist(value: unknown, parts: InterpreterAssistP
     typeof text === "string" && text.trim() && text.length <= max ? text.replace(/\s+/g, " ").trim() : undefined;
   const result: InterpreterAssistResult = {};
   if (speaker === "theirs") {
-    if (parts.replies && Array.isArray(raw.replies)) {
-      const replies = raw.replies.flatMap((item) => {
-        if (!item || typeof item !== "object") return [];
-        const mine = line(item.mine, 180);
-        const theirs = line(item.theirs, 300);
-        return mine && theirs ? [{ mine, theirs }] : [];
-      }).filter((reply, index, all) => all.findIndex((item) => item.theirs === reply.theirs) === index).slice(0, 3);
-      if (replies.length >= 2) result.replies = replies;
-    }
     if (parts.nuance) {
       const nuance = line(raw.nuance, 240);
       if (nuance) result.nuance = nuance;
