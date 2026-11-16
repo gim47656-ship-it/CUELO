@@ -25,7 +25,9 @@ function harness(translate: TranslateInput, kind: "main" | "sub" = "main", idle 
     for (let i = 0; i < 10; i++) await Promise.resolve();
   };
   const lifecycle = (name: "agent_start" | "agent_end", event: Record<string, unknown> = {}) => emit(name, event);
-  return { prompt, userMessage, lifecycle, sent, deliveries, calls };
+  // 실행 중 안내는 다음 도구 경계(도구 결과)에서 aside로 실린다(lib/quiet-delivery).
+  const boundary = () => emit("tool_result", { toolName: "read", isError: false });
+  return { prompt, userMessage, lifecycle, boundary, sent, deliveries, calls };
 }
 
 describe("user-input-interpreter", () => {
@@ -40,9 +42,12 @@ describe("user-input-interpreter", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  test("실행 중 끼어든 한국어 메시지는 번역이 오면 aside로 붙인다", async () => {
+  test("실행 중 끼어든 한국어 메시지는 번역이 오면 다음 도구 경계에 aside로 붙인다", async () => {
     const h = harness(async () => "But is npm really needed?");
+    h.lifecycle("agent_start");
     await h.userMessage("근데 npm 이꼭필요해?");
+    expect(h.sent).toHaveLength(0);
+    h.boundary();
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]).toMatchObject({ customType: INPUT_TRANSLATION_TYPE, display: false });
     expect(h.sent[0]!.content).toContain("But is npm really needed?");
@@ -104,6 +109,7 @@ describe("user-input-interpreter", () => {
     open("How is the office PC checked then?");
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(h.calls).toEqual([steer]);
+    h.boundary();
     expect(h.sent[0]!.content).toContain("How is the office PC checked then?");
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
     // willContinue인 agent_end 뒤는 같은 실행이고, 실행이 끝난 뒤의 새 프롬프트는 다시 같은 요청에 싣는다.

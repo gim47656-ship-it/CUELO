@@ -8,7 +8,7 @@ function harness(branch: unknown[] = [], kind: "main" | "sub" = "main", now?: ()
   const handlers: Record<string, Handler[]> = {};
   const sent: unknown[] = [];
   const deliveries: unknown[] = [];
-  const ctx = { cwd: "test", agent: { kind }, sessionManager: { getBranch: () => branch, getSessionId: () => "session" } };
+  const ctx = { cwd: "test", agent: { kind }, isIdle: () => false, sessionManager: { getBranch: () => branch, getSessionId: () => "session" } };
   (now ? createTodoNudge(now) : todoNudge)({
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: unknown, options: unknown) => { sent.push(message); deliveries.push(options); },
@@ -18,14 +18,25 @@ function harness(branch: unknown[] = [], kind: "main" | "sub" = "main", now?: ()
   };
   const input = (text = "첫째를 조사하고, 둘째를 수정하고, 셋째를 검증해줘", source = "interactive") =>
     emit("input", { source, text });
-  const calls = (names: string[]) => { for (const toolName of names) emit("tool_call", { toolName }); };
+  // 실행 중인 Main: 안내는 다음 도구 경계(도구 결과)에서 aside로 실린다(lib/quiet-delivery).
+  const boundary = () => emit("tool_result", { toolName: "read", isError: false });
+  const calls = (names: string[]) => {
+    for (const toolName of names) {
+      emit("tool_call", { toolName });
+      emit("tool_result", { toolName, isError: false });
+    }
+  };
   const todoState = (...statuses: string[]) => emit("tool_result", {
     toolName: "todo", isError: false,
     details: { phases: [{ tasks: statuses.map((status, i) => ({ content: `work${i}`, status })) }] },
   });
-  const notice = (customType = "async-result") => emit("message_start", { message: { role: "custom", customType } });
+  const notice = (customType = "async-result") => {
+    emit("message_start", { message: { role: "custom", customType } });
+    boundary();
+  };
   emit("session_start", {});
-  return { emit, input, calls, todoState, notice, sent, deliveries };
+  emit("agent_start", {});
+  return { emit, input, calls, todoState, notice, boundary, sent, deliveries };
 }
 
 describe("todo nudge", () => {
@@ -99,7 +110,10 @@ describe("todo nudge on job-completion notices", () => {
   test("편집 전 체크포인트와 child 활동 advisory DM은 상태 전환이 아니라 안내하지 않는다", () => {
     const h = harness();
     h.todoState("in_progress");
-    const dm = (text: string) => h.emit("message_start", { message: { role: "custom", customType: "irc:incoming", content: text } });
+    const dm = (text: string) => {
+      h.emit("message_start", { message: { role: "custom", customType: "irc:incoming", content: text } });
+      h.boundary();
+    };
     dm("<irc>\nIncoming IRC message from agent `Maker`:\n\n위치: src/a.ts:1-5\n불변식:\n- keep x");
     dm("<irc>\nIncoming IRC message from agent `Maker`:\n\n[Child activity advisory; not a failure verdict] {}");
     expect(h.sent).toHaveLength(0);

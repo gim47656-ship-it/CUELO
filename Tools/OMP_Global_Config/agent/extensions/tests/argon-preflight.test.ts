@@ -136,7 +136,7 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
   let notes: string[] = [];
   const query = createExtensionModelQuery(registry, findScopedSettings(root), () => model);
   const ctx = {
-    cwd: root, agent: { kind }, ui: { setWidget: (_key: string, lines: string[]) => { notes = lines; } }, model,
+    cwd: root, agent: { kind }, isIdle: () => true, ui: { setWidget: (_key: string, lines: string[]) => { notes = lines; } }, model,
     models: { ...query, resolve: (spec: string) => { resolved.push(spec); return query.resolve(spec); } }, modelRegistry: registry,
     sessionManager: { getBranch: () => restored.map((text) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }] } })) },
   };

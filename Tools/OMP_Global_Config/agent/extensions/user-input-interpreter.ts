@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { interpret, SECRET_PATTERN } from "./lib/interpreter";
+import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 
 /**
@@ -9,7 +10,8 @@ import { onSessionLifecycle } from "./lib/session-identity";
  * - 새 프롬프트는 before_agent_start에서 번역을 기다려 같은 요청에 싣는다. 실행 중 끼어든 메시지는 기다리지 않는다:
  *   core는 대기열의 steering·follow-up도 넘기기 전에 before_agent_start를 돌리므로, 여기서 기다리면 끼어든 말이
  *   번역 시간만큼 늦게 모델에 닿는다(2026-11-03 측정: 10-30 이후 steering 298건 중 295건이 번역 종료 직후 전달, 중앙값
- *   3.2초). 그 메시지는 message_start에서 잡아 번역이 오면 aside로 붙인다. 이미 프롬프트로 번역한 글은 다시 보내지 않는다.
+ *   3.2초). 그 메시지는 message_start에서 잡아 번역이 오면 붙인다. 이미 프롬프트로 번역한 글은 다시 보내지 않는다.
+ *   늦은 번역은 lib/quiet-delivery로 보내 wait를 끊거나 끝난 턴을 다시 열지 않는다(2026-11-16, 7일 표본에서 wait 끊김 10·턴 재개 20).
  * - Main만 대상이다(Maker는 Main의 영어 브리프를 받는다). 비밀처럼 보이는 글과 한글이 거의 없는 글은 보내지 않는다.
  * - 번역이 실패하거나 늦으면 덧붙이지 않고 원문만 간다. 번역 실패가 사용자 요청을 막지 않는다.
  */
@@ -64,6 +66,7 @@ export async function translateInput(text: string, ctx: ExtensionContext, signal
 export function createUserInputInterpreter(translate: TranslateInput = translateInput, timeoutMs = TIMEOUT_MS) {
   return function userInputInterpreter(pi: ExtensionAPI): void {
     let handled: string[] = [];
+    const quiet = createQuietDelivery(pi);
     let pending = new Set<AbortController>();
     // 새 프롬프트의 before_agent_start는 실행 전에, 대기열 메시지의 것은 실행 중에 온다.
     let running = false;
@@ -118,11 +121,7 @@ export function createUserInputInterpreter(translate: TranslateInput = translate
       remember(text);
       void run(text, ctx).then((english) => {
         if (!english) return;
-        const late = !ctx.isIdle();
-        pi.sendMessage(
-          { customType: INPUT_TRANSLATION_TYPE, content: translationContent(english, late), display: false, attribution: "agent" },
-          late ? { deliverAs: "aside" } : undefined,
-        );
+        quiet({ customType: INPUT_TRANSLATION_TYPE, content: translationContent(english, !ctx.isIdle()), display: false, attribution: "agent" }, ctx);
       });
     });
   };

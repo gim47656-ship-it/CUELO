@@ -279,3 +279,34 @@ test("panel parses and renders old and new observed labels with the same tally",
  expect(legacy).not.toContain("|확인됨");
  expect(legacy.replace(/확인됨/g, "")).toBe(modern.replace(/확인됨/g, ""));
 });
+
+// 2026-11-16 (doc/history/2026/11/16-quiet-advisories): while a Maker or background job runs, the turn-end reminder must
+// not wake Main. It rides the next turn instead, and the turn that ends with nothing running still gets the waking check.
+test("turn-end reminder waits for the next turn while background jobs run, then wakes once nothing runs", async () => {
+ const handlers = new Map<string, Handler[]>();
+ let tool: GoalTool;
+ const notices: { customType: string; options: unknown }[] = [];
+ const entries: { type: string; customType: string; data: unknown }[] = [];
+ let running: { id: string }[] = [{ id: "job-1" }];
+ const ctx = { cwd: process.cwd(), agent: { kind: "main" }, sessionManager: { getBranch: () => entries }, ui: { setWidget() {} }, getAsyncJobSnapshot: () => ({ running, recent: [] }) };
+ goalLane({
+  zod: z,
+  on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+  registerTool(value: GoalTool) { tool = value; },
+  sendMessage(value: { customType: string }, options: unknown) { notices.push({ customType: value.customType, options }); },
+  appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
+ } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
+ const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
+ const end = () => emit("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: "Maker가 구현 중이에요." }] }] });
+ await emit("session_start", {});
+ await emit("input", { source: "rpc", text: "Build it." });
+ await tool!.execute("goal-test", { op: "frame", goal: "Built", size: "normal", deliverables: [{ id: "b", what: "Build", check: "bun run build" }] }, undefined, undefined, ctx);
+ await end();
+ await end();
+ expect(notices).toEqual([{ customType: "goal-lane", options: { deliverAs: "nextTurn" } }]);
+ await emit("agent_start", {});
+ running = [];
+ await end();
+ await end();
+ expect(notices.map((notice) => notice.options)).toEqual([{ deliverAs: "nextTurn" }, { deliverAs: "aside" }]);
+});

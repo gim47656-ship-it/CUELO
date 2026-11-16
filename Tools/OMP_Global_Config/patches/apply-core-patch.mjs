@@ -25497,6 +25497,23 @@ function planSpawns(
 	noop(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')), skip);
 }
 
+// 2026-11-16 (doc/history/2026/11/16-quiet-advisories): the auto-learn notice is display-only (dropped from model
+// context), yet sent as an aside while streaming it ended a running `wait` or extended a finished turn — 42 extra
+// model calls in 7 days. Park it for the next turn instead. r1 and r2 bodies both upgrade to this one.
+{
+	const owners = EDITS.filter(entry => entry.file === "src/sdk.ts" && entry.marker.includes('"[교훈 자동 저장] " + saved.length'));
+	if (owners.length !== 1) throw new Error(`autolearn notice owner: ${owners.length}/1`);
+	const notice = owners[0];
+	const from = 'session.isStreaming ? { deliverAs: "aside" } : undefined,';
+	if (notice.patched.split(from).length !== 2) throw new Error("autolearn notice delivery line not found");
+	const patched = notice.patched.replace(from, () => 'session.isStreaming ? { deliverAs: "nextTurn" } : undefined,');
+	const end = 'Failed to show auto-learn capture result"';
+	const marker = patched.slice(patched.indexOf('{ deliverAs: "nextTurn" }'), patched.indexOf(end) + end.length);
+	const r1 = notice.legacyPatched;
+	Object.assign(notice, { marker, legacyPatched: notice.patched, patched, excludes: r1 });
+	notice.alternates = [{ file: notice.file, marker, anchor: notice.anchor, requires: r1, legacyPatched: r1, patched }];
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

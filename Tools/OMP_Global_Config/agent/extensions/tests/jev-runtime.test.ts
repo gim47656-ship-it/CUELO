@@ -1757,12 +1757,18 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   test("known owner 지시는 전송을 붙잡지 않고 원 계약 대비 분류를 뒤에 advisory로 보낸다", async () => {
     const gate = Promise.withResolvers<void>();
     const harness = createHarness({ judgeGate: gate.promise, judgeAnswers: answer("scope-change") });
+    await harness.emit("agent_start", {});
     await registerLiveMaker(harness, "Existing", OWNER_TASK);
     const message = "a.ts와 `src/c.ts`도 고쳐.\n```ts\nconst privateWire = 1;\n```\nhttps://example.test/x 참고";
     expect(await harness.emit("tool_call", ownerMessage(message))).toBeUndefined();
     expect(harness.sent).toHaveLength(0);
 
     gate.resolve();
+    await flushOwnerJudgment();
+    await flushOwnerJudgment();
+    // 실행 중에는 담아 두었다가 다음 도구 경계에 싣는다(lib/quiet-delivery): wait를 끊지 않는다.
+    expect(harness.sent).toHaveLength(0);
+    await harness.emit("tool_result", { type: "tool_result", toolCallId: "read-1", toolName: "read", input: { path: "a.ts" }, content: [{ type: "text", text: "x" }], isError: false });
     await untilSent(harness, 1);
     expect(harness.sent).toHaveLength(1);
     expect(harness.sent[0]!.options).toEqual({ deliverAs: "aside" });

@@ -53,15 +53,19 @@ describe("classify", () => {
 });
 
 describe("korean reply guard", () => {
-  test("첫 드리프트도 알림 1회와 함께 그 메시지를 번역해 표시한다", async () => {
+  test("첫 드리프트도 알림 1회와 함께 그 메시지를 번역해 표시하고, 턴이 끝난 뒤 턴 없이 붙인다", async () => {
     const seen: string[] = [];
     const h = harness(async (text) => { seen.push(text); return "번역문"; });
+    h.emit("agent_start");
     await h.assistant(ENGLISH);
     expect(seen).toEqual([ENGLISH]);
+    // 실행 중에는 aside로 끼우지 않는다: 번역은 모델 문맥에서 빠지는 표시용이라 wait를 끊을 이유가 없다.
+    expect(h.sent).toHaveLength(0);
+    h.emit("agent_end", { willContinue: false });
     expect(h.sent).toHaveLength(2);
     expect(h.sent[0]).toMatchObject({ customType: REMINDER_TYPE, display: false });
     expect(h.sent[0]!.content).toContain("한국어");
-    expect(h.deliveries[0]).toEqual({ deliverAs: "nextTurn" });
+    expect(h.deliveries).toEqual([undefined, undefined]);
     expect(h.sent[1]).toMatchObject({ customType: TRANSLATION_TYPE, display: true, content: "[한국어 번역]\n번역문" });
   });
 
@@ -81,9 +85,12 @@ describe("korean reply guard", () => {
     expect(sent.at(-1)!.details).toEqual({ sourceTimestamp: 1234, sourceHash: `${text.length}:${h}` });
   });
 
-  test("도구 호출이 이어지는 드리프트 알림은 aside로 끼운다", async () => {
+  test("도구 호출이 이어지는 드리프트 알림은 다음 도구 경계에 aside로 끼운다", async () => {
     const h = harness(ok);
+    h.emit("agent_start");
     await h.assistant(ENGLISH, true);
+    expect(h.sent).toHaveLength(0);
+    h.emit("tool_result", { toolName: "read", isError: false });
     expect(h.deliveries[0]).toEqual({ deliverAs: "aside" });
   });
 

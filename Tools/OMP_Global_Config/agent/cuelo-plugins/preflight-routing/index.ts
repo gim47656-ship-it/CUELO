@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPreflightCheck, record, opinionText, failureText, secs } from "../../extensions/lib/preflight-check";
+import { createQuietDelivery } from "../../extensions/lib/quiet-delivery";
 import { extractGuardBlock, readGuardField } from "../../extensions/command-guard/task-guard";
 
 const CLEAN = /^\s*빠진 것 없음\s*\.?\s*$/;
@@ -86,6 +87,8 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
   const checks = new Map<string, Check>();
   const state = createPreflightCheck(pi, () => checks.clear());
   const { ask, note, inflight } = state;
+  // 조언은 wait를 끊거나 끝난 턴을 다시 열지 않고 다음 모델 호출 전에 닿는다(2026-11-16, lib/quiet-delivery).
+  const quiet = createQuietDelivery(pi);
 
   pi.on("tool_call", async (event, ctx) => {
     if (!state.main) return;
@@ -182,7 +185,7 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       void check.pending.then((verdict) => {
         if (!verdict) return;
         if (verdict.stale || !current()) { note(ctx, `${what} 조언 버림(점검 중 지시나 목표가 바뀜)`); return; }
-        pi.sendMessage({ customType: "preflight-advice", content: verdict.reason, display: false, attribution: "agent" }, { deliverAs: "aside" });
+        quiet({ customType: "preflight-advice", content: verdict.reason, display: false, attribution: "agent" }, ctx);
       }).catch((error: unknown) => note(ctx, `${what} 조언 전달 실패: ${error instanceof Error ? error.message : String(error)}`)).finally(settle);
       return;
     }

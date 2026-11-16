@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { interpret, SECRET_PATTERN } from "./lib/interpreter";
+import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 
 /**
@@ -119,12 +120,10 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateRepl
     };
     // details는 화면이 번역을 원문 말풍선에 붙이는 연결이다. 번역은 순서가 뒤바뀌어 도착할 수 있어 위치로 짝짓지 않는다.
     // sourceHash는 원문 텍스트 블록을 "\n"으로 이은 값의 hash()이며 CUELO lib/reply-translation.ts가 같은 식으로 다시 계산한다.
-    const show = (ctx: ExtensionContext, content: string, source: { sourceTimestamp: number | undefined; sourceHash: string }) => {
-      pi.sendMessage(
-        { customType: TRANSLATION_TYPE, content, display: true, attribution: "agent", details: source },
-        ctx.isIdle() ? undefined : { deliverAs: "aside" },
-      );
-    };
+    // 번역과 알림은 lib/quiet-delivery로 보낸다: 번역은 모델 문맥에서 빠지는데도 aside라 wait를 끊었다(2026-11-16, 7일 표본 번역 28·알림 20).
+    const quiet = createQuietDelivery(pi);
+    const show = (ctx: ExtensionContext, content: string, source: { sourceTimestamp: number | undefined; sourceHash: string }) =>
+      quiet({ customType: TRANSLATION_TYPE, content, display: true, attribution: "agent", details: source }, ctx);
 
     onSessionLifecycle(pi, { start: reset });
     pi.on("session_shutdown", reset);
@@ -154,11 +153,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateRepl
       const timestamp = typeof message.timestamp === "number" ? message.timestamp : undefined;
       lastDrift = { key, timestamp };
       if (previous?.key === key && previous.timestamp === timestamp) return;
-      const hasToolCall = Array.isArray(message.content) && message.content.some((b) => b?.type === "toolCall");
-      pi.sendMessage(
-        { customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" },
-        { deliverAs: hasToolCall ? "aside" : "nextTurn" },
-      );
+      quiet({ customType: REMINDER_TYPE, content: REMINDER_TEXT, display: false, attribution: "agent" }, ctx);
       if (translated.has(key)) return;
       translated.add(key);
       if (translated.size > SEEN_LIMIT) translated.delete(translated.values().next().value as string);

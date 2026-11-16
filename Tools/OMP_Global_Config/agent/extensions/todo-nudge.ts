@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 
@@ -37,6 +38,8 @@ export function createTodoNudge(now: () => number = Date.now) {
   let todos: readonly TodoSnapshotItem[] = [];
   let noticeNudged = false;
   let coreNudgedAt = Number.NEGATIVE_INFINITY;
+  // wait를 끊거나 끝난 턴을 다시 열지 않는다(2026-11-16, 7일 표본에서 wait 끊김 11).
+  const quiet = createQuietDelivery(pi);
 
   onSessionLifecycle(pi, {
     start: (ctx) => {
@@ -77,12 +80,9 @@ export function createTodoNudge(now: () => number = Date.now) {
     if (!todos.some((item) => item.status === "pending" || item.status === "in_progress")) return;
     if (now() - coreNudgedAt < CORE_NUDGE_WINDOW_MS) return;
     noticeNudged = true;
-    pi.sendMessage(
-      { customType: "todo-nudge", content: NOTICE_REMINDER, display: false, attribution: "agent" },
-      { deliverAs: "aside" },
-    );
+    quiet({ customType: "todo-nudge", content: NOTICE_REMINDER, display: false, attribution: "agent" }, ctx);
   });
-  pi.on("tool_call", (event) => {
+  pi.on("tool_call", (event, ctx) => {
     if (event.toolName === "todo") noticeNudged = false;
     if (!armed || nudged || usedTodo) return;
     if (event.toolName === "todo") {
@@ -94,10 +94,7 @@ export function createTodoNudge(now: () => number = Date.now) {
     calls += 1;
     if (calls < TOOL_CALLS_BEFORE_NUDGE) return;
     nudged = true;
-    pi.sendMessage(
-      { customType: "todo-nudge", content: REMINDER, display: false, attribution: "agent" },
-      { deliverAs: "aside" },
-    );
+    quiet({ customType: "todo-nudge", content: REMINDER, display: false, attribution: "agent" }, ctx);
   });
   };
 }

@@ -13,6 +13,7 @@ import {
 import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
 import { clearPreparedTaskSession } from "./lib/prepared-task";
+import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { LiveServices } from "./lib/turn-jobs";
 import { readChildSkillReads, renderSkillEvidence, type SkillReadWindow } from "./lib/skill-evidence";
@@ -1482,16 +1483,14 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       });
     }
 
+    // wait를 끊거나 끝난 턴을 다시 열지 않는다(2026-11-16, 7일 표본에서 wait 끊김 16). 다음 모델 호출 전에는 닿는다.
+    // 두 종류는 일부러 wait를 끝낸다: 긴 job 관측 기한, 그리고 Maker가 Main 답을 기다리는 체크포인트(미루면 서로 기다린다).
+    const quiet = createQuietDelivery(pi);
+    const WAIT_ENDING_PLACEMENTS: Record<string, true> = { "wait-observation-due": true, "pre-wait-unanswered-checkpoint": true };
     function sendAdvisory(placement: string, content: string): void {
-      pi.sendMessage(
-        {
-          customType: ADVISORY_CUSTOM_TYPE,
-          content,
-          display: false,
-          attribution: "agent",
-        },
-        { deliverAs: "aside" },
-      );
+      const message = { customType: ADVISORY_CUSTOM_TYPE, content, display: false, attribution: "agent" as const };
+      if (WAIT_ENDING_PLACEMENTS[placement] === true) pi.sendMessage(message, { deliverAs: "aside" });
+      else quiet(message);
     }
 
     // known owner 지시 분류: 진행 중 판정은 세션 변경·shutdown에서 끊고 늦은 결과는 버린다. 새 입력은 끊지 않는다.
@@ -1514,7 +1513,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       const generation = ownerMessageGeneration;
       const deliver = (kind: OwnerInstructionKind, answers: Record<string, JudgeAnswer> | undefined, reason = "") => {
         if (generation !== ownerMessageGeneration || kind === "same-scope" || kind === "unknown") return;
-        pi.sendMessage(
+        quiet(
           {
             customType: ADVISORY_CUSTOM_TYPE,
             content: renderAdvisory(
@@ -1526,8 +1525,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
             display: false,
             attribution: "agent",
           },
-          // idle 세션에 aside를 보내면 이 안내만으로 새 턴이 열린다. 그때는 다음 턴 문맥에만 붙인다.
-          ctx.isIdle() ? undefined : { deliverAs: "aside" },
+          ctx,
         );
       };
       const acceptance = owner.guard.acceptance;

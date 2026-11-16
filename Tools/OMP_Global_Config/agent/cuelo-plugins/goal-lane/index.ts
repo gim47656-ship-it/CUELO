@@ -396,6 +396,8 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   /** The user's own words as typed (spaces kept), for the JEV explicit check; the tail is what gets sent. */
   let userWords = "";
   let nudgedThisInput = false;
+  /** An end-of-turn nudge already parked for the next turn while background jobs ran; cleared when a turn starts. */
+  let deferredNudge = false;
   let frameRemindedThisInput = false;
   let substantiveThisInput = 0;
   /** JEV verdict for the current input; set only by the judgment started for that same input. */
@@ -421,6 +423,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     userText = "";
     userWords = "";
     nudgedThisInput = false;
+    deferredNudge = false;
     frameRemindedThisInput = false;
     substantiveThisInput = 0;
     frameJudgedNeeded = false;
@@ -617,6 +620,11 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     }
   });
 
+  pi.on("agent_start", () => {
+    // The parked nudge rides the turn that just started; a later wait may park a fresh one.
+    deferredNudge = false;
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     try {
       if (!active(ctx) || !activeInput || event.willContinue || nudgedThisInput) return;
@@ -633,6 +641,14 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
       }
       const nudge = pendingText(frame!, "턴을 끝내기 전 목표 대조.");
       if (!nudge) return;
+      // 2026-11-16 사용자 결정(doc/history/2026/11/16-quiet-advisories): Maker나 백그라운드 job이 돌고 있으면 대기 중이다.
+      // 깨우지 않고 그 결과가 여는 다음 턴에 붙인다. 그 턴이 끝날 때 다시 대조하도록 nudgedThisInput은 세우지 않는다.
+      if ((ctx.getAsyncJobSnapshot?.()?.running.length ?? 0) > 0) {
+        if (deferredNudge) return;
+        deferredNudge = true;
+        pi.sendMessage({ customType: CUSTOM_TYPE, content: nudge, display: false, attribution: "agent" }, { deliverAs: "nextTurn" });
+        return;
+      }
       nudgedThisInput = true;
       pi.sendMessage({ customType: CUSTOM_TYPE, content: nudge, display: false, attribution: "agent" }, { deliverAs: "aside" });
     } catch {

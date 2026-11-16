@@ -140,7 +140,7 @@ describe("todo-nudge 세션 전환", () => {
     const { pi, handlers, sent } = fakePi();
     todoNudge(pi);
     const session: Session = { id: "session-1", branch: [persistedTodo("in_progress")] };
-    const ctx = contextFor(session, { agent: { kind: "main" } });
+    const ctx = contextFor(session, { agent: { kind: "main" }, isIdle: () => true });
     const emit = (name: string, event: Record<string, unknown> = {}) => handlers[name]!.forEach((handler) => handler(event, ctx));
     const fiveTools = () => { for (const toolName of ["read", "edit", "bash", "grep", "read"]) emit("tool_call", { toolName }); };
     return { session, emit, sent, fiveTools };
