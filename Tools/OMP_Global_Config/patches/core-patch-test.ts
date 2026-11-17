@@ -2337,9 +2337,12 @@ if (process.platform === "linux" && existsSync("/usr/bin/bwrap") && existsSync(j
 	const sandboxRoot = mkdtempSync(join(tmpdir(), "cuelo-core-sandbox-"));
 	const home = join(sandboxRoot, "home");
 	const work = join(sandboxRoot, "work");
+	// CUELO serves every session from one process whose Settings cwd is the runtime folder, not the session workspace.
+	const server = join(sandboxRoot, "server");
 	const agent = join(home, ".omp/agent");
 	mkdirSync(agent, { recursive: true });
 	mkdirSync(work);
+	mkdirSync(server);
 	writeFileSync(join(agent, "config.yml"), "shellPath: /bin/bash\nsandbox:\n  enabled: true\n");
 	writeFileSync(join(agent, "hive-api-key"), "sandbox-fixture");
 	const repo = join(import.meta.dir, "../../..");
@@ -2348,7 +2351,7 @@ if (process.platform === "linux" && existsSync("/usr/bin/bwrap") && existsSync(j
 		const installed = Bun.spawnSync([process.execPath, join(repo, "Tools/CUELO_Setup/linux/install-sandbox.mjs"), join(agent, "config.yml"), repo], { env });
 		check("sandbox profile installs only into the isolated home", installed.exitCode === 0, installed.stderr.toString());
 		const probe = `const { Settings } = await import(${JSON.stringify(`${CORE}/config/settings.ts`)});
-await Settings.init({ cwd: ${JSON.stringify(work)}, agentDir: ${JSON.stringify(agent)} });
+await Settings.init({ cwd: ${JSON.stringify(server)}, agentDir: ${JSON.stringify(agent)} });
 const { executeBash } = await import(${JSON.stringify(`${CORE}/exec/bash-executor.ts`)});
 const result = await executeBash('test ! -s "$HOME/.omp/agent/hive-api-key" && echo HIDDEN; touch "$HOME/outside" 2>/dev/null && echo ESCAPED || echo BLOCKED; printf "%s" "$EXPLICIT" | cat; touch cwd-ok; exit 7', { cwd: ${JSON.stringify(work)}, env: { EXPLICIT: "PIPE_OK" }, minimize: false });
 const fs = await import("node:fs");
@@ -2362,10 +2365,10 @@ for (const mode of [0o555, 0]) {
   fs.chmodSync(directory, 0o755);
 }
 console.log(JSON.stringify({ ...result, quarantine })); process.exit(0);`;
-		const child = Bun.spawnSync([process.execPath, "-e", probe], { env, cwd: work, timeout: 30_000 });
+		const child = Bun.spawnSync([process.execPath, "-e", probe], { env, cwd: server, timeout: 30_000 });
 		const result = JSON.parse(child.stdout.toString().trim().split(/\r?\n/).pop() ?? "{}") as { exitCode?: number; output?: string; quarantine?: boolean };
 		check("sandbox hides credentials and blocks home writes, including shell builtins", child.exitCode === 0 && /HIDDEN/.test(result.output ?? "") && /BLOCKED/.test(result.output ?? "") && !/ESCAPED/.test(result.output ?? ""), child.stderr.toString());
-		check("sandbox keeps pipelines, per-call env, cwd writes and exit status", result.exitCode === 7 && /PIPE_OK/.test(result.output ?? "") && existsSync(join(work, "cwd-ok")), JSON.stringify(result));
+		check("sandbox keeps pipelines, per-call env, command-cwd writes (not the server cwd) and exit status", result.exitCode === 7 && /PIPE_OK/.test(result.output ?? "") && existsSync(join(work, "cwd-ok")), JSON.stringify(result));
 		check("sandbox quarantines new Git pointers even under readonly or unreadable parents", child.exitCode === 0 && result.quarantine === true, child.stderr.toString());
 	} finally {
 		rmSync(sandboxRoot, { recursive: true, force: true });
