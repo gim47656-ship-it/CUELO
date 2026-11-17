@@ -58,6 +58,43 @@ async function hasCommit(repo: string, rev: string): Promise<boolean> {
   }
 }
 
+/** 배포가 서버를 바꾼 구간. `from`은 세션을 내린 시각(`DRAINED`, 없으면 `START`), `to`는 새 서버가 뜬 시각(`READY` 또는 `ROLLED_BACK`). */
+export interface DeployCutover { from: number; to: number }
+
+const CUTOVER_LINE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (START|DRAINED|READY|ROLLED_BACK)\b/gm;
+
+/**
+ * `~/.omp/wsl-update/<UTC>.log`(update.sh)에서 서버 교체 구간을 읽는다. 서버가 바뀌지 않은 실행(READY·ROLLED_BACK이 없는
+ * 실패)은 뺀다. `coveredFrom`은 남은 로그 중 가장 이른 시작 시각이며, 그 전 배포는 로그가 지워져 알 수 없다.
+ */
+export async function deployCutovers(agentDir: string): Promise<{ cutovers: DeployCutover[]; coveredFrom: number | null }> {
+  const dir = join(agentDir, "..", "wsl-update");
+  const cutovers: DeployCutover[] = [];
+  let coveredFrom: number | null = null;
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => /^\d{8}T\d{6}Z\.log$/.test(name));
+  } catch {
+    return { cutovers, coveredFrom };
+  }
+  for (const name of names) {
+    let text: string;
+    try { text = await readFile(join(dir, name), "utf8"); } catch { continue; }
+    let start: number | null = null, drained: number | null = null, end: number | null = null;
+    for (const [, at, stage] of text.matchAll(CUTOVER_LINE_RE)) {
+      const time = Date.parse(at);
+      if (stage === "START") start ??= time;
+      else if (stage === "DRAINED") drained ??= time;
+      else end = time;
+    }
+    if (start !== null) coveredFrom = coveredFrom === null ? start : Math.min(coveredFrom, start);
+    const from = drained ?? start;
+    if (from !== null && end !== null) cutovers.push({ from, to: end });
+  }
+  cutovers.sort((a, b) => a.from - b.from);
+  return { cutovers, coveredFrom };
+}
+
 export async function inspectDeploy(agentDir: string, repo: string | null): Promise<DeployState> {
   const warnings: string[] = [];
   let deployed: string | null = null, head: string | null = null;

@@ -12,6 +12,7 @@ import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, R
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
+import type { DeployCutover } from "./deploy";
 
 const DAY_MS = 86_400_000;
 const YIELD_EVERY_MS = 8;
@@ -111,6 +112,8 @@ export type WindowCounts = {
   /** 피할 수 있었던 다시 쓰기(세션 첫 요청 제외) 중 캐시 쓰기 비용(`usage.cost.cacheWrite`)이 기록되지 않은 것이 있었는지 */
   missingRewriteCost: boolean;
   rewrites: Record<RewriteCause, { count: number; cost: number }>;
+  /** 위 다시 쓰기 중 배포 교체 구간을 사이에 둔 프롬프트·앞부분 바뀜(배포가 프로필을 바꿔 생긴 것). 주간 예산에서 뺀다(2026-11-17 사용자 결정). */
+  deployRewrites: { count: number; cost: number };
   gaps: number[];
   purposes: Record<string, UsageTotal>;
   models: Record<string, UsageTotal>;
@@ -145,6 +148,8 @@ export type ScanResult = {
   failureExcerpts: Record<string, FailureExcerpt[]>;
   /** 14일 안에 실패 뒤 같은 턴에서 같은 도구가 성공한 기록 */
   recoveries: Recovery[];
+  /** 배포 교체 시각을 읽은 업데이트 로그의 시작(`from`, 없으면 null)과 그 로그가 최근 7일 시작을 덮는지. 보고서가 채운다. */
+  deployLogs?: { from: number | null; coversRecent: boolean };
 };
 
 /** 도구 실패 하나의 발췌. 모두 비밀을 가리고 자른 값이다. `recovery`는 같은 턴에서 같은 도구가 다음으로 성공한 호출의 인자 요약이다. */
@@ -172,6 +177,7 @@ function emptyWindow(): WindowCounts {
     finalizeResults: 0,
     apiKeyCalls: 0, apiKeyCost: 0, cacheWriteCost: 0, missingRewriteCost: false,
     rewrites: Object.fromEntries(REWRITE_CAUSES.map((cause) => [cause, { count: 0, cost: 0 }])) as WindowCounts["rewrites"],
+    deployRewrites: { count: 0, cost: 0 },
     gaps: [], purposes: {}, models: {}, errorsBySignature: {},
   };
 }
@@ -502,7 +508,7 @@ class SessionCostTable {
  * `splitAt`은 고침 표시 시각들이다. 최근 7일 사건을 표시마다 전·후 묶음에도 함께 세어, 파일은 표시 수와 관계없이
  * 한 번만 읽는다.
  */
-export async function scanSessions(dir: string, now: number, splitAt: readonly number[] = []): Promise<ScanResult> {
+export async function scanSessions(dir: string, now: number, splitAt: readonly number[] = [], cutovers: readonly DeployCutover[] = []): Promise<ScanResult> {
   const windows: [WindowCounts, WindowCounts] = [emptyWindow(), emptyWindow()];
   const splits = new Map<number, SplitCounts>();
   for (const at of splitAt) if (!splits.has(at)) splits.set(at, { before: emptyWindow(), after: emptyWindow() });
@@ -569,7 +575,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let previousRequest: MainRequest | null = null;
     let compacted = false, promptChanged = false;
     let lastDigest: unknown;
-    const observeCache = (entry: Entry, time: number): { cause: RewriteCause; cost: number } | null => {
+    const observeCache = (entry: Entry, time: number): { cause: RewriteCause; cost: number; deploy: boolean } | null => {
       if (entry.type === "compaction") compacted = true;
       // 다이제스트는 대개 바뀔 때 쓰이지만 같은 값이 다시 쓰이기도 해서 값이 달라졌을 때만 바뀐 것으로 본다.
       if (entry.type === "custom" && entry.customType === "system-prompt-digest") {
@@ -583,9 +589,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
       if (!m || !usage || !prompt) return null;
       const request = { at: typeof m.timestamp === "number" ? m.timestamp : time, prompt, model: `${m.provider ?? ""}/${m.model ?? ""}`, credentialId: m.credentialId };
       const cause = rewriteCause(usage, request, previousRequest, compacted, promptChanged);
+      // 직전 요청과 이번 요청 사이에 서버 교체가 있었고 프롬프트나 앞부분이 바뀐 다시 쓰기는 배포 몫이다. 만료·계정·압축은
+      // 배포가 끼어도 그 원인대로 둔다.
+      const prev = previousRequest;
+      const deploy = (cause === "prompt" || cause === "prefix") && prev !== null && cutovers.some((c) => prev.at < c.to && c.from < request.at);
       previousRequest = request;
       compacted = promptChanged = false;
-      return cause ? { cause, cost: Number(usage.cost?.cacheWrite) || 0 } : null;
+      return cause ? { cause, cost: Number(usage.cost?.cacheWrite) || 0, deploy } : null;
     };
     const childSession = isChildSession(dir, path);
     let lastYield = performance.now();
@@ -743,12 +753,16 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
               if (rewrite) {
                 w.rewrites[rewrite.cause].count++;
                 w.rewrites[rewrite.cause].cost += rewrite.cost;
+                if (rewrite.deploy) {
+                  w.deployRewrites.count++;
+                  w.deployRewrites.cost += rewrite.cost;
+                }
               }
             });
             if (index === 0) {
               costs.add("total", sessionId, path, cost, time);
               costs.add(`model:${key}`, sessionId, path, cost, time);
-              if (rewrite) rewriteRows.push({ first: rewrite.cause === "first", cost: rewrite.cost, row: example(`캐시 다시 쓰기 $${rewrite.cost.toFixed(2)} · ${REWRITE_CAUSE_LABELS[rewrite.cause]}`) });
+              if (rewrite) rewriteRows.push({ first: rewrite.cause === "first", cost: rewrite.cost, row: example(`캐시 다시 쓰기 $${rewrite.cost.toFixed(2)} · ${REWRITE_CAUSE_LABELS[rewrite.cause]}${rewrite.deploy ? " · 배포 직후" : ""}`) });
             }
             billed(usage, cost);
           }

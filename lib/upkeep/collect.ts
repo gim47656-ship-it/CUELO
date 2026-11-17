@@ -16,7 +16,7 @@ import {
   INCIDENT_FLOOR, MODEL_COST_FLOOR_USD, NUDGE_WATCH_PER_100, NUDGE_PROBLEM_PER_100,
   REWRITE_WATCH_SHARE, REWRITE_PROBLEM_SHARE, REWRITE_WATCH_USD, REWRITE_PROBLEM_USD, criterionIdForMetric,
 } from "./criteria";
-import { inspectDeploy, type DeployState } from "./deploy";
+import { deployCutovers, inspectDeploy, type DeployState } from "./deploy";
 import { activeCheckMarks, precisionByRule, type CheckMark } from "./checks";
 import { activeFixMarks, isFixableMetricId } from "./fixes";
 import { readHandoffs } from "./handoff";
@@ -411,7 +411,8 @@ type CostRow = { metric: UpkeepMetric; label: string; cost: number; folded: bool
 
 /**
  * 본 요청 캐시 다시 쓰기(2026-10-31 사용자 결정). 값과 판정은 피할 수 있었던 원인만 센 금액이고, 세션 첫 요청은 늘 캐시를
- * 새로 쓰므로 원인별 내역에만 남긴다.
+ * 새로 쓰므로 원인별 내역에만 남긴다. 주간 예산은 배포 교체 직후 프롬프트·앞부분 바뀜까지 뺀 금액으로 본다(2026-11-17
+ * 사용자 결정 「빼기」: 고침 뒤 4.1일 80건 $112.60 중 38건 $65.16이 서버 재시작 직후였고 모두 배포로 실제 내용이 바뀐 것).
  */
 function cacheRewriteMetric(scan: ScanResult): UpkeepMetric {
   const [a, b] = scan.windows;
@@ -425,18 +426,26 @@ function cacheRewriteMetric(scan: ScanResult): UpkeepMetric {
     m.status = Math.max(now.cost, before.cost) < COST_FLOOR_USD ? "ok" : compare(m.current, m.previous, a.turns, b.turns);
   }
   const share = (cost: number, w: WindowCounts) => (w.cacheWriteCost ? cost / w.cacheWriteCost : null);
+  const budget = Math.max(0, now.cost - a.deployRewrites.cost);
   if (!a.missingRewriteCost && a.turns >= MIN_SAMPLE && a.cacheWriteCost > 0) {
-    const fraction = share(now.cost, a)!;
-    adoptWorse(m, now.cost >= REWRITE_PROBLEM_USD && fraction >= REWRITE_PROBLEM_SHARE ? "problem"
-      : now.cost >= REWRITE_WATCH_USD && fraction >= REWRITE_WATCH_SHARE ? "watch" : "ok", "주간 예산");
+    const fraction = share(budget, a)!;
+    adoptWorse(m, budget >= REWRITE_PROBLEM_USD && fraction >= REWRITE_PROBLEM_SHARE ? "problem"
+      : budget >= REWRITE_WATCH_USD && fraction >= REWRITE_WATCH_SHARE ? "watch" : "ok", "주간 예산");
   }
-  m.criterion += `. 주간 예산: 캐시 쓰기 비용의 ${REWRITE_WATCH_SHARE * 100}% 이상이며 $${REWRITE_WATCH_USD} 이상이면 주의, ${REWRITE_PROBLEM_SHARE * 100}% 이상이며 $${REWRITE_PROBLEM_USD} 이상이면 문제 (최근 요청 ${MIN_SAMPLE}건 이상)`;
+  m.criterion += `. 주간 예산: 배포로 서버가 바뀐 직후 프롬프트나 앞부분이 바뀐 다시 쓰기를 뺀 금액이 캐시 쓰기 비용의 ${REWRITE_WATCH_SHARE * 100}% 이상이며 $${REWRITE_WATCH_USD} 이상이면 주의, ${REWRITE_PROBLEM_SHARE * 100}% 이상이며 $${REWRITE_PROBLEM_USD} 이상이면 문제 (최근 요청 ${MIN_SAMPLE}건 이상)`;
+  const logs = scan.deployLogs;
+  const uncovered = logs && !logs.coversRecent
+    ? (logs.from === null ? "배포 기록(업데이트 로그)이 없어 배포 직후 다시 쓰기를 주간 예산에서 빼지 못했습니다."
+      : `배포 기록이 ${new Date(logs.from).toISOString().slice(0, 10)}부터만 남아 그 전 배포 직후 다시 쓰기는 주간 예산에서 빼지 못했습니다.`)
+    : "";
   const causes = REWRITE_CAUSES.filter((c) => a.rewrites[c].count).map((c) => `${REWRITE_CAUSE_LABELS[c]} ${a.rewrites[c].count}건 ${usd(a.rewrites[c].cost)}`);
   m.note = [
     `원 금액 ${usd(now.cost)} / ${usd(before.cost)} (${now.count} / ${before.count}건), 본 요청 캐시 쓰기 비용 중 ${percent(share(now.cost, a))} / ${percent(share(before.cost, b))}.`,
     causes.length ? `원인별: ${causes.join(", ")}.` : "",
     a.missingRewriteCost || b.missingRewriteCost ? "캐시 쓰기 비용이 기록되지 않은 다시 쓰기가 있는 기간은 판정하지 않습니다." : "",
     "세션 첫 요청은 피할 수 없어 판정에서 뺍니다.",
+    a.deployRewrites.count ? `배포로 서버가 바뀐 직후의 다시 쓰기 ${a.deployRewrites.count}건 ${usd(a.deployRewrites.cost)}는 주간 예산에서 뺍니다(남은 금액 ${usd(budget)}, 캐시 쓰기 비용 중 ${percent(share(budget, a))}).` : "",
+    uncovered,
   ].filter(Boolean).join(" ");
   m.evidence = scan.evidence["session-cache-rewrite"] ?? [];
   return m;
@@ -873,11 +882,14 @@ async function buildReport(): Promise<UpkeepReport> {
   const handoffs = readHandoffs(repo, new Date(start));
   const marks = activeFixMarks(agentDir, start - 7 * DAY_MS);
   const checks = activeCheckMarks(agentDir, start);
+  // 배포 교체 구간은 세션 스캔이 다시 쓰기를 배포 몫으로 가를 때 쓰므로 먼저 읽는다(로그 몇십 개, 짧다).
+  const deployLogs = await deployCutovers(agentDir);
   const [scan, deploy, skills] = await Promise.all([
-    scanSessions(getSessionsDir(agentDir), start, Object.values(marks)),
+    scanSessions(getSessionsDir(agentDir), start, Object.values(marks), deployLogs.cutovers),
     inspectDeploy(agentDir, repo),
     installedSkills(agentDir),
   ]);
+  scan.deployLogs = { from: deployLogs.coveredFrom, coversRecent: deployLogs.coveredFrom !== null && deployLogs.coveredFrom <= start - 7 * DAY_MS };
   // Maker 결과(partial)와 세션 cwd별 마지막 기록은 세션 스캔에서 나오므로 스캔 뒤에 센다.
   const [maker, workspace, stale, taskCost] = await Promise.all([
     makerMetrics(agentDir, start, handoffs.items, scan.makerResults),
