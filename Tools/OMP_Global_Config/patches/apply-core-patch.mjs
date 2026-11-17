@@ -26040,7 +26040,7 @@ EDITS.push({
 	file: "src/exec/bash-executor.ts",
 	marker: "// CUELO: sandbox command boundary",
 	anchor: "\tconst finalCommand =\n\t\toptions?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell\n\t\t\t? buildUserShellCommand(shell, args, preflight.command)\n\t\t\t: preflight.command;",
-	patched: '\tlet finalCommand =\n\t\toptions?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell\n\t\t\t? buildUserShellCommand(shell, args, preflight.command)\n\t\t\t: preflight.command;\n\t// CUELO: sandbox command boundary\n\tconst sandboxCommand = process.platform === "linux" && /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? finalCommand : undefined;\n\t// The server-wide Settings cwd is the CUELO runtime, not the session; the command cwd is the workspace.\n\tconst sandboxCwd = commandCwd ?? settings.getCwd();\n\tlet sandboxCommandDir: string | undefined;\n\tlet sandboxCleanupError: unknown;\n\tif (sandboxCommand !== undefined) prepareCueloSandboxEnv(commandEnv, sandboxCwd, settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox);',
+	patched: '\tlet finalCommand =\n\t\toptions?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell\n\t\t\t? buildUserShellCommand(shell, args, preflight.command)\n\t\t\t: preflight.command;\n\t// CUELO: sandbox command boundary\n\tconst sandboxCommand = process.platform === "linux" && /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? finalCommand : undefined;\n\tlet sandboxCommandDir: string | undefined;\n\tlet sandboxCleanupError: unknown;\n\tif (sandboxCommand !== undefined) prepareCueloSandboxEnv(commandEnv, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox);',
 });
 EDITS.push({
 	file: "src/exec/bash-executor.ts",
@@ -26052,13 +26052,13 @@ EDITS.push({
 	file: "src/exec/bash-executor.ts",
 	marker: "summary.output += checkCueloSandboxGit(",
 	anchor: "\t\treturn {\n\t\t\t...(await sink.dump(notice)),",
-	patched: '\t\tconst summary = await sink.dump(notice);\n\t\tif (sandboxCommand !== undefined) summary.output += checkCueloSandboxGit(sandboxCwd);\n\t\treturn {\n\t\t\t...summary,',
+	patched: '\t\tconst summary = await sink.dump(notice);\n\t\tif (sandboxCommand !== undefined) summary.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn {\n\t\t\t...summary,',
 });
 EDITS.push({
 	file: "src/exec/bash-executor.ts",
 	marker: "if (sandboxCommandDir) rmSync(",
 	anchor: "\t\tsettleTrace();\n\t\tawait sink.dispose();",
-	patched: '\t\tsettleTrace();\n\t\ttry { if (sandboxCommand !== undefined) checkCueloSandboxGit(sandboxCwd); } catch (error) { sandboxCleanupError = error; }\n\t\tif (sandboxCommandDir) rmSync(sandboxCommandDir, { recursive: true, force: true });\n\t\tawait sink.dispose();',
+	patched: '\t\tsettleTrace();\n\t\ttry { if (sandboxCommand !== undefined) checkCueloSandboxGit(settings.getCwd()); } catch (error) { sandboxCleanupError = error; }\n\t\tif (sandboxCommandDir) rmSync(sandboxCommandDir, { recursive: true, force: true });\n\t\tawait sink.dispose();',
 });
 EDITS.push({
 	file: "src/exec/bash-executor.ts",
@@ -26086,7 +26086,7 @@ for (const { file, anchor, patched } of [
 	{
 		file: "src/tools/bash-interactive.ts",
 		anchor: '\t\t\t\t\t\t\tenv: { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },',
-		patched: '\t\t\t\t\t\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell) ? prepareCueloSandboxEnv({ ...interactiveShellEnv, TERM: "xterm-256color", ...options.env }, options.cwd, settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },',
+		patched: '\t\t\t\t\t\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell) ? prepareCueloSandboxEnv({ ...interactiveShellEnv, TERM: "xterm-256color", ...options.env }, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },',
 	},
 	{
 		file: "src/eval/py/index.ts",
@@ -26111,7 +26111,7 @@ for (const { file, anchor, patched } of [
 	{
 		file: "src/tools/bash-interactive.ts",
 		anchor: '\t\treturn result;\n\t} finally {',
-		patched: '\t\tif (/[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell)) result.output += checkCueloSandboxGit(options.cwd);\n\t\treturn result;\n\t} finally {',
+		patched: '\t\tif (/[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell)) result.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn result;\n\t} finally {',
 	},
 	{
 		file: "src/tools/bash.ts",
@@ -26161,6 +26161,32 @@ for (const { file, extra, anchor } of [
 		anchor: 'import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";',
 	},
 ]) EDITS.push({ file, marker: "// CUELO: sandbox runtime imports", anchor, patched: "// CUELO: sandbox runtime imports\n" + extra + anchor });
+// 2026-11-17: CUELO serves every session from one process whose Settings cwd is the runtime folder, so the bodies above
+// (deployed in 0.10.303) bound ~/cuelo-run as the sandbox workspace and left every session folder read-only. The workspace and
+// Git checks follow the command cwd instead. The deployed bodies stay as legacyPatched so installed cores upgrade in place.
+{
+	const upgrade = (file, needle, replacements) => {
+		const found = EDITS.filter(entry => entry.file === file && entry.patched.includes(needle));
+		if (found.length !== 1) throw new Error(`sandbox cwd upgrade: ${file} matched ${found.length} entries`);
+		const entry = found[0];
+		let patched = entry.patched;
+		for (const [from, to] of replacements) {
+			if (!patched.includes(from)) throw new Error(`sandbox cwd upgrade: ${file} lacks ${from}`);
+			patched = patched.replace(from, to);
+		}
+		if (entry.marker === entry.patched) entry.marker = patched;
+		entry.legacyPatched = entry.patched;
+		entry.patched = patched;
+	};
+	upgrade("src/exec/bash-executor.ts", "// CUELO: sandbox command boundary", [
+		["\tlet sandboxCommandDir", "\t// The server-wide Settings cwd is the CUELO runtime, not the session; the command cwd is the workspace.\n\tconst sandboxCwd = commandCwd ?? settings.getCwd();\n\tlet sandboxCommandDir"],
+		["prepareCueloSandboxEnv(commandEnv, settings.getCwd(),", "prepareCueloSandboxEnv(commandEnv, sandboxCwd,"],
+	]);
+	upgrade("src/exec/bash-executor.ts", "summary.output += checkCueloSandboxGit(settings.getCwd())", [["checkCueloSandboxGit(settings.getCwd())", "checkCueloSandboxGit(sandboxCwd)"]]);
+	upgrade("src/exec/bash-executor.ts", "if (sandboxCommandDir) rmSync(", [["checkCueloSandboxGit(settings.getCwd())", "checkCueloSandboxGit(sandboxCwd)"]]);
+	upgrade("src/tools/bash-interactive.ts", "...interactiveShellEnv, TERM", [["...options.env }, settings.getCwd(),", "...options.env }, options.cwd,"]]);
+	upgrade("src/tools/bash-interactive.ts", "result.output += checkCueloSandboxGit(settings.getCwd())", [["checkCueloSandboxGit(settings.getCwd())", "checkCueloSandboxGit(options.cwd)"]]);
+}
 
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는

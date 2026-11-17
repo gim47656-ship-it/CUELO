@@ -41,7 +41,8 @@ export default function sandboxEscape(pi: ExtensionAPI): void {
       const { command, reason } = params as { command: string; reason: string };
       if (!await approveSandboxEscape(command, reason, ctx, homedir(), ctx.cwd)) return { content: [{ type: "text", text: "CUELO sandbox: user denied or cancelled escape. Nothing ran." }], isError: true };
       // Do not use pi.exec: it follows shellPath and would re-enter the sandbox.
-      const child = Bun.spawn(["/bin/bash", "-c", command], { cwd: ctx.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", signal });
+      // One CUELO server runs every session, so its env has no PI_SESSION_ID; the standing deploy command needs this session's id.
+      const child = Bun.spawn(["/bin/bash", "-c", command], { cwd: ctx.cwd, env: { ...process.env, PI_SESSION_ID: ctx.sessionManager.getSessionId() }, stdin: "ignore", stdout: "pipe", stderr: "pipe", signal });
       const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       return { content: [{ type: "text", text: `${stdout}${stderr}\nExit code: ${exitCode}` }], isError: exitCode !== 0 };
     },
