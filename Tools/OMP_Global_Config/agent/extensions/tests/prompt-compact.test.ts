@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,9 +8,31 @@ import promptCompact, { SKILL_CATALOG_POINTER, TARGETS, applyMainOnly, compactSk
 type Agent = { kind: "main" | "sub"; name: string };
 type Handler = (event: { systemPrompt: string[] }, ctx?: { agent: Agent; cwd?: string }) => { systemPrompt: string[] } | undefined;
 
-function register(): Handler | undefined {
+// config.yml is private and absent from the public mirror, so catalog tests load the module from a fixture agent dir.
+const CATALOG_FIXTURE = "skills:\n  promptCatalog:\n    global:\n      hwpx: Korean HWPX documents.\n    default:\n      web-perf: Web performance audits.\n    projects:\n      cuelo:\n        cuelo-release-deploy: Releasing CUELO.\n";
+let fixtureRoot = "";
+let registerFixture: typeof promptCompact = promptCompact;
+
+beforeAll(async () => {
+  fixtureRoot = mkdtempSync(join(tmpdir(), "prompt-catalog-fixture-"));
+  const agentRoot = join(import.meta.dir, "../..");
+  mkdirSync(join(fixtureRoot, "extensions"), { recursive: true });
+  mkdirSync(join(fixtureRoot, "prompt-copies"));
+  writeFileSync(join(fixtureRoot, "extensions/prompt-compact.ts"), readFileSync(join(import.meta.dir, "../prompt-compact.ts")));
+  for (const target of TARGETS) for (const file of [target.source, target.copy]) writeFileSync(join(fixtureRoot, file), readFileSync(join(agentRoot, file)));
+  writeFileSync(join(fixtureRoot, "config.yml"), CATALOG_FIXTURE);
+  mkdirSync(join(fixtureRoot, "cuelo-project"));
+  writeFileSync(join(fixtureRoot, "cuelo-project/package.json"), JSON.stringify({ name: "cuelo" }));
+  registerFixture = (await import(join(fixtureRoot, "extensions/prompt-compact.ts"))).default;
+});
+
+afterAll(() => {
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+function register(load: typeof promptCompact = registerFixture): Handler | undefined {
   let handler: Handler | undefined;
-  promptCompact({ on: (name: string, fn: Handler) => { if (name === "before_agent_start") handler = fn; } } as never);
+  load({ on: (name: string, fn: Handler) => { if (name === "before_agent_start") handler = fn; } } as never);
   return handler;
 }
 
@@ -26,7 +48,7 @@ describe("prompt-compact", () => {
   });
 
   test("shipped English copies replace the Korean rule bodies and leave other blocks untouched", () => {
-    const handler = register();
+    const handler = register(promptCompact);
     // A stale copy must not replace the canonical Korean source.
     expect(handler).toBeDefined();
     const agents = TARGETS[0]!;
@@ -64,9 +86,10 @@ describe("prompt-compact", () => {
 
   test("every role gets short skill triggers while only Maker loses main-only instructions", () => {
     const handler = register()!;
-    const maker = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "sub", name: "maker" } })!.systemPrompt[0]!;
-    const main = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "main", name: "main" } })!.systemPrompt[0]!;
-    const advisor = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "sub", name: "advisor" } })!.systemPrompt[0]!;
+    const cwd = join(fixtureRoot, "cuelo-project");
+    const maker = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "sub", name: "maker" }, cwd })!.systemPrompt[0]!;
+    const main = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "main", name: "main" }, cwd })!.systemPrompt[0]!;
+    const advisor = handler({ systemPrompt: [SHIPPED_GENERIC] }, { agent: { kind: "sub", name: "advisor" }, cwd })!.systemPrompt[0]!;
     for (const text of [main, maker, advisor]) {
       expect(text).toContain(SKILL_CATALOG_POINTER);
       expect(text).toContain("- hwpx:");
