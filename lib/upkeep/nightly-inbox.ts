@@ -13,7 +13,7 @@ import { NIGHTLY_BRANCH_RETENTION_DAYS, nightlyBranchStart } from "./criteria";
 import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
 import {
   candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyBase, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
-  nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue, NIGHTLY_PLUGIN_REVIEW,
+  nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue, regressionReviewDue, NIGHTLY_PLUGIN_REVIEW, NIGHTLY_REGRESSION_SECTION,
 } from "./nightly";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
@@ -763,6 +763,8 @@ export function planInboxRun(
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));
     sections.push(block.join("\n"));
   }
+  const regressionReview = regressionReviewDue(state, date);
+  if (regressionReview) sections.push(NIGHTLY_REGRESSION_SECTION);
   if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));
   sections.push(IMPROVEMENT_REVIEW_BLOCK, NIGHTLY_PLUGIN_REVIEW, INBOX_SUMMARY_RULES);
   return {
@@ -774,6 +776,7 @@ export function planInboxRun(
       problems: active.flatMap(({ bundle }) => bundle.problems.map((p) => `${bundle.source}:${p.id}`)),
       skillCandidates: active.reduce((sum, { candidates }) => sum + candidates.length, 0),
       weeklyReview: active.some(({ plan }) => plan.jobs.weeklyReview),
+      ...(regressionReview ? { regressionReview: true } : {}),
       handoff: handoffItems.map(handoffLabel),
       issueLookup: issues.status === "unavailable" ? "unavailable" : issues.partial ? "partial" : "ok",
       issues: issues.status === "ok" ? issues.issues.map((issue) => issue.number) : [],

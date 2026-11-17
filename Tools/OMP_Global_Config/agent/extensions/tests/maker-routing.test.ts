@@ -260,6 +260,23 @@ describe("2026-11-07 dispatch format normalization", () => {
     expect(result.input.tasks[1].task).toBe(full.task);
     expect(await h.beforeTask({ context: "PREPARED_CONTEXT", task: "PREPARED_TASK: missing" }, {})).toMatchObject({ block: true });
   });
+  test("full briefs recover PREPARED_CONTEXT only from one matching session contract and annotate the reference", async () => {
+    const h = harness();
+    const routes = await h.prepare("stored context", [h.task], {});
+    const input = { context: "PREPARED_CONTEXT\nKeep this context addition", tasks: [{ ...h.input.tasks[0], task: `${brief}\nKeep this brief addition` }] };
+    const result = await h.beforeTask(input, {}) as NormalizedDispatch;
+    expect(result.block).toBeUndefined();
+    expect(result.input.context).toBe("stored context\nKeep this context addition");
+    expect(result.input.tasks[0].task).toBe(`${brief}\nKeep this brief addition`);
+    expect(result.notices.join("\n")).toContain(`PREPARED_TASK: ${routes[0].preparedId}`);
+    expect(input.context).toStartWith("PREPARED_CONTEXT");
+    expect(() => resolvePreparedTaskInput(input, "another-session")).toThrow("exact prepared");
+    expect(await h.beforeTask({ ...input, tasks: [{ ...input.tasks[0], task: brief.replace("src/view.ts", "src/new.ts") }] }, {})).toMatchObject({ block: true });
+    expect(await h.beforeTask({ ...input, tasks: [{ ...input.tasks[0], name: "Another" }] }, {})).toMatchObject({ block: true });
+    // A second prepared entry with the same meaning is ambiguous even when its context is the same.
+    await h.prepare("stored context", [{ ...h.task, task: `${brief}\nAnother prepared brief` }], {});
+    expect(await h.beforeTask(input, {})).toMatchObject({ block: true, reason: expect.stringContaining("exact prepared") });
+  });
   test("first dispatch defaults and unambiguous prefixes are visible to the child", async () => {
     for (const [value, expected] of [["", "feature"], ["feat", "feature"], ["maint", "maintenance"], ["diag", "diagnostic"]]) {
       const h = harness();

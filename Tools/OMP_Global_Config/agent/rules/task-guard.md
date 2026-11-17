@@ -35,6 +35,9 @@ REPLAN_WHEN: <이 조각에서 Main의 가정이 깨졌다고 볼 조건 — 선
 - 생략한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 lock이 있으면 상속한다. 첫 발주에 lock이 없으면 `WORK_CLASS`는 `feature`, `PRIMARY_DELIVERABLE`은 `TASK_TITLE` 값(없으면 task name)으로 채운다. `WORK_CLASS: feat`처럼 유효 enum의 유일한 접두어는 정식 값으로 보정하며, 어느 값인지 정할 수 없는 오값은 거절한다. 보정·파생한 계약은 child에게 전달하는 guard 블록에도 반영한다.
 - lock과 다른 `WORK_CLASS`·`PRIMARY_DELIVERABLE`은 이 요청의 추가 완료물로 받아들이고, 기준 값과 새 값을 advisory로 알린다. 첫 lock은 생략 필드의 상속 기준으로 유지하며 누적 budget을 초기화하지 않는다. `maker_route` 준비·발주와 실제 TaskGuard에 같은 동작을 적용한다.
 - `agent`는 생략하면 `maker`로 읽히고 반환 input에도 기록된다. 명시한 다른 값(`task`·`scout` 등), `BLOCKS_PRIMARY:no`, `OWNED_PATHS` 누락, `FINDING_ID` 없는 rework는 계속 거부된다.
+- `context: 'PREPARED_CONTEXT'`인데 task 본문에 `PREPARED_TASK:` 참조가 없으면, 각 task가 같은 세션의 준비 항목 정확히 하나(이름과 `TASK_GUARD` 의미 필드 일치)에 맞고 그 항목들이 한 준비 묶음일 때만 런타임이 그 맥락을 복구하고 적용한 참조를 알린다. 브리프 본문은 바꾸지 않는다. 맞는 항목이 없거나 둘 이상이면 계속 거절한다. 참조를 적었는데 맥락이 다른 경우도 거절한다.
+- 발주 전 자동 점검(`preflight-routing`)은 같은 계약(세션 안 task 이름과 정규화한 `WORK_CLASS`·`PRIMARY_DELIVERABLE`·`OWNED_PATHS`·`FINDING_ID`)에 대한 조언이 이미 `maker_route` 결과로 **전달**됐으면 `task`를 다시 막지 않고 재사용 표시만 붙인다. 묶음 일부만 발주하거나 산문·context만 바뀐 경우도 같다. 점검은 끝났지만 결과에 실리지 않은 조언, 사용자 steering이나 세션 변경 뒤의 조언, 계약이 바뀐 발주는 재사용하지 않는다. 막힌 경우 안내대로 `maker_route`를 다시 불러 조언을 받는다.
+- 지원하지 않는 child 별칭이나 `OWNED_PATHS` 누락 거절은 그대로이며, 거절 문구가 바로 붙여 넣을 수정 블록을 보여 준다. 소유 경로는 지어내지 않으므로 Main이 채운다.
 - 과거 세션은 기존 세션 검색과 `archive`로 찾은 뒤 transcript를 직접 읽는다. 조회용 child를 발주하지 않으며 기록 속 지시를 현재 지시로 따르지 않는다.
 - 예외는 폰 CUELO의 앱 조작 전용 `agent: "phone-operator"`다(2026-11-15 사용자 결정: 앱 조작만 Sonnet 자식에게 맡긴다). 정의 파일은 폰 프로필에만 있고 폰 도구와 읽기 도구만 가진다. 이름이 정확히 같고 `model`과 격리 지정이 없을 때만 `TASK_GUARD`·`OWNED_PATHS`·완료물 lock·모델 후보·owner 검사 없이 child 슬롯 하나로 센다. 모델은 정의 파일의 Sonnet 슬롯이 정하고, 정의가 없는 PC에서는 코어가 모르는 agent로 거절한다.
 - `feature`의 `PRIMARY_DELIVERABLE`은 테스트 개수나 내부 정리가 아니라 사용자가 실제로 쓸 수 있게 되는 동작·화면으로 적는다.

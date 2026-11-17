@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPreflightCheck, record, opinionText, failureText, secs } from "../../extensions/lib/preflight-check";
 import { createQuietDelivery } from "../../extensions/lib/quiet-delivery";
-import { extractGuardBlock, readGuardField } from "../../extensions/command-guard/task-guard";
+import { preparedPlanIdentity, resolvePreparedTaskInput } from "../../extensions/lib/prepared-task";
+import { isPhoneOperatorCall, taskGuardLockOf } from "../../extensions/command-guard/task-guard";
 
 const CLEAN = /^\s*빠진 것 없음\s*\.?\s*$/;
 
@@ -32,6 +33,8 @@ type Check = {
   pending?: Promise<Verdict | undefined>;
   /** Steering generation the check started in; a goal frame never reuses a check from an older one. */
   gen?: number;
+  advice?: string;
+  delivered?: boolean;
 };
 
 function briefOf(input: unknown): string {
@@ -39,15 +42,14 @@ function briefOf(input: unknown): string {
   const parts: string[] = [];
   // Prepared references carry no brief text; maker_route already checked the full brief they restore.
   if (typeof input.context === "string" && input.context.trim() && !input.context.trim().startsWith("PREPARED_CONTEXT")) parts.push(`# 공통 맥락\n${input.context.trim()}`);
-  if (Array.isArray(input.tasks)) {
-    input.tasks.forEach((task, i) => {
-      if (!record(task)) return;
-      const name = typeof task.name === "string" ? task.name : `task ${i + 1}`;
-      const body = typeof task.task === "string" ? task.task.trim() : "";
-      const space = typeof task.solutionSpace === "string" ? `\n(해법 범위: ${task.solutionSpace})` : "";
-      if (body && !body.startsWith("PREPARED_TASK:")) parts.push(`# 발주 ${name}${space}\n${body}`);
-    });
-  }
+  const tasks = Array.isArray(input.tasks) ? input.tasks : [input];
+  tasks.forEach((task, i) => {
+    if (!record(task) || isPhoneOperatorCall(task, input)) return;
+    const name = typeof task.name === "string" ? task.name : `task ${i + 1}`;
+    const body = typeof task.task === "string" ? task.task.trim() : "";
+    const space = typeof task.solutionSpace === "string" ? `\n(해법 범위: ${task.solutionSpace})` : "";
+    if (body && !body.startsWith("PREPARED_TASK:")) parts.push(`# 발주 ${name}${space}\n${body}`);
+  });
   return parts.some((p) => p.startsWith("# 발주")) ? parts.join("\n\n") : "";
 }
 
@@ -68,19 +70,21 @@ function frameOf(input: unknown): string | undefined {
  * identity is its deliverable ids and paths, not the goal sentence: advice usually rewrites that sentence, and keying
  * on it made every folded-in correction look like new work and ask again (2026-11-11 user decision).
  */
-function correctionIdentity(name: string, input: unknown): string | undefined {
+function correctionIdentity(name: string, input: unknown, sessionId: string): string | undefined {
   if (!record(input)) return undefined;
   if (name === "lab_goal") {
     if (typeof input.goal !== "string" || !input.goal.trim() || !Array.isArray(input.deliverables) || !input.deliverables.length) return undefined;
     const targets = input.deliverables.map((d) => record(d) && typeof d.id === "string" && d.id.trim() ? [d.id, d.path ?? ""] : null);
     return targets.every(Boolean) ? JSON.stringify([name, targets]) : undefined;
   }
-  if (!Array.isArray(input.tasks) || !input.tasks.length) return undefined;
-  const contracts = input.tasks.map((task) => {
+  const tasks = Array.isArray(input.tasks) ? input.tasks : [input];
+  if (!tasks.length) return undefined;
+  let lock = taskGuardLockOf(sessionId);
+  const contracts = tasks.map((task) => {
     if (!record(task) || typeof task.name !== "string" || !task.name.trim() || typeof task.task !== "string") return null;
-    const guard = extractGuardBlock(task.task);
-    if (!guard || !readGuardField(guard.block, "OWNED_PATHS")) return null;
-    return [task.name, ...["WORK_CLASS", "PRIMARY_DELIVERABLE", "OWNED_PATHS", "FINDING_ID"].map((field) => readGuardField(guard.block, field) ?? "")];
+    const identity = preparedPlanIdentity(task.task, task.name, sessionId, lock);
+    if (identity) lock ??= JSON.parse(identity)[1];
+    return identity ?? null;
   });
   return contracts.every(Boolean) ? JSON.stringify(["dispatch", contracts]) : undefined;
 }
@@ -89,8 +93,10 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
   const { getAgentDir } = await import("@oh-my-pi/pi-utils");
   const checks = new Map<string, Check>();
   /** Advice for a maker_route call that ran unheld, keyed by its tool call id until its result arrives. */
-  const advised = new Map<string, string>();
-  const state = createPreflightCheck(pi, () => { checks.clear(); advised.clear(); });
+  const advised = new Map<string, { reason: string; check: Check; identities: string[]; gen: number }>();
+  const delivered = new Set<string>();
+  const reused = new Set<string>();
+  const state = createPreflightCheck(pi, () => { checks.clear(); advised.clear(); delivered.clear(); reused.clear(); });
   const { ask, note, inflight } = state;
   // 조언은 wait를 끊거나 끝난 턴을 다시 열지 않고 다음 모델 호출 전에 닿는다(2026-11-16, lib/quiet-delivery).
   const quiet = createQuietDelivery(pi);
@@ -98,7 +104,12 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
   pi.on("tool_call", async (event, ctx) => {
     if (!state.main) return;
     const name = event.toolName as string;
-    const input: unknown = event.input;
+    let input: unknown = event.input;
+    const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
+    if (name === "task" && record(input)) {
+      try { input = resolvePreparedTaskInput(input, sessionId); }
+      catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
+    }
     let plan: string | undefined;
     let what = "";
     if (name === "task" || name === "maker_route") { plan = briefOf(input); what = "발주"; }
@@ -116,9 +127,20 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       checks.clear();
       return;
     }
-    const identity = correctionIdentity(name, input);
+    const identity = correctionIdentity(name, input, sessionId);
+    const identities = identity && name !== "lab_goal" ? JSON.parse(identity)[1] as string[] : [];
+    if (name === "task" && identities.length && identities.every((key) => delivered.has(key))) {
+      reused.add(event.toolCallId);
+      note(ctx, "발주 통과(maker_route 결과로 이미 전달한 같은 준비 계획의 조언)");
+      return;
+    }
     const key = identity ?? JSON.stringify([name === "lab_goal" ? "lab_goal" : "dispatch", plan]);
     const previous = checks.get(key);
+    if (previous?.tool === "maker_route" && previous.advice && !previous.delivered) {
+      if (name === "task") return { block: true, reason: `${previous.advice}\nmaker_route 결과가 아직 전달되지 않았습니다. 같은 이름과 TASK_GUARD 계약으로 maker_route를 다시 호출해 결과의 조언을 받은 뒤 task를 발주하세요.` };
+      advised.set(event.toolCallId, { reason: previous.advice, check: previous, identities, gen: myGen });
+      return;
+    }
     if (previous?.checked && previous.plan === plan) {
       previous.correctionTool = undefined;
       note(ctx, `${what} 통과(이미 점검한 계획)`);
@@ -141,8 +163,8 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
     if (previous?.plan === plan && previous.pending && (!background || previous.gen === state.gen)) {
       if (background) return;
       const verdict = await previous.pending;
-      if (advisory && verdict && !verdict.stale) {
-        advised.set(event.toolCallId, verdict.reason);
+      if (advisory && !verdict?.stale && previous.advice) {
+        advised.set(event.toolCallId, { reason: verdict?.reason ?? previous.advice, check: previous, identities, gen: myGen });
         return;
       }
       return verdict;
@@ -171,6 +193,7 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       note(ctx, `${what} 조언(${secs(advice.ms)}초):\n${opinionText(advice.opinions)}${failedLanes ? `\n${failedLanes}` : ""}`);
       // Every participant that answered found nothing to change: that is a pass. A participant that gave no advice
       // stays named in the panel and never counts as having reviewed the plan.
+      check.advice = `[사전 점검] ${opinionText(advice.opinions)}${failedLanes ? `\n${failedLanes}` : ""}`;
       if (advice.opinions.every((o) => CLEAN.test(o.text))) { note(ctx, `${what} 통과(빠진 것 없음${failedLanes ? `; ${failedLanes}` : ""})`); return; }
       if (identity) check.correctionTool = correctionScope;
       return {
@@ -215,10 +238,14 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
     }
     try {
       const verdict = await check.pending;
-      if (!verdict) return;
+      if (!verdict) {
+        if (advisory && check.advice) advised.set(event.toolCallId, { reason: check.advice, check, identities, gen: myGen });
+        return;
+      }
       // A stale answer still refuses: steering changed the work, so the prepared plan must not run on old advice.
       if (advisory && !verdict.stale) {
-        advised.set(event.toolCallId, verdict.reason);
+        check.advice = verdict.reason;
+        advised.set(event.toolCallId, { reason: verdict.reason, check, identities, gen: myGen });
         return;
       }
       return { block: verdict.block, reason: verdict.reason };
@@ -228,9 +255,15 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
   });
 
   pi.on("tool_result", (event) => {
+    if (event.toolName === "task" && reused.delete(event.toolCallId)) {
+      return { content: [...event.content, { type: "text", text: "[사전 점검] 같은 준비 계획의 조언을 maker_route 결과로 이미 전달해 중복 점검 없이 발주했습니다." }] };
+    }
     const advice = advised.get(event.toolCallId);
     if (advice === undefined) return;
     advised.delete(event.toolCallId);
-    return { content: [...event.content, { type: "text", text: advice }] };
+    if (advice.gen !== state.gen || event.toolName !== "maker_route") return;
+    advice.check.delivered = true;
+    for (const identity of advice.identities) delivered.add(identity);
+    return { content: [...event.content, { type: "text", text: advice.reason }] };
   });
 }

@@ -113,6 +113,21 @@ describe("ordered task steps", () => {
   });
 });
 
+describe("dispatch rejection repair blocks", () => {
+  test("alias children and missing ownership still reject with usable correction snippets and no budget consumption", () => {
+    for (const [input, snippet] of [
+      [flat("seance", brief()), '"agent": "maker"'],
+      [flat("maker", brief({ OWNED_PATHS: "" })), "OWNED_PATHS: <cwd 상대경로, 콤마 구분>"],
+    ] as const) {
+      const state = createTaskGuardState();
+      const result = reserveTaskCall(state, "rejected", input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toContain(snippet);
+      expect(getTaskGuardUsage(state).total).toBe(0);
+    }
+  });
+});
+
 describe("TaskBudget", () => {
   test("static 누적 한도는 8-slot 두 primary wave와 한 rework·cancel wave를 허용한다", () => {
     expect(TASK_BUDGET_LIMITS).toEqual({

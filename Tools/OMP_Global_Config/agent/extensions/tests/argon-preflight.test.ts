@@ -9,6 +9,8 @@ import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-c
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
+import { clearPreparedTaskSession, storePreparedTaskBatch } from "../lib/prepared-task";
+import { bindTaskGuardSession, createTaskGuardState, reserveTaskCall, unbindTaskGuardSession } from "../command-guard/task-guard";
 
 // The plugin's real handlers make the real completion call; a local OpenAI-compatible server stands in for the
 // opposite-family review role, records the user prompt and reports which model id was actually served.
@@ -30,6 +32,7 @@ let server: ReturnType<typeof Bun.serve>;
 let root: string;
 let registry: ModelRegistry;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const fixtureSessions: string[] = [];
 
 beforeAll(async () => {
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -94,6 +97,7 @@ beforeAll(async () => {
   provider("hive", ["deepseek-ai/deepseek-v4.1-flash-1017"]);
 });
 afterAll(() => {
+  for (const id of fixtureSessions) clearPreparedTaskSession(id);
   server.stop(true);
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -136,10 +140,12 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
   /** The plugin's panel lines (its own history, newest last). */
   let notes: string[] = [];
   const query = createExtensionModelQuery(registry, findScopedSettings(root), () => model);
+  const sessionId = `preflight-fixture-${fixtureSessions.length + 1}`;
+  fixtureSessions.push(sessionId);
   const ctx = {
     cwd: root, agent: { kind }, isIdle: () => true, ui: { setWidget: (_key: string, lines: string[]) => { notes = lines; } }, model,
     models: { ...query, resolve: (spec: string) => { resolved.push(spec); return query.resolve(spec); } }, modelRegistry: registry,
-    sessionManager: { getBranch: () => restored.map((text) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }] } })) },
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => restored.map((text) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }] } })) },
   };
   const fire = async (name: string, event: unknown) => {
     let out: unknown;
@@ -148,6 +154,7 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
   };
   await fire("session_start", {});
   return {
+    sessionId,
     say: async (text: string) => {
       await fire("input", { source: "interactive", text });
       await fire("message_start", { message: { role: "user", content: [{ type: "text", text }] } });
@@ -156,6 +163,7 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
     call: (toolName: string, input: unknown, toolCallId = "call-1") => fire("tool_call", { toolName, toolCallId, input }) as Promise<Dispatched>,
     /** The host's tool_result event for a maker_route call that ran; returns what the plugin replaced its content with. */
     routed: (toolCallId: string) => fire("tool_result", { toolName: "maker_route", toolCallId, input: {}, content: [{ type: "text", text: "routes" }], isError: false }) as Promise<Returned>,
+    dispatched: (toolCallId: string) => fire("tool_result", { toolName: "task", toolCallId, content: [{ type: "text", text: "spawned" }] }) as Promise<Returned>,
     steer: (text: string) => fire("message_start", { message: { role: "user", content: text } }),
     switchSession: () => fire("session_switch", {}),
     endTurn: () => fire("agent_end", {}),
@@ -726,6 +734,7 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
       const s = await mainSession();
       const body = "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE: CSV export\nOWNED_PATHS: src/export.ts\n# Change\nWrite CSV.";
       const input = { context: "Export only", tasks: [{ name: "Export", task: body }] };
+      const [preparedId] = storePreparedTaskBatch(input.context, input.tasks, s.sessionId);
       expect(await s.call("maker_route", input, "route-1")).toBeUndefined();
       const advice = (await s.routed("route-1"))?.content ?? [];
       expect(advice[0]?.text).toBe("routes");
@@ -735,14 +744,142 @@ describe("argon-preflight entrypoints share the Gemini-first rule", () => {
       expect(await s.routed("route-1")).toBeUndefined();
       const corrected = { ...input, tasks: [{ name: "Export", task: `${body}\nKeep headers.` }] };
       expect((await s.call("task", corrected))?.block).toBeUndefined();
-      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: "PREPARED_TASK: b1.1\nKeep headers." }] }))?.block).toBeUndefined();
+      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${preparedId}\nKeep headers.` }] }))?.block).toBeUndefined();
       expect(served).toHaveLength(1);
-      expect((await s.call("task", { ...input, tasks: [{ name: "Export", task: `${body}\nDrop headers.` }] }))?.block).toBe(true);
-      expect(served).toHaveLength(2);
+      expect((await s.call("task", { ...input, tasks: [{ name: "Export", task: `${body}\nDrop headers.` }] }))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
       const changed = { ...input, tasks: [{ name: "Export", task: body.replace("src/export.ts", "src/other.ts") }] };
       expect(await s.call("maker_route", changed, "route-2")).toBeUndefined();
-      expect(served).toHaveLength(3);
+      expect(served).toHaveLength(2);
       expect((await s.routed("route-2"))?.content?.at(-1)?.text).toContain("[사전 점검]");
+    });
+  });
+
+  test("a completed maker_route check whose result was never delivered cannot license a task", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const input = guarded();
+      const [id] = storePreparedTaskBatch("", input.tasks, s.sessionId);
+      expect(await s.call("maker_route", input, "undelivered")).toBeUndefined();
+      expect((await s.call("task", input))?.block).toBe(true);
+      expect((await s.call("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${id}` }] }))?.block).toBe(true);
+      expect(served).toHaveLength(1);
+      expect((await s.routed("undelivered"))?.content?.at(-1)?.text).toContain("사전 점검");
+      expect((await s.call("task", input))?.block).toBeUndefined();
+      expect(s.notes.join("\n")).toContain("이미 전달한");
+      expect((await s.dispatched("call-1"))?.content?.at(-1)?.text).toContain("이미 전달해");
+    });
+  });
+
+  test("R1-ANT-1 R1-ANT-2: a retried maker_route redelivers pending advice before identical or revised dispatch", async () => {
+    await withGemini(async () => {
+      for (const extra of ["", "\nRevised prose"]) {
+        const s = await mainSession();
+        const original = guarded();
+        const revised = guarded(extra);
+        await s.call("maker_route", original, "lost");
+        await s.call("maker_route", revised, "retry");
+        expect((await s.call("task", revised))?.block).toBe(true);
+        expect((await s.routed("retry"))?.content?.at(-1)?.text).toContain("사전 점검");
+        expect((await s.call("task", revised))?.block).toBeUndefined();
+      }
+      expect(served).toHaveLength(2);
+    });
+  });
+
+  test("R1-ANT-4: a delivered clean result licenses a changed-prose batch subset without rechecking", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      behavior.set(GEMINI_ID, "clean");
+      const first = guarded().tasks[0]!;
+      const second = { ...first, name: "Other", task: first.task.replace("src/export.ts", "src/other.ts") };
+      await s.call("maker_route", { tasks: [first, second] }, "clean");
+      await s.routed("clean");
+      behavior.delete(GEMINI_ID);
+      expect((await s.call("task", { tasks: [{ ...second, task: `${second.task}\nKeep header` }] }))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
+    });
+  });
+
+  test("R1-ANT-3: phone-operator remains exempt while ordinary flat maker dispatch needs advice", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      expect(await s.call("task", { agent: "phone-operator", task: "계산기에서 1+2를 눌러 결과를 알려 줘." })).toBeUndefined();
+      expect(served).toHaveLength(0);
+      expect((await s.call("task", guarded().tasks[0]!))?.block).toBe(true);
+      expect(served).toHaveLength(1);
+    });
+  });
+
+  test("R2-ANT-1: steering drops an undelivered check and maker_route asks again before redelivery", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      await s.call("maker_route", guarded(), "old");
+      await s.steer("New requirement before the result arrived");
+      await s.call("maker_route", guarded("\nRevised"), "new");
+      expect(served).toHaveLength(2);
+      expect(await s.routed("old")).toBeUndefined();
+      expect((await s.routed("new"))?.content?.at(-1)?.text).toContain("사전 점검");
+      expect((await s.call("task", guarded("\nRevised")))?.block).toBeUndefined();
+    });
+  });
+
+  test("R2-ANT-2: an undelivered clean result refuses task with a maker_route recovery instruction", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      behavior.set(GEMINI_ID, "clean");
+      await s.call("maker_route", guarded(), "clean-lost");
+      const held = await s.call("task", guarded());
+      expect(held?.block).toBe(true);
+      expect(held?.reason).toContain("maker_route를 다시 호출");
+    });
+  });
+
+  test("delivered advice follows individual prepared contracts, not batch shape or prose, and expires on steering", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const first = guarded().tasks[0]!;
+      const second = { name: "Other", task: first.task.replace("src/export.ts", "src/other.ts") };
+      const batch = { context: "Preparation prose", tasks: [first, second] };
+      await s.call("maker_route", batch, "batch");
+      await s.routed("batch");
+      expect((await s.call("task", { context: "Dispatch prose", tasks: [second] }))?.block).toBeUndefined();
+      expect(served).toHaveLength(1);
+      for (const replacement of [
+        { ...first, name: "Renamed" },
+        { ...first, task: first.task.replace("src/export.ts", "src/new.ts") },
+        { ...first, task: first.task.replace("OWNED_PATHS:", "FINDING_ID: finding-new\nOWNED_PATHS:") },
+        { ...first, task: first.task.replace("PRIMARY_DELIVERABLE: Export", "PRIMARY_DELIVERABLE: New deliverable") },
+      ]) {
+        expect((await s.call("task", { tasks: [replacement] }))?.block).toBe(true);
+      }
+      await s.steer("New requirement");
+      expect((await s.call("task", { tasks: [first] }))?.block).toBe(true);
+    });
+  });
+
+  test("canonical enum prefixes, path sets and inherited batch contracts reuse delivered advice after guard normalization", async () => {
+    await withGemini(async () => {
+      const s = await mainSession();
+      const state = createTaskGuardState();
+      bindTaskGuardSession(s.sessionId, state);
+      try {
+        const first = guarded().tasks[0]!;
+        const second = { name: "Other", task: "TASK_GUARD:\nOWNED_PATHS: ./src/b.ts, src/a.ts, src/b.ts\nBody" };
+        await s.call("maker_route", { tasks: [first, second] }, "inherited");
+        await s.routed("inherited");
+        const normalized = reserveTaskCall(state, "normalize", { tasks: [first, second] });
+        expect(normalized.ok).toBe(true);
+        if (!normalized.ok) throw new Error(normalized.reason);
+        const canonical = normalized.input as { tasks: Array<{ name: string; task: string }> };
+        const item = canonical.tasks[1]!;
+        expect((await s.call("task", { ...item, task: item.task.replace("WORK_CLASS: maintenance", "WORK_CLASS: maint").replace("./src/b.ts, src/a.ts, src/b.ts", "src/a.ts, src/b.ts") }))?.block).toBeUndefined();
+        expect(served).toHaveLength(1);
+        await s.switchSession();
+        expect((await s.call("task", { tasks: [first] }))?.block).toBe(true);
+      } finally {
+        unbindTaskGuardSession(s.sessionId, state);
+      }
     });
   });
 

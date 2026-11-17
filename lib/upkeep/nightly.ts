@@ -5,6 +5,7 @@
  * 하루 한 번만 돌고, 지난 세션이 아직 돌면 새로 열지 않는다. 마지막 실행은 agent 디렉터리의 `cuelo-nightly-improve.json`에 남긴다.
  */
 import { mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { writePrivateFileAtomicSync } from "../atomic-file";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
@@ -31,6 +32,7 @@ export interface NightlyState extends NightlySourceState {
   startedAt: string;
   /** 받은편지함 모드의 출처별 기록. 위 두 칸(skillsScannedAt·performanceReviewDate)은 이 PC 자신의 기록이다. */
   sources?: Record<string, NightlySourceState>;
+  regressionReviewDate?: string;
 }
 
 export type NightlySkipReason = "nothing-to-do" | "no-repo" | "already-ran-today" | "previous-still-running";
@@ -41,6 +43,7 @@ export interface NightlyJobs {
   /** 새 절차 후보 수 */
   skillCandidates: number;
   weeklyReview: boolean;
+  regressionReview?: boolean;
   /** 받은편지함 모드의 합계에서만: 맡긴 HANDOFF 클라우드 점검 항목(`경로 「제목」`) */
   handoff?: string[];
   /** 받은편지함 모드에서만: 공개 저장소 열린 이슈 조회 결과와 맡긴 이슈 번호 */
@@ -100,12 +103,14 @@ export function readNightlyState(agentDir: string): NightlyState | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
     || typeof parsed.date !== "string" || typeof parsed.sessionId !== "string"
     || typeof parsed.worktree !== "string" || typeof parsed.startedAt !== "string"
-    || !isSourceState(parsed) || !isSourceMap(parsed.sources)) {
+    || !isSourceState(parsed) || !isSourceMap(parsed.sources)
+    || (parsed.regressionReviewDate !== undefined && typeof parsed.regressionReviewDate !== "string")) {
     throw new Error(`${NIGHTLY_STATE_FILE} is not a nightly run record`);
   }
   return {
     date: parsed.date, sessionId: parsed.sessionId, worktree: parsed.worktree, startedAt: parsed.startedAt,
     ...sourceState(parsed),
+    ...(parsed.regressionReviewDate ? { regressionReviewDate: parsed.regressionReviewDate } : {}),
     ...(parsed.sources ? { sources: Object.fromEntries(Object.entries(parsed.sources).map(([name, value]) => [name, sourceState(value)])) } : {}),
   };
 }
@@ -140,7 +145,8 @@ type RunPlan = Extract<NightlyPlan, { action: "run" }>;
  * 바꾸며 그 밖에는 지난 기록의 날짜를 이어 둔다.
  */
 export function nightlyStateAfterRun(plan: RunPlan, previous: NightlyState | null, sessionId: string, worktree: string, startedAt: string): NightlyState {
-  const base = { date: plan.date, sessionId, worktree, startedAt };
+  const regressionReviewDate = plan.jobs.regressionReview ? plan.date : previous?.regressionReviewDate;
+  const base = { date: plan.date, sessionId, worktree, startedAt, ...(regressionReviewDate ? { regressionReviewDate } : {}) };
   if (plan.sources) {
     // 받은편지함 모드: 이 PC 자신의 기록은 그대로 두고, 이번에 읽은 출처만 그 출처 기록을 옮긴다.
     const sources = { ...previous?.sources };
@@ -224,6 +230,18 @@ export const NIGHTLY_SKILL_RULES = [
   "- 관리 스킬은 저장소 밖에 있으므로 이 일만으로는 commit도 버전 올림도 하지 않습니다.",
 ].join("\n");
 
+const posixQuote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
+const REGRESSION_COMMAND = `node ${posixQuote(join(homedir(), "cuelo-run/Tools/OMP_Global_Config/evals/outcome/run-revision-compare.mjs"))} --weekly --budget 2`;
+
+export const NIGHTLY_REGRESSION_SECTION = [
+  "# 주간 회귀 측정",
+  "",
+  `이번 주 회귀 측정은 사용자 사전 승인 범위입니다. 배포된 읽기 전용 런타임에서 \`${REGRESSION_COMMAND}\`를 한 번 실행합니다. 작업 사본의 스크립트로 바꾸지 않습니다. 최신 릴리스와 그보다 7일 이상 앞선 릴리스의 격리 프로필을 같은 DeepSeek 1017 모델과 숨김 테스트로 비교하며, 실행 전체 비용은 $2를 넘기지 않습니다. 다른 모델이나 유료 fallback은 쓰지 않습니다.`,
+  "이 명령은 POSIX 호스트 전용입니다. 주간 기본 계획은 arm당 3회(총 6셀)이며 $2 예산 때문에 더 적게 실행되면 summary.json의 실제 셀 수를 그대로 보고합니다. Windows에서는 이 명령을 다른 셸 문법으로 바꾸지 말고 미지원이라고 보고합니다.",
+  "bash 샌드박스가 켜져 있으면 Main이 `sandbox_escape`로 실행하고 `command`에는 위 명령을 그대로 넣습니다. `reason`은 `Run the standing-approved weekly DeepSeek regression comparison with a $2 cap`입니다. 이 정확한 명령만 상시 승인되어 있으므로 경로를 바꾸거나 옵션이나 셸 접미사를 붙이지 않습니다. 격리 프로필의 과제 에이전트는 샌드박스를 다시 켜고 실행됩니다.",
+  "출력된 summary.json을 야간 결과에 첨부하고, arm별 점수, 회차 수, 중앙값과 최소/최대, 턴, 시작 문맥, 총비용을 요약합니다. 점수 범위가 겹치면 결론 불충분이라고 씁니다. 같은 코어에서 프로필만 비교하므로 과거 앱과 코어 변경은 측정하지 않습니다. 실패하거나 예산이 부족하면 그대로 보고하고 한도를 올리거나 재실행하지 않습니다. 배포하지 않습니다.",
+].join("\n");
+
 export const NIGHTLY_WEEKLY_SECTION = [
   "## 주간 성능 점검",
   "",
@@ -270,6 +288,10 @@ export function weeklyReviewDue(state: NightlySourceState | null | undefined, to
   return !Number.isFinite(days) || days >= WEEK_DAYS;
 }
 
+export function regressionReviewDue(state: NightlyState | null | undefined, today: string): boolean {
+  return weeklyReviewDue({ performanceReviewDate: state?.regressionReviewDate }, today);
+}
+
 /** 절차 후보를 모을 시작 시각. 지난 실행이 남긴 스캔 상한, 없으면 최근 7일. */
 export function skillScanSince(state: NightlySourceState | null | undefined, now: Date): number {
   const at = state?.skillsScannedAt ? Date.parse(state.skillsScannedAt) : NaN;
@@ -313,13 +335,15 @@ export function planNightlyRun(
   const date = kstDate(now.toISOString());
   const problems = openProblems(report);
   const weeklyReview = weeklyReviewDue(state, date);
-  if (!problems.length && !skillCandidates.length && !weeklyReview && coreUpdate?.status !== "newer") return { action: "skip", reason: "nothing-to-do" };
+  const regressionReview = regressionReviewDue(state, date);
+  if (!problems.length && !skillCandidates.length && !weeklyReview && !regressionReview && coreUpdate?.status !== "newer") return { action: "skip", reason: "nothing-to-do" };
   const blocked = nightlyGuard(report.repoCwd, state, date, runningSessionIds);
   if (blocked || !report.repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
   const sections = [NIGHTLY_PREAMBLE, nightlyAuditRules(date), "# 오늘 할 일"];
   if (problems.length) sections.push(NIGHTLY_PROBLEM_SECTION);
   if (skillCandidates.length) sections.push([NIGHTLY_SKILL_RULES, "", "후보:", ...skillCandidates.map(candidateLine)].join("\n"));
   if (weeklyReview) sections.push(NIGHTLY_WEEKLY_SECTION);
+  if (regressionReview) sections.push(NIGHTLY_REGRESSION_SECTION.replace(/^# /, "## "));
   if (coreUpdate) {
     const block = nightlyCoreUpdateBlock(coreUpdate);
     if (block) sections.push(block);
@@ -331,7 +355,7 @@ export function planNightlyRun(
     date,
     repoCwd: report.repoCwd,
     branch: nightlyBranch(date),
-    jobs: { problems, skillCandidates: skillCandidates.length, weeklyReview, ...(coreUpdate?.status === "newer" ? { coreUpgrade: { from: coreUpdate.current, to: coreUpdate.latest } } : {}) },
+    jobs: { problems, skillCandidates: skillCandidates.length, weeklyReview, ...(regressionReview ? { regressionReview: true } : {}), ...(coreUpdate?.status === "newer" ? { coreUpgrade: { from: coreUpdate.current, to: coreUpdate.latest } } : {}) },
     skillsScannedAt: now.toISOString(),
     ...(coreUpdate ? { coreUpdate } : {}),
     prompt: sections.join("\n\n"),

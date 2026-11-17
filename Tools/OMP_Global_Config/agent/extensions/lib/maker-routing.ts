@@ -337,7 +337,7 @@ function dispatchContract(task: string, lock: DispatchContractLock | undefined, 
 }
 
 const GUARD_TEMPLATE =
-  `양식: 브리프 첫머리에 \`TASK_GUARD:\` 줄, 그 다음 줄부터 빈 줄 없이 \`WORK_CLASS: ${WORK_CLASSES.join("|")}\`(생략 시 lock 또는 feature)·\`PRIMARY_DELIVERABLE: <완료물 한 줄>\`(생략 시 lock 또는 TASK_TITLE·task name)·\`OWNED_PATHS: <cwd 상대경로, 콤마 구분>\`, 그 뒤 \`TASK_TITLE\`·\`TODO_TASKS\`. 정본 rule://task-guard.`;
+  `복사한 뒤 <...>를 실제 판단값으로 채우세요(경로는 자동으로 정하지 않습니다):\nTASK_GUARD:\nOWNED_PATHS: <cwd 상대경로, 콤마 구분>\n\nWORK_CLASS는 생략 시 lock 또는 feature, PRIMARY_DELIVERABLE은 생략 시 lock 또는 TASK_TITLE과 task name입니다. TASK_TITLE과 TODO_TASKS는 guard 뒤에 둡니다. 정본 rule://task-guard.`;
 
 /** 계약을 완성하지 못한 이유를 필드 단위로 짚는다. 브리프 본문은 싣지 않는다. */
 export function contractGapReason(task: string, lock: DispatchContractLock | undefined, name: string): string {
@@ -1120,14 +1120,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
 
   async function beforeTask(input: Record<string, unknown>, ctx: ExtensionContext, callId = "") {
     let canonicalInput: Record<string, unknown>;
+    const notices: string[] = [];
     try {
       const sessionId = ctx.sessionManager?.getSessionId?.();
-      canonicalInput = resolvePreparedTaskInput(input, typeof sessionId === "string" ? sessionId : "");
+      canonicalInput = resolvePreparedTaskInput(input, typeof sessionId === "string" ? sessionId : "", notices);
     } catch (error) {
       return { block: true, reason: error instanceof Error ? error.message : String(error) };
     }
     const tasks = (Array.isArray(canonicalInput.tasks) ? canonicalInput.tasks : [canonicalInput]) as Record<string, unknown>[];
-    const notices: string[] = [];
     const normalizedItems = new Map<number, Record<string, unknown>>();
     const atGeneration = generation;
     // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.

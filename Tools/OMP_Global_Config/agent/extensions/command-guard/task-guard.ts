@@ -453,7 +453,7 @@ function validateItem(
   metadata: GuardMetadata,
 ): Delta | string {
   if (!isMakerAgent(item.agent)) {
-    return `[SpawnGuard] 허용 child는 maker뿐입니다: ${item.agent || "<empty>"}`;
+    return `[SpawnGuard] 허용 child는 maker뿐입니다: ${item.agent || "<empty>"}\n일반 구현 발주라면 해당 task 항목의 agent를 아래 값으로 바꾸고 나머지 계약을 유지하세요:\n"agent": "maker"\n캐릭터 호출은 agent 별칭으로 바꾸지 말고 rule://subagent의 호출 절차를 따르세요.`;
   }
 
   if (!metadata.blocksPrimary) {
@@ -466,7 +466,7 @@ function validateItem(
   if (metadata.ownedPaths.length === 0) {
     return (
       "[SpawnGuard] maker 계열 spawn에는 OWNED_PATHS가 필요합니다. " +
-      "이 child가 수정할 소유 경로를 콤마로 나열하세요."
+      "아래를 기존 TASK_GUARD의 마지막 guard 필드 뒤에 붙이고 <...>를 실제 소유 경로로 채우세요:\nOWNED_PATHS: <cwd 상대경로, 콤마 구분>"
     );
   }
   if (metadata.ownedPaths.some(isEscapingOwnedPath)) {

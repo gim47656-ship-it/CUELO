@@ -1314,8 +1314,9 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     }
     if (isToolCallEventType<"task", TaskCallInput>("task", event)) {
       let canonicalInput: TaskCallInput;
+      const preparedNotices: string[] = [];
       try {
-        canonicalInput = resolvePreparedTaskInput(event.input, ctx.sessionManager.getSessionId());
+        canonicalInput = resolvePreparedTaskInput(event.input, ctx.sessionManager.getSessionId(), preparedNotices);
       } catch (error) {
         return {
           block: true,
@@ -1360,8 +1361,9 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
 
       const decision = reserveTaskCall(taskGuard, event.toolCallId, guardedInput);
       if (!decision.ok) return { block: true, reason: decision.reason };
-      if (decision.notices?.length) {
-        pi.sendMessage({ customType: "task-guard-advisory", content: decision.notices.join("\n"), display: true }, { triggerTurn: false });
+      const notices = [...preparedNotices, ...(decision.notices ?? [])];
+      if (notices.length) {
+        pi.sendMessage({ customType: "task-guard-advisory", content: notices.join("\n"), display: true }, { triggerTurn: false });
       }
       const makers = reservedMakers(taskGuard, event.toolCallId);
       if (claimedAliases.length > 0) {

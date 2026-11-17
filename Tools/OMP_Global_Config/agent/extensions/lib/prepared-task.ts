@@ -1,3 +1,5 @@
+import { defaultPrimaryDeliverable, extractGuardBlock, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf } from "../command-guard/task-guard";
+
 interface PreparedTaskSource {
   name: string;
   task: string;
@@ -6,6 +8,7 @@ interface PreparedTaskSource {
 interface PreparedTaskRecord extends PreparedTaskSource {
   batchId: string;
   context: string;
+  identity?: string;
 }
 
 interface PreparedSessionState {
@@ -73,10 +76,13 @@ export function storePreparedTaskBatch(
   if (existing) return [...existing];
 
   const batchId = `b${++shared.nextBatchId}`;
+  let lock = taskGuardLockOf(sessionId);
   const ids = tasks.map((task, index) => {
     if (!task.name.trim()) throw new Error("prepared task에는 비어 있지 않은 name이 필요합니다.");
     const id = `${batchId}.${index + 1}`;
-    state.records.set(id, { batchId, context, name: task.name, task: task.task });
+    const identity = preparedPlanIdentity(task.task, task.name, sessionId, lock);
+    if (identity) lock ??= JSON.parse(identity)[1];
+    state.records.set(id, { batchId, context, name: task.name, task: task.task, identity });
     return id;
   });
   state.batchesBySignature.set(signature, ids);
@@ -118,6 +124,29 @@ function describeReference(value: string): string {
   return notes.join(" · ") || "exact 참조 문법이 아닙니다";
 }
 
+/** Same name and canonical meaning fields as maker-routing's preparation linkage; prose is not identity. */
+export function preparedPlanIdentity(
+  task: string,
+  name: string,
+  sessionId: string,
+  lock = taskGuardLockOf(sessionId),
+): string | undefined {
+  const guard = extractGuardBlock(task);
+  if (!guard || !name.trim()) return;
+  const field = (key: string) => readGuardField(guard.block, key) ?? "";
+  const explicitClass = field("WORK_CLASS").toLowerCase();
+  if (explicitClass && !normalizeWorkClass(explicitClass)) return;
+  const paths = parseOwnedPaths(field("OWNED_PATHS"));
+  const primaryDeliverable = field("PRIMARY_DELIVERABLE") || lock?.primaryDeliverable || defaultPrimaryDeliverable(task, name);
+  if (!paths.length || !primaryDeliverable) return;
+  return JSON.stringify([name.trim(), {
+    workClass: normalizeWorkClass(explicitClass) || lock?.workClass || "feature",
+    primaryDeliverable,
+    ownedPaths: [...new Set(paths)].sort(),
+    findingId: field("FINDING_ID") || null,
+  }]);
+}
+
 /**
  * task의 기존 문자열 필드에 실린 prepared 참조를 canonical input으로 복원한다.
  * full input은 객체 identity까지 그대로 보존하며, 참조 입력은 얕은 복사본을 반환한다.
@@ -125,6 +154,7 @@ function describeReference(value: string): string {
 export function resolvePreparedTaskInput(
   input: Record<string, unknown>,
   sessionId: string,
+  notices?: string[],
 ): Record<string, unknown> {
   const items = (Array.isArray(input.tasks) ? input.tasks : [input]) as unknown[];
   const taskValues = items.map((item) =>
@@ -165,9 +195,30 @@ export function resolvePreparedTaskInput(
     );
   }
   if (!hasReference) {
+    const state = sessions.get(requireSessionId(sessionId));
+    let lock = taskGuardLockOf(sessionId);
+    const recovered = items.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+      const source = item as Record<string, unknown>;
+      if (typeof source.task !== "string" || typeof source.name !== "string") return [];
+      const identity = preparedPlanIdentity(source.task, source.name, sessionId, lock);
+      if (identity) lock ??= JSON.parse(identity)[1];
+      return identity ? [...(state?.records.entries() ?? [])].filter(([, stored]) =>
+        (stored.identity ?? preparedPlanIdentity(stored.task, stored.name, sessionId)) === identity,
+      ) : [];
+    });
+    if (recovered.length > 0 && recovered.every((entries) => entries.length === 1)) {
+      const stored = recovered.map((entries) => entries[0]!);
+      const first = stored[0]![1];
+      if (stored.every(([, entry]) => entry.batchId === first.batchId && entry.context === first.context)) {
+        const context = contextAddition ? `${first.context.trimEnd()}\n${contextAddition}` : first.context;
+        notices?.push(`[PreparedTask] PREPARED_CONTEXT 복원: ${stored.map(([id, entry]) => `${entry.name} → PREPARED_TASK: ${id}`).join(", ")}. 발주 본문은 유지했습니다.`);
+        return { ...input, context };
+      }
+    }
     throw new Error(
       `context='${CONTEXT_REFERENCE}'인데 exact prepared 참조가 없습니다: task는 'PREPARED_TASK: <preparedId>' 하나이거나, ` +
-      "참조 대신 full 원문을 그 context와 함께 보내야 합니다.",
+      "참조 대신 full 원문을 그 context와 함께 보내야 합니다. 이름과 TASK_GUARD가 일치하는 같은 session의 준비가 정확히 하나일 때만 context를 복원합니다.",
     );
   }
 

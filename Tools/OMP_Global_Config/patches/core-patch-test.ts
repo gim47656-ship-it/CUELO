@@ -3,7 +3,7 @@
 // 동적 import 예외: 정적 import는 `@oh-my-pi/pi-coding-agent`를 bun 전역 캐시의
 // 미패치 사본으로 해석한다. 이 테스트는 omp-web이 실제로 적재하는 사본만 검증해야
 // 하므로 디스크 경로를 고정한다(모듈 로딩 경계 테스트).
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
@@ -2328,6 +2328,47 @@ process.exit(0);`;
 	}
 	rmSync(probeHome, { recursive: true, force: true });
 	rmSync(envCwd, { recursive: true, force: true });
+}
+
+// A shellPath named bash used to affect only rc snapshots, leaving builtins and pipelines on the host.
+if (process.platform === "linux" && existsSync("/usr/bin/bwrap")) {
+	console.log("\nCUELO sandbox wraps complete embedded-shell commands");
+	const sandboxRoot = mkdtempSync(join(tmpdir(), "cuelo-core-sandbox-"));
+	const home = join(sandboxRoot, "home");
+	const work = join(sandboxRoot, "work");
+	const agent = join(home, ".omp/agent");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(work);
+	writeFileSync(join(agent, "config.yml"), "shellPath: /bin/bash\nsandbox:\n  enabled: true\n");
+	writeFileSync(join(agent, "hive-api-key"), "sandbox-fixture");
+	const repo = join(import.meta.dir, "../../..");
+	try {
+		const env = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent };
+		const installed = Bun.spawnSync([process.execPath, join(repo, "Tools/CUELO_Setup/linux/install-sandbox.mjs"), join(agent, "config.yml"), repo], { env });
+		check("sandbox profile installs only into the isolated home", installed.exitCode === 0, installed.stderr.toString());
+		const probe = `const { Settings } = await import(${JSON.stringify(`${CORE}/config/settings.ts`)});
+await Settings.init({ cwd: ${JSON.stringify(work)}, agentDir: ${JSON.stringify(agent)} });
+const { executeBash } = await import(${JSON.stringify(`${CORE}/exec/bash-executor.ts`)});
+const result = await executeBash('test ! -s "$HOME/.omp/agent/hive-api-key" && echo HIDDEN; touch "$HOME/outside" 2>/dev/null && echo ESCAPED || echo BLOCKED; printf "%s" "$EXPLICIT" | cat; touch cwd-ok; exit 7', { cwd: ${JSON.stringify(work)}, env: { EXPLICIT: "PIPE_OK" }, minimize: false });
+const fs = await import("node:fs");
+const metadata = globalThis[Symbol.for("cuelo.sandbox.git")].get(${JSON.stringify(work)});
+let quarantine = true;
+for (const mode of [0o555, 0]) {
+  const directory = ${JSON.stringify(work)} + "/new-" + mode + "/sub", pointer = directory + "/.git";
+  fs.mkdirSync(directory, { recursive: true }); metadata.pointers.add(pointer);
+  const trapped = await executeBash("mkdir " + JSON.stringify(pointer) + "; mkdir .git; chmod " + mode.toString(8) + " " + JSON.stringify(directory), { cwd: ${JSON.stringify(work)}, minimize: false });
+  quarantine &&= trapped.output.includes(pointer + ".cuelo-quarantine-");
+  fs.chmodSync(directory, 0o755);
+}
+console.log(JSON.stringify({ ...result, quarantine })); process.exit(0);`;
+		const child = Bun.spawnSync([process.execPath, "-e", probe], { env, cwd: work, timeout: 30_000 });
+		const result = JSON.parse(child.stdout.toString().trim().split(/\r?\n/).pop() ?? "{}") as { exitCode?: number; output?: string; quarantine?: boolean };
+		check("sandbox hides credentials and blocks home writes, including shell builtins", child.exitCode === 0 && /HIDDEN/.test(result.output ?? "") && /BLOCKED/.test(result.output ?? "") && !/ESCAPED/.test(result.output ?? ""), child.stderr.toString());
+		check("sandbox keeps pipelines, per-call env, cwd writes and exit status", result.exitCode === 7 && /PIPE_OK/.test(result.output ?? "") && existsSync(join(work, "cwd-ok")), JSON.stringify(result));
+		check("sandbox quarantines new Git pointers even under readonly or unreadable parents", child.exitCode === 0 && result.quarantine === true, child.stderr.toString());
+	} finally {
+		rmSync(sandboxRoot, { recursive: true, force: true });
+	}
 }
 
 // 2026-09-29: 이름 있는 bash service 는 bash-executor 가 아니라 daemon broker 가 띄운다. CUELO 가 띄운

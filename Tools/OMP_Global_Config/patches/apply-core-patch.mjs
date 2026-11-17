@@ -25869,6 +25869,227 @@ ${TAIL}`,
 	});
 }
 
+// CUELO: sandbox startup is trusted host code. Pin metadata once per workspace and
+// strip interpreter/loader hooks before launching it; command text goes through a private file.
+EDITS.push({
+	file: "../pi-utils/src/env.ts",
+	marker: "// CUELO: sandbox bootstrap and pinned git routing",
+	anchor: "const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;",
+	patched: `// CUELO: sandbox bootstrap and pinned git routing
+interface CueloSandboxGitState { dir: string; common: string; top: string; workspace: string; roots: Set<string>; topology: Set<string>; pointers: Set<string>; routing: Set<string>; links: Map<string, string>; modes: Map<string, { mode: number; dev: number; ino: number }> }
+const cueloSandboxGlobal = globalThis as typeof globalThis & { [key: symbol]: Map<string, CueloSandboxGitState> | undefined };
+const cueloSandboxGit = cueloSandboxGlobal[Symbol.for("cuelo.sandbox.git")] ??= new Map<string, CueloSandboxGitState>();
+function cueloInside(file: string, root: string): boolean {
+	const rel = path.relative(root, file);
+	return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
+}
+function cueloGitlinks(top: string, dir: string, common: string): Set<string> {
+	const pointers = new Set([path.join(top, ".git")]);
+	if (!dir || !common) return pointers;
+	const index = Bun.spawnSync(["/usr/bin/git", "--git-dir=" + dir, "--work-tree=" + top, "-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"], { env: { PATH: "/usr/bin:/bin", GIT_COMMON_DIR: common, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+	if (index.exitCode !== 0) throw new Error("CUELO sandbox: cannot enumerate gitlinks safely");
+	for (const row of index.stdout.toString().split("\\0")) if (row.startsWith("160000 ")) pointers.add(path.join(top, row.slice(row.indexOf("\\t") + 1), ".git"));
+	return pointers;
+}
+function cueloRoutingFiles(roots: ReadonlySet<string>): string[] {
+	return [...roots].flatMap(root => ["config", "hooks", "commondir", "gitdir", "config.worktree", "objects/info/alternates"].map(name => path.join(root, name)));
+}
+export function prepareCueloSandboxEnv<T extends Record<string, string | undefined>>(env: T, cwd: string, agentDir: string, home: string, force = false): T {
+	for (const name of Object.keys(env)) if (/^(?:LD_|DYLD_|BASH_FUNC_|BUN_|GIT_CONFIG_|GIT_TRACE)|^(?:BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|NODE_OPTIONS|GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE|GIT_CONFIG|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_NAMESPACE)$/.test(name)) delete env[name];
+	let metadata = cueloSandboxGit.get(cwd);
+	if (!metadata) {
+		const workspace = fs.realpathSync(cwd);
+		const gitEnv = { PATH: "/usr/bin:/bin", HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" };
+		const git = Bun.spawnSync(["/usr/bin/git", "-C", workspace, "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir"], { env: gitEnv });
+		const paths = git.exitCode === 0 ? git.stdout.toString().trim().split(/\\r?\\n/) : [];
+		const dir = paths[0] ? fs.realpathSync(paths[0]) : "", common = paths[1] ? fs.realpathSync(paths[1]) : "";
+		const topResult = dir ? Bun.spawnSync(["/usr/bin/git", "-C", workspace, "rev-parse", "--show-toplevel"], { env: gitEnv }) : undefined;
+		const top = topResult?.exitCode === 0 ? fs.realpathSync(topResult.stdout.toString().trim()) : workspace;
+		const pointers = cueloGitlinks(top, dir, common);
+		pointers.add(path.join(workspace, ".git"));
+		const roots = new Set([dir, common].filter(Boolean)), commons = new Set(common ? [common] : []);
+		for (const pointer of pointers) if (fs.existsSync(pointer)) {
+			if (fs.realpathSync(path.dirname(pointer)) !== path.dirname(pointer)) throw new Error("CUELO sandbox: symlink Git worktree paths require Main's approved escape");
+			const gitDir = fs.statSync(pointer).isDirectory() ? pointer : path.resolve(path.dirname(pointer), fs.readFileSync(pointer, "utf8").replace(/^gitdir:\\s*/, "").trim());
+			if (!fs.existsSync(gitDir)) continue;
+			const canonical = fs.realpathSync(gitDir); roots.add(canonical);
+			const commonFile = path.join(canonical, "commondir");
+			commons.add(fs.existsSync(commonFile) ? fs.realpathSync(path.resolve(canonical, fs.readFileSync(commonFile, "utf8").trim())) : canonical);
+		}
+		for (const value of commons) roots.add(value);
+		const topology = new Set<string>();
+		for (const root of commons) if (cueloInside(root, workspace) || (common && cueloInside(root, common))) {
+			for (const name of ["modules", "worktrees", "objects/info"]) {
+				let cursor = root;
+				for (const part of name.split("/")) {
+					cursor = path.join(cursor, part);
+					const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+					if (stat && !stat.isDirectory()) throw new Error("CUELO sandbox: symlink/non-directory Git topology needs Main's approved escape: " + cursor);
+					if (!stat) fs.mkdirSync(cursor);
+				}
+				topology.add(cursor);
+			}
+		}
+		const routing = new Set([...cueloRoutingFiles(roots), ...pointers].filter(file => fs.lstatSync(file, { throwIfNoEntry: false })));
+		const links = new Map<string, string>();
+		for (const file of routing) if (fs.lstatSync(file).isSymbolicLink() && (cueloInside(file, workspace) || (common && cueloInside(file, common))) && fs.realpathSync(path.dirname(file)) === path.dirname(file)) links.set(file, fs.readlinkSync(file));
+		const modes = new Map<string, { mode: number; dev: number; ino: number }>();
+		const directories = new Set([workspace, ...roots]);
+		for (const leaf of [...pointers, ...topology, ...routing].map(file => path.dirname(file))) {
+			for (let cursor = leaf; cueloInside(cursor, workspace) || (common && cueloInside(cursor, common)); cursor = path.dirname(cursor)) {
+				const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+				if (stat && !stat.isDirectory()) throw new Error("CUELO sandbox: Git metadata ancestors must be real directories");
+				if (stat) directories.add(cursor);
+				if (cursor === workspace || cursor === common) break;
+			}
+		}
+		for (const root of [...directories].sort((a, b) => a.length - b.length)) if (cueloInside(root, workspace) || (common && cueloInside(root, common))) {
+			const stat = fs.lstatSync(root);
+			if (!stat.isDirectory()) throw new Error("CUELO sandbox: Git root must be a real directory");
+			modes.set(root, { mode: stat.mode & 0o777, dev: stat.dev, ino: stat.ino });
+		}
+		metadata = { dir, common, top, workspace, roots, topology, pointers, routing, links, modes };
+		cueloSandboxGit.set(cwd, metadata); cueloSandboxGit.set(workspace, metadata);
+	}
+	Object.assign(env, { CUELO_SANDBOX_WORKSPACE: metadata.workspace, CUELO_SANDBOX_HOME: home, CUELO_SANDBOX_PROFILE: agentDir, CUELO_SANDBOX_FORCE: force ? "1" : "0", CUELO_SANDBOX_GIT_DIR: metadata.dir, CUELO_SANDBOX_GIT_COMMON: metadata.common, CUELO_SANDBOX_GIT_ROOTS: JSON.stringify([...metadata.roots]), CUELO_SANDBOX_GIT_TOPOLOGY: JSON.stringify([...metadata.topology]), CUELO_SANDBOX_GIT_POINTERS: JSON.stringify([...metadata.pointers]) });
+	return env;
+}
+export function checkCueloSandboxGit(cwd: string): string {
+	const metadata = cueloSandboxGit.get(cwd);
+	if (!metadata) return "";
+	const notices: string[] = [];
+	const errors: string[] = [];
+	const attempt = (run: () => void) => { try { run(); } catch (error) { errors.push(String(error)); } };
+	// Linux O_PATH handles anchor mutations without following attacker-controlled ancestors.
+	const directoryFlags = 0x200000 | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+	for (const [directory, pinned] of metadata.modes) attempt(() => {
+		const fd = fs.openSync(directory, directoryFlags);
+		try {
+			const stat = fs.fstatSync(fd);
+			if (stat.dev !== pinned.dev || stat.ino !== pinned.ino) throw new Error("Git root identity changed; refusing host mutation: " + directory);
+			if ((stat.mode & 0o777) !== pinned.mode) { fs.chmodSync("/proc/self/fd/" + fd, pinned.mode); notices.push("restored metadata directory permissions: " + directory); }
+		} finally { fs.closeSync(fd); }
+	});
+	const quarantine = (file: string, force = false): boolean => {
+		if (!force && metadata.routing.has(file)) return false;
+		const base = metadata.common && cueloInside(file, metadata.common) ? metadata.common : metadata.workspace;
+		if (!cueloInside(file, base)) return false;
+		let fd = fs.openSync(base, directoryFlags);
+		let originalMode: number | undefined;
+		const expose = () => { const mode = fs.fstatSync(fd).mode & 0o777; if ((mode & 0o700) !== 0o700) { fs.chmodSync("/proc/self/fd/" + fd, mode | 0o700); originalMode = mode; } };
+		const close = () => { try { if (originalMode !== undefined) fs.chmodSync("/proc/self/fd/" + fd, originalMode); } finally { fs.closeSync(fd); } };
+		try {
+			const pinned = metadata.modes.get(base), root = fs.fstatSync(fd);
+			if (!pinned || root.dev !== pinned.dev || root.ino !== pinned.ino) throw new Error("Git quarantine root identity changed");
+			expose();
+			const rename = (name: string, destination: string) => {
+				const prefix = "/proc/self/fd/" + fd + "/";
+				fs.renameSync(prefix + name, prefix + destination);
+			};
+			let parent = base;
+			for (const part of path.relative(base, path.dirname(file)).split(path.sep).filter(Boolean)) {
+				const entry = "/proc/self/fd/" + fd + "/" + part, stat = fs.lstatSync(entry, { throwIfNoEntry: false });
+				if (!stat) return false;
+				if (stat.isSymbolicLink()) { const name = part + ".cuelo-quarantine-" + crypto.randomUUID(); rename(part, name); notices.push("quarantined Git metadata alias: " + path.join(parent, name)); return false; }
+				if (!stat.isDirectory()) return false;
+				const next = fs.openSync(entry, directoryFlags); close(); fd = next; originalMode = undefined; expose(); parent = path.join(parent, part);
+			}
+			const name = path.basename(file);
+			if (!fs.lstatSync("/proc/self/fd/" + fd + "/" + name, { throwIfNoEntry: false })) return false;
+			const destination = name + ".cuelo-quarantine-" + crypto.randomUUID();
+			rename(name, destination); notices.push("quarantined newly created Git metadata: " + path.join(parent, destination));
+			return true;
+		} finally { close(); }
+	};
+	for (const [file, target] of metadata.links) attempt(() => {
+		const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+		if (!stat?.isSymbolicLink() || fs.readlinkSync(file) !== target) {
+			if (fs.realpathSync(path.dirname(file)) !== path.dirname(file)) throw new Error("CUELO sandbox: refusing to restore a routing link through a changed parent alias");
+			if (stat) quarantine(file, true);
+			fs.symlinkSync(target, file);
+			notices.push("restored pinned Git routing link: " + file);
+		}
+	});
+	for (const file of cueloRoutingFiles(metadata.roots)) attempt(() => { quarantine(file); });
+	for (const pointer of metadata.pointers) attempt(() => { quarantine(pointer); });
+	if (!errors.length) attempt(() => { for (const pointer of cueloGitlinks(metadata.top, metadata.dir, metadata.common)) quarantine(pointer); });
+	if (errors.length) throw new Error("CUELO sandbox: independent Git cleanup completed where safe, but Main's approved escape is required for: " + errors.join("; "));
+	return notices.length ? "\\nCUELO sandbox: " + notices.join("; ") + ". Intentional git init or new submodule metadata requires Main's approved escape.\\n" : "";
+}
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;`,
+});
+EDITS.push({
+	file: "src/exec/settings.ts",
+	marker: 'id: "sandbox.enabled"',
+	anchor: 'export const cfgShellPath = register({ id: "shellPath", type: "string", default: undefined });',
+	patched: 'export const cfgSandboxEnabled = register({ id: "sandbox.enabled", type: "boolean", default: false });\nexport const cfgShellPath = register({ id: "shellPath", type: "string", default: undefined });',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "// CUELO: sandbox host helpers",
+	anchor: 'import type { ImageContent } from "@oh-my-pi/pi-ai";',
+	patched: '// CUELO: sandbox host helpers\nimport { mkdtempSync, writeFileSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\nimport { cfgSandboxEnabled } from "./settings";\nimport type { ImageContent } from "@oh-my-pi/pi-ai";',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "// CUELO: forced sandbox overlay",
+	anchor: "\tconst { shell, args, env: shellEnv, prefix } = shellConfig;",
+	patched: '\t// CUELO: forced sandbox overlay\n\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);\n\tconst { args, env: shellEnv, prefix } = shellConfig;\n\tconst shell = forceSandbox ? join(settings.getAgentDir(), "sandbox/bash") : shellConfig.shell;',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "// CUELO: sandbox command boundary",
+	anchor: "\tconst finalCommand =\n\t\toptions?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell\n\t\t\t? buildUserShellCommand(shell, args, preflight.command)\n\t\t\t: preflight.command;",
+	patched: '\tlet finalCommand =\n\t\toptions?.useUserShell === true && !bashShell && !isCmdShell(shell) && !runCdInPersistentShell\n\t\t\t? buildUserShellCommand(shell, args, preflight.command)\n\t\t\t: preflight.command;\n\t// CUELO: sandbox command boundary\n\tconst sandboxCommand = process.platform === "linux" && /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? finalCommand : undefined;\n\tlet sandboxCommandDir: string | undefined;\n\tlet sandboxCleanupError: unknown;\n\tif (sandboxCommand !== undefined) prepareCueloSandboxEnv(commandEnv, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox);',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: 'mkdtempSync(join(tmpdir(), "cuelo-command-"))',
+	anchor: "\t\tconst runPromise = executionShell.run(",
+	patched: '\t\tif (sandboxCommand !== undefined) {\n\t\t\tsandboxCommandDir = mkdtempSync(join(tmpdir(), "cuelo-command-"));\n\t\t\tconst commandFile = join(sandboxCommandDir, "command.sh");\n\t\t\twriteFileSync(commandFile, sandboxCommand, { mode: 0o600 });\n\t\t\tfinalCommand = quotePosixArgv([shell, "--cuelo-command-file", commandFile]);\n\t\t}\n\t\tconst runPromise = executionShell.run(',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "summary.output += checkCueloSandboxGit(",
+	anchor: "\t\treturn {\n\t\t\t...(await sink.dump(notice)),",
+	patched: '\t\tconst summary = await sink.dump(notice);\n\t\tif (sandboxCommand !== undefined) summary.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn {\n\t\t\t...summary,',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "if (sandboxCommandDir) rmSync(",
+	anchor: "\t\tsettleTrace();\n\t\tawait sink.dispose();",
+	patched: '\t\tsettleTrace();\n\t\ttry { if (sandboxCommand !== undefined) checkCueloSandboxGit(settings.getCwd()); } catch (error) { sandboxCleanupError = error; }\n\t\tif (sandboxCommandDir) rmSync(sandboxCommandDir, { recursive: true, force: true });\n\t\tawait sink.dispose();',
+});
+EDITS.push({
+	file: "src/exec/bash-executor.ts",
+	marker: "if (sandboxCleanupError) throw sandboxCleanupError;",
+	anchor: "\t}\n}\n\nfunction buildSessionKey(",
+	patched: "\t\tif (sandboxCleanupError) throw sandboxCleanupError;\n\t}\n}\n\nfunction buildSessionKey(",
+});
+// External service/PTY/Python paths already launch an executable; force the same wrappers and bootstrap policy.
+for (const [file, anchor, patched] of [
+	["src/launch/services.ts", '\tconst shell = session.settings.getShellConfig();', '\tconst shell = { ...session.settings.getShellConfig() };\n\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(session.settings);\n\tif (forceSandbox) shell.shell = path.join(session.settings.getAgentDir(), "sandbox/bash");'],
+	["src/launch/services.ts", '\t\tenv: { ...shell.env, ...params.env },', '\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(shell.shell) ? prepareCueloSandboxEnv({ ...shell.env, ...params.env }, session.cwd, session.settings.getAgentDir(), shell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...shell.env, ...params.env },'],
+	["src/tools/bash-interactive.ts", '\tconst { shell: resolvedShell, env: shellEnv } = settings.getShellConfig();', '\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);\n\tconst { shell: configuredShell, env: shellEnv } = settings.getShellConfig();\n\tconst resolvedShell = forceSandbox ? path.join(settings.getAgentDir(), "sandbox/bash") : configuredShell;'],
+	["src/tools/bash-interactive.ts", '\t\t\t\t\t\t\tenv: { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },', '\t\t\t\t\t\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell) ? prepareCueloSandboxEnv({ ...interactiveShellEnv, TERM: "xterm-256color", ...options.env }, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },'],
+	["src/eval/py/index.ts", '\treturn cfgPythonInterpreter.get(session)?.trim() || undefined;', '\treturn process.platform === "linux" && cfgSandboxEnabled.get(session) ? path.join(session.settings.getAgentDir(), "sandbox/python") : cfgPythonInterpreter.get(session)?.trim() || undefined;'],
+	["src/eval/py/kernel.ts", '\t\tspawnEnv.PYTHONUNBUFFERED = "1";', '\t\tif (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) {\n\t\t\tconst settings = await Settings.init();\n\t\t\tprepareCueloSandboxEnv(spawnEnv, options.cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\t}\n\t\tspawnEnv.PYTHONUNBUFFERED = "1";'],
+	["src/eval/py/kernel.ts", "\t\tconst result = await probeCandidates(", '\t\tfor (const runtime of runtimes) if (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) prepareCueloSandboxEnv(runtime.env, cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\tconst result = await probeCandidates('],
+	["src/exec/bash-executor.ts", '\t\t\tdirenvSetting: virtualCwd ? "off" : cfgBashDirenv.get(settings),', '\t\t\tdirenvSetting: virtualCwd || /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? "off" : cfgBashDirenv.get(settings),'],
+	["src/tools/bash-interactive.ts", '\t\treturn result;\n\t} finally {', '\t\tif (/[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell)) result.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn result;\n\t} finally {'],
+	["src/tools/bash.ts", "\t\t\tconst daemon = service.daemon;", "\t\t\tconst daemon = service.daemon;\n\t\t\tconst sandboxWarning = checkCueloSandboxGit(this.session.cwd);\n\t\t\tif (sandboxWarning) pendingNotices.push(sandboxWarning);"],
+	["src/tools/bash.ts", "\t\t\t\t\t\tdirenvSetting: cfgBashDirenv.get(this.session.settings),", '\t\t\t\t\t\tdirenvSetting: cfgSandboxEnabled.get(this.session.settings) || /[/\\\\]sandbox[/\\\\]bash$/.test(this.session.settings.getShellConfig().shell) ? "off" : cfgBashDirenv.get(this.session.settings),'],
+	["src/tools/bash.ts", "\t\t\t\tconst bridgeEnv = backendPreflight?.env;", '\t\t\t\tconst bridgeShell = { ...this.session.settings.getShellConfig() };\n\t\t\t\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(this.session.settings);\n\t\t\t\tif (forceSandbox) bridgeShell.shell = path.join(this.session.settings.getAgentDir(), "sandbox/bash");\n\t\t\t\tconst bridgeEnv = forceSandbox || /[/\\\\]sandbox[/\\\\]bash$/.test(bridgeShell.shell) ? prepareCueloSandboxEnv({ ...bridgeShell.env, ...backendPreflight?.env }, this.session.cwd, this.session.settings.getAgentDir(), bridgeShell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : backendPreflight?.env;'],
+	["src/tools/bash.ts", "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, this.session.settings.getShellConfig());", "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, bridgeShell);"],
+]) EDITS.push({ file, marker: patched, anchor, patched });
+for (const [file, extra, anchor] of [
+	["src/launch/services.ts", 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n', 'import * as path from "node:path";'],
+	["src/tools/bash-interactive.ts", 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n', 'import { BashInteractiveOverlayComponent } from "@oh-my-pi/pi-tui/tools/bash-interactive";'],
+	["src/eval/py/index.ts", 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../../exec/settings";\n', 'import type { ToolSession } from "../../tools";'],
+	["src/eval/py/kernel.ts", 'import { cfgSandboxEnabled } from "../../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n', 'import * as path from "node:path";'],
+	["src/tools/bash.ts", 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n', 'import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";'],
+]) EDITS.push({ file, marker: "// CUELO: sandbox runtime imports", anchor, patched: "// CUELO: sandbox runtime imports\n" + extra + anchor });
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면
