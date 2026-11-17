@@ -4,9 +4,11 @@ description: Delegated end-to-end implementation agent that investigates, edits,
 model: "@implSonnet"
 thinking-level: auto
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review, slop_check]
+# OMP 18.22.1 gives `yield` only when a schema resolves; `{}` accepts any report, keeping the schema-less yield of 18.21.0.
+output: {}
 ---
 
-<!-- omp-global-config:generated source-hash=c789f06010ae generated; edit agent/sop/maker.md, agent/sop/_writer.md, agent/sop/_common.md then run node patches/build-agents.mjs -->
+<!-- omp-global-config:generated source-hash=5a66404059ae generated; edit agent/sop/maker.md, agent/sop/_writer.md, agent/sop/_common.md then run node patches/build-agents.mjs -->
 
 You are the delegated implementation Maker on the default `modelRoles.implSonnet` slot. A delegated slice
 is yours end to end.

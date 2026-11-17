@@ -3865,27 +3865,32 @@ console.log("\n[33b] 수명주기 dispose — root 범위 정리는 남의 root 
 console.log("\n[34] live.voice — Codex v3 목소리(haetsal·hanul 등)를 받고, 목록 밖 값은 계속 거절한다");
 {
 	const { cfgLiveVoice } = await import(`${CORE}/live/settings.ts`);
-	const { DEFAULT_LIVE_VOICE, LIVE_VOICE_VALUES } = await import(`${CORE}/live/voices.ts`);
+	const { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS } = await import(`${CORE}/live/voices.ts`);
+	// 18.22.1: live.voice became a free string (custom live endpoints take other names); the option list stays as suggestions.
+	const freeVoice = !(await Bun.file(`${CORE}/live/voices.ts`).text()).includes("LIVE_VOICE_VALUES");
+	const values = LIVE_VOICE_OPTIONS.map(({ value }: { value: string }) => value);
 	const v1 = ["arbor", "breeze", "cove", "ember", "juniper", "maple", "sol", "spruce", "vale"];
 	const v3Only = ["aube", "bubbie", "haetsal", "hanul", "himari", "leher", "miko", "neer", "porto", "rindo", "rio", "rivage", "selva", "sonna", "tinta", "viola"];
 	check(
 		"기존 아홉 목소리 순서와 기본값 sol 은 그대로이고 v3 열여섯 개가 뒤에 붙는다",
-		DEFAULT_LIVE_VOICE === "sol" && JSON.stringify(LIVE_VOICE_VALUES) === JSON.stringify([...v1, ...v3Only]),
-		JSON.stringify(LIVE_VOICE_VALUES),
+		DEFAULT_LIVE_VOICE === "sol" && JSON.stringify(values) === JSON.stringify([...v1, ...v3Only]),
+		JSON.stringify(values),
 	);
 	check("live.voice 는 haetsal·hanul 을 포함한 v3 값을 모두 받는다", [...v1, ...v3Only].every(value => cfgLiveVoice.accepts(value)));
 	check("live.voice 는 haetsal 을 텍스트로도 받는다", cfgLiveVoice.parse("haetsal") === "haetsal");
-	let rejected = 0;
-	for (const bad of ["nova", "Haetsal", "marin", ""]) {
-		if (!cfgLiveVoice.accepts(bad)) rejected += 1;
+	if (!freeVoice) {
+		let rejected = 0;
+		for (const bad of ["nova", "Haetsal", "marin", ""]) {
+			if (!cfgLiveVoice.accepts(bad)) rejected += 1;
+		}
+		let parseRejected = false;
+		try {
+			cfgLiveVoice.parse("nova");
+		} catch {
+			parseRejected = true;
+		}
+		check("옛 판: 목록 밖 값(nova·대문자 Haetsal·v2 marin·빈 값)은 계속 거절한다", rejected === 4 && parseRejected, `rejected=${rejected} parse=${parseRejected}`);
 	}
-	let parseRejected = false;
-	try {
-		cfgLiveVoice.parse("nova");
-	} catch {
-		parseRejected = true;
-	}
-	check("목록 밖 값(nova·대문자 Haetsal·v2 marin·빈 값)은 계속 거절한다", rejected === 4 && parseRejected, `rejected=${rejected} parse=${parseRejected}`);
 }
 
 // 2026-10-26 실사고: CUELO 재시작 직후 root 세션 여럿이 함께 떴고, 옛 claim(이름 확인 → 수 초 뒤 register 덮어쓰기)이 모두에게

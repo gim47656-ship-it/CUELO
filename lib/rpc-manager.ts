@@ -573,7 +573,8 @@ class PlainTextTheme extends Theme {
   constructor() {
     super(
       { thinkingXhigh: "" } as ConstructorParameters<typeof Theme>[0],
-      {} as ConstructorParameters<typeof Theme>[1],
+      // OMP 18.22 reads statusLineBg in the constructor when no terminal background is given.
+      { statusLineBg: "" } as ConstructorParameters<typeof Theme>[1],
       "truecolor",
       "unicode",
       {},

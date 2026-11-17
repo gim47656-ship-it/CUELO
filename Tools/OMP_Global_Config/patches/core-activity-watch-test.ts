@@ -571,13 +571,16 @@ await check("actual SDK task producer preserves long terminal evidence through a
   // 18.13.0 (#16599) hands a result up to 11,500 chars to the parent whole; 18.12.x cut the preview at 5,000. 13.5k chars exceed both caps.
   const report = { revision: "completion-fixture", padding: "evidence ".repeat(1500), validation: { smoke: "observed" } };
   let parentRequests = 0;
+  // 18.22.1 gives `yield` only with a resolved schema (CUELO's maker declares `output: {}`); older cores keep the schema-less yield path.
+  const schemaGatedYield = (await Bun.file(`${core}/task/executor.ts`).text()).includes("export function usesYield(");
+  const childSchema = schemaGatedYield ? { outputSchema: {} } : {};
   const local = Bun.serve({ port: 0, async fetch(request) {
     const input = await request.json() as { tools?: { name: string }[] };
     const yieldName = input.tools?.find(tool => tool.name === "yield" || tool.name === "_yield")?.name;
     const call = yieldName ? { id: "long-yield", name: yieldName, input: { data: report } }
       // 18.11.3 upstream (seance) rejects `model` on a non-maker agent; the child inherits the parent's fixture model.
       : parentRequests++ === 0 ? { id: "spawn-long", name: "task", input: { context: "Local completion fixture", tasks: [
-        { name: "EvidenceChild", agent: "task", task: "Return the fixture report.", solutionSpace: "Return supplied fixture only.", isolated: false },
+        { name: "EvidenceChild", agent: "task", task: "Return the fixture report.", solutionSpace: "Return supplied fixture only.", isolated: false, ...childSchema },
       ] } } : undefined;
     return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       send(controller, { type: "message_start", message: { id: "completion", type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });

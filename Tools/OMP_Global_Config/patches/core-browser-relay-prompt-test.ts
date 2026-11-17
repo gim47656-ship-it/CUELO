@@ -6,9 +6,11 @@ import assert from "node:assert/strict";
 const core = process.env.OMP_CORE_PATCH_TARGET;
 if (!core) throw new Error("OMP_CORE_PATCH_TARGET required (scratch core only)");
 const { createBrowserPreludeDefinition } = await import(`${core}/src/tools/browser/prelude-definition.ts`);
+const { Settings } = await import(`${core}/src/config/settings.ts`);
 
 const host = { invoke: async () => undefined, status: () => undefined };
-const session = { settings: {} };
+// 18.22.1 reads browser settings through the config registry, so a bare object no longer stands in for Settings.
+const session = { settings: Settings.isolated({}) };
 const render = (relayFallback?: unknown): string | undefined =>
 	createBrowserPreludeDefinition(session, { ...host, relayFallback }).guidance;
 
@@ -17,6 +19,14 @@ const connected = render({ kind: "connected", cdpUrl: "http://user:secret@127.0.
 assert.ok(!connected.includes("secret") && !connected.includes("abc"), "userinfo and token stay redacted");
 console.log("  PASS");
 
-console.log("[3] relay가 꺼지면 안내가 없다");
-assert.equal(render(undefined), undefined);
+console.log("[3] relay가 꺼지면 relay 안내가 없다");
+// 18.22.1 always sends the user-session safety block; only the relay section depends on a relay fallback.
+const userSession = Bun.file(`${core}/src/prompts/system/browser-user-session.md`);
+if (await userSession.exists()) {
+	const relayLead = (await Bun.file(`${core}/src/prompts/system/browser-relay.md`).text()).split("\n").find(line => line.trim())!;
+	const off = render(undefined)!;
+	assert.ok(off.startsWith("# Browser user sessions") && !off.includes(relayLead.trim()), "safety block only, no relay section");
+} else {
+	assert.equal(render(undefined), undefined);
+}
 console.log("  PASS");

@@ -3,6 +3,8 @@ name: maker
 description: Delegated end-to-end implementation agent that investigates, edits, repairs, validates its own slice, and verifies the actual surface it changed.
 model: "@implSonnet"
 tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review, slop_check]
+# OMP 18.22.1 gives `yield` only when a schema resolves; `{}` accepts any report, keeping the schema-less yield of 18.21.0.
+output: {}
 ---
 
 You are the delegated implementation Maker on the default `modelRoles.implSonnet` slot. A delegated slice

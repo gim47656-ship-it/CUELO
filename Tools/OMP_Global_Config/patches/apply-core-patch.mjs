@@ -26732,6 +26732,143 @@ for (const { file, extra, anchor } of [
 	});
 }
 
+// 18.22.1 (ADAPT): upstream inserted lines inside eleven anchors. Older candidate bodies stay byte-identical;
+// each new candidate is the last old candidate with only the upstream hunk carried over.
+// - usage.ts: upstream now tags `request.credentialId` itself, but CUELO consumers read our
+//   `metadata.localCredentialId`, so our attribution stays and sits next to upstream's line.
+// - eval.md: browser moved to the new first-call list; compact it the same way as the other preludes.
+// - computer worker: numeric setValue, the macOS background-move note and nested menu paths are carried
+//   into CUELO's `#input`/ComputerActionResult bodies.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`18.22.1 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const alternate = (entry, candidate, discriminator) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`18.22.1 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const port = (entry, discriminator, edit) => {
+		const prior = entry.alternates?.at(-1) ?? entry;
+		alternate(entry, { marker: prior.marker, anchor: edit(prior.anchor), patched: edit(prior.patched) }, discriminator);
+	};
+
+	const sameModel = "!switchedCredential && currentSelector) {";
+	port(one(entry => entry.file === "src/session/turn-recovery.ts" && entry.marker === "const baiTransportSameModelRetry ="),
+		"#demotedReasoningOmittedFor", text => swap(text, sameModel, "!switchedCredential && !stripDemotedReasoning && currentSelector) {"));
+
+	const tagged = "function tagReportCredentialId(";
+	port(one(entry => entry.marker === "// Stored OAuth row behind this env-policy probe."), tagged, text => swap(text,
+		"\t\t\t\t\trequests.push(request);",
+		"\t\t\t\t\t// Same stored-row attribution contract as the generic loop\n\t\t\t\t\t// below (e.g. xai-oauth probes take this path).\n\t\t\t\t\trequest.credentialId = entry.id;\n\t\t\t\t\trequests.push(request);"));
+	port(one(entry => entry.marker === "// Stored row behind this probe (key references already resolved above)."), tagged, text => swap(text,
+		"\n\t\t\t\trequests.push(request);", "\n\t\t\t\trequest.credentialId = entry.id;\n\t\t\t\trequests.push(request);"));
+
+	const numeric = "const text = valueText(value);";
+	const setValue = text => {
+		const upstream = [
+			["\tasync setValue(value: string): Promise<void> {\n\t\tconst context = this.#getContext();\n\t\tguardRun(context, \"setValue\");\n\t\tvalidateString(value, \"setValue(value)\");\n",
+				"\tasync setValue(value: string | number): Promise<void> {\n\t\tconst context = this.#getContext();\n\t\tguardRun(context, \"setValue\");\n\t\tconst text = valueText(value);\n"],
+			["this.#session.axSetValue(this.ref, value));", "this.#session.axSetValue(this.ref, text));"],
+			["\tasync setValue(value: string): Promise<void> {\n\t\t// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tvalidateString(value, \"setValue(value)\");\n\t\tawait (await this.#resolve()).setValue(value);\n",
+				"\tasync setValue(value: string | number): Promise<void> {\n\t\t// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tconst text = valueText(value);\n\t\tawait (await this.#resolve()).setValue(text);\n"],
+			// CUELO bodies return ComputerActionResult and verify the read-back value.
+			["\tasync setValue(value: string): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tvalidateString(value, \"setValue(value)\");\n",
+				"\tasync setValue(value: string | number): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tconst text = valueText(value);\n"],
+			["ref => this.#session.axSetValue(ref, value),", "ref => this.#session.axSetValue(ref, text),"],
+			["return after.value === value\n", "return after.value === text\n"],
+			["\tasync setValue(value: string): Promise<ComputerActionResult> {\n\t\t// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tvalidateString(value, \"setValue(value)\");\n\t\treturn (await this.#resolve()).setValue(value);\n",
+				"\tasync setValue(value: string | number): Promise<ComputerActionResult> {\n\t\t// Reject a read-only run or a bad argument before the ref lookup reaches the native addon.\n\t\tguardRun(this.#getContext(), \"setValue\");\n\t\tconst text = valueText(value);\n\t\treturn (await this.#resolve()).setValue(text);\n"],
+		];
+		for (const [from, to] of upstream) if (text.includes(from)) text = swap(text, from, to);
+		return text;
+	};
+	port(one(entry => entry.file === "src/tools/computer/worker.ts" && entry.marker === "class RefBook {"), numeric, setValue);
+
+	const backgroundNote = "\t\tif (\n\t\t\tbackground &&\n\t\t\tthis.#session.capabilities.backend === \"quartz\" &&\n\t\t\t!context.backgroundMoveNote &&\n\t\t\t!backgroundMoveNoted.has(this.#session)\n\t\t) {\n\t\t\tcontext.backgroundMoveNote = true;\n\t\t\tconst refuse = context.snapshot.backgroundFallback === \"refuse\";\n\t\t\tcontext.output.push({ type: \"text\", text: prompt.render(backgroundMoveNote, { refuse }).trim() });\n\t\t}\n";
+	const backgroundFlag = "\t\t// A desktop or display move drives the user's own pointer whatever the options, so it is never background.\n\t\tlet background = native.takeover !== true && this.id !== \"desktop\" && !this.id.startsWith(\"display:\");\n";
+	const window = text => {
+		const upstream = [
+			["\t\tconst native = pointerOptions(options);\n\t\tawait sendInput(\n\t\t\tthis.#session,\n\t\t\tcontext,\n\t\t\t\"move\",\n\t\t\tnative.takeover,\n\t\t\tfallback => this.#session.moveMouse(this.id, x, y, { ...native, ...fallback }),\n\t\t\tthis.pid,\n\t\t);\n\t}\n",
+				"\t\tconst native = pointerOptions(options);\n" + backgroundFlag + "\t\tawait sendInput(\n\t\t\tthis.#session,\n\t\t\tcontext,\n\t\t\t\"move\",\n\t\t\tnative.takeover,\n\t\t\tfallback => {\n\t\t\t\tif (fallback) background = false;\n\t\t\t\treturn this.#session.moveMouse(this.id, x, y, { ...native, ...fallback });\n\t\t\t},\n\t\t\tthis.pid,\n\t\t);\n" + backgroundNote + "\t}\n"],
+			// CUELO body: the same note around `#input`, keeping its ComputerActionResult.
+			["\t\tconst native = pointerOptions(options);\n\t\treturn this.#input(\"move\", context, native.takeover, fallback =>\n\t\t\tthis.#session.moveMouse(this.id, x, y, { ...native, ...fallback }),\n\t\t);\n\t}\n",
+				"\t\tconst native = pointerOptions(options);\n" + backgroundFlag + "\t\tconst result = await this.#input(\"move\", context, native.takeover, fallback => {\n\t\t\tif (fallback) background = false;\n\t\t\treturn this.#session.moveMouse(this.id, x, y, { ...native, ...fallback });\n\t\t});\n" + backgroundNote + "\t\treturn result;\n\t}\n"],
+			["\t\t\t\treturn await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));\n",
+				"\t\t\t\tconst items = await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));\n\t\t\t\treturn segments?.length ? await this.#menuTree(items, context.signal) : items;\n"],
+			["\t\t};\n\t}\n\n\tasync bringToCurrentSpace(): Promise<void> {\n", "\t\t};\n\t}\n\n" + [
+				"\tasync #menuTree(items: MenuItem[], signal: AbortSignal): Promise<MenuItem[]> {",
+				"\t\tconst listed: MenuItem[] = [];",
+				"\t\tlet budget = MENU_TREE_LIMIT - items.length;",
+				"\t\tconst visit = async (level: MenuItem[]): Promise<void> => {",
+				"\t\t\tfor (const item of level) {",
+				"\t\t\t\tlisted.push(item);",
+				"\t\t\t\tif (!item.hasSubmenu || !item.enabled || budget <= 0) continue;",
+				"\t\t\t\tlet children: MenuItem[];",
+				"\t\t\t\ttry {",
+				"\t\t\t\t\tchildren = await nativeCall(signal, () => this.#session.menuItems(this.id, item.path));",
+				"\t\t\t\t} catch (error) {",
+				"\t\t\t\t\t// A refusal or AX timeout stops expansion, but keeps discovered paths available.",
+				"\t\t\t\t\tif (error instanceof ToolError && MENU_TREE_SKIPPABLE.some(code => error.message.startsWith(code))) {",
+				"\t\t\t\t\t\tbudget = 0;",
+				"\t\t\t\t\t\tcontinue;",
+				"\t\t\t\t\t}",
+				"\t\t\t\t\tthrow error;",
+				"\t\t\t\t}",
+				"\t\t\t\tif (children.length > budget) continue;",
+				"\t\t\t\tbudget -= children.length;",
+				"\t\t\t\tawait visit(children);",
+				"\t\t\t}",
+				"\t\t};",
+				"\t\tawait visit(items);",
+				"\t\treturn listed;",
+				"\t}",
+				"",
+				"\tasync bringToCurrentSpace(): Promise<void> {",
+			].join("\n") + "\n"],
+		];
+		for (const [from, to] of upstream) if (text.includes(from)) text = swap(text, from, to);
+		return text;
+	};
+	port(one(entry => entry.file === "src/tools/computer/worker.ts" && entry.marker === "return windowInputResult(action, this.id, options);"), numeric, window);
+	port(one(entry => entry.file === "src/tools/computer/worker.ts" && entry.marker === "\tgoalProbe?: boolean;"), "\tbackgroundMoveNote: boolean;",
+		text => swap(text, "\toutput: RunOutput;\n", "\toutput: RunOutput;\n\t/** Whether this run's output holds the background-move note, spent for the session only if the run succeeds. */\n\tbackgroundMoveNote: boolean;\n"));
+
+	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&N2e(c))continue';
+	alternate(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')),
+		{ marker: skip, anchor: skip, patched: skip }, skip);
+
+	const preludeReturn = "\t\t\treturn getEnabledEvalPreludes(builtins);";
+	port(one(entry => entry.file === "src/sdk.ts" && entry.marker === "\t\t\t\tmcpPrelude ??= createMcpEvalPrelude(toolSession);"),
+		"dsmPrelude ??= createDsmPrelude(toolSession);", text => swap(text, preludeReturn,
+			"\t\t\tif (cfgDisasmBackend.get(settings) !== undefined) {\n\t\t\t\tdsmPrelude ??= createDsmPrelude(toolSession);\n\t\t\t\tbuiltins.push(dsmPrelude);\n\t\t\t}\n" + preludeReturn));
+
+	const invoke = "\t}\n\treturn definition.invoke(parameters, context);\n}";
+	port(one(entry => entry.file === "src/eval/preludes.ts" && entry.marker.startsWith("export function createMcpEvalPrelude(")),
+		"firstCallDocumentation?: string;", text => swap(text, invoke,
+			"\t}\n\t// Even a call that fails shows the model has reached for this prelude, so its guide is due.\n\tif (definition.firstCallDocumentation?.trim()) context.session.noteEvalPreludeCall?.(definition.name);\n\treturn definition.invoke(parameters, context);\n}"));
+
+	// Discriminators must survive our own patch, or the applied file resolves to the old candidate.
+	const read = one(entry => entry.file === "src/prompts/tools/read.md" && entry.marker === "- Read xd://read/sources BEFORE");
+	alternate(read, {
+		marker: read.marker,
+		anchor: swap(read.anchor, "{{#if BINARY_VIEWS}}executables, {{/if}}video", "executable metadata, video"),
+		patched: swap(read.patched, "{{#if BINARY_VIEWS}}executable/{{/if}}video", "executable metadata/video"),
+	}, "executable metadata");
+
+	const firstCall = "{{#each firstCallPreludes}}";
+	alternate(one(entry => entry.file === "src/prompts/tools/eval.md" && entry.marker === "{{/each}}\n{{#each inlinePreludes}}"), {
+		marker: "{{/each}}\n" + firstCall + "\n{{name}}=xd://eval/{{name}} (guide follows first call)\n{{/each}}\n{{#each inlinePreludes}}",
+		anchor: "{{/each}}\n{{#if firstCallPreludes}}\nNo `read` needed before first use; the guide follows the first call's result (full reference linked):\n" + firstCall + "\n- `{{name}}`: {{summary}} → `xd://eval/{{name}}`\n{{/each}}\n{{/if}}\n</namespaces>\n{{#each inlinePreludes}}",
+		patched: "{{/each}}\n" + firstCall + "\n{{name}}=xd://eval/{{name}} (guide follows first call)\n{{/each}}\n{{#each inlinePreludes}}",
+	}, firstCall);
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면
