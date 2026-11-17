@@ -2331,7 +2331,8 @@ process.exit(0);`;
 }
 
 // A shellPath named bash used to affect only rc snapshots, leaving builtins and pipelines on the host.
-if (process.platform === "linux" && existsSync("/usr/bin/bwrap")) {
+// The installer is in Tools/CUELO_Setup, which the public mirror omits; there this private-install check is skipped.
+if (process.platform === "linux" && existsSync("/usr/bin/bwrap") && existsSync(join(import.meta.dir, "../../..", "Tools/CUELO_Setup/linux/install-sandbox.mjs"))) {
 	console.log("\nCUELO sandbox wraps complete embedded-shell commands");
 	const sandboxRoot = mkdtempSync(join(tmpdir(), "cuelo-core-sandbox-"));
 	const home = join(sandboxRoot, "home");

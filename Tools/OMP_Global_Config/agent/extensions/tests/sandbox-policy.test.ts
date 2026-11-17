@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSandboxArgs, containsLiteralCredential, secretPaths } from "../lib/sandbox-policy";
-import { sandboxConfig } from "../../../../CUELO_Setup/linux/install-sandbox.mjs";
+// The installer lives in Tools/CUELO_Setup, which .publicignore keeps out of the public mirror.
+// A static import would break this whole file there, so only the installer case loads it lazily and skips without it.
+const installerPath = join(import.meta.dir, "../../../../CUELO_Setup/linux/install-sandbox.mjs");
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -79,7 +81,8 @@ test("metadata ancestors stay pinned and missing pinned topology fails closed", 
   expect(() => buildSandboxArgs({ home, cwd, uid: 1, agentDir: join(cwd, "profile") })).toThrow("profile outside");
 });
 
-test("profile installation preserves comments, custom Python and disable switch", () => {
+test.skipIf(!existsSync(installerPath))("profile installation preserves comments, custom Python and disable switch (skipped in the public mirror)", async () => {
+  const { sandboxConfig } = await import(installerPath);
   const text = "shellPath: /bin/bash\n# keep\nsandbox:\n  enabled: true\npython:\n  interpreter: /custom/python\nother: yes\n";
   const out = sandboxConfig(text, "/repo");
   expect(out).toContain("# keep");
