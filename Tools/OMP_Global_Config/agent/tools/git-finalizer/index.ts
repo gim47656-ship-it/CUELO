@@ -181,7 +181,7 @@ async function missingHandoffNote(cwd: string, files: string[]): Promise<string 
   if (folders.size === 0) return undefined;
   const shown = [...folders].slice(0, 3).map((folder) => `\`${folder}\``).join(", ");
   const more = folders.size > 3 ? ` 외 ${folders.size - 3}곳` : "";
-  return `HANDOFF 확인: ${shown}${more}에서 저장소 루트까지 HANDOFF.md가 없다. 소스·설정을 바꾼 첫 커밋이면 rule://docs-handoff대로 작업한 프로젝트 폴더에 HANDOFF.md·doc/README.md·doc/history 기록을 만들어 이어서 커밋한다(이번 커밋은 그대로 진행됐다).`;
+  return `HANDOFF 확인: ${shown}${more}에서 저장소 루트까지 HANDOFF.md가 없다. 같은 저장소의 다른 프로젝트가 HANDOFF.md와 doc/history를 쓰고 있고 바꿀 경로가 제한되지 않았으면 rule://docs-handoff대로 작업한 프로젝트 폴더에 HANDOFF.md·doc/README.md·doc/history 기록을 만들어 이어서 커밋한다. 그 관례가 없거나 경로가 정해진 과제면 새로 만들지 않는다(이번 커밋은 그대로 진행됐다).`;
 }
 
 function isSourcePath(path: string, packagedTools: string[]): boolean {
