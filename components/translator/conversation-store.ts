@@ -16,6 +16,9 @@ interface StoredSegment {
   mine: string;
   theirs: string;
   at: number;
+  side?: "me" | "them";
+  language?: string;
+  utterance?: string;
 }
 
 interface StoredConversation {
@@ -30,7 +33,8 @@ export function serializeConversation(segments: readonly TranscriptSegment[]): s
     segments: segments
       .filter((segment) => segment.text.trim())
       .slice(-CONVERSATION_MAX_SEGMENTS)
-      .map(({ role, text, mine, theirs, at }) => ({ role, text, mine: mine.code, theirs: theirs.code, at })),
+      .map(({ role, text, mine, theirs, at, side, language, utterance }) => ({ role, text, mine: mine.code, theirs: theirs.code, at,
+        ...(side ? { side } : {}), ...(language ? { language: language.code } : {}), ...(utterance ? { utterance } : {}) })),
   };
   return JSON.stringify(stored);
 }
@@ -68,6 +72,9 @@ export function restoreConversation(raw: string | null): TranscriptLog {
       call: 0,
       at: typeof at === "number" && Number.isFinite(at) ? at : 0,
       restored: true,
+      ...(item.side === "me" || item.side === "them" ? { side: item.side } : {}),
+      ...(findTranslatorLanguage(item.language) ? { language: findTranslatorLanguage(item.language) } : {}),
+      ...(typeof item.utterance === "string" && item.utterance.length <= 100 ? { utterance: item.utterance } : {}),
     });
   }
   return { ...log, segments, nextId: segments.length };

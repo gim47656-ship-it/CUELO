@@ -49,6 +49,10 @@ import { Phrasebook } from "./Phrasebook";
 import { CameraIcon, MenuScan } from "./MenuScan";
 import { LineAssist } from "./LineAssist";
 import { useLineAssist } from "./useLineAssist";
+import { useVoiceInterpreter } from "./useVoiceInterpreter";
+import { upsertVoiceUtterance } from "./voice-transcript";
+import type { VoiceUtterance } from "@/lib/interpreter-voice/session";
+import { VOICE_COPY, OVERLAP_COPY, ENROLL_COPY } from "./voice-copy";
 
 /**
  * 통역 모드. 사이드바 「통역」 보기가 켜지면 작업 대화 칸 위에 덮인다. 「통역 시작」은 세션 없는
@@ -86,6 +90,7 @@ interface Settings {
   noiseSuppression: boolean;
   /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
   fastDrafts: boolean;
+  engine: "voice" | "codex";
   assistMeaning: boolean;
 }
 
@@ -100,6 +105,7 @@ function readSettings(): Settings {
     echoGuard: true,
     noiseSuppression: false,
     fastDrafts: false,
+    engine: "voice",
     assistMeaning: true,
   };
   try {
@@ -120,6 +126,7 @@ function readSettings(): Settings {
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
+      engine: saved.engine === "codex" ? "codex" : "voice",
       assistMeaning: saved.assistMeaning !== false,
     };
   } catch {
@@ -333,6 +340,8 @@ interface ConversationLogProps {
   onShow: (card: ShowCardContent) => void;
   speech: Speech;
   renderAssist: (turn: ConversationTurn) => ReactNode;
+  onCorrect?: (turn: ConversationTurn) => void;
+  correctionConnection?: string;
 }
 
 /**
@@ -341,7 +350,7 @@ interface ConversationLogProps {
  * 새 글이 오면 맨 아래를 보고 있을 때만 따라 내려가고, 위로 올려 읽는 중이면 자리를 지키고 「최근 말로」
  * 단추를 보인다.
  */
-function ConversationLog({ label, turns, visible, pending, jumpLabel, layoutKey, onShow, speech, renderAssist }: ConversationLogProps) {
+function ConversationLog({ label, turns, visible, pending, jumpLabel, layoutKey, onShow, speech, renderAssist, onCorrect, correctionConnection }: ConversationLogProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [behind, setBehind] = useState(false);
@@ -369,7 +378,7 @@ function ConversationLog({ label, turns, visible, pending, jumpLabel, layoutKey,
     <section className="translator-conversation" aria-label={label}>
       <div ref={logRef} className="translator-log" role="log" aria-label={label} onScroll={onScroll}>
         {turns.map((turn, index) => <ConversationBubble key={turn.key} turn={turn} latest={index === turns.length - 1}
-          visible={visible} speech={speech} onShow={onShow} renderText={(text) => <NumberMarked text={text} />}>
+          visible={visible} speech={speech} onShow={onShow} onCorrect={onCorrect && turn.voiceLines.some((line) => line.segment.utterance?.startsWith(`${correctionConnection}:`) && !line.segment.restored) ? () => onCorrect(turn) : undefined} renderText={(text) => <NumberMarked text={text} />}>
           {renderAssist(turn)}
         </ConversationBubble>)}
         {pending ? <p className="translator-pending">{pending}</p> : null}
@@ -399,7 +408,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
   const [typingOpen, setTypingOpen] = useState(false);
-  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistMeaning } = settings;
+  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistMeaning, engine } = settings;
+  const voiceCopy = VOICE_COPY[locale === "ko" ? "ko" : "en"];
   const typed = useTypedInterpreter({ mine, theirs, profile, visible, open: typingOpen, assistSettings: { meaning: assistMeaning } });
   const menuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -438,9 +448,10 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       echoGuard,
       noiseSuppression,
       fastDrafts,
+      engine,
       assistMeaning,
     }));
-  }, [assistMeaning, echoGuard, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
+  }, [assistMeaning, echoGuard, engine, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
 
   const reconcileDraftsRef = useRef<(segments: TranscriptSegment[]) => void>(() => {});
 
@@ -458,17 +469,23 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setCurrentCall(transcriptRef.current.call);
   }, []);
 
-  const call = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard, playVoice: voice, suppressNoise: noiseSuppression });
+  const codexCall = useInterpreterCall({ onTranscript: handleTranscript, getHistory, onReconnect: handleReconnect, muteMicWhilePlaying: echoGuard, playVoice: voice, suppressNoise: noiseSuppression });
+  const handleVoiceUtterance = useCallback((item: VoiceUtterance, connection: string, startedAt: number, pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage }) => {
+    transcriptRef.current = upsertVoiceUtterance(transcriptRef.current, item, connection, pair, startedAt);
+    setSegments(transcriptRef.current.segments);
+  }, []);
+  const voiceCall = useVoiceInterpreter({ onUtterance: handleVoiceUtterance, playVoice: voice, echoGuard });
+  const call = engine === "codex" ? codexCall : voiceCall;
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
 
   // 켠 동안 통화가 열려 있으면 전용 모델의 초안 자막을 받는다. 재연결·새 통화마다 처음부터 다시 연다.
   const drafts = useDraftCaptions({
-    enabled: fastDrafts && active,
+    enabled: engine === "codex" && fastDrafts && active,
     epoch: currentCall,
     pairRef,
     segments,
-    sendTrack: call.sendTrack,
-    isBlocked: call.isBlocked, onBlockedChange: call.onBlockedChange,
+    sendTrack: codexCall.sendTrack,
+    isBlocked: codexCall.isBlocked, onBlockedChange: codexCall.onBlockedChange,
   });
 
   const { reconcile: reconcileDrafts } = drafts;
@@ -480,7 +497,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     pairRef.current = next;
     transcriptRef.current = beginTranscriptCall(transcriptRef.current);
     setCurrentCall(transcriptRef.current.call);
-    call.start(next.mine, next.theirs, next.profile);
+    if (next.engine === "codex") { voiceCall.shutdown(); codexCall.start(next.mine, next.theirs, next.profile); }
+    else { codexCall.stop(); voiceCall.start(next.mine, next.theirs, next.profile); }
   };
 
   /** 통화 중에 언어나 분위기·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
@@ -542,8 +560,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   // 화면이 열려 있고 통역 중이 아니면 고른 설정으로 통화를 미리 열어 둔다. 마이크는 열지 않고
   // (「통역 시작」에서야 켠다) 연결만 해 두어, 시작을 누르면 신호 교환을 기다리지 않는다.
   useEffect(() => {
-    if (visible && !active && supported === true && window.isSecureContext) prepare(mine, theirs, profile);
-  }, [active, mine, prepare, profile, supported, theirs, visible]);
+    if (engine === "codex" && visible && !active && supported === true && window.isSecureContext) prepare?.(mine, theirs, profile);
+  }, [active, engine, mine, prepare, profile, supported, theirs, visible]);
 
   // 통역 중에는 화면이 꺼지지 않게 한다. 폰 화면이 꺼지면 홈 화면 앱은 마이크를 놓는다. 다른 앱에
   // 갔다 오면 브라우저가 잠금을 풀므로 화면이 다시 보일 때 다시 건다. 지원하지 않으면 그냥 넘어간다.
@@ -579,7 +597,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   // 지금 통화에서 가장 나중에 생긴 조각이 들은 말이면 아직 그 뒤 통역이 오지 않은 것이다.
   const latest = segments.at(-1);
-  const awaitingTranslation = active && latest !== undefined && latest.call === currentCall && latest.role === "user";
+  const awaitingTranslation = active && (engine === "voice"
+    ? segments.some((segment) => segment.call === currentCall && segment.role === "user" && !segment.translationError && !segments.some((other) => other.utterance === segment.utterance && other.role === "assistant" && other.final))
+    : latest !== undefined && latest.call === currentCall && latest.role === "user");
   const phase: Phase = call.state === "error"
     ? "error"
     : call.reconnecting ? "reconnecting"
@@ -597,9 +617,9 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const scaleStyle = { "--translator-scale": String(TEXT_SCALES[size] ?? 1) } as CSSProperties;
   const sizeGlyph = locale === "ko" ? "가" : "A";
   const canStart = active || !(unsupported || insecure || call.supported === null);
-  const displayLines = useMemo(() => mergeDisplay(segments, drafts.state), [segments, drafts.state]);
+  const displayLines = useMemo(() => mergeDisplay(segments.filter((segment) => segment.text.trim()), drafts.state), [segments, drafts.state]);
   // Voice streams have no reliable pairing: help only known other-person originals.
-  const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
+  const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.text.trim() && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
     .slice(-HISTORY_MAX_LINES).map((segment) => ({ id: String(segment.id), mine: segment.mine.code, theirs: segment.theirs.code, speaker: "theirs" as const, text: segment.text }));
   const voiceAssists = useLineAssist(voiceAssistLines, { meaning: assistMeaning }, { profile, history: transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES) }, visible && !face);
   const turns = useMemo(() => conversationTurns(displayLines, typed.turns, mine, typed.provisional), [displayLines, typed.turns, mine, typed.provisional]);
@@ -708,6 +728,25 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     </p>
   );
 
+  const voiceStatus = engine === "voice" && active ? (
+    <div className="translator-voice-status">
+      {voiceCall.models.state !== "ready" ? <p className="translator-options-note" role="status">{voiceCall.models.state === "failed" ? voiceCopy.modelFailed : voiceCopy.modelLoading.replace("{percent}", String(voiceCall.models.percent))}</p> : null}
+      {voiceCall.enrollment.side ? <section className="translator-enrollment" aria-label={voiceCopy.enrollTitle}>
+        <h3>{voiceCopy.enrollTitle}</h3>
+        <p>{voiceCall.enrollment.side === "me" ? voiceCopy.enrollMe : voiceCopy.enrollThem}</p>
+        <p lang={(voiceCall.enrollment.side === "me" ? mine : theirs).tag}>{ENROLL_COPY[(voiceCall.enrollment.side === "me" ? mine : theirs).code]}</p>
+        <p className="translator-options-note">{voiceCopy.enrollHint}</p>
+        {voiceCall.enrollment.failed ? <p role="status">{voiceCopy.enrollRetry}</p> : null}
+        {voiceCall.models.state === "loading" ? <p className="translator-options-note">{voiceCopy.enrollWaiting}</p> : null}
+        <div className="translator-enrollment-actions">
+          <button type="button" onClick={voiceCall.skipEnrollment}>{voiceCopy.enrollSkip}</button>
+          <button type="button" disabled={voiceCall.models.state !== "ready" || voiceCall.enrollment.seconds < 1} onClick={voiceCall.nextEnrollment}>{voiceCall.enrollment.side === "me" ? voiceCopy.enrollNext : voiceCopy.enrollDone}</button>
+        </div>
+      </section> : null}
+      {voiceCall.overlap ? <div className="translator-overlap" role="alert"><p lang={mine.tag}>{OVERLAP_COPY[mine.code]}</p><p lang={theirs.tag}>{OVERLAP_COPY[theirs.code]}</p></div> : null}
+    </div>
+  ) : null;
+
   const callButton = (compact: boolean) => (
     <button
       type="button"
@@ -741,6 +780,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             {notice ? (
               <p className="translator-face-notice" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
             ) : null}
+            {voiceStatus}
             {phase === "idle" ? null : statusLine}
             <div className="translator-face-controls">
               {callButton(true)}
@@ -803,6 +843,14 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
         {showSetup ? (
           <div id="translator-setup" className="translator-setup">
             <button type="button" className="translator-setup-close translator-icon-button" aria-label={tt("translator.cardClose")} onClick={() => setSetupOpen(false)}><CloseIcon /></button>
+            <label className="translator-language">
+              <span>{voiceCopy.engineLabel}</span>
+              <select value={engine} onChange={(event) => changeCallSettings({ ...settings, engine: event.target.value === "codex" ? "codex" : "voice" })}>
+                <option value="voice">{voiceCopy.engineVoice}</option>
+                <option value="codex">{voiceCopy.engineCodex}</option>
+              </select>
+            </label>
+            <p className="translator-options-note">{voiceCopy.engineHint}</p>
             <div className="translator-languages">
               <label className="translator-language">
                 <span>{tt("translator.me")}</span>
@@ -929,6 +977,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                   <p id="translator-echo-guard-hint" className="translator-options-note">{tt("translator.echoGuardHint")}</p>
                 </>
               ) : null}
+              {engine === "codex" ? <>
               <label className="translator-toggle">
                 <input
                   type="checkbox"
@@ -949,6 +998,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <span>{tt("translator.fastDrafts")}</span>
               </label>
               <p id="translator-fast-drafts-hint" className="translator-options-note">{tt("translator.fastDraftsHint")}</p>
+              </> : null}
             </div>
             <div className="translator-options">
               <label className="translator-toggle">
@@ -971,6 +1021,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
           </div>
         ) : null}
       </header>
+      {voiceStatus}
       {notice ? (
         <p className="translator-banner" data-tone={call.state === "error" ? "danger" : undefined} role={call.state === "error" ? "alert" : "status"}>{notice}</p>
       ) : null}
@@ -983,6 +1034,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
         <ConversationLog label={tt("translator.conversation")} turns={turns} visible={visible}
           pending={phase === "translating" ? tt("translator.translationPending") : null}
           jumpLabel={tt("translator.jumpLatest")} layoutKey={layoutKey} onShow={setCard} speech={speech}
+          correctionConnection={voiceCall.connectionId}
+          onCorrect={engine === "voice" ? (turn) => {
+            const segment = turn.voiceLines.find((line) => line.segment.utterance?.startsWith(`${voiceCall.connectionId}:`))?.segment;
+            if (segment?.utterance) voiceCall.correct(Number(segment.utterance.split(":").at(-1)), segment.translationError ? turn.side : turn.side === "me" ? "them" : "me");
+          } : undefined}
           renderAssist={(turn) => turn.typed ? <LineAssist result={typed.assists.get(String(turn.typed.id))}
             meaning={assistMeaning} mine={mine} numericMismatch={assistMeaning && !turn.pending && turn.side === "me" && hasNumericMismatch(turn.typed.original, turn.typed.translation)} />
             : turn.voiceLines.filter((line) => line.segment.role === "user" && !line.draft && line.segment.final).map((line) =>

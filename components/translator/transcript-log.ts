@@ -27,6 +27,11 @@ export interface TranscriptSegment {
   at: number;
   /** 지난번 화면에서 저장해 둔 조각. 새 통화의 앞 맥락으로는 넘기지 않는다. */
   restored?: boolean;
+  /** Explicit voice direction and stable utterance identity; absent for Codex Live. */
+  side?: "me" | "them";
+  language?: TranslatorLanguage;
+  utterance?: string;
+  translationError?: boolean;
 }
 
 export interface TranscriptUpdate {
@@ -94,6 +99,8 @@ export function addTranscript(
  * 숫자·이름만 말했으면 `undefined`다.
  */
 export function segmentLanguage(segment: TranscriptSegment): TranslatorLanguage | undefined {
+  if (segment.language) return segment.language;
+  if (segment.utterance && !segment.side) return undefined;
   return guessTranslatorLanguage(segment.text, segment.mine, segment.theirs);
 }
 
@@ -102,12 +109,14 @@ export function segmentLanguage(segment: TranscriptSegment): TranslatorLanguage 
  * 언어를 모르면 `undefined`다.
  */
 export function segmentSpeaker(segment: TranscriptSegment): "me" | "them" | undefined {
+  if (segment.utterance) return segment.side;
   const language = segmentLanguage(segment);
   return language ? speakerOf(segment, language) : undefined;
 }
 
 /** 조각이 `language`로 쓰였다고 알 때 그 조각을 낳은 사람. 초안 자막은 언어를 글자로 짐작하지 않고 안다. */
-export function speakerOf(segment: Pick<TranscriptSegment, "role" | "mine">, language: TranslatorLanguage): "me" | "them" {
+export function speakerOf(segment: Pick<TranscriptSegment, "role" | "mine" | "side">, language: TranslatorLanguage): "me" | "them" {
+  if (segment.side) return segment.side;
   const mineLanguage = language.code === segment.mine.code;
   return (segment.role === "user") === mineLanguage ? "me" : "them";
 }

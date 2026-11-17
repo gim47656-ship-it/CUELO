@@ -69,7 +69,7 @@ test("missing subscription credentials return auth failure without paid fallback
   } finally { globalThis.__ompRuntimePromise = saved; }
 });
 
-async function withProviderStream(createStream: CustomStreamSimpleFn, check: (response: Response) => Promise<void>) {
+async function withProviderStream(createStream: CustomStreamSimpleFn, check: (response: Response) => Promise<void>, body: unknown = input) {
   const saved = globalThis.__ompRuntimePromise;
   const api = "interpreter-stream-unit";
   registerCustomApi(api, createStream, api);
@@ -78,7 +78,7 @@ async function withProviderStream(createStream: CustomStreamSimpleFn, check: (re
     getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unit-test" }),
   } } as never);
   try {
-    await check(await POST(request(input)));
+    await check(await POST(request(body)));
   } finally {
     globalThis.__ompRuntimePromise = saved;
     unregisterCustomApis(api);
@@ -140,5 +140,93 @@ test("the translation is announced as soon as the Hangul reading starts, before 
     // The reading is still held by the provider, yet the translation is already final.
     expect(seen.at(-1)).toEqual({ type: "translation", text: "Đừng cho đậu phộng.", source: "ko", target: "vi" });
     release();
+  });
+});
+
+test("voice direction is explicit, selects Terra and rejects arbitrary model controls", async () => {
+  const voice = { ...input, mode: "voice", source: "vi", text: "Cái 김치찌개 này không cay." };
+  expect(parseInterpreterTextRequest(voice).target.code).toBe("ko");
+  expect(() => parseInterpreterTextRequest({ ...voice, mode: "other" })).toThrow();
+  const saved = globalThis.__ompRuntimePromise;
+  let selected: string[] = [];
+  globalThis.__ompRuntimePromise = Promise.resolve({ modelRegistry: {
+    find: (provider: string, id: string) => { selected = [provider, id]; return { provider, id }; },
+    getApiKeyAndHeaders: async () => ({ ok: false }),
+  } } as never);
+  try {
+    expect((await POST(request(voice))).status).toBe(401);
+    expect(selected).toEqual(["openai-codex", "gpt-6.1-terra"]);
+  } finally { globalThis.__ompRuntimePromise = saved; }
+});
+
+const voiceBody = { mine: "ko", theirs: "ja", source: "ja", text: "原くしないで。ガムサハブニーだ。", mode: "voice" };
+const providerText = (text: string) => {
+  const stream = createAssistantMessageEventStream();
+  queueMicrotask(() => {
+    const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } as unknown as AssistantMessage;
+    stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+    stream.push({ type: "done", reason: "stop", message });
+  });
+  return stream;
+};
+
+test("voice suppresses the observed wrong-language final and retries once with fixed direction", async () => {
+  let calls = 0, retryPrompt = "", firstAborted = false;
+  await withProviderStream((_model, context, options) => {
+    calls++;
+    expect(options?.forceReasoningOff).toBe(true);
+    if (calls === 1) options?.signal?.addEventListener("abort", () => { firstAborted = true; }, { once: true });
+    if (calls === 2) retryPrompt = JSON.stringify(context.systemPrompt);
+    return providerText(calls === 1 ? "辛くしないでください。감사합니다." : "맵지 않게 해 주세요. 감사합니다.");
+  }, async (response) => {
+    const events = [];
+    for await (const event of readInterpreterTextEvents(response.body!)) events.push(event);
+    expect(calls).toBe(2);
+    expect(firstAborted).toBe(true);
+    expect(retryPrompt).toContain("fixed target is Korean");
+    expect(events.filter((event) => event.type === "delta").map((event) => event.text).join("")).toBe("맵지 않게 해 주세요. 감사합니다.");
+    expect(events.at(-1)).toEqual({ type: "done", text: "맵지 않게 해 주세요. 감사합니다.", source: "ja", target: "ko" });
+  }, voiceBody);
+});
+
+test("voice rejects a second wrong-language answer without emitting it or retrying again", async () => {
+  let calls = 0;
+  await withProviderStream(() => { calls++; return providerText("辛くしないでください。감사합니다."); }, async (response) => {
+    const events = [];
+    for await (const event of readInterpreterTextEvents(response.body!)) events.push(event);
+    expect(calls).toBe(2);
+    expect(events).toEqual([{ type: "error", error: "live-upstream" }]);
+  }, voiceBody);
+});
+
+test("voice releases a confidently Korean prefix before provider completion", async () => {
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  await withProviderStream(() => {
+    const stream = createAssistantMessageEventStream();
+    void (async () => {
+      const text = "맵지 않게 해 주세요. 감사합니다.";
+      const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } as unknown as AssistantMessage;
+      stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+      await held;
+      stream.push({ type: "done", reason: "stop", message });
+    })();
+    return stream;
+  }, async (response) => {
+    const events = readInterpreterTextEvents(response.body!);
+    expect((await events.next()).value).toEqual({ type: "delta", text: "맵지 않게 해 주세요. 감사합니다." });
+    release();
+    expect((await events.next()).value?.type).toBe("done");
+  }, voiceBody);
+});
+
+test("typed interpretation retains its existing reasoning control", async () => {
+  await withProviderStream((_model, _context, options) => {
+    expect(options?.disableReasoning).toBe(true);
+    expect(options?.forceReasoningOff).not.toBe(true);
+    return providerText("Không cho đậu phộng.");
+  }, async (response) => {
+    const events = [];
+    for await (const event of readInterpreterTextEvents(response.body!)) events.push(event);
+    expect(events.at(-1)).toEqual({ type: "done", text: "Không cho đậu phộng.", source: "ko", target: "vi" });
   });
 });

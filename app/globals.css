@@ -7147,6 +7147,17 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
   color: var(--danger);
 }
 
+.translator-voice-status { flex: 0 0 auto; max-block-size: 45dvh; overflow-y: auto; padding: 0 var(--seed-dimension-x4); }
+.translator-enrollment { padding: var(--seed-dimension-x3); background: var(--bg-subtle); border-radius: var(--radius-control); }
+.translator-enrollment h3 { margin: 0 0 var(--seed-dimension-x2); font-size: var(--seed-font-size-t4-static); }
+.translator-enrollment p, .translator-overlap p { margin: 0 0 var(--seed-dimension-x2); overflow-wrap: anywhere; }
+.translator-enrollment-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--seed-dimension-x2); margin-block-start: var(--seed-dimension-x3); }
+.translator-enrollment-actions button, .translator-voice-retry { min-block-size: 44px; padding: 8px 14px; border: 0; border-radius: var(--radius-control); background: var(--bg-hover); color: var(--text); font: inherit; cursor: pointer; }
+.translator-enrollment-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.translator-enrollment-actions button:focus-visible, .translator-voice-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.translator-overlap { padding: var(--seed-dimension-x3); border-radius: var(--radius-control); background: var(--bg-selected); color: var(--text); }
+.translator-voice-retry { color: var(--danger); }
+
 .translator-log {
   display: flex;
   flex: 1 1 auto;

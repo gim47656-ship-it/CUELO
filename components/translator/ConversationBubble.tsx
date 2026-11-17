@@ -7,6 +7,7 @@ import { loadReading, type ShowCardContent } from "./ShowCard";
 import { useTranslatorText } from "./i18n";
 import type { Speech } from "./useSpeech";
 import type { BubbleText, ConversationTurn } from "./conversation-display";
+import { VOICE_COPY } from "./voice-copy";
 
 function Translation({ line, renderText, load }: { line: BubbleText; renderText: (text: string) => ReactNode; load: boolean }) {
   const [fetched, setFetched] = useState<{ text: string; reading: string } | null>(null);
@@ -39,24 +40,26 @@ function Translation({ line, renderText, load }: { line: BubbleText; renderText:
   </>;
 }
 
-export function ConversationBubble({ turn, latest, visible, speech, onShow, renderText, children }: {
+export function ConversationBubble({ turn, latest, visible, speech, onShow, onCorrect, renderText, children }: {
   turn: ConversationTurn; latest: boolean; visible: boolean; speech: Speech; onShow: (card: ShowCardContent) => void;
-  renderText: (text: string) => ReactNode; children?: ReactNode;
+  onCorrect?: () => void; renderText: (text: string) => ReactNode; children?: ReactNode;
 }) {
-  const { tt } = useTranslatorText();
+  const { tt, locale } = useTranslatorText();
+  const voiceCopy = VOICE_COPY[locale === "ko" ? "ko" : "en"];
   const translation = turn.translations.at(-1);
   const content = translation ?? turn.originals.at(-1);
   const language = content?.language ?? content?.fallbackLanguage;
   const card = content && language ? { text: content.text, language, reading: content.reading } : null;
   return <article className="translator-entry" data-side={turn.side} data-latest={latest ? "true" : undefined} data-speaker-start={turn.speakerStart ? "true" : undefined} aria-busy={turn.pending || undefined}>
     {turn.speakerStart ? <span className="translator-speaker">{tt(turn.side === "me" ? "translator.me" : "translator.them")}</span> : null}
-    <button type="button" className="translator-bubble" title={tt("translator.cardTitle")} onClick={() => { if (card) onShow(card); }}>
-      <span className="sr-only">{tt("translator.cardTitle")}</span>
+    <button type="button" className="translator-bubble" title={onCorrect ? voiceCopy.correctSpeaker : tt("translator.cardTitle")} onClick={() => { if (onCorrect) onCorrect(); else if (card) onShow(card); }}>
+      <span className="sr-only">{onCorrect ? voiceCopy.correctSpeaker : tt("translator.cardTitle")}</span>
       {turn.translations.map((line) => <Translation key={line.key} line={line} renderText={renderText} load={visible} />)}
       {turn.originals.map((line) => <span key={line.key} className="translator-original" data-only={!turn.translations.length ? "true" : undefined} lang={line.language?.tag}>{renderText(line.text)}</span>)}
     </button>
+    {onCorrect && turn.voiceLines.some((line) => line.segment.translationError) ? <button type="button" className="translator-voice-retry" onClick={onCorrect}>{voiceCopy.translationFailed}</button> : null}
     {children}
-    {latest && translation && card ? <div className="translator-bubble-controls">
+    {(latest || onCorrect) && translation && card ? <div className="translator-bubble-controls">
       <div className="translator-bubble-actions">
         <button type="button" onClick={() => onShow(card)}><Maximize2 size={18} aria-hidden="true" />{tt("translator.cardTitle")}</button>
         <button type="button" disabled={!speech.supported} aria-pressed={speech.speaking} onClick={() => speech.speaking ? speech.cancel() : speech.speak(card.text, card.language)}>
