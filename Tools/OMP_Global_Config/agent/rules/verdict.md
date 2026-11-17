@@ -1,5 +1,5 @@
 ---
-description: For multi-file/module start contracts and completion verdicts, plus evidence/comparison criteria for task, model or agent efficiency.
+description: Before multi-file contracts, verdicts or efficiency comparisons.
 ---
 
 # 착수 계약과 최종 판정

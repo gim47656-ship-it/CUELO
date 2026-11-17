@@ -65,11 +65,10 @@ const CONFIRMATION_PATTERN =
   /(승인(?:이 필요|을 (?:요청|부탁|기다)|해 주|받아야)|허락(?:이 필요|해 주|받아야)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|정해\s?주세요|정해\s?줘|주시면|라고\s?(?:알려|말해)\s?(?:줘|주세요)|(?:네|너의|당신의|사용자님의?)\s?결정|동의(?:를|가)?\s?(?:기다리|필요)|골라 주세요|선택해 주세요|어느 쪽|shall I|may I|would you like|(?:need|needs|awaiting|waiting for) your (?:approval|decision|permission))/i;
 
 const SYSTEM_BLOCK = `# Goal lane (Main only)
-On a request whose result the user will judge (an image, a document, a site, a feature, a fix, an investigation), call \`lab_goal\` \`op: "frame"\` before the first substantive tool call: \`goal\` = the purpose behind the request, \`explicit\` = conditions in the user's own words, \`assumptions\` = conditions you added yourself, \`deliverables\` = what must exist at the end and the check that would convince an outside expert. A pure typo or one-line edit is \`size: "small"\` (the plugin then stays silent) or no frame at all.
-- Only what the user actually said is explicit; the tool moves anything else to assumptions. An assumption never outranks the goal: when it limits the result ("keep the exact pose" while the user asked for a natural hand), drop it or ask the user.
-- Work at the depth the goal needs: source material, the specialist tools and checks an expert would use, not a summary or your own impression.
-- Before reporting done or waiting, record \`op: "evidence"\` per deliverable. A file path only proves the file exists; the check itself needs a bash command you ran or one exact line of an eval cell you ran without error (\`command\`), a URL that answers (\`url\`) or a vision read of the file (\`observation\`, after \`read <file>?q=…\`). Your own look at an image is not a check. A successful command, URL or vision read only means evidence was observed; it never proves the requirement is met. You assess whether it is relevant to the deliverable's check. Delegating does not move a deliverable off your lane; while a child works, do your own deliverables.
-- When the user changes the request or adds work while you are on it, call \`op: "frame"\` again with the new goal and every deliverable still owed; a deliverable kept with the same id, check, what and path keeps its evidence, and a change to any of them drops it.`;
+Before the first substantive tool call for a user-judged result, call \`lab_goal\` frame: goal = purpose, explicit = user's own conditions, assumptions = yours, deliverables = required outputs and expert-convincing checks. Pure typo/one-line edits may omit framing or use size:small.
+- Only user-stated conditions are explicit. Drop or ask about assumptions that limit the goal. Use expert source material, tools and checks, not summaries or impressions.
+- Before done/waiting, record evidence for each deliverable: file proves existence only; command = executed bash command or exact successful eval line; url = responding URL; observation = vision read (\`read <file>?q=…\`), not your own look. Observed evidence does not prove fulfillment: judge its relevance. Delegation does not remove your deliverables; work on yours while children run.
+- Reframe changed requests with all still-owed deliverables. Evidence survives only when id, check, what and path all stay the same.`;
 
 // The system prompt carries only the fixed SYSTEM_BLOCK. The frame used to be appended there too, so every new frame
 // (and the restored one after a restart) changed the last system block on the next prompt and the provider re-wrote the
@@ -663,7 +662,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     // Bookkeeping only: the core runs this call even when user steering arrived mid-response (apply-core-patch steeringSafe).
     steeringSafe: true,
     description:
-      "요청 뒤의 목표를 실행과 완료 판단에 연결한다. op frame: goal(목적), explicit(사용자가 한 말 그대로의 조건), assumptions(Main이 더한 조건), deliverables(끝에 있어야 할 것과 외부 전문가가 납득할 확인 방법, 선택 path), size(small|normal|deep). 다시 frame을 부르면 id·check·what·정규화 path(둘 다 없으면 같음, 없음→있음은 다름; 로컬 경로는 cwd 기준 문자열 정규화)가 모두 같은 산출물만 이전 근거를 이어받고 하나라도 바뀌면 근거를 버린다. explicit 항목은 이 세션의 사용자 원문과 대조해(부정·인용한 말은 판정기가 가려) 사용자가 말하지 않은 것은 assumptions로 옮긴다. op evidence: id와 kind(file|command|url|observation)·value로 근거를 남기면 플러그인이 파일 존재·이 세션에서 실행한 bash 종료 코드·URL 응답·vision read 결과를 관측해 기록하고, 관측하지 못한 것은 자기 보고로 남긴다. 관측 성공은 근거가 관측됐다는 뜻이지 요구 충족 증명이 아니며 관련성은 Main이 판단한다. op status: 현재 상태. 차단 없음.",
+      "Main goal/evidence tracking, advisory not a gate. frame: goal, explicit(user-stated), assumptions(yours), deliverables[{id,what,check,path?}], size. Reframing retains evidence only for unchanged id/check/what/normalized path. evidence: id, kind(file|command|url|observation), value; unobserved evidence stays self-reported. Observation is not proof of fulfillment. status: current state.",
     parameters: z.object({
       op: z.enum(["frame", "evidence", "status"]),
       size: z.enum(["small", "normal", "deep"]).optional(),

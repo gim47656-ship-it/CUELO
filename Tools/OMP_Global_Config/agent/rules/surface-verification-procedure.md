@@ -1,5 +1,5 @@
 ---
-description: Read before browser/screen verification, image inspection, document/log classification or long-job monitoring.
+description: Before browser, image, bulk classification or long-job work.
 ---
 
 - **브라우저 경로는 실행 환경 지침이 정한다.** ego lite PC(`ego_browser` 도구가 도는 PC)에서는 브라우저를 여는

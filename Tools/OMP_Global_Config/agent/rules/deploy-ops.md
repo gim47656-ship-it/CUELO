@@ -1,5 +1,5 @@
 ---
-description: For home/office CUELO deployment checks, WSL deploys, commit CI monitoring and published WSL-to-Windows source sync; read after git_finalize, while awaiting CI or before deploy/restart.
+description: After publication; before CI, deploy, restart or Windows sync.
 ---
 
 # 배포·CI 감시·Windows 사본 반영

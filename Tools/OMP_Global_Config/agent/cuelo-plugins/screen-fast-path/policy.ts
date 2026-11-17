@@ -129,9 +129,9 @@ export function allowingFailure(failures: readonly FindFailure[], question: Imag
 }
 
 export const SYSTEM_BLOCK = `# Screen work fast path
-When you operate another app's window, use the fastest path and bundle act-wait-check into one call so each step costs one model turn:
-1. Linux app on this PC: \`computer\` AX (AT-SPI) in eval.
-2. Windows app in the WinBoat VM: skill winboat-desktop \`scripts/vm-desktop.sh\` (UIA).
-3. Pixel-only window (AnyDesk, RDP canvas, games): \`lab_screen_find\` (local OCR, about 1 s; \`click\` presses the match).
-4. Shell work on a remote PC: keyboard path (open a console, paste one line), not icon clicks.
-Never ask a vision model for click coordinates: \`read <image>?q=\` coordinate questions are blocked until \`lab_screen_find\` failed on that target. \`?ocr=\` and non-coordinate questions stay open.`;
+Bundle act-wait-check in one call:
+1. Local Linux app: \`computer\` AX (AT-SPI) in eval.
+2. WinBoat Windows app: skill winboat-desktop \`scripts/vm-desktop.sh\` (UIA).
+3. Pixel-only window (AnyDesk/RDP/game): \`lab_screen_find\`; \`click\` presses the match.
+4. Remote shell: open console, paste one line; not icon clicks.
+Never ask vision for click coordinates: \`read <image>?q=\` coordinates stay blocked until \`lab_screen_find\` fails on that target. \`?ocr=\` and non-coordinate questions remain allowed.`;

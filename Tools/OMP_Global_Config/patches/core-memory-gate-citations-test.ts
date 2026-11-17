@@ -383,7 +383,6 @@ try {
 		const schema = tool.parameters as unknown as { toJsonSchema?: () => unknown; json?: unknown };
 		const json = JSON.stringify(schema.toJsonSchema?.() ?? schema.json ?? {});
 		check("parameters 에 kind 와 citations 가 있다", json.includes('"kind"') && json.includes('"citations"') && json.includes("evidence"), json.slice(0, 400));
-		check("도구 설명이 kind 와 citations 규칙을 알린다", tool.description.includes("`kind` is required in project scope") && tool.description.includes("citations"));
 	}
 } finally {
 	rmSync(root, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 ---
-description: Main only, immediately before task dispatch; read rule://task-guard, not a skill. Makers receiving TASK_GUARD must not read it. Covers the runtime-enforced template, per-request budget and side-quest limits.
+description: Main before dispatch, not Makers; rule, not skill.
 ---
 
 # Task Guard

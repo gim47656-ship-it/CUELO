@@ -1,5 +1,5 @@
 ---
-description: Read before drafting new or rewritten prose/paragraphs or using draft/slop_check for documents or UI copy.
+description: Before new/rewritten prose, draft or slop_check.
 ---
 
 - **글씨가 들어가는 콘텐츠는 Gemini가 먼저 쓰고 AI 슬롭 점검을 거친다(2026-10-25 사용자 결정).** 새로 쓰거나 한 문단

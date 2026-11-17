@@ -119,12 +119,12 @@ export default function consult(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "consult", label: "Consult", loadMode: "essential", approval: "read",
-    description: "도구 없이 지정한 정확한 모델 하나(provider/id, 예: anthropic/claude-fable-5-1)에 질문과 직접 붙인 짧은 맥락만 한 번 보내 의견을 묻습니다. 파일·대화 기록을 자동으로 모으지 않고 도구·하위 세션·파일을 만들지 않습니다. 역할 별칭·짧은 이름·:effort 접미사나 정확히 일치하지 않는 해석, 자격 없음, 텍스트 입력 미지원, 지원하지 않는 reasoning은 호출 없이 거절하며 다른 모델로 대체하지 않습니다. reasoning을 비우면 추론을 끈 가벼운 호출입니다. question과 context는 합쳐 32KiB 이하여야 하고(넘으면 거절) 비밀로 보이는 값이 있으면 보내지 않습니다. 내용은 그 모델의 제공자로 전송되고 사용량은 purpose consult로 기록됩니다. 답은 참고 의견일 뿐 구현·리뷰 승인이나 cross_review·slop_check·git_finalize 같은 게이트의 근거가 될 수 없습니다. 결과는 requested·resolved·reasoning·status(complete·incomplete·error·cancelled·rejected)와 답을 돌려줍니다.",
+    description: "Tool-free advice from one exact provider/id; no aliases, effort suffixes or fallback. question+context <=32KiB, no secrets; sent to that provider. Advice never approves implementation/review or satisfies gates.",
     parameters: z.object({
-      model: z.string().describe("정확한 provider/id"),
+      model: z.string(),
       question: z.string(),
-      context: z.string().optional().describe("호출자가 직접 고른 짧은 맥락(비신뢰 자료로 전달)"),
-      reasoning: z.string().optional().describe("minimal·low·medium·high·xhigh·max 중 모델이 지원하는 값. 비우면 추론 끔"),
+      context: z.string().optional().describe("Short caller-selected context"),
+      reasoning: z.string().optional().describe("Supported effort; omitted=off"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await consultModel(params as ConsultInput, ctx, signal ?? new AbortController().signal));

@@ -1,5 +1,5 @@
 ---
-description: For web/app visual design, layout, responsiveness, design systems, reviews and adopting or excluding design skills.
+description: Before UI design, layout, styling or design reviews.
 ---
 
 # 프론트엔드 디자인

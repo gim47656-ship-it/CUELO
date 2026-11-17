@@ -1396,12 +1396,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const z = pi.zod;
     const strings = () => z.array(z.string());
     const nullable = () => strings().nullable();
-    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe(`실제로 발주할 브리프 전문(요약·제목 아님). 첫 줄 \`TASK_GUARD:\` 다음 줄부터 빈 줄 없이 WORK_CLASS: ${WORK_CLASSES.join("|")}(이 셋만 허용, 요청의 첫 child 필수)·PRIMARY_DELIVERABLE(요청의 첫 child)·OWNED_PATHS, 그 뒤 TASK_TITLE·TODO_TASKS, 이어서 # Target·# Change·# Acceptance. 실제 task 호출은 agent를 생략하면 maker이고 다른 agent는 거절된다. 양식 정본 rule://task-guard.`), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
+    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe("Full brief; read rule://task-guard first. maker-only."), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
     // SDK 18.2.6 TSchema의 unknown generic 불변성만 연결한다. 실제 Zod schema 검증은 그대로다.
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: `Main 전용 발주 준비. Jev가 난이도, 열린 설계, 한정된 설계, UI 난이도, 재작업 성격, owner와 교차검증 필요성을 판단한다. 방향이 정해진 구현과 보통 UI는 Sonnet, 어려운 UI는 Opus, 한정된 설계와 실패 재작업은 Sol을 추천한다. DeepSeek는 추천하지 않고 Main의 명시 선택(ROUTING_REASON)만 받는다. Maker 후보는 Anthropic 하루 몫 소진으로 바뀌지 않는다. 큰 교차 경계 재설계와 반복 실패는 Main으로 반환하고 그 준비로는 발주할 수 없다. UNKNOWN은 막지 않으며 Main이 ROUTING_REASON으로 정한다. 추천 변경에는 ROUTING_REASON이 필요하다. 계정 pin, 실행 중 모델과 기존 owner는 바꾸지 않는다. 후보 selector:auto로 발주한다. history와 교차검증 조언은 advisory다. task 원문은 Jev에 보내지 않는다.`,
+      description: "Main-only dispatch preparation: briefs+assessments. Candidate selector:auto; overrides/UNKNOWN/DeepSeek need ROUTING_REASON. Keep owner/account pin. No dispatch of Main-returned work.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

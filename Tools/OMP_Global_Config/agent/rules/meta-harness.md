@@ -1,5 +1,5 @@
 ---
-description: For generating, verifying and syncing agent definitions (agent/agents) from SOP fragments.
+description: Before generating or syncing agent definitions.
 globs: ["Tools/OMP_Global_Config/**"]
 ---
 

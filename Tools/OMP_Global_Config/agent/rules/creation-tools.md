@@ -1,5 +1,5 @@
 ---
-description: For web UI, HTML report slides, PPT, Word, PDF reports or template reuse, choose the creation path without waiting for tool names.
+description: Before UI, HTML, slides, Office/PDF creation or template reuse.
 ---
 
 # 웹·발표·문서 제작 도구 선택

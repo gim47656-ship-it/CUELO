@@ -1,5 +1,5 @@
 ---
-description: Read when correcting agent mistakes or changing rules; maps enforcers and escalation.
+description: Before mistake correction or rule changes.
 ---
 
 # 규칙별 지키는 장치

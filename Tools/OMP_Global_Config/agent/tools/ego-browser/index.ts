@@ -410,25 +410,11 @@ export const linuxExec: Exec = createLinuxExec();
 function toolDescription(host: EgoHost): string {
   if (host === "linux") {
     const guide = join(dirname(linuxHostPath()), "..", "..", "skills", "ego-browser", "SKILL.md");
-    return "Drive isolated ego TaskSpaces in the Electron ego lite app on this Linux PC without a bash heredoc. Each space is an Agent Space inside the app, opened in the background and separate from the user's tabs. If the app is not running, the tool starts it (`~/.local/bin/ego-lite --launch` in its own systemd user unit) and waits for it; if the app cannot start, the call fails rather than using another browser. Only a PC without the app launcher uses the separate ego Chromium (CDP 32899) in an isolated new window; a Chromium result does not verify the Electron ego app. Never open agent work in the user's Space, tabs, or the CUELO PWA, including through native GUI controls or raw CDP. "
-      + "`script` runs in Linux Node.js (ESM, top-level await, not the page): the tool has already run `taskSpaces.useOrCreate(<name>)` and bound `task` (`id`, `handOff()`, `takeOver()`, `finish({ keep })`); `page` is the space's current tab (`page.goto`, `page.snapshot`, `page.evaluate`, locators), and `browser.openOrReuseTab(url, { wait: true })` opens more tabs. "
-      + "Raw CDP goes through the global `cdp(method, params)` (there is no `page.cdp` here), and the Electron app has no `Page.printToPDF`. Viewport, dark mode, console capture, pre-click occlusion and dialog recipes: `skill://ego-browser-verify-recipes`. "
-      + `Read the API guide at \`${guide}\` before first use. `
-      + "One TaskSpace is kept per session and resumed on every call (variables do not persist between calls, tabs do). "
-      + "Only `profile: \"user\"` exists here (`verify` fails because spaces copy the user's cookies); use it for CUELO screen verification too, and leave only checks that need a logged-out state unverified. "
-      + "Never clear cookies, cache or storage. For login, permission or CAPTCHA steps call `await task.handOff()`, end the script and tell the user; after the user says continue, start the next script with `await task.takeOver()`. "
-      + "Set `finish: true` on the last call to close the space; spaces still open when the session ends are closed automatically unless they were handed off to the user. "
-      + "If the browser cannot be reached, report the connection failure. Do not silently substitute browser.open or another browser.";
+    return "Isolated ego TaskSpace; never user's Space/tabs/PWA or substitute browser after failure. "
+      + `Read \`${guide}\` first; recipes: skill://ego-browser-verify-recipes. `
+      + "script: Node ESM/await; task/page bound; global cdp(), not page.cdp; no Page.printToPDF. Space persists, variables do not. profile:user only; logged-out checks unverified. Never clear cookies/cache/storage. Login/permission/CAPTCHA: await task.handOff(), end script, tell user; takeOver() only after continue. Last call finish:true.";
   }
-  return "Drive ego lite TaskSpaces (the `ego-browser` runtime) without a bash heredoc. Only on PCs where ego lite is installed (the tool says so and exits when it is not; then use the normal `browser` tool). "
-    + "`script` is the body of an `ego-browser nodejs` script (ESM, top-level await, Node.js, not the page): the tool has already run `const task = await taskSpace(<name>)` and `const page = task.page(\"p1\")`, so use `task`/`page` directly. Browser-side JS goes inside `page.evaluate()`. "
-    + "Run `ego-browser skill` once in bash to read the API guide. "
-    + "The script's Node.js runs on Windows, so WSL paths such as `/tmp` or `/home` do not exist there: read or write files through `\\\\wsl.localhost\\<distro>\\…` and import local modules as `file://wsl.localhost/<distro>/…`. "
-    + "One TaskSpace is kept per session and profile and resumed on every call (variables do not persist between calls, tabs and pages do). "
-    + `\`profile: "user"\` (default) is the user's own ego profile with their logins; \`profile: "verify"\` is the dedicated verification profile (the ego profile named "${VERIFY_PROFILE_NAME}", logged out everywhere) and MUST be used for CUELO screen/UI verification. If that profile does not exist the call fails; do not fall back to the user profile, tell the user to create it. `
-    + "Never clear cookies, cache or storage (it hits the whole profile). For login, permission or CAPTCHA steps call `task.handOff()` and tell the user (it stops the script; do not retry or take control back until the user says continue). "
-    + "Set `finish: true` on the last call to close the space (`task.finish({ keep: [] })`, also on error); spaces still open when the session ends are closed automatically unless they were handed off to the user. "
-    + "Do not use relay (`browser.open`) for this unless the user names a tab that is already open.";
+  return "Isolated ego lite TaskSpaces. Read API with `ego-browser skill` before first use. script: Windows Node ESM/top-level await; task/page(p1) bound; use page.evaluate for page JS and UNC/file URLs for WSL files. Space persists per session/profile, variables do not. Use profile:verify for CUELO UI checks; missing verify profile is a failure, never fall back to user. Never clear cookies/cache/storage. Login/permission/CAPTCHA: task.handOff() and tell user; resume only after continue. Last call finish:true. Relay browser.open only for an already-open user-named tab.";
 }
 
 /** 세션마다 한 번 불리는 팩토리. 상태는 클로저에 두고, ego 실행기와 host는 주입할 수 있다. */
@@ -443,10 +429,10 @@ export function createFactory(exec: Exec, host: EgoHost = "windows"): CustomTool
       loadMode: "essential",
       description: toolDescription(host),
       parameters: pi.zod.object({
-        script: pi.zod.string().describe(host === "linux" ? "Script body; `task` and `page` are already defined" : "Script body; `task` and `page` (p1) are already defined"),
-        profile: pi.zod.enum(["user", "verify"]).optional().describe(`user = the user's default ego profile (default); verify = the ego profile named "${VERIFY_PROFILE_NAME}", verification only${host === "linux" ? " (not available on this Linux PC)" : ""}`),
-        finish: pi.zod.boolean().optional().describe("Close the TaskSpace after this script, even if it throws"),
-        timeoutMs: pi.zod.number().optional().describe(`Kill the script after this many ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS})`),
+        script: pi.zod.string(),
+        profile: pi.zod.enum(["user", "verify"]).optional(),
+        finish: pi.zod.boolean().optional(),
+        timeoutMs: pi.zod.number().optional().describe(`ms; default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}`),
       }),
 
       async execute(_toolCallId, params, _onUpdate, ctx, signal) {

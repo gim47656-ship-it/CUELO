@@ -201,12 +201,12 @@ export default function draft(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "draft", label: "Draft", loadMode: "essential", approval: "write",
-    description: "Has the draft role model (source-profile default: Gemini 4 Hydrogen via the AI Studio relay) write a document draft (md, txt, csv, xlsx, docx, pdf) and saves it at output inside the cwd. On failure it falls back once to the model modelRoles.draftFallback names (source-profile default: Gemini 4 Argon via the AI Studio relay). Installs without draftFallback fall back to DeepSeek 1017 on Hive; a draftFallback that is set but fails resolution, credentials or input fails under that model's name without falling through to DeepSeek. A fallback equal to the draft model is not called again. The output extension sets the format (xlsx/docx built by the tool; pdf printed through an ego lite TaskSpace on WSL, through Windows Edge only on PCs without ego lite; csv as UTF-8 BOM). Reference text in paths passes the same filter as skim and goes to that model's provider (default Google; the fallback goes to the configured model's provider). An existing file is overwritten only with overwrite: true. Returns the actual model, saved path, size and outline; if both models fail or conversion/saving fails, no file is created and an error result returns. The caller must review the result file. Use edit/write for code, configuration, rules and exact-line edits. New or paragraph-level rewritten prose is a draft target even in HANDOFF and doc/history records.",
+    description: "Draft prose with configured role; output extension sets format. paths text goes to provider. Overwrite needs overwrite:true. Open/review result. Use edit/write for code/config/rules/exact-line edits.",
     parameters: z.object({
-      instruction: z.string().describe("What to write: purpose, audience, structure, length, language"),
-      output: z.string().describe("Save path inside cwd: relative to cwd, or an absolute path inside cwd. The extension sets the format: .md .txt .csv .xlsx .docx .pdf"),
-      paths: z.array(z.string()).optional().describe("Reference text files, directories or globs inside the cwd"),
-      overwrite: z.boolean().optional().describe("Overwrite an existing file (default false)"),
+      instruction: z.string().describe("Purpose, audience, structure, length, language, facts"),
+      output: z.string().describe("Inside cwd: .md .txt .csv .xlsx .docx .pdf"),
+      paths: z.array(z.string()).optional().describe("cwd reference files/directories/globs"),
+      overwrite: z.boolean().optional().describe("Default false"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const result = await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal);

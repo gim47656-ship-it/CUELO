@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { compactSkills } from "../agent/extensions/prompt-compact";
 
 if (!process.env.OMP_RESUME_TEST_ROOT) {
   const root = mkdtempSync(join(tmpdir(), "omp-resume-prefix-"));
@@ -51,14 +52,15 @@ if (!process.env.OMP_RESUME_TEST_ROOT) {
   const { fixture: createFixture, capture } = await import("../../../lib/resume-prefix.test.mjs");
   const { SessionManager } = await import("@oh-my-pi/pi-coding-agent");
   const { replayRevivedAgentStart } = await import("@oh-my-pi/pi-coding-agent/task/executor");
-  const { namesOnlySkills } = await import("../agent/extensions/prompt-compact");
   const { createHash } = await import("node:crypto");
   test("revived Maker first request matches pre-revive effective blocks and preserves the raw base", async t => {
     const f = await createFixture(t);
     const base = ["stable head", "<skills>\n- debugging: full description\n- testing: full description\n</skills>", "<project-context>fixture</project-context>"];
-    const expected = base.map(namesOnlySkills);
+    const triggers = { debugging: "fixture debugging", testing: "fixture testing" };
+    const expected = base.map(block => compactSkills(block, triggers));
+    assert.notDeepEqual(expected, base, "the fixture must exercise a real prompt transformation");
     const extension = (pi: { on: (event: string, handler: (event: { systemPrompt: string[] }) => unknown) => void }) => {
-      pi.on("before_agent_start", event => ({ systemPrompt: event.systemPrompt.map(namesOnlySkills), messages: [{ customType: "fixture-notice", content: "must not duplicate", display: false }] }));
+      pi.on("before_agent_start", event => ({ systemPrompt: event.systemPrompt.map(block => compactSkills(block, triggers)), messages: [{ customType: "fixture-notice", content: "must not duplicate", display: false }] }));
     };
     const before = await f.create(SessionManager.inMemory(f.cwd), { systemPrompt: base, extensions: [extension], taskDepth: 1, agentName: "maker", requireYieldTool: false });
     // The original prompt preparation applies the hook result to the effective prompt.

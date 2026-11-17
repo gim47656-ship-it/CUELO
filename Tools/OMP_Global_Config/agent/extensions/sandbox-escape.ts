@@ -35,7 +35,7 @@ export async function approveSandboxEscape(command: string, reason: string, ctx:
 export default function sandboxEscape(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "sandbox_escape", label: "Sandbox escape", loadMode: "essential", approval: "exec",
-    description: "Main-only: run one exact command outside the CUELO bash sandbox after interactive user approval showing command and reason. Makers must report to Main. Only the exact standing-approved CUELO deploy and weekly $2 regression runner bypass the dialog. No automatic approval, and no ordinary escape in headless mode.",
+    description: "Main-only sandbox escape; user interactively approves exact command+reason. Makers report to Main. No auto/headless approval except standing deploy/weekly runner.",
     parameters: pi.zod.object({ command: pi.zod.string().min(1), reason: pi.zod.string().min(1) }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const { command, reason } = params as { command: string; reason: string };

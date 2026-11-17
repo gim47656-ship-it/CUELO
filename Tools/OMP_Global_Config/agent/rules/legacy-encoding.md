@@ -1,5 +1,5 @@
 ---
-description: For encoding detection and preservation when editing VB.NET, VB6 or legacy config/data files.
+description: Before legacy edits.
 globs: ["**/*.vb", "**/*.frm", "**/*.bas", "**/*.cfg", "**/*.csv", "**/*.resx"]
 ---
 

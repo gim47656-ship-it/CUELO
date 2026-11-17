@@ -1,5 +1,5 @@
 ---
-description: For SubAgent delegation, parallel execution, review contracts and Git/communication boundaries.
+description: Before delegation, child review or Git handoff.
 ---
 
 # SubAgent 오케스트레이션

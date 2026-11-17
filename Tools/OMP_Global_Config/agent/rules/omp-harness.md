@@ -1,5 +1,5 @@
 ---
-description: For OMP updates, upgrades or version swaps, upstream rebase decisions and global config mirror sync/verification.
+description: Before OMP updates or profile sync.
 globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 ---
 

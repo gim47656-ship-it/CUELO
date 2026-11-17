@@ -1959,17 +1959,6 @@ check(
 	`tail=${JSON.stringify(mnemopiGuidanceOff.slice(-120))}`,
 );
 check(
-	"autoRetain false 안내는 의도적 retain/learn 만 남는다고 밝힌다",
-	mnemopiGuidanceOff.includes("explicit `retain`") && mnemopiGuidanceOff.includes("`learn`"),
-	`tail=${JSON.stringify(mnemopiGuidanceOff.slice(-160))}`,
-);
-check(
-	"설정과 무관한 공통 안내 줄은 그대로다",
-	["# Memory", "`<memories>` blocks injected", "Use `recall` proactively", "Use `retain` to store durable facts", "Use `reflect`"].every(
-		line => mnemopiGuidanceOn.includes(line) && mnemopiGuidanceOff.includes(line),
-	),
-);
-check(
 	"state 의 config 가 있으면 settings 보다 우선한다",
 	!(await mnemopiGuidance({ stateAutoRetain: false, settingsAutoRetain: true })).includes("retained automatically") &&
 		(await mnemopiGuidance({ stateAutoRetain: true, settingsAutoRetain: false })).includes("retained automatically"),

@@ -1,5 +1,5 @@
 ---
-description: For HANDOFF, README and doc-map roles, work-record ownership and lookup order.
+description: Before HANDOFF, README, maps or work records.
 ---
 
 # 프로젝트 문서 지도와 기록

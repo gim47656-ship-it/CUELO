@@ -2,7 +2,7 @@
 // Opus 토크나이저에서 한국어 규칙은 약 1.2자/토큰, 영어는 약 4자/토큰이라 같은 규칙이 요청마다 3배 가까이 든다.
 // 사본 첫 줄의 source 지문이 현재 원문과 다르면(원문만 고치고 사본을 갱신하지 않음) 그 원문은 그대로 싣는다.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
@@ -67,26 +67,60 @@ export function applyMainOnly(body: string, maker: boolean): string {
 
 const SKILLS_OPEN = "<skills>\n";
 const SKILLS_CLOSE = "\n</skills>";
-export const SKILL_NAMES_POINTER =
-  "Names only. Main hands the skills a slice needs in the brief; read `skill://<name>` before using one (an unknown name lists every loaded skill).";
+export const SKILL_CATALOG_POINTER =
+  "Read matching skills before use. Listed: global + project triggers. Omitted skills remain available: read `skill://__catalog__` for all names, then `skill://<name>`.";
 
-/**
- * Maker child용 Skill 목록: 설명 없이 이름만 남긴다. 설명 포함 목록은 Maker 첫 요청마다 약 6.3K 토큰이었고,
- * 필요한 Skill은 Main이 브리프로 넘긴다(rule://subagent 「Skill 인계」). `skill://` 해석은 session.skills에서
- * 하므로 프롬프트 목록을 줄여도 읽기는 그대로 된다.
- */
-export function namesOnlySkills(block: string): string {
+type SkillTriggers = Record<string, string>;
+interface SkillCatalog {
+  global: SkillTriggers;
+  default: SkillTriggers;
+  projects: Record<string, SkillTriggers>;
+}
+
+function loadSkillCatalog(): SkillCatalog | undefined {
+  let catalog: SkillCatalog | undefined;
+  try {
+    const config = Bun.YAML.parse(readFileSync(join(AGENT_DIR, "config.yml"), "utf8")) as { skills?: { promptCatalog?: SkillCatalog } };
+    catalog = config?.skills?.promptCatalog;
+  } catch {
+    // Missing/unreadable configuration keeps the complete discovery surface.
+  }
+  if (!catalog) console.warn("[prompt-compact] Skill catalog unavailable; retaining the complete skill list.");
+  return catalog;
+}
+
+// The nearest mapped ancestor identifies a project, including workspace packages.
+function skillTriggers(cwd: string, catalog: SkillCatalog): SkillTriggers {
+  let directory = resolve(cwd);
+  while (true) {
+    try {
+      const source = readFileSync(join(directory, "package.json"), "utf8").replace(/^\uFEFF/, "");
+      const { name } = JSON.parse(source) as { name?: string };
+      if (name && Object.hasOwn(catalog.projects, name)) return { ...catalog.global, ...catalog.projects[name] };
+    } catch {
+      // Absent, unreadable or temporarily invalid packages do not shadow ancestors.
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return { ...catalog.global, ...catalog.default };
+    directory = parent;
+  }
+}
+
+/** Display-only filtering: session.skills and skill:// resolution are unchanged. */
+export function compactSkills(block: string, triggers?: SkillTriggers): string {
+  if (!triggers) return block;
   const start = block.indexOf(SKILLS_OPEN);
   if (start < 0) return block;
   const from = start + SKILLS_OPEN.length;
   const end = block.indexOf(SKILLS_CLOSE, from);
   if (end < 0) return block;
-  const names = block
-    .slice(from, end)
-    .split("\n")
-    .flatMap((line) => /^- ([^:\s][^:]*):/.exec(line)?.[1] ?? []);
-  if (names.length === 0) return block;
-  return `${block.slice(0, from)}${SKILL_NAMES_POINTER}\n${names.join(", ")}${block.slice(end)}`;
+  const entries = block.slice(from, end).split("\n").flatMap((line) => {
+    const name = /^- ([^:\s][^:]*):/.exec(line)?.[1];
+    return name && Object.hasOwn(triggers, name) && triggers[name] ? [`- ${name}: ${triggers[name]}`] : [];
+  });
+  // A catalog mismatch must not leave the model with no discovery surface.
+  if (entries.length === 0) return block;
+  return `${block.slice(0, from)}${SKILL_CATALOG_POINTER}\n${entries.join("\n")}${block.slice(end)}`;
 }
 
 export default function promptCompact(pi: ExtensionAPI): void {
@@ -94,16 +128,17 @@ export default function promptCompact(pi: ExtensionAPI): void {
   const swaps = loadSwaps(AGENT_DIR, TARGETS);
   const mainBodies = swaps.map((swap) => applyMainOnly(swap.body, false));
   const makerBodies = swaps.map((swap) => applyMainOnly(swap.body, true));
+  const catalog = loadSkillCatalog();
   pi.on("before_agent_start", (event, ctx) => {
-    // Maker child만 줄인다. 다른 subagent(advisor·/tan 복제 등)와 Main은 기존 본문을 받는다.
-    // 사본이 낡아 교체할 것이 없어도 Maker Skill 목록은 줄인다.
+    // Every role gets short triggers; only Maker loses main-only instructions.
     const maker = ctx?.agent?.kind === "sub" && ctx.agent.name === "maker";
-    if (!maker && swaps.length === 0) return undefined;
+    // Re-read identity each turn so a repaired/new package is not stuck on defaults.
+    const triggers = catalog ? skillTriggers(ctx?.cwd ?? process.cwd(), catalog) : undefined;
     const bodies = maker ? makerBodies : mainBodies;
     return {
       systemPrompt: event.systemPrompt.map((block) => {
         const swapped = swaps.reduce((current, swap, index) => replaceBetween(current, swap.open, swap.close, bodies[index]!), block);
-        return maker ? namesOnlySkills(swapped) : swapped;
+        return compactSkills(swapped, triggers);
       }),
     };
   });

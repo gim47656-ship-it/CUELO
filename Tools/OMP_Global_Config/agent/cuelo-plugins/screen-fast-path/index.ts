@@ -83,13 +83,7 @@ export function createScreenFastPath(options: ScreenFastPathOptions = {}) {
       label: "Screen find (local OCR)",
       loadMode: "essential",
       description:
-        "Find text on screen with local OCR (Korean + English, about 1 s) and optionally click it. For pixel-only windows (AnyDesk, RDP canvas, games) where AX/UIA cannot see controls. "
-        + "Returns one line per text box: `x y score text` in global screen coordinates (image pixels with `png`). "
-        + "`window` = title regex of the window to capture (largest visible match; default whole screen); `png` = OCR an existing image instead (no capture, no click); "
-        + "`find` = keep only boxes containing this text (case-insensitive, spaces ignored); `click` = click the `nth` (default 1) box containing this text through XTEST and put the mouse back. "
-        + "A `window` is read from its own pixels even when other windows cover it; `click` brings that window to the front first, because XTEST clicks land on whatever is on top. "
-        + "The capture is deleted right away. Unfiltered output can include private screen text, so narrow with `find`/`click`. "
-        + "First use installs rapidocr_onnxruntime into ~/.omp/python-env and downloads the Korean recognition model (sha256 checked). Needs an X11 session except with `png`.",
+        "Local Korean/English OCR for pixel-only windows; optional XTEST click brings target forward and restores mouse. window: title regex (largest match; default screen); png: existing image, no click. find/click: case-insensitive substring, spaces ignored; nth: 1-based match. Returns x y score text (screen coordinates, image pixels for png). Narrow find/click to avoid private text. First use installs OCR dependencies/model under ~/.omp. X11 required except png.",
       parameters: z.object({
         window: z.string().optional().describe("Window title regex; default whole screen"),
         png: z.string().optional().describe("Existing image to OCR instead of capturing; no click"),

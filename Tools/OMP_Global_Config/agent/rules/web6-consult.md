@@ -1,5 +1,5 @@
 ---
-description: For ChatGPT 6 Pro (SHION) consultation seats, triggers, routing and input limits; read when the user names 6 Pro/SHION or in a 6PRO tab session.
+description: When user names 6 Pro/SHION or in a 6PRO session.
 ---
 
 # ChatGPT 6 Pro 상담
