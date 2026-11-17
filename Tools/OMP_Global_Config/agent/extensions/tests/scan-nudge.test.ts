@@ -194,6 +194,17 @@ describe("scan-nudge", () => {
     expect(h.sent).toHaveLength(1);
   });
 
+  test("image checks do not count as broad reading", () => {
+    const h = harness();
+    h.input();
+    // 11-17 실사용: 스크린샷 확인만 4번 한 Main 턴에 skim 안내가 나갔다.
+    for (const path of ["/tmp/scr.png?q=Is the wallpaper rendered?", "/tmp/mon.PNG", "kys/pg-1.jpg?ocr=read it", "a.webp:raw", "b.gif:RAW"]) h.call("read", { path });
+    for (const path of ["src/f1.ts", "src/f2.ts", "x.json?q=.a"]) h.call("read", { path });
+    expect(h.sent).toHaveLength(0);
+    h.call("read", { path: "src/f4.ts" });
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("path normalization strips selectors and queries", () => {
     expect(normalizeReadPath("a/b.ts:50-80", "/r")).toBe("/r/a/b.ts");
     expect(normalizeReadPath("a/b.ts:raw:2-4", "/r")).toBe("/r/a/b.ts");

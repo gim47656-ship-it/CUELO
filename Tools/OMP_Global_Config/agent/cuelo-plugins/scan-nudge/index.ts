@@ -9,8 +9,11 @@ import { isAbsolute, join, resolve } from "node:path";
 export const EXPLORATION_READS_BEFORE_NUDGE = 4;
 
 const INTERNAL_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
-const SELECTOR = /:(?:raw|img|conflicts|-?\d[\d,+:-]*(?::raw)?|raw:[\d,+:-]+)$/;
+const SELECTOR = /:(?:raw|img|conflicts|-?\d[\d,+:-]*(?::raw)?|raw:[\d,+:-]+)$/i;
 const EDIT_TARGET = /^\[([^\]\n#]+)#[0-9A-Fa-f]{4}\]/gm;
+// 이미지 읽기(`?q=`, `?ocr=` 포함)는 화면이나 그림 확인이지 넓은 텍스트 읽기가 아니고 skim이 대신할 수 없다.
+// 11-10~11-17 실사용 Main 안내 41건 중 7건이 이미지 읽기를 빼면 4개에 못 미쳤다.
+const IMAGE_FILE = /\.(?:png|jpe?g|webp|gif|bmp)$/i;
 
 export function reminder(count: number, isMaker = false): string {
   return [
@@ -132,7 +135,7 @@ export function createScanNudge(log: Log = defaultLog) {
       }
       if (event.toolName !== "read" || nudged || delegated) return;
       const path = normalizeReadPath(input.path, ctx.cwd);
-      if (!path || edited.has(path)) return;
+      if (!path || edited.has(path) || IMAGE_FILE.test(path)) return;
       explored.add(path);
       if (explored.size < EXPLORATION_READS_BEFORE_NUDGE) return;
       nudged = true;
