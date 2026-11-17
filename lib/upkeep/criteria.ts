@@ -160,5 +160,6 @@ export function criterionIdForMetric(id: string): string {
   if (id.startsWith("skill:")) return "skill-correlation-info-v2";
   if (id.startsWith("model:")) return "model-cost-v2";
   if (id.startsWith("purpose:")) return "purpose-cost-v1";
+  if (id.startsWith("task-cost:")) return "task-cost-v1";
   return `${id}-v2`;
 }

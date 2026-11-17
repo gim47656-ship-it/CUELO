@@ -10,9 +10,6 @@ import type { SessionInfo } from "./types";
  */
 export const RESULT_REVIEW_STORAGE_KEY = "omp-web:session-opened-at";
 
-/** 연 시각을 남기는 세션 수 상한. 넘으면 오래전에 연 것부터 버리고, 버린 세션은 `since`로 판정한다. */
-export const RESULT_REVIEW_MAX_ENTRIES = 500;
-
 export interface ResultReviewState {
   /** 이 브라우저가 연 시각을 남기기 시작한 때(ms). 연 기록이 없는 세션의 기준이다. */
   since: number;
@@ -44,11 +41,7 @@ export function parseResultReviewState(raw: string | null, now: number): ResultR
 }
 
 export function serializeResultReviewState(state: ResultReviewState): string {
-  const entries = Object.entries(state.opened);
-  const kept = entries.length > RESULT_REVIEW_MAX_ENTRIES
-    ? entries.sort((left, right) => right[1] - left[1]).slice(0, RESULT_REVIEW_MAX_ENTRIES)
-    : entries;
-  return JSON.stringify({ since: state.since, opened: Object.fromEntries(kept) });
+  return JSON.stringify({ since: state.since, opened: state.opened });
 }
 
 /**
@@ -71,8 +64,8 @@ export function resultReviewToStore(storedRaw: string | null, state: ResultRevie
   return serializeResultReviewState(mergeResultReviewStates(state, parseResultReviewState(storedRaw, now)));
 }
 
-function activityMs(session: Pick<SessionInfo, "modified">): number | null {
-  const at = Date.parse(session.modified);
+function activityMs(session: Pick<SessionInfo, "modified" | "conversationModified">): number | null {
+  const at = Date.parse(session.conversationModified ?? session.modified);
   return Number.isFinite(at) ? at : null;
 }
 
@@ -80,7 +73,7 @@ function activityMs(session: Pick<SessionInfo, "modified">): number | null {
  * 세션을 지금 연 것으로 남긴다. 서버 시계가 브라우저보다 앞서도 열어 둔 동안의 활동이 다시
  * 확인할 결과가 되지 않게, 지금과 그 세션의 활동 시각 중 나중 것을 쓴다. 바뀐 게 없으면 같은 객체다.
  */
-export function markSessionOpened(state: ResultReviewState, session: Pick<SessionInfo, "id" | "modified">, now: number): ResultReviewState {
+export function markSessionOpened(state: ResultReviewState, session: Pick<SessionInfo, "id" | "modified" | "conversationModified">, now: number): ResultReviewState {
   const at = Math.max(now, activityMs(session) ?? 0);
   if ((state.opened[session.id] ?? -Infinity) >= at) return state;
   return { since: state.since, opened: { ...state.opened, [session.id]: at } };
@@ -116,7 +109,7 @@ export function forgetSessions(state: ResultReviewState, ids: Iterable<string>):
  * 「모두 확인」: 지금 확인할 결과로 보이는 세션을 모두 연 것으로 남긴다. 답을 기다리는 세션은
  * 열어 봐도 남으므로 여기서도 그대로다. 바뀐 게 없으면 같은 객체다.
  */
-export function markSessionsOpened(state: ResultReviewState, sessions: Iterable<Pick<SessionInfo, "id" | "modified">>, now: number): ResultReviewState {
+export function markSessionsOpened(state: ResultReviewState, sessions: Iterable<Pick<SessionInfo, "id" | "modified" | "conversationModified">>, now: number): ResultReviewState {
   let next = state;
   for (const session of sessions) next = markSessionOpened(next, session, now);
   return next;

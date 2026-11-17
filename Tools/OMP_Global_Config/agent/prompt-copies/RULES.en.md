@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 37da9c22de09842d -->
+<!-- source-fingerprint: bf3b48b3aef8720c -->
 # Global Rules
 
 (Model-facing English copy of the Korean source `RULES.md`.)
@@ -38,7 +38,7 @@ Rules that tool shapes and runtime guards enforce live in those tool description
 - Investigate affected symbols, needed sections, existing artifacts and runtime evidence; do not change context proxies, permanent gates or thresholds without that evidence. After compaction/resume inherit decisions, contracts, unfinished work, check results and artifact locators; narrowly recall unclear past instructions only when material. Token count alone never stops work.
 - Read known official documentation URLs directly. To find library, version or API docs you may use the Context7 CLI: prefix every command with `CTX7_TELEMETRY_DISABLED=1`, run `ctx7 library <name> "<question>"` with a question free of secrets and internal source, then `ctx7 docs <id> "<question>"` with the exact returned ID. Never add `ctx7 setup`, MCP or Skills.
 - Start multi-file, documentation and repository-structure research with `skim`; confirm exact lines with `read` before editing. Never target secrets.
-- Before new text or paragraph rewrites, apply `draft` and `slop_check` per `rule://writing-review-procedure`. Waiving `slop_check` on an artifact a person sees needs an explicit user instruction; never pass a failed review.
+- Follow `rule://writing-review-procedure` for the scope and exclusions of `draft` and `slop_check` on new or rewritten prose. Waiving `slop_check` on an in-scope artifact needs an explicit user instruction; never pass a failed review.
 - In new user-facing replies and new document prose, do not join words with the middle dot (U+00B7); use a comma or conjunction. Preserve quotes, raw errors, paths, code, data and existing lines; this rule alone never justifies a bulk rewrite.
 - LibreOffice is the default for opening, editing and converting existing Word, Excel and PowerPoint documents (user decision, 2026-10-15). Use MS Office when the user asks or macros, external links or format fidelity require it. Re-saving existing documents with other tools or libraries needs a preservation check for that format and version first. Never overwrite the original; work on a copy or new file and afterwards verify Korean fonts, layout, tables, formulas and computed values. This default authorizes no installation, MCP registration or permission change.
 - For web UI, HTML report slides, PPT, Word or PDF creation and template reuse, read `rule://creation-tools` first without waiting for tool names (user decision, 2026-10-28). Preserve the existing design system, originals and editability; this authorizes no unsolicited creation, installation, cost or external publication.

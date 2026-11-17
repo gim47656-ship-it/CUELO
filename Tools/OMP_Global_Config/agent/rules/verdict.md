@@ -31,11 +31,9 @@ description: For multi-file/module start contracts and completion verdicts, plus
   위치)이나 미확인(막힌 이유 + 필요한 확인)을 revision과 함께 남긴다. "테스트 통과"는 조건 하나의
   증거일 수 있어도 조건 전체의 증거가 아니다. 최종 수용에서 Main이 빠진 조건을 확인한다.
 - 하위 에이전트 보고가 부족하면 전체를 다시 시키지 말고 빠진 증거만 요청한다.
-- 위임한 조각의 Maker는 source·contract·caller 증거와 자기 검증의 exact command·cwd·exit
-  status·관측·raw artifact locator·재사용 근거·미검증 조건을 함께 제공한다. 위임한 조각에서
-  Main은 조립·한정된 확인·finding 판단·최종 수용을 맡고, 그 조각의 집중 검사를 같은 환경·같은
-  조건으로 반복해 확인하지 않는다(공통 격리 환경과 필요한 전체 빌드·통합·수용 검사는 Main이
-  실행한다). `routine`은 Main이 직접 구현하고 검증해 같은 증거를 스스로 남긴다.
+- 위임한 Maker는 source·contract·caller 증거와 자기 검증의 exact command·cwd·exit status·관측·raw
+  artifact locator·재사용 근거·미검증 조건을 제공한다. `routine`은 Main이 직접 구현하고 검증해
+  같은 증거를 남긴다. 위임 조각의 검수와 통합 검증 소유권은 다음 항목을 따른다.
 - 검수는 Main이 소유한다. Main은 owner의 불변 raw artifact와 locator를 검수 대상으로 쓰고,
   owner의 집중 검사를 같은 환경·조건에서 반복하지 않는다. 공통 격리 환경과 필요한 전체
   빌드·통합·수용 검사는 Main이 frozen revision에서 실행하며, 검사가 도는 동안 그 revision을

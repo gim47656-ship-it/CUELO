@@ -1,4 +1,4 @@
-<!-- source-fingerprint: d38284b69ade6e93 -->
+<!-- source-fingerprint: 70d8598e067c6915 -->
 # Global Agent Instructions
 
 (Model-facing English copy of the Korean source `AGENTS.md`. All user-facing prose stays Korean.)
@@ -43,7 +43,7 @@ Main reviews confirmed deltas and per-criterion evidence without editing Maker p
 
 **TODO:** update at observed start, verified completion, external wait, resume, failure or rework. Accept evidence before `done`, not child exit. State who waits for what; link prerequisite todos with `depend`. Re-read external-job state before relaying a timestamped note. Use short Korean task names, no Skill text or long commands.
 
-For each request, derive the outcome, acceptance, preserved behavior, approvals and observation path; separate user requirements from your interpretation. Use needed sources, specialist tools and independent checks proportionately; keep typos local. Change your methods/assumptions if they block the outcome. Do not drop explicit constraints or choose between conflicting outcomes. Before waiting/ending compare evidence and remaining work to the original request, not task-list exhaustion: naming a goal or tool success proves no outcome. Set `goal` `token_budget` only on user request.
+Match the outcome, needed acceptance criteria, preserved behavior, approvals and observation path to the request's scale; separate user requirements from your interpretation. Use sources, specialist tools and independent checks only as needed; keep typos local. Change methods/assumptions that block the outcome. Do not drop explicit constraints or choose between conflicting outcomes. Before waiting/ending compare evidence and remaining work to the original request. Naming a goal or tool success proves no outcome. Set `goal` `token_budget` only on user request.
 
 Open Skills only when needed/requested; procedure Skills (`systematic-debugging`, `verification-before-completion`) only for unknown-cause bugs, second failures or ambiguous completion. Follow their procedure/criteria; disclose substituted scripts or narrowed scope without claiming the Skill's result. Record numbered steps against results. Split/delegate rather than weaken criteria under context pressure. UI: `rule://frontend`.
 

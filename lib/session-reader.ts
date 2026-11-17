@@ -5,8 +5,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { Tokenizer, type AgentMessage as OmpAgentMessage } from "@oh-my-pi/pi-agent-core";
 import { calculatePromptTokens, hasContextTokenUsage } from "@oh-my-pi/pi-agent-core/compaction";
-import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync } from "fs";
-import { stat } from "fs/promises";
+import { closeSync, existsSync, openSync, readSync, realpathSync } from "fs";
+import { open, stat, type FileHandle } from "fs/promises";
 import { dirname, join, normalize as normalizePath, resolve, sep } from "path";
 import type { AgentMessage, CompactedWork, SessionEntry, SessionHeader, SessionInfo, SessionContext, TrackerTodoRecords } from "./types";
 import type { TodoPhase } from "./todo-state";
@@ -18,13 +18,14 @@ import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit
 import { getLatestTodoPhasesFromEntries, getLatestTodoSnapshotIdentity, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getOmpRuntime } from "./omp-runtime";
 import { normalizeToolCalls } from "./normalize";
-import { deferredToolImageText } from "./message-display";
+import { deferredToolImageText, getAssistantErrorMessage, isToolImageBlock } from "./message-display";
 import { sessionPathKey } from "./session-path";
 import { peekSessionProject, rememberPlainSessionProject, resolveProject, type SessionProjectGrouping } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent, parseLiveTranscriptSpeaker } from "./live-types";
 import { GPT6_REPLY_CUSTOM_TYPE, GPT6_REPLY_SOURCE } from "./gpt6-bridge";
 import { latestThinkingCeiling } from "./thinking-ceiling";
+import { buildTranscriptRenderPlan, partitionTranscriptPlan } from "./transcript-plan";
 
 export { getAgentDir };
 
@@ -138,67 +139,109 @@ export function mergeSessionLists(
 const ACTIVITY_TAIL_CHUNK_BYTES = 64 * 1024;
 const ACTIVITY_TAIL_MAX_BYTES = 8 * 1024 * 1024;
 
+interface SessionActivityTimes {
+  beforeExit: string | null;
+  conversation: string | null;
+}
+
 declare global {
-  var __ompSessionActivityCache: Map<string, { mtimeMs: number; size: number; at: string | null }> | undefined;
+  var __ompSessionActivityCache: Map<string, { mtimeMs: number; size: number; activity: SessionActivityTimes }> | undefined;
   var __ompSessionFirstMessageCache: Map<string, { mtimeMs: number; size: number; text: string | null }> | undefined;
 }
 
-/**
- * The time of the last transcript record when a file ends in `session_exit` diagnostics.
- *
- * Opening a session in the browser starts an AgentSession, and disposing it (idle timeout,
- * restart) appends a `session_exit` line. That line alone moves the file mtime — which the SDK
- * reports as `modified` — so a session untouched for days jumped into "today". Only trailing
- * exit lines are skipped; any other tail means real activity and returns `null` so the caller
- * keeps the SDK mtime. Before the first exit line is found the walk stops at one chunk and at
- * any line that does not name `session_exit`, so an active session costs one small read; it only
- * grows past a large record in front of the exit lines.
- */
-export function readActivityBeforeSessionExit(filePath: string): string | null {
-  let fd: number | undefined;
+/** Read both the legacy list time and the latest conversation result in one backward scan. */
+export async function readSessionActivity(filePath: string): Promise<SessionActivityTimes> {
+  const activity: SessionActivityTimes = { beforeExit: null, conversation: null };
+  const messages: AgentMessage[] = [];
+  const timestamps: string[] = [];
+  const finish = () => {
+    messages.reverse();
+    timestamps.reverse();
+    const { main } = partitionTranscriptPlan(messages, buildTranscriptRenderPlan(messages));
+    const imageResultTimes = new Map<string, number>();
+    messages.forEach((message, index) => {
+      if (message.role === "toolResult") imageResultTimes.set(message.toolCallId, Date.parse(timestamps[index]));
+    });
+    let latest = -Infinity;
+    for (const item of main) {
+      latest = Math.max(latest, Date.parse(timestamps[item.idx]));
+      if (item.kind === "answer") {
+        for (const block of item.blocks) {
+          if (isToolImageBlock(block)) latest = Math.max(latest, imageResultTimes.get(block.toolImage.toolCallId) ?? -Infinity);
+        }
+      }
+    }
+    if (Number.isFinite(latest)) activity.conversation = new Date(latest).toISOString();
+    return activity;
+  };
+  let file: FileHandle | undefined;
   try {
-    fd = openSync(filePath, "r");
-    let position = fstatSync(fd).size;
+    file = await open(filePath, "r");
+    let position = (await file.stat()).size;
     let tail = Buffer.alloc(0);
     let end = 0;
     let skippedExit = false;
+    let beforeExitResolved = false;
+    let bytesRead = 0;
     for (;;) {
       const newline = end > 0 ? tail.lastIndexOf(0x0a, end - 1) : -1;
       if (newline < 0 && position > 0) {
-        // Exit diagnostics are small: a last line longer than one chunk is real activity.
-        if (!skippedExit && tail.length >= ACTIVITY_TAIL_CHUNK_BYTES) return null;
-        if (tail.length >= ACTIVITY_TAIL_MAX_BYTES) return null;
-        const length = Math.min(ACTIVITY_TAIL_CHUNK_BYTES, position);
+        if (bytesRead >= ACTIVITY_TAIL_MAX_BYTES) beforeExitResolved = true;
+        const length = Math.min(Math.max(ACTIVITY_TAIL_CHUNK_BYTES, end), position);
         const chunk = Buffer.alloc(length);
         position -= length;
-        readSync(fd, chunk, 0, length, position);
-        tail = Buffer.concat([chunk, tail]);
+        await file.read(chunk, 0, length, position);
+        tail = Buffer.concat([chunk, tail.subarray(0, end)]);
         end += length;
+        bytesRead += length;
         continue;
       }
       const line = tail.toString("utf8", newline + 1, end).trim();
       end = Math.max(newline, 0);
       if (line) {
-        if (!skippedExit && !line.includes(SESSION_EXIT_CUSTOM_TYPE)) return null;
-        const entry: unknown = JSON.parse(line);
-        if (!entry || typeof entry !== "object") return null;
-        if ("type" in entry && entry.type === "custom" && "customType" in entry
-          && entry.customType === SESSION_EXIT_CUSTOM_TYPE) {
-          skippedExit = true;
-        } else {
-          if (!skippedExit) return null;
-          const timestamp = "timestamp" in entry ? entry.timestamp : undefined;
-          return typeof timestamp === "string" && Number.isFinite(Date.parse(timestamp))
-            ? new Date(timestamp).toISOString()
-            : null;
+        let entry: SessionEntry | SessionHeader;
+        try {
+          entry = JSON.parse(line) as SessionEntry | SessionHeader;
+        } catch {
+          // A torn trailing append must not hide the complete result before it.
+          beforeExitResolved = true;
+          continue;
+        }
+        if (!entry || typeof entry !== "object") continue;
+        if (!beforeExitResolved) {
+          if (entry.type === "custom" && entry.customType === SESSION_EXIT_CUSTOM_TYPE) {
+            skippedExit = true;
+          } else {
+            beforeExitResolved = true;
+            if (skippedExit && Number.isFinite(Date.parse(entry.timestamp))) {
+              activity.beforeExit = new Date(entry.timestamp).toISOString();
+            }
+          }
+        }
+        if (entry.type === "session") {
+          if (Number.isFinite(Date.parse(entry.timestamp))) activity.conversation = new Date(entry.timestamp).toISOString();
+          return finish();
+        }
+        const message = entryToUiMessage(entry, { deferThinking: true, deferToolResultImages: true });
+        if (message && Number.isFinite(Date.parse(entry.timestamp))) {
+          messages.push(message);
+          timestamps.push(entry.timestamp);
+          if (message.role === "user") return finish();
+          // A plain latest answer has no later tool result to attach and no retry error to fold.
+          if (message.role === "assistant" && !getAssistantErrorMessage(message)
+            && !message.content.some((block) => block.type === "toolCall")
+            && !messages.some((item) => item.role === "toolResult")
+            && partitionTranscriptPlan([message], [{ kind: "message", idx: 0 }]).main.some((item) => item.kind === "answer")) {
+            return finish();
+          }
         }
       }
-      if (newline < 0) return null;
+      if (newline < 0) return finish();
     }
   } catch {
-    return null;
+    return activity;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    await file?.close();
   }
 }
 
@@ -279,16 +322,21 @@ function sessionFirstMessage(session: OmpSessionInfo): string | null {
   return text;
 }
 
-function sessionActivityTime(session: OmpSessionInfo): string {
+async function sessionActivityTimes(session: OmpSessionInfo): Promise<Pick<SessionInfo, "modified" | "conversationModified">> {
   const mtime = session.modified instanceof Date ? session.modified : new Date(String(session.modified));
   const fallback = Number.isFinite(mtime.getTime()) ? mtime.toISOString() : String(session.modified);
   const cache = globalThis.__ompSessionActivityCache ??= new Map();
   const key = sessionPathKey(session.path);
   const cached = cache.get(key);
-  if (cached && cached.mtimeMs === mtime.getTime() && cached.size === session.size) return cached.at ?? fallback;
-  const at = readActivityBeforeSessionExit(session.path);
-  cache.set(key, { mtimeMs: mtime.getTime(), size: session.size, at });
-  return at ?? fallback;
+  let activity = cached?.mtimeMs === mtime.getTime() && cached.size === session.size ? cached.activity : undefined;
+  if (!activity) {
+    activity = await readSessionActivity(session.path);
+    cache.set(key, { mtimeMs: mtime.getTime(), size: session.size, activity });
+  }
+  return {
+    modified: activity.beforeExit ?? fallback,
+    ...(activity.conversation ? { conversationModified: activity.conversation } : {}),
+  };
 }
 
 async function loadAllSessions(): Promise<SessionInfo[]> {
@@ -297,23 +345,27 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
   const pathToId = new Map<string, string>();
   for (const s of ompSessions) pathToId.set(sessionPathKey(s.path), s.id);
 
-  const sessions = ompSessions.map((s) => {
-    cacheSessionPath(s.id, s.path);
-    const firstMessage = sessionFirstMessage(s);
-    return {
-      path: s.path,
-      id: s.id,
-      cwd: s.cwd,
-      name: s.title,
-      created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
-      modified: sessionActivityTime(s),
-      // A user message found past the SDK window proves the session is not empty.
-      messageCount: firstMessage ? Math.max(s.messageCount, 1) : s.messageCount,
-      firstMessage: getDocumentPromptUserMessage(firstMessage ?? "") || NO_MESSAGES,
-      parentSessionId: s.parentSessionPath ? pathToId.get(sessionPathKey(s.parentSessionPath)) : undefined,
-      transient: false,
-    };
-  });
+  const sessions: SessionInfo[] = [];
+  for (let start = 0; start < ompSessions.length; start += 8) {
+    const batch = await Promise.all(ompSessions.slice(start, start + 8).map(async (s) => {
+      cacheSessionPath(s.id, s.path);
+      const firstMessage = sessionFirstMessage(s);
+      return {
+        path: s.path,
+        id: s.id,
+        cwd: s.cwd,
+        name: s.title,
+        created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
+        ...await sessionActivityTimes(s),
+        // A user message found past the SDK window proves the session is not empty.
+        messageCount: firstMessage ? Math.max(s.messageCount, 1) : s.messageCount,
+        firstMessage: getDocumentPromptUserMessage(firstMessage ?? "") || NO_MESSAGES,
+        parentSessionId: s.parentSessionPath ? pathToId.get(sessionPathKey(s.parentSessionPath)) : undefined,
+        transient: false,
+      };
+    }));
+    sessions.push(...batch);
+  }
   return attachSessionProjectInfo(sessions);
 }
 

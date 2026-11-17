@@ -31,6 +31,26 @@ const SECTION_START = /^(?:#{1,3}[ \t]|<[a-z][\w-]*[ >])/;
 const VOLATILE_MARKERS = ["<memories>", "<project-context>"];
 const TITLE_CHARS = 60;
 
+// Core prompts/system/autolearn-nudge-autocontinue.md, emitted only in the detached capture agent.
+const CAPTURE_PREFIX = "Automated capture turn — not a user reply; user has not responded to your previous turn.";
+
+function hasCapturePrompt(content: unknown): boolean {
+  if (typeof content === "string") return content.startsWith(CAPTURE_PREFIX);
+  return Array.isArray(content) && content.some((block: unknown) =>
+    block !== null && typeof block === "object" && "type" in block && block.type === "text"
+    && "text" in block && typeof block.text === "string" && block.text.startsWith(CAPTURE_PREFIX));
+}
+
+function isAutoLearnCapture(payload: unknown, ctx: ExtensionContext): boolean {
+  if (!payload || typeof payload !== "object" || !("messages" in payload) || !Array.isArray(payload.messages)) return false;
+  if (!payload.messages.some((message: unknown) =>
+    message !== null && typeof message === "object" && "role" in message && (message.role === "user" || message.role === "system")
+    && "content" in message && hasCapturePrompt(message.content))) return false;
+  // A real user can quote the template, and older sessions can persist it. Only a detached, unpersisted nudge identifies a capture.
+  return !ctx.sessionManager.getBranch().some((entry) =>
+    entry.type === "custom_message" ? hasCapturePrompt(entry.content)
+      : entry.type === "message" && (entry.message.role === "user" || entry.message.role === "developer") && hasCapturePrompt(entry.message.content));
+}
 type Section = [title: string, hash: string, chars: number];
 
 export interface PromptPrefixRecord {
@@ -267,12 +287,14 @@ export default function promptPrefixLedger(pi: ExtensionAPI, clock: () => number
   let restored = false;
   let chained = 0;
   let lastAgentAt: number | undefined;
+  let submittedCapturePrompt = false;
   // 다른 세션으로 바뀌면 그 세션 분기의 snapshot부터 다시 본다. 같은 세션 안 분기 이동은 다른 분기와 비교하지 않도록 기준만 버린다.
   const forget = (reloadSnapshot: boolean) => {
     last = undefined;
     restored = !reloadSnapshot;
     chained = 0;
     lastAgentAt = undefined;
+    submittedCapturePrompt = false;
   };
   const append = (customType: string, data: unknown) => {
     try {
@@ -284,9 +306,14 @@ export default function promptPrefixLedger(pi: ExtensionAPI, clock: () => number
   onSessionLifecycle(pi, { start: () => forget(true) });
   pi.on("session_tree", () => forget(false));
   pi.on("session_branch", () => forget(false));
+  // User-input persistence can lag the first provider request. The normal prompt hook does not run in a detached capture.
+  pi.on("before_agent_start", (event) => {
+    if (hasCapturePrompt(event.prompt)) submittedCapturePrompt = true;
+  });
 
   // 매 요청마다 현재 분기의 마지막 기록과 비교한다. 재시작, 세션 전환, 분기 이동 뒤에도 기준이 그 분기의 기록이다.
   pi.on("before_provider_request", (event, ctx) => {
+    if (!submittedCapturePrompt && isAutoLearnCapture(event.payload, ctx)) return;
     const record = promptPrefixRecord(event.payload);
     if (record && record.key !== lastRecordedKey(ctx)) pi.appendEntry(PROMPT_PREFIX_LEDGER_TYPE, record);
 

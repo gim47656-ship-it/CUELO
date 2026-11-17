@@ -25,6 +25,7 @@ import {
   type MakerResult, type ScanResult, type SessionCost, type UsageTotal, type WindowCounts,
 } from "./sessions";
 import { kstDateTime } from "./prompt";
+import { collectTaskCost, type TaskCostResult } from "./task-cost";
 import { buildSkillUsage, installedSkills, type InstalledSkill, type SkillUsageRow } from "./skill-usage";
 import { inspectWorkspace, type WorkspaceLeftovers } from "./workspace";
 import type { UpkeepDueItem, UpkeepEvidence, UpkeepMetric, UpkeepReport, UpkeepSection, UpkeepStatus } from "./types";
@@ -500,14 +501,51 @@ function costCandidates(scan: ScanResult, handoffs: UpkeepDueItem[], keyWindows:
   return { fixed: [perTurn, cacheRewriteMetric(scan), billedApiKeyMetric(scan)], rows };
 }
 
-export function costSection(scan: ScanResult, handoffs: UpkeepDueItem[]): UpkeepSection {
+/**
+ * 작업당 비용(2026-11-17 사용자 결정): Maker 모델마다 최근 기간 안 모든 시도의 추정 비용을 수용된 시도 수로 나눈다.
+ * 요청 100건당 비용과 달리 분자에 Maker 비용이, 분모에 수용된 결과가 들어간다. 구독 사용분도 빼지 않은 추정 금액이다.
+ * 판정하지 않는 참고 행이라 상태는 늘 정상이고(「미확인」이 비용 섹션 상태를 끌어내리지 않게), 표본이 적으면 건수만 보여 준다.
+ */
+export function taskCostMetrics(result: TaskCostResult): UpkeepMetric[] {
+  type Counts = TaskCostResult["models"][0]["windows"][0];
+  const zero = (): Counts => ({ attempts: 0, accepted: 0, rework: 0, held: 0, cost: 0, missingCost: false });
+  const merged = new Map<string, [Counts, Counts]>();
+  for (const { model, windows } of result.models) {
+    const key = shortModel(model);
+    const into = merged.get(key) ?? merged.set(key, [zero(), zero()]).get(key)!;
+    for (const w of [0, 1] as const) {
+      into[w].attempts += windows[w].attempts;
+      into[w].accepted += windows[w].accepted;
+      into[w].rework += windows[w].rework;
+      into[w].held += windows[w].held;
+      into[w].cost += windows[w].cost;
+      into[w].missingCost ||= windows[w].missingCost;
+    }
+  }
+  const per = (c: Counts) => (c.missingCost || !c.accepted ? null : c.cost / c.accepted);
+  const shown = (c: Counts) => `시도 ${c.attempts}건, 수용 ${c.accepted}건, rework ${c.rework}건, held ${c.held}건, 비용 ${usd(c.cost)}`;
+  return [...merged].filter(([, [a]]) => a.attempts > 0).sort(([, [x]], [, [y]]) => y.cost - x.cost).map(([model, [a, b]]) => {
+    const m = metric(`task-cost:${model}`, `작업당 비용 ${model} (수용된 Maker 시도당)`, "usd", per(a), per(b), "ok",
+      "참고용(판정 안 함). 모델별로 최근 7일 Maker 시도 전체의 추정 비용을 수용(accepted)된 시도 수로 나눈 값입니다. "
+      + `수용 시도가 ${MIN_SAMPLE}건 미만이면 건수만 보고 해석하지 않습니다`);
+    const notes = [`최근 7일 ${shown(a)}. 직전 7일 ${shown(b)}.`];
+    if (a.missingCost || b.missingCost) notes.push("일부 사용량 기록에 비용이 없어 그 기간 값은 비웁니다.");
+    else if (!a.accepted) notes.push("최근 7일에 수용된 시도가 없어 작업당 비용을 셀 수 없습니다.");
+    else if (a.accepted < MIN_SAMPLE) notes.push(`수용 시도가 ${MIN_SAMPLE}건 미만이라 건수만 참고하세요.`);
+    notes.push("판정이 없거나 held인 시도의 비용도 분자에 들어갑니다.");
+    m.note = notes.join(" ");
+    return m;
+  });
+}
+
+export function costSection(scan: ScanResult, handoffs: UpkeepDueItem[], taskCost: UpkeepMetric[] = []): UpkeepSection {
   const { fixed, rows } = costCandidates(scan, handoffs);
   rows.sort((x, y) => y.cost - x.cost);
 
   const shown = rows.filter((r) => !r.folded);
   const top = shown.slice(0, COST_TOP);
   const rest = [...shown.slice(COST_TOP), ...rows.filter((r) => r.folded)];
-  const metrics = [...fixed, ...top.map((r) => r.metric)];
+  const metrics = [...fixed, ...top.map((r) => r.metric), ...taskCost];
   if (rest.length) {
     const sum = (pick: (m: UpkeepMetric) => number | null) => (rest.some((r) => pick(r.metric) === null) ? null : rest.reduce((n, r) => n + (pick(r.metric) ?? 0), 0));
     const other = metric("cost-other", `그 밖의 ${rest.length}개 합계 (요청 100건당)`, "usd", sum((m) => m.current), sum((m) => m.previous), "ok");
@@ -841,19 +879,22 @@ async function buildReport(): Promise<UpkeepReport> {
     installedSkills(agentDir),
   ]);
   // Maker 결과(partial)와 세션 cwd별 마지막 기록은 세션 스캔에서 나오므로 스캔 뒤에 센다.
-  const [maker, workspace, stale] = await Promise.all([
+  const [maker, workspace, stale, taskCost] = await Promise.all([
     makerMetrics(agentDir, start, handoffs.items, scan.makerResults),
     inspectWorkspace(repo, agentDir, scan.warnings.length ? null : scan.cwdActivity, start),
     inspectRecordedStaleWorktrees().catch((error) => ({ worktrees: [], warnings: [String(error)] })),
+    collectTaskCost(agentDir, getSessionsDir(agentDir), start).catch((error): TaskCostResult => ({ models: [], unlinked: [0, 0], warning: `작업당 비용을 셀 수 없습니다: ${String(error)}` })),
   ]);
+  const taskCostWarnings = [...(taskCost.warning ? [taskCost.warning] : []), ...(taskCost.unlinked[0] || taskCost.unlinked[1] ? [`하위 세션 기록을 찾지 못한 Maker 시도(최근 7일 ${taskCost.unlinked[0]}건, 직전 7일 ${taskCost.unlinked[1]}건)가 있는 모델·기간은 작업당 비용을 비웁니다.`] : [])];
   const sections = [
     bottleneckSection(scan, maker, [...scan.warnings, ...(maker.warning ? [maker.warning] : [])]),
     memorySection(scan, handoffs.items),
-    costSection(scan, handoffs.items),
+    costSection(scan, handoffs.items, taskCostMetrics(taskCost)),
     complaintSection(scan),
     skillSection(scan, skills.skills, start, skills.warnings),
     opsSection(handoffs.items, handoffs.warnings, deploy, workspace, start),
   ];
+  sections.find((s) => s.id === "cost")!.warnings.push(...taskCostWarnings);
   const ops = sections.find((s) => s.id === "ops")!;
   ops.metrics.push(staleWorktreeMetric(stale.worktrees, stale.warnings, start));
   ops.warnings.push(...stale.warnings);

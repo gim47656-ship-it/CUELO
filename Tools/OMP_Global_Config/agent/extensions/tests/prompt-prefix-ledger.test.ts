@@ -11,7 +11,7 @@ import promptPrefixLedger, {
 } from "../prompt-prefix-ledger";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
-type Entry = { type: string; customType?: string; data?: unknown };
+type Entry = { type: string; customType?: string; data?: unknown; content?: unknown; message?: { role: string; content: unknown } };
 
 function payload(skills = "- a: one", projectContext = "<project-context>\nrepo rules\n</project-context>") {
   return {
@@ -49,7 +49,7 @@ function harness(branch: Entry[] = [], clock: () => number = () => 1_000, failOn
       expect(handler({ type: "before_provider_request", payload: body }, ctx)).toBeUndefined();
     }
   };
-  const emit = (name: string) => { for (const handler of handlers[name] ?? []) handler({ type: name }, ctx); };
+  const emit = (name: string, fields: Record<string, unknown> = {}) => { for (const handler of handlers[name] ?? []) handler({ type: name, ...fields }, ctx); };
   const shutdown = () => emit("session_shutdown");
   const switchTo = (id: string) => { sessionId = id; emit("session_switch"); };
   const records = () => branch.filter((entry) => entry.customType === PROMPT_PREFIX_LEDGER_TYPE).map((entry) => entry.data as PromptPrefixRecord);
@@ -157,6 +157,58 @@ describe("prompt prefix ledger", () => {
     expect(found!.lostChars).toBeGreaterThanOrEqual(MIN_LOST_CHARS);
     expect(found!.prev).toContain("첫 질문\"");
     expect(found!.cur).toContain("첫 질문 (고침)");
+  });
+
+  test("private auto-learn capture does not replace the primary baseline or snapshot", () => {
+    const marker = "Automated capture turn — not a user reply; user has not responded to your previous turn.";
+    for (const content of [marker, [{ type: "text", text: marker }]]) {
+      const h = harness();
+      const primary = conversation();
+      h.send(primary);
+      const capture = {
+        ...primary,
+        messages: [
+          ...primary.messages.slice(0, 2),
+          { role: "system", content: [{ type: "text", text: "[한국어 번역]\ndisplay-only reply" }] },
+          ...primary.messages.slice(2),
+          { role: "user", content },
+        ],
+      };
+      h.send(capture);
+      h.send({ ...capture, messages: [...capture.messages, { role: "assistant", content: "captured" }] });
+      h.shutdown();
+      const resumed = harness([...h.branch]);
+      resumed.send(conversation("첫 질문", [{ role: "user", content: "다음 질문" }]));
+      expect(resumed.records()).toHaveLength(1);
+      expect(resumed.breaks()).toEqual([]);
+      resumed.send(conversation("첫 질문 (고침)"));
+      expect(resumed.breaks()).toEqual([expect.objectContaining({ kind: "rewrite", index: 0 })]);
+    }
+  });
+
+  test("a persisted user quotation of the capture prompt is still a primary request", () => {
+    const content = "Automated capture turn — not a user reply; user has not responded to your previous turn.";
+    const h = harness([{ type: "message", message: { role: "user", content } }]);
+    const first = conversation("original", [{ role: "user", content }]);
+    h.send(first);
+    h.send({ ...first, messages: [{ role: "user", content: "rewritten" }, ...first.messages.slice(1)] });
+    expect(h.breaks()).toEqual([expect.objectContaining({ kind: "rewrite", index: 0 })]);
+  });
+
+  test("a submitted user quotation is primary even before its entry is persisted", () => {
+    const content = "Automated capture turn — not a user reply; user has not responded to your previous turn.";
+    const h = harness();
+    h.emit("before_agent_start", { reason: "prompt", prompt: content });
+    const first = conversation("original", [{ role: "user", content }]);
+    h.send(first);
+    h.send({ ...first, messages: [{ role: "user", content: "rewritten" }, ...first.messages.slice(1)] });
+    expect(h.records()).toHaveLength(1);
+    expect(h.breaks()).toEqual([expect.objectContaining({ kind: "rewrite", index: 0 })]);
+    h.switchTo("s2");
+    h.send(first);
+    h.send({ ...first, messages: [{ role: "user", content: "another branch" }, ...first.messages.slice(1)] });
+    expect(h.breaks()).toHaveLength(1);
+    expect(h.records()).toHaveLength(1);
   });
 
   test("cache_control 위치만 옮겨 다니거나 끝의 짧은 메시지만 바뀐 요청은 기록하지 않는다", () => {

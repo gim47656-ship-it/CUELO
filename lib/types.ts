@@ -459,6 +459,8 @@ export interface SessionInfo {
   name?: string;
   created: string;
   modified: string;
+  /** Last record rendered in the conversation, excluding internal diagnostics and compaction. */
+  conversationModified?: string;
   messageCount: number;
   firstMessage: string;
   parentSessionId?: string; // set if this session was forked from another

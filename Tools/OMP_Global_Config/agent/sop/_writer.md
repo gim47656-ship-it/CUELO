@@ -37,12 +37,11 @@
   first decides whether layout or accessibility is affected instead of being treated as equal to
   docs; local logic starts from a focused behavior check; and build config, server connection,
   session, auth, or data meaning follow their actual impact, where a small diff never skips a
-  required check. That means the focused build, test, lint, or type-check over the paths you
-  changed plus the browser, native, or CLI smoke that proves the surface you changed actually
-  behaves, using `eval` for browser observation and a `bash` service (`name` set) for processes that
-  must stay up. Give that service a name unique to your session - core 18.3.0 stops and replaces a
-  live service of the same name regardless of who started it - read it with `read proc://<name>`
-  and stop it with `write proc://<name>/kill`. Reuse
+  required check. Choose the focused build, test, lint, type-check or surface smoke needed for that
+  change; do not stack checks that prove the same condition. Use `eval` for browser observation.
+  A process that must stay up uses a uniquely named `bash` service: an existing service with the
+  same name is stopped and replaced. Read it with `read proc://<name>` and stop it with
+  `write proc://<name>/kill`. Reuse
   a suitable same-revision build, server, or result first; an isolated server and a full
   production build are never the default, and when a check needs the common environment or a full
   build, request or reuse Main's artifact instead of producing your own.
@@ -162,8 +161,8 @@
   evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
   reviewed file after your last round; if you must, run another round and report the new head.
   A chain with no non-probe round left never ends your slice: fix or refute what remains, finish
-  the acceptance work, run the focused check on each changed code file's final content, and list
-  those files with that check as evidence so Main can resolve with `unreviewedAcknowledgements`.
+  the acceptance work, and provide focused-check evidence covering each changed code file's final
+  content, reusing valid results, so Main can resolve with `unreviewedAcknowledgements`.
   `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
   `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (plus the non-blocking `crossReviewAdvisory` inside
@@ -208,14 +207,12 @@
   already-open tab the user named as the top-level `target` (user decision 2026-10-31; command-guard refuses
   other eval `browser.open` calls). `web_search` and a plain `read` of a URL open no browser and stay
   as they are; once a found page must be opened or rendered (JS-rendered page, login, screenshot,
-  interaction), move it to the ego TaskSpace. Verify there with `profile: "verify"` (never the user
-  profile); on a PC without ego lite use HEADLESS Chromium (`app: "chromium"`). Localhost, isolated
-  verification servers, and build output all qualify — that is nearly every check you run. On such
-  a PC `browser.relay: true` is the profile default, so OMITTING `app: "chromium"` in
-  `browser.open` opens a tab in the USER'S OWN browser. Never put a broken
-  intermediate state on the user's screen. Use the user's browser profile only when their live
-  session is genuinely required, or when Main tells you to hand a FINISHED surface over for
-  judgement — do not open it on your own initiative.
+  interaction), move it to the ego TaskSpace. Follow the environment's `ego_browser` instructions:
+  use `profile: "verify"` when available; on Linux ego without that profile use a default-profile
+  TaskSpace and leave logged-out-only checks unverified. On a PC without ego lite use HEADLESS
+  Chromium (`app: "chromium"`); omitting that option can open the user's browser. Never put a
+  broken intermediate state on the user's screen. Use a live user session only when required,
+  or when Main hands a FINISHED surface over for judgement.
   Do not launch Chrome/Edge executables directly from bash or eval (including `Bun.spawn`) for
   verification. Use the managed browser helpers or the project's supported verification commands.
   Such commands must use an absolute, isolated profile path: even headless startup can show a

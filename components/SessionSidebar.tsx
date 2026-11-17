@@ -850,9 +850,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   }, [selectedSessionId]);
 
   // 열어 둔 세션은 본 것이다. 연 동안 활동이 늘어도(그 세션이 끝나도) 다시 남긴다.
-  const selectedActivity = selectedSessionId
-    ? sessionsForDisplay.find((session) => session.id === selectedSessionId)?.modified
+  const selectedReviewSession = selectedSessionId
+    ? sessionsForDisplay.find((session) => session.id === selectedSessionId)
     : undefined;
+  const selectedActivity = selectedReviewSession?.conversationModified ?? selectedReviewSession?.modified;
   const resultReviewReady = resultReview !== null;
   useEffect(() => {
     if (!selectedSessionId || selectedActivity === undefined || !resultReviewReady) return;
