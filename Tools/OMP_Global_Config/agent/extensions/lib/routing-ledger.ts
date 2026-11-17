@@ -489,8 +489,8 @@ export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord;
 export interface RoutingLedger {
   /** 실패해도 던지지 않는다. 기록 실패가 발주를 막으면 안 된다. 저장 성공 여부를 돌려준다. */
   append(record: AnyLedgerRecord): boolean;
-  /** 실패하면 빈 목록. 깨진 줄은 건너뛴다. */
-  read(): LedgerRecord[];
+  /** 실패하면 빈 목록. 깨진 줄은 건너뛴다. sessionId를 주면 복원·재작업용으로 파일 전체에서 그 세션만 읽는다. */
+  read(sessionId?: string): LedgerRecord[];
 }
 
 /** 실행 프로필의 agent 루트. prompt-compact의 AGENT_DIR과 같은 관례이며 CUELO의 steering-received.jsonl과 같은 자리다. */
@@ -512,12 +512,12 @@ export function createRoutingLedger(path: string, onError?: (error: unknown) => 
         return false;
       }
     },
-    read() {
+    read(sessionId) {
       let fd: number | undefined;
       try {
         fd = openSync(path, "r");
         const size = fstatSync(fd).size;
-        const start = Math.max(0, size - TAIL_BYTES);
+        const start = sessionId === undefined ? Math.max(0, size - TAIL_BYTES) : 0;
         const bytes = new Uint8Array(size - start);
         readSync(fd, bytes, 0, bytes.length, start);
         let text = new TextDecoder().decode(bytes);
@@ -527,7 +527,8 @@ export function createRoutingLedger(path: string, onError?: (error: unknown) => 
           if (!line.trim()) return [];
           try {
             const parsed = JSON.parse(line) as LedgerRecord;
-            return parsed && (parsed.type === "dispatch" || parsed.type === "outcome" || parsed.type === "verdict") ? [parsed] : [];
+            return parsed && (parsed.type === "dispatch" || parsed.type === "outcome" || parsed.type === "verdict")
+              && (sessionId === undefined || parsed.sessionId === sessionId) ? [parsed] : [];
           } catch {
             return [];
           }

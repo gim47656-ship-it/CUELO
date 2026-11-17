@@ -239,8 +239,8 @@ export function parseOwnedPaths(raw: string | undefined): string[] {
 }
 
 /**
- * cwd 밖을 가리키는 표기(절대경로 또는 `..` 세그먼트). isPathOwned는 경로 해석을 하지 않는
- * 문자열 매칭이므로 스냅샷 키(`-- .`로 cwd 하위만 담는다)와 절대 매칭되지 않는다.
+ * cwd 밖을 가리키는 표기(절대경로 또는 정규화 뒤 남은 선행 `..` 세그먼트).
+ * cwd 안의 `..`는 collapseOwnedPath가 먼저 접는다.
  */
 function isEscapingOwnedPath(value: string): boolean {
   const normalized = value.trim().replace(/\\/g, "/");
@@ -1217,18 +1217,23 @@ export function matchUserEgoAppCdp(text: unknown, readPort: UserEgoPortReader): 
 export type TreeSnapshot = ReadonlyMap<string, string | undefined>;
 
 /**
- * 어휘적 정규화: 구분자를 `/`로 통일하고 반복 `/`와 `.` 세그먼트를 접는다. 후행 `/`(디렉터리)와
- * 선행 `/`·드라이브 루트 `X:/`(절대경로 표시)는 유지하고, `..`는 건드리지 않으며(해석 없음), 비면 `.`(cwd)이다.
- * 대소문자는 바꾸지 않는다.
+ * 어휘적 정규화: 구분자를 `/`로 통일하고 반복 `/`, `.`, cwd 안의 `..` 세그먼트를 접는다.
+ * 후행 `/`, `.`·`..`(디렉터리)와 선행 `/`·드라이브 루트 `X:/`(절대경로 표시)는 유지한다.
+ * cwd 밖으로 나가는 선행 `..`는 거부할 수 있게 남긴다. 비면 `.`(cwd)이며 대소문자는 바꾸지 않는다.
  */
 export function collapseOwnedPath(value: string): string {
   const slashed = value.trim().replace(/\\/g, "/");
   const drive = /^[A-Za-z]:\//.exec(slashed)?.[0] ?? "";
   const rest = slashed.slice(drive.length);
-  const segments = rest.split("/").filter((segment) => segment.length > 0 && segment !== ".");
+  const segments: string[] = [];
+  for (const segment of rest.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === ".." && segments.length > 0 && segments.at(-1) !== "..") segments.pop();
+    else segments.push(segment);
+  }
   const lead = drive || (rest.startsWith("/") ? "/" : "");
   if (segments.length === 0) return lead || (slashed.length > 0 ? "." : "");
-  const trail = rest.endsWith("/") ? "/" : "";
+  const trail = /(?:\/|(?:^|\/)\.\.?)$/.test(rest) ? "/" : "";
   return `${lead}${segments.join("/")}${trail}`;
 }
 

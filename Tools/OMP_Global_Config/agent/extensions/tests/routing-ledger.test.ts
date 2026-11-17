@@ -68,6 +68,23 @@ describe("routing ledger 파일", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  test("session recovery retains old dispatches outside the default summary tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "routing-ledger-session-"));
+    try {
+      const path = join(dir, "routing-ledger.jsonl");
+      const ledger = createRoutingLedger(path);
+      const old = dispatch("Old");
+      ledger.append(old);
+      appendFileSync(path, `${JSON.stringify({ type: "cross-review-waiver", padding: "x".repeat(1 << 20) })}\n`);
+      ledger.append(outcome("Old", "completed"));
+      ledger.append(dispatch("Other", { sessionId: OTHER_SESSION }));
+      expect(ledger.read().some((row) => row.type === "dispatch" && row.attemptId === old.attemptId)).toBe(false);
+      expect(ledger.read(SESSION)).toEqual([old, outcome("Old", "completed")]);
+      expect(scopedAttempts(ledger.read(SESSION), SESSION)[0]).toMatchObject({ name: "Old", status: "completed" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   test("쓰기·읽기 실패는 던지지 않고 onError로만 알린다", () => {
     const errors: unknown[] = [];
     // 디렉터리를 파일 경로로 주면 append와 read가 모두 실패한다.

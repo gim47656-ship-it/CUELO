@@ -91,7 +91,8 @@ function withoutTaskGuardBlock(task: string): string {
 }
 
 function oneLineFields(body: string, name: string): string[] {
-  const pattern = new RegExp(`^\\s*${name}\\s*:\\s*(.*?)\\s*$`, "gim");
+  const space = "[^\\S\\n\\r\\u2028\\u2029]*";
+  const pattern = new RegExp(`^${space}${name}${space}:${space}(.*?)${space}$`, "gim");
   return [...body.matchAll(pattern)].map((match) => match[1] ?? "");
 }
 

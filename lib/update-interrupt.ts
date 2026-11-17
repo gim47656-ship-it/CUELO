@@ -26,7 +26,8 @@
  * 도구 제한 보존(2026-11-17):
  * - 제한 세션(`restrictTools`)의 허용 도구는 wrapper 메모리에만 있다. drain이 세션 목록과 함께 `restrictTools`로 적고,
  *   새 서버의 콜드 재개가 같은 제한으로 `startRpcSession`을 부른다. 기록 없이 띄우면 제한 없는 도구 묶음이 열린다.
- * - 서버가 갑자기 죽은 뒤의 복구(`recoverAbruptStop`)는 영수증에 제한이 없어 이 기록을 만들지 못한다.
+ * - 서버가 갑자기 죽은 뒤의 복구(`recoverAbruptStop`)도 같다: 영수증(`runtime-activity`)의 `recovery.restrictTools`에
+ *   실행 중인 제한 세션의 허용 도구를 적어 두고, 복구가 그 값을 대기열의 같은 필드로 옮긴다.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -507,7 +508,14 @@ function queueAbruptResume(sessionIds: string[], prior: PriorGenerationActivity)
   const merged = [...new Set([...known, ...sessionIds])].sort();
   const abrupt = [...new Set([...(previous?.abruptSessionIds ?? []), ...sessionIds.filter((sessionId) => !known.has(sessionId))])].sort();
   const failures = (previous?.failures ?? []).filter((failure) => merged.includes(failure.sessionId));
-  const restrictTools = restrictionsKept(previous?.restrictTools, merged);
+  // 영수증은 급사 직전 wrapper가 쓴 값이라 방금 올린 세션에는 대기열의 옛 기록보다 정본이다. 영수증에 없으면 제한 없이 돌던 세션이다.
+  const restricted: Record<string, string[]> = { ...previous?.restrictTools };
+  for (const sessionId of sessionIds) {
+    const tools = prior.restrictTools?.[sessionId];
+    if (tools === undefined) delete restricted[sessionId];
+    else restricted[sessionId] = tools;
+  }
+  const restrictTools = restrictionsKept(restricted, merged);
   writeJsonAtomic(pendingPath(), {
     schemaVersion: 1,
     // `runResumePass`는 이 프로세스가 쓴 목록을 건너뛴다. 옛 세대 pid가 우연히 같아도 건너뛰지 않게 한다.

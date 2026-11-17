@@ -2900,7 +2900,12 @@ export function getWaitingRpcSessionIds(): string[] {
 
 /** 실행 중인 세션 목록을 업데이트·롤백 복구용 영수증에 기록한다. */
 export function notifyRunningChange(): void {
-  recordRuntimeActivity(getRunningRpcSessionIds(), getWaitingRpcSessionIds());
+  const restrictTools: Record<string, readonly string[]> = {};
+  for (const sessionId of getRunningRpcSessionIds()) {
+    const tools = getRpcSession(sessionId)?.restrictTools;
+    if (tools !== undefined) restrictTools[sessionId] = tools;
+  }
+  recordRuntimeActivity(getRunningRpcSessionIds(), getWaitingRpcSessionIds(), restrictTools);
   // 보류된 신뢰 변경이 없으면 map 크기만 보고 돌아온다.
   reconcileProjectTrust(projectTrustHost);
 }

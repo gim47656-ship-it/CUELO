@@ -25573,6 +25573,46 @@ function planSpawns(
 	notice.alternates = [{ file: notice.file, marker, anchor: notice.anchor, requires: r1, legacyPatched: r1, patched }];
 }
 
+// 2026-11-17 (doc/history/2026/11/17-improve-batch): Auto 판정은 강도가 바뀔 때만 thinking_level_change 를 남기고
+// 분류 결과 자체는 어디에도 남지 않아 턴별 강도 분포를 잴 수 없었다(87회 판정에 결과값 0개). 판정이 확정될 때마다
+// 컨텍스트에 들어가지 않는 custom 항목(custom_message 가 아니다)을 하나 붙인다. 강도 결정은 바꾸지 않는다.
+// 분류기 값은 분류기 자체 상한이 이미 적용된 값이고, 정책 상한·세션 상한이 더 낮추면 applied 와 ceiling 으로 드러난다.
+// raise-only 가 반영되지 않은 재판정과 중단된 턴은 확정이 아니므로 기록하지 않는다. 기존 ceiling 항목의 marker 가
+// `#resolveAutoThinkingLevel(effort);` 줄까지 이어지므로 그 줄 앞은 건드리지 않고, 변경 여부는 앞 줄에서 미리 잡는다.
+// 검증: core-agent-thinking-test.ts [auto-thinking-decision].
+{
+	const DROP = "\t\t// Drop the result if the turn was aborted/superseded while classifying.\n\t\tif (this.#host.promptGeneration() !== generation || !this.#autoThinking) return;\n";
+	EDITS.push({
+		file: "src/session/model-controls.ts",
+		marker: "const decisionBefore = this.#thinkingLevel;",
+		anchor: DROP,
+		patched: DROP + "\t\t// CUELO: Auto 판정 기록용 — 확정 직전의 강도.\n\t\tconst decisionBefore = this.#thinkingLevel;\n",
+	});
+	const TAIL = "\t}\n\n\t/**\n\t * Apply a `chillax` keyword";
+	EDITS.push({
+		file: "src/session/model-controls.ts",
+		marker: '"auto-thinking-decision"',
+		anchor: TAIL,
+		patched: `\t\t// CUELO: Auto 판정 기록 — 분류 결과와 적용 강도를 컨텍스트 밖 custom 항목으로 남긴다.
+		try {
+			const ultrathink = this.#host.magicKeywordEnabled("ultrathink") && containsMagicKeyword(promptText, "ultrathink");
+			this.#host.sessionManager.appendCustomEntry("auto-thinking-decision", {
+				path: ultrathink ? "ultrathink" : policyHold ? "hold" : resolved === undefined ? "fallback" : "classifier",
+				classifier: ultrathink || policyHold ? null : (resolved ?? null),
+				floor: policyFloor ?? null,
+				ceiling: policyCeiling ?? null,
+				sessionCeiling: this.#thinkingLevelCeiling ?? null,
+				applied: effort,
+				changed: decisionBefore !== effort,
+				raiseOnly: options?.raiseOnly === true,
+			});
+		} catch (error) {
+			logger.warn("auto-thinking: decision record failed", { error: error instanceof Error ? error.message : String(error) });
+		}
+${TAIL}`,
+	});
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

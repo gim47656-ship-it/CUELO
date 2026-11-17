@@ -818,6 +818,29 @@ describe("OWNED_PATHS", () => {
     expect(parseOwnedPaths(undefined)).toEqual([]);
   });
 
+  test("parent segments normalize inside cwd and cwd aliases retain whole-tree ownership", () => {
+    expect(parseOwnedPaths("src/.., src/../lib/, src/../a.ts")).toEqual([".", "lib/", "a.ts"]);
+    expect(isPathOwned(["src/.."], "any/file.ts")).toBe(true);
+    expect(isPathOwned(["src/../lib/"], "lib/a.ts")).toBe(true);
+    expect(isPathOwned(["lib/"], "src/../lib/a.ts")).toBe(true);
+    const state = createWriterClaimState();
+    claimSharedWriters(state, "parent", [{ name: "Alpha", index: 0, ownedPaths: ["src/../lib/"] }]);
+    expect(decideOwnerWrite({ cwd: "/repo", state, running: () => [] }, "Beta", ["src/../lib/a.ts"])?.conflict)
+      .toEqual({ owner: "Alpha", path: "lib/a.ts" });
+    const guard = createTaskGuardState();
+    expect(reserveTaskCall(guard, "cwd", flat("maker", brief({ OWNED_PATHS: "src/.." }))).ok).toBe(true);
+    expect(reservedMakers(guard, "cwd")[0]?.ownedPaths).toEqual(["."]);
+  });
+
+  test("terminal parent and dot segments retain directory ownership", () => {
+    expect(parseOwnedPaths("lib/sub/.., lib/sub/../a.ts, lib/., lib/sub/../")).toEqual(["lib/", "lib/a.ts", "lib/", "lib/"]);
+    expect(isPathOwned(["lib/sub/.."], "lib/a.ts")).toBe(true);
+    const state = createWriterClaimState();
+    claimSharedWriters(state, "directory", [{ name: "Alpha", index: 0, ownedPaths: ["lib/sub/.."] }]);
+    expect(decideOwnerWrite({ cwd: "/repo", state, running: () => [] }, "Beta", ["lib/a.ts"])?.conflict)
+      .toEqual({ owner: "Alpha", path: "lib/a.ts" });
+  });
+
   test("반복 구분자와 내부 .는 한 표기로 접고 isPathOwned도 같은 소유로 본다", () => {
     expect(parseOwnedPaths("src//view.ts, src/./view.ts, a//b/, .")).toEqual(["src/view.ts", "src/view.ts", "a/b/", "."]);
     expect(isPathOwned(["src//view.ts"], "src/view.ts")).toBe(true);
@@ -842,14 +865,14 @@ describe("OWNED_PATHS", () => {
 
   test("cwd 밖을 가리키는 `..` 표기는 거부한다", () => {
     const state = createTaskGuardState();
-    for (const escaping of ["../x.txt", "..", "..\\x.txt", "a/../b.txt", "a/../../x"]) {
+    for (const escaping of ["../x.txt", "..", "..\\x.txt", "a/../../x", "../src/../x"]) {
       const decision = reserveTaskCall(state, escaping, flat("maker", brief({ OWNED_PATHS: escaping })));
       expect(decision.ok).toBe(false);
       if (!decision.ok) expect(decision.reason).toMatch(/OWNED_PATHS/);
     }
     // cwd 안에 머무는 표기는 계속 허용한다.
     expect(
-      reserveTaskCall(state, "ok", flat("maker", brief({ OWNED_PATHS: "sub/dir/, c.txt" }))).ok,
+      reserveTaskCall(state, "ok", flat("maker", brief({ OWNED_PATHS: "sub/dir/, c.txt, a/../b.txt" }))).ok,
     ).toBe(true);
   });
 });

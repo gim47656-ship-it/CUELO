@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, relative, sep } from "node:path";
 import { boundary, localPath, targets, within, type Boundary, type Result } from "./turn-documents";
+import { readGuardField } from "../command-guard/task-guard";
 
 // Main 세션의 게시(commit+push) 누락 관측. 근거는 성공한 edit·write·draft 결과, task 발주 영수증과 async-result 정산,
 // git_finalize 영수증(input.files와 details.ok/stage)뿐이다. Git을 실행해 바꾸지 않고, 더러운 파일 전체를 소유로 보지 않는다.
@@ -28,10 +29,9 @@ function guard(task: string): { workClass?: string; owned: string[] } {
   if (!marker) return { owned: [] };
   const tail = task.slice(marker.index + marker[0].length);
   const block = tail.slice(0, /\r?\n\s*\r?\n/.exec(tail)?.index ?? tail.length);
-  const field = (name: string) => new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "im").exec(block)?.[1];
   return {
-    workClass: field("WORK_CLASS")?.toLowerCase(),
-    owned: (field("OWNED_PATHS") ?? "").split(",").map((path) => path.trim()).filter(Boolean),
+    workClass: readGuardField(block, "WORK_CLASS")?.toLowerCase(),
+    owned: (readGuardField(block, "OWNED_PATHS") ?? "").split(",").map((path) => path.trim()).filter(Boolean),
   };
 }
 

@@ -145,7 +145,7 @@ const dead = () => ({ state: "dead" as const });
 /** 서버로 표시된 이전 세대 영수증(runtime-activity/<pid>.json)을 만든다. */
 function writeActivity(
   pid: number,
-  options: { origin: string; startedAtMs: number; running: string[]; waiting?: string[]; marked?: boolean },
+  options: { origin: string; startedAtMs: number; running: string[]; waiting?: string[]; marked?: boolean; restrictTools?: Record<string, string[]> },
 ): void {
   mkdirSync(join(root, "runtime-activity"), { recursive: true });
   writeFileSync(join(root, "runtime-activity", `${pid}.json`), JSON.stringify({
@@ -155,7 +155,10 @@ function writeActivity(
     updatedAtUtc: new Date().toISOString(),
     runningSessionIds: options.running,
     ...(options.marked === false ? {} : {
-      recovery: { eligible: true, origin: options.origin, startedAtMs: options.startedAtMs, waitingSessionIds: options.waiting ?? [] },
+      recovery: {
+        eligible: true, origin: options.origin, startedAtMs: options.startedAtMs, waitingSessionIds: options.waiting ?? [],
+        ...(options.restrictTools ? { restrictTools: options.restrictTools } : {}),
+      },
     }),
   }), "utf8");
 }
@@ -684,6 +687,27 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     const limitedStarts = control.startOptions.filter((entry) => entry.sessionId === limited).map((entry) => entry.options);
     expect(limitedStarts).toEqual([{ restrictTools: allowed }, { restrictTools: allowed }]);
     expect(existsSync(pendingPath())).toBe(false);
+  },
+
+  "급사 뒤 복구는 영수증에 적힌 도구 제한을 대기열과 재개 옵션으로 그대로 옮긴다": async (mod) => {
+    const origin = "http://127.0.0.1:30141";
+    const [limited, none, open] = [SID(130), SID(131), SID(132)];
+    const allowed = ["read", "grep", "glob", "web_search"];
+    for (const sessionId of [limited, none, open]) control.transcripts.set(sessionId, [{ role: "user", content: "q" }]);
+    // 대기열에 옛 기록이 남아 있어도 급사 직전 영수증이 정본이다.
+    seedPending([limited, none], { requestId: "probe-stale", writerPid: 777 });
+    writeFileSync(pendingPath(), JSON.stringify({ ...readPendingFile(), restrictTools: { [limited]: ["read"] } }), "utf8");
+    writeActivity(4245, { origin, startedAtMs: 1_000, running: [limited, none, open], restrictTools: { [limited]: allowed, [none]: [] } });
+
+    expect((await mod.recoverAbruptStop({ origin, probe: dead })).queued.sort()).toEqual([limited, none, open].sort());
+    // 제한이 없는 세션은 적지 않는다. 빈 목록은 제한이므로 적는다.
+    expect(readPendingFile()?.restrictTools).toEqual({ [limited]: allowed, [none]: [] });
+
+    expect((await mod.resumeInterruptedSessions()).sort()).toEqual([limited, none, open].sort());
+    const optionsOf = (sessionId: string) => control.startOptions.filter((entry) => entry.sessionId === sessionId).map((entry) => entry.options);
+    expect(optionsOf(limited)).toEqual([{ restrictTools: allowed }]);
+    expect(optionsOf(none)).toEqual([{ restrictTools: [] }]);
+    expect(optionsOf(open)).toEqual([undefined]);
   },
 
   "다시 drain할 때 실행 중인 세션은 지금 wrapper의 제한이 정본이고 실행 중이 아닌 세션의 기록은 그대로 둔다": async (mod) => {

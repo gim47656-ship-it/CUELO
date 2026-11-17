@@ -1,6 +1,6 @@
 {
   "name": "cuelo",
-  "version": "0.10.300",
+  "version": "0.10.301",
   "description": "CUELO — open-source AI coding agent workspace and harness for omp (oh-my-pi)",
   "homepage": "https://github.com/gim47656-ship-it/CUELO#readme",
   "repository": {
@@ -87,6 +87,7 @@
     "postinstall": "node bin/prepare-runtime.js",
     "prepare:runtime": "node bin/prepare-runtime.js",
     "prepare:source": "node bin/prepare-runtime.js --source",
+    "prepare:worktree": "node bin/prepare-worktree.js",
     "dev": "bun --bun next dev --webpack -H 127.0.0.1 -p 30141",
     "dev:lan": "bun --bun next dev --webpack -H 0.0.0.0 -p 30141",
     "dev:verify": "CUELO_DIST_DIR=.next-verify NODE_ENV=development bun --bun next dev --webpack -H 127.0.0.1 -p 30163",

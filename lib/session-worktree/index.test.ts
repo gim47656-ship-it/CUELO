@@ -418,3 +418,36 @@ describe("issue #88 missing worktree registrations", () => {
     });
   }
 });
+
+describe("prepare:worktree convention on selection", () => {
+  function withPrepare(f: ReturnType<typeof fixture>, scripts?: Record<string, string>) {
+    if (scripts) { writeFileSync(join(f.main, "package.json"), JSON.stringify({ scripts })); git(f.main, "add", "."); git(f.main, "commit", "-qm", "pkg"); git(f.main, "push", "-q"); }
+    const calls: { worktree: string; gitDir: string | undefined }[] = [];
+    const host: WorktreeHost = { ...f.host, prepare: async (worktree, gitDir) => { calls.push({ worktree, gitDir }); } };
+    return { host, calls };
+  }
+  test("a new auto worktree requests the preparation once, with its private git dir", async () => {
+    const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
+    const tree = await selectSessionWorktree(f.main, p.host, { autoWorktree: true });
+    expect(p.calls).toEqual([{ worktree: tree.cwd, gitDir: git(tree.cwd, "rev-parse", "--absolute-git-dir") }]);
+  });
+  test("a reused issue worktree, a plain checkout and a script-less repository request nothing", async () => {
+    const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
+    const first = await selectSessionWorktree(f.main, p.host, { issue: "#5" });
+    expect(p.calls).toHaveLength(1);
+    const again = await selectSessionWorktree(f.main, p.host, { issue: "#5" });
+    expect(again.cwd).toBe(first.cwd);
+    expect(p.calls).toHaveLength(1);
+    await selectSessionWorktree(f.main, p.host);
+    expect(p.calls).toHaveLength(1);
+  });
+  test("without the script the real default starts no process and the session start succeeds", async () => {
+    const f = fixture(); const tree = await selectSessionWorktree(f.main, f.host, { autoWorktree: true });
+    expect(tree.created).toBeDefined();
+    expect(existsSync(join(git(tree.cwd, "rev-parse", "--absolute-git-dir"), "cuelo-prepare.json"))).toBe(false);
+  });
+  test("a failing preparation start never fails the selection", async () => {
+    const f = fixture(); const host: WorktreeHost = { ...f.host, prepare: async () => { throw new Error("boom"); } };
+    expect((await selectSessionWorktree(f.main, host, { autoWorktree: true })).created).toBeDefined();
+  });
+});

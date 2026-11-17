@@ -1058,6 +1058,31 @@ describe("Main의 추천 확인 전에는 발주하지 않는 라우팅", () => 
       ]);
     });
   });
+  test("same-call FINDING_ID links to the earlier primary even with older same-name history", async () => {
+    const ledger = memoryLedger();
+    const h = harness({ ledger });
+    const primary = { name: "Fix", task: brief, assessment: facts };
+    const rework = { ...primary, task: reworkTaskBrief };
+    await h.prepare("prior", [primary], {} as never);
+    const old = { tasks: [{ name: "Fix", task: brief, model: `${SONNET}:auto`, isolated: true }] };
+    expect(await h.beforeTask(old, {} as never, "prior")).toBeUndefined();
+    h.noteSpawned(old, "prior");
+    await h.prepare("batch", [primary, rework], {} as never);
+    const batch = { tasks: [primary, rework].map(({ name, task }) => ({ name, task, model: `${SONNET}:auto`, isolated: true })) };
+    expect(await h.beforeTask(batch, {} as never, "batch")).toBeUndefined();
+    const spawned = h.noteSpawned(batch, "batch", new Map([
+      [0, { agentId: "Fix-2", jobId: "job-2" }], [1, { agentId: "Fix-3", jobId: "job-3" }],
+    ]));
+    expect(spawned.get(1)?.identity).toMatchObject({
+      assignmentId: `${h.sessionId}#batch#0`, attempt: 2, attemptId: `${h.sessionId}#batch#0#a2`,
+    });
+  });
+  test("unreserved FINDING_ID spawn does not read whole-session history", () => {
+    const reads: Array<string | undefined> = [];
+    const h = harness({ ledger: { append: () => true, read: (sessionId) => { reads.push(sessionId); return []; } } });
+    h.noteSpawned({ tasks: [{ name: "Fix", task: reworkTaskBrief, model: `${SONNET}:auto` }] }, "unreserved");
+    expect(reads).toEqual([]);
+  });
   test("isolated로 요청한 항목은 별도 worktree scope라 같은 배치 중복으로 막지 않고 workspace를 기록한다", async () => {
     const tasks = [
       { name: "Left", task: brief, assessment: facts },

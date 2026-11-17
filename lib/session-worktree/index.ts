@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { addWorktree, listWorktrees, removeWorktree, type WorktreeInfo } from "../worktree";
+import { startWorktreePrepare } from "./prepare";
 
 const exec = promisify(execFile);
 async function git(cwd: string, args: string[], timeout = 10_000): Promise<string> {
@@ -19,6 +20,8 @@ export interface LiveUse { id: string; cwd: string }
 export interface WorktreeHost {
   live(): LiveUse[];
   reserve(path: string): { busy: string[]; release(): void };
+  /** Test seam for the detached `prepare:worktree` start; defaults to the real spawn. */
+  prepare?(worktree: string, gitDir: string | undefined): Promise<unknown>;
 }
 export interface Selection {
   cwd: string;
@@ -134,6 +137,12 @@ async function clearMissingRegistration(root: string, tree: WorktreeInfo, host: 
   } finally { reservation.release(); }
 }
 
+/** A freshly added checkout has no installed dependencies; start the repository's own preparation in the background. */
+async function prepareNew(path: string, host: WorktreeHost): Promise<void> {
+  try { await (host.prepare ?? startWorktreePrepare)(path, await optionalGit(path, ["rev-parse", "--absolute-git-dir"])); }
+  catch (error) { console.error("[session-worktree] prepare:worktree not started:", error); }
+}
+
 /** Caller holds the repo lock through runtime registration, not just checkout creation. */
 export async function selectSessionWorktree(cwd: string, host: WorktreeHost, options: { issue?: unknown; autoWorktree?: boolean } = {}): Promise<Selection> {
   const repo = await repository(cwd);
@@ -166,6 +175,7 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
     // A branch without a checkout can be reused for an issue, but never adopted as auto-owned.
     if (issue && !existing && branch === `wt/issue-${issue}`) {
       const tree = await addWorktree(repo.main, branch);
+      await prepareNew(tree.path, host);
       return inRequestedDirectory({ cwd: tree.path, worktree: { branch, base: "existing branch", fallback: false } });
     }
     branch = issue ? `wt/issue-${issue}-${short()}` : `wt/s-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${short()}`;
@@ -181,6 +191,7 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
     await git(repo.main, ["config", configKey(branch, "base-ref"), created.baseRef]);
     await git(repo.main, ["config", configKey(branch, "path"), tree.path]);
     await git(repo.main, ["config", configKey(branch, "target"), base.target]);
+    await prepareNew(tree.path, host);
     return inRequestedDirectory({ cwd: tree.path, worktree: { branch, base: base.fallback ? base.target : `origin/${base.target}`, fallback: base.fallback },
       created });
   } catch (error) {

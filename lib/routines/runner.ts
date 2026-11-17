@@ -61,8 +61,11 @@ const RETRY_WINDOW_MS = 3 * 60 * 60_000;
 
 const log = (message: string) => console.log(`[routines] ${message}`);
 
+interface QueuedRun { rank: number; launch: () => void; abandon: () => void }
+
 declare global {
   var __cueloRoutineRuns: Map<string, Promise<void>> | undefined;
+  var __cueloRoutineSlots: { active: number; queue: QueuedRun[] } | undefined;
   var __cueloRoutineBootId: string | undefined;
   var __cueloRoutineServerStop: { since: number | null } | undefined;
   var __cueloRoutineRecovery: Promise<void> | undefined;
@@ -103,22 +106,80 @@ export function isRoutineRunning(id: string): boolean {
   return runs().has(id);
 }
 
+/** 동시에 도는 루틴 세션의 상한. 서버가 다시 뜰 때 한꺼번에 시작해 8GB 머신의 메모리가 바닥난 적이 있다. */
+const MAX_CONCURRENT_RUNS = 2;
+const REPLY_RANK = 0;
+const MANUAL_RANK = 1;
+const ROUTINE_RANK = 2;
+
+function slots(): { active: number; queue: QueuedRun[] } {
+  globalThis.__cueloRoutineSlots ??= { active: 0, queue: [] };
+  return globalThis.__cueloRoutineSlots;
+}
+
+/**
+ * 세션 한 개 분량의 실행을 맡는다. 자리가 있으면 바로 `begin`을 부르고, 가득 차면 메모리의 대기열(rank 순, 같은 rank는
+ * 먼저 온 순)에 둔다. 대기 중인 루틴도 runs 맵에 있어 isRoutineRunning과 스케줄러의 중복 검사가 그대로 막는다. 대기 표시를
+ * 남기지 못하면(상태 파일 쓰기 실패) 대기열에 넣지 않고 false다.
+ */
+function submit(id: string, rank: number, label: string, begin: () => Promise<void>, markQueued: () => void): boolean {
+  const map = runs();
+  const state = slots();
+  const waiting = state.active >= MAX_CONCURRENT_RUNS;
+  if (waiting) {
+    try { markQueued(); }
+    catch (error) { console.error(`[routines] ${id} could not be queued:`, error); return false; }
+  }
+  const { promise, resolve: release } = Promise.withResolvers<void>();
+  map.set(id, promise);
+  const finish = () => { map.delete(id); release(); };
+  const launch = (rethrow: boolean) => {
+    state.active++;
+    let work: Promise<void>;
+    try { work = begin(); } catch (error) {
+      // 바로 시작하는 호출은 예전처럼 부른 쪽에 실패를 알린다(상태 표시를 못 쓴 채 시작했다고 하지 않는다).
+      if (rethrow) { state.active--; finish(); throw error; }
+      work = Promise.reject(error);
+    }
+    work.catch((error) => console.error(`[routines] ${id} ${label} failed:`, error)).finally(() => { state.active--; finish(); pumpQueue(); });
+  };
+  if (!waiting) { launch(true); return true; }
+  log(`${id} queued: ${state.active} routines already running`);
+  const at = state.queue.findIndex((entry) => entry.rank > rank);
+  state.queue.splice(at < 0 ? state.queue.length : at, 0, { rank, launch: () => launch(false), abandon: finish });
+  return true;
+}
+
+/** 자리가 나면 대기열 앞에서부터 시작한다. 서버가 종료 중이면 새 세션을 열지 않고 놓는다(표시가 남아 다음 부팅의 복구가 잇는다). */
+function pumpQueue(): void {
+  const state = slots();
+  while (state.active < MAX_CONCURRENT_RUNS && state.queue.length > 0) {
+    const next = state.queue.shift()!;
+    if (serverStopping()) next.abandon();
+    else next.launch();
+  }
+}
+
 /**
  * 새 회차를 시작한다. 이미 돌고 있거나 서버가 종료 중이면 시작하지 않고 false. 실행은 기다리지 않는다. `retryOf`는
  * 복구가 다시 돌리는 끊긴 회차의 표시이고, 새 실행이 그 표시를 덮어쓴다(먼저 지우지 않아 시작이 실패해도 남는다).
  */
 export function startRoutineRun(dir: string, routine: Routine, trigger: RoutineRunning["trigger"], retryOf?: RoutineRunning): boolean {
-  const map = runs();
-  if (map.has(routine.id) || serverStopping()) return false;
+  if (runs().has(routine.id) || serverStopping()) return false;
   // 끊겼거나 글을 못 올린 지난 실행의 표시가 남아 있으면, 복구가 처리할 때까지 새 실행으로 덮지 않는다.
   const pending = readRoutineRunStates()[routine.id]?.running;
   if (pending && !sameRunning(pending, retryOf)) return false;
   const attempt = retryOf ? (retryOf.attempt ?? 1) + 1 : 1;
-  const run = executeRun(dir, routine, trigger, attempt)
-    .catch((error) => console.error(`[routines] ${routine.id} run failed:`, error))
-    .finally(() => map.delete(routine.id));
-  map.set(routine.id, run);
-  return true;
+  const rank = !retryOf && trigger === "manual" ? MANUAL_RANK : ROUTINE_RANK;
+  // 대기 중 표시는 attempt 0: 서버가 죽어도 복구가 시도 횟수를 쓰지 않은 채 다시 돌린다. 다시 돌리는 중이던 회차(retryOf)는
+  // 기존 표시를 그대로 둔다.
+  return submit(routine.id, rank, "run", () => executeRun(dir, routine, trigger, attempt), () => {
+    if (retryOf) return;
+    updateRoutineRunState(routine.id, (current) => ({
+      ...current,
+      running: { bootId: routineBootId(), sessionId: null, startedAt: new Date().toISOString(), trigger, attempt: 0 },
+    }));
+  });
 }
 
 /**
@@ -503,33 +564,34 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
 }
 
 export function startRoutineReply(dir: string, routine: Routine, file: string, retryOf?: RoutineRunning): boolean {
-  const map = runs();
   if (pendingReplyWrites.has(`${routine.id}/${file}`)) return false;
   const state = readRoutineRunStates()[routine.id];
-  if (map.has(routine.id) || serverStopping() || (state?.running && !sameRunning(state.running, retryOf))) return false;
+  if (runs().has(routine.id) || serverStopping() || (state?.running && !sameRunning(state.running, retryOf))) return false;
   const post = readPost(dir, routine.id, file);
   if (!post || post.host !== thisRoutineHost()) return false;
   const replies = readReplies(dir, routine.id, file);
   const handled = state?.handledReplyFiles?.[file];
   const pending = retryOf ? replies.filter((r) => retryOf.replyFiles?.includes(r.file)) : pendingReplies(replies, handled);
   if (!pending.length) return false;
-  const started = new Date();
-  const running: RoutineRunning = {
-    bootId: routineBootId(), sessionId: retryOf?.sessionId ?? replies.findLast((r) => r.author === "agent" && r.sessionId)?.sessionId ?? post.sessionId,
-    startedAt: started.toISOString(), trigger: "reply", replyPost: file,
-    replyFiles: pending.map((r) => r.file), attempt: retryOf ? (retryOf.attempt ?? 1) + 1 : 1,
+  const attempt = retryOf ? (retryOf.attempt ?? 1) + 1 : 1;
+  const sessionId = retryOf?.sessionId ?? replies.findLast((r) => r.author === "agent" && r.sessionId)?.sessionId ?? post.sessionId;
+  /** 실행 표시와 처리 중 표시를 남긴다. 시작 시각은 실제 시작 때 정한다(60분 마감이 대기 시간을 먹지 않는다). */
+  const claim = (runAttempt: number): RoutineRunning => {
+    const running: RoutineRunning = {
+      bootId: routineBootId(), sessionId, startedAt: new Date().toISOString(), trigger: "reply", replyPost: file,
+      replyFiles: pending.map((r) => r.file), attempt: runAttempt,
+    };
+    updateRoutineRunState(routine.id, (current) => ({
+      ...current, running, handledReplyFiles: {
+        ...current.handledReplyFiles,
+        [file]: running.replyFiles!,
+      },
+    }));
+    return running;
   };
-  updateRoutineRunState(routine.id, (current) => ({
-    ...current, running, handledReplyFiles: {
-      ...current.handledReplyFiles,
-      [file]: running.replyFiles!,
-    },
-  }));
-  const work = executeReply(dir, routine, file, post, replies, pending, running)
-    .catch((error) => console.error(`[routines] ${routine.id} reply failed:`, error))
-    .finally(() => map.delete(routine.id));
-  map.set(routine.id, work);
-  return true;
+  // 대기 중 표시는 attempt 0: 서버가 죽어도 복구가 시도 횟수를 쓰지 않은 채 다시 돌린다. 다시 돌리는 중이던 회차(retryOf)는
+  // 기존 표시를 그대로 둔다.
+  return submit(routine.id, REPLY_RANK, "reply", () => executeReply(dir, routine, file, post, replies, pending, claim(attempt)), () => { if (!retryOf) claim(0); });
 }
 
 async function executeReply(dir: string, routine: Routine, file: string, post: RoutinePost, replies: RoutineReply[], pending: RoutineReply[], running: RoutineRunning): Promise<void> {

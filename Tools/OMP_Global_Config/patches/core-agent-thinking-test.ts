@@ -123,6 +123,7 @@ const controls = (
 	options: { thinkingLevel?: string; thinkingLevelCeiling?: string; settings?: unknown; branch?: object[] } = {},
 ) => {
 	const persisted: string[] = [];
+	const entries: Array<{ customType: string; data: Record<string, unknown> }> = [];
 	const control = new ModelControls(
 		{
 			agent: { setThinkingLevel() {}, setDisableReasoning() {}, metadataForProvider: () => undefined },
@@ -134,6 +135,7 @@ const controls = (
 				getBranch: () => options.branch ?? [],
 				appendModelUsage: () => undefined,
 				appendThinkingLevelChange: (level: string) => persisted.push(level),
+				appendCustomEntry: (customType: string, data: Record<string, unknown>) => entries.push({ customType, data }),
 			},
 			providerSessionState: new Map(),
 			model: () => model,
@@ -150,7 +152,7 @@ const controls = (
 		await control.applyAutoThinkingLevel(prompt, 1);
 		return control.thinkingLevel;
 	};
-	return { control, turn, persisted };
+	return { control, turn, persisted, entries };
 };
 const full = ladderModel(["low", "medium", "high", "xhigh"]);
 
@@ -589,6 +591,68 @@ try {
 			await session.dispose();
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+	// 2026-11-17: Auto 판정마다 분류 결과와 적용 강도를 컨텍스트 밖 custom 항목으로 남긴다([auto-thinking-decision]).
+	await regression("[auto-thinking-decision] every auto resolution appends one non-context custom entry", async () => {
+		setFloor("medium");
+		Reflect.deleteProperty(globalThis, policyKey);
+		const decisions = (entries: Array<{ customType: string; data: Record<string, unknown> }>) => {
+			assert.equal(entries.every(entry => entry.customType === "auto-thinking-decision"), true);
+			return entries.map(entry => entry.data);
+		};
+		const classified = controls(full);
+		assert.equal(await classified.turn("medium"), "medium", "provisional high 에서 내려간다");
+		assert.equal(await classified.turn("medium"), "medium");
+		assert.deepEqual(decisions(classified.entries), [
+			{ path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: true, raiseOnly: false },
+			{ path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: false, raiseOnly: false },
+		], "강도가 그대로여도 판정마다 남는다");
+		assert.equal(await classified.turn("fail"), "medium");
+		assert.deepEqual(classified.entries.at(-1)?.data, {
+			path: "fallback", classifier: null, floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: false, raiseOnly: false,
+		});
+
+		Reflect.set(globalThis, policyKey, () => ({ floor: "medium", ceiling: "high", hold: true }));
+		const held = controls(full, { thinkingLevelCeiling: "xhigh" });
+		const beforeHold = judgeCalls;
+		assert.equal(await held.turn("xhigh"), "medium", "first hold starts at the floor");
+		assert.equal(judgeCalls, beforeHold);
+		assert.deepEqual(decisions(held.entries), [
+			{ path: "hold", classifier: null, floor: "medium", ceiling: "high", sessionCeiling: "xhigh", applied: "medium", changed: true, raiseOnly: false },
+		]);
+
+		Reflect.set(globalThis, policyKey, () => ({ floor: "medium", ceiling: "high" }));
+		const capped = controls(full);
+		assert.equal(await capped.turn("xhigh"), "high");
+		assert.deepEqual(capped.entries.at(-1)?.data, {
+			path: "classifier", classifier: "xhigh", floor: "medium", ceiling: "high", sessionCeiling: null, applied: "high", changed: false, raiseOnly: false,
+		}, "provisional high 와 같아 changed 는 false. 정책 상한이 낮춘 판정은 classifier 와 applied 가 갈린다");
+
+		Reflect.deleteProperty(globalThis, policyKey);
+		const keyword = controls(ladderModel(["low", "medium", "high", "xhigh", "max"]));
+		assert.equal(await keyword.turn("low", "ultrathink please"), "max");
+		assert.deepEqual(keyword.entries.at(-1)?.data, {
+			path: "ultrathink", classifier: null, floor: null, ceiling: null, sessionCeiling: null, applied: "max", changed: true, raiseOnly: false,
+		});
+
+		// ultrathink 는 hold 정책보다 우선하고, 올리지 못한 raise-only 재판정은 기록하지 않는다.
+		Reflect.set(globalThis, policyKey, () => ({ hold: true }));
+		const bypass = controls(ladderModel(["low", "medium", "high", "xhigh", "max"]));
+		assert.equal(await bypass.turn("low", "ultrathink please"), "max");
+		assert.equal(bypass.entries.at(-1)?.data.path, "ultrathink");
+		Reflect.deleteProperty(globalThis, policyKey);
+		const raising = controls(full);
+		assert.equal(await raising.turn("medium"), "medium");
+		const recorded = raising.entries.length;
+		reply = "xhigh";
+		await raising.control.applyAutoThinkingLevel("steer", 1, undefined, { raiseOnly: true });
+		assert.equal(raising.entries.length, recorded + 1);
+		assert.deepEqual(raising.entries.at(-1)?.data, {
+			path: "classifier", classifier: "xhigh", floor: null, ceiling: null, sessionCeiling: null, applied: "xhigh", changed: true, raiseOnly: true,
+		});
+		reply = "low";
+		await raising.control.applyAutoThinkingLevel("steer", 1, undefined, { raiseOnly: true });
+		assert.equal(raising.entries.length, recorded + 1, "올리지 못한 raise-only 재판정은 기록하지 않는다");
 	});
 } finally {
 	if (previousPolicy === undefined) Reflect.deleteProperty(globalThis, policyKey);

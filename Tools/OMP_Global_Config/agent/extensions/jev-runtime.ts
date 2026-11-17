@@ -1,6 +1,6 @@
 
 import type { AsyncJobSnapshot, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { isPathOwned } from "./command-guard/task-guard";
+import { isPathOwned, readGuardField } from "./command-guard/task-guard";
 import { registerMakerRouting, workspaceOf, type Owner } from "./lib/maker-routing";
 import {
   describeObservedJob,
@@ -135,11 +135,6 @@ interface TaskGuardMeta {
   progress: TaskProgressMetadata;
 }
 
-function readGuardField(block: string, name: string): string | undefined {
-  const match = block.match(new RegExp(`^\\s*${name}\\s*:\\s*(.+?)\\s*$`, "im"));
-  const value = match?.[1]?.trim();
-  return value || undefined;
-}
 
 /** 브리프의 `# Acceptance`(또는 `# 수용 조건`) 절. 다음 heading 전까지이며 없거나 비면 undefined다. */
 function readAcceptanceSection(task: string): string | undefined {
@@ -1883,7 +1878,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               agentId,
               jobId: job.jobId,
             };
-            const sourceDispatch = baseLedger.read()
+            const sourceDispatch = baseLedger.read(source.sessionId)
               .filter((record): record is DispatchRecord => record.type === "dispatch" && record.attemptId === source.attemptId)
               .at(-1);
             baseLedger.append({
@@ -2076,12 +2071,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       resumeByAgent.clear();
       preWriteJobs.clear();
       pendingResume.clear();
-      for (const entry of scopedAttempts(baseLedger.read(), typeof sessionId === "string" ? sessionId : "")) {
+      const sessionRecords = typeof sessionId === "string" ? baseLedger.read(sessionId) : [];
+      for (const entry of scopedAttempts(sessionRecords, typeof sessionId === "string" ? sessionId : "")) {
         observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status, ownership: entry.ownership, restored: true, sourceRevision: entry.sourceRevision });
         if (entry.status !== "running") settledAttempts.add(entry.identity.attemptId);
       }
       // durable outcome이 남긴 jobId는 reload 뒤에도 중복 소비를 막는다.
-      for (const record of baseLedger.read()) {
+      for (const record of sessionRecords) {
         if (record.type === "outcome" && record.sessionId === sessionId && record.jobId) consumedJobs.add(record.jobId);
       }
       liveMakers.clear();
@@ -2491,7 +2487,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
               jobId: fresh[0]!,
             };
           // 원 attempt의 dispatch metadata를 정확한 identity로 복사해 재작업 attempt가 같은 모델·effort 관측을 유지한다.
-          const source = baseLedger.read()
+          const source = baseLedger.read(previous.sessionId)
             .filter((record): record is DispatchRecord => record.type === "dispatch" && record.attemptId === previous.attemptId)
             .at(-1);
           baseLedger.append({

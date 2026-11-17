@@ -471,6 +471,56 @@ describe("jev-runtime pre-dispatch", () => {
     });
   }
 
+  for (const mode of ["restart", "spawn-rework", "spawn-rework-lower", "spawn-rework-spaced", "immediate-dm", "delayed-dm"] as const) {
+    test(`old dispatch beyond 1MiB retains ${mode} binding`, async () => {
+      const jobs: Array<{ id: string; agentId: string }> = [];
+      const options = { asyncJobs: jobs, judgeAnswers: {
+        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+      } };
+      const first = createHarness(options);
+      await spawnAndSettle(first, "Fix", "old-dispatch", "old-agent");
+      const original = JSON.parse(readFileSync(first.ledgerPath, "utf8").split("\n")[0]!);
+      appendFileSync(first.ledgerPath, `${JSON.stringify({ type: "cross-review-waiver", padding: "x".repeat(1 << 20) })}\n`);
+      const harness = mode === "restart" ? createHarness({ ...options, ledgerPath: first.ledgerPath }) : first;
+      if (mode === "restart") {
+        await harness.emit("session_start", {});
+        expect((await harness.verdict({
+          sessionId: fixtureSession, assignmentId: original.assignmentId, attemptId: original.attemptId,
+          verdict: "accepted", revision: "r1", reason: "checked", evidenceLocators: ["artifact://old"],
+        })).details).toMatchObject({ ok: true });
+        return;
+      }
+      if (mode.startsWith("spawn-rework")) {
+        const finding = mode === "spawn-rework-lower" ? "finding_id: F-old"
+          : mode === "spawn-rework-spaced" ? "FINDING_ID:   F-old  " : "FINDING_ID: F-old";
+        const task = GUARDED_TASK.replace("PURPOSE: primary", `PURPOSE: rework\n${finding}`);
+        await harness.prepare(task, "Fix");
+        const call = taskCall("new-rework", task, { name: "Fix", model: "test/local:auto" });
+        expect(await harness.emit("tool_call", call)).toBeUndefined();
+        await harness.emit("tool_result", { ...call, type: "tool_result", isError: false,
+          details: { async: { jobId: "new-job" }, progress: [{ index: 0, id: "new-agent", status: "running" }] } });
+      } else {
+        const call = { toolName: "write", toolCallId: "rework-dm",
+          input: { path: "agent://old-agent", content: "REWORK task_id=Fix role=maker previous_revision=r1 next_revision=r2\nKeep scope." } };
+        await harness.emit("tool_call", call);
+        if (mode === "immediate-dm") jobs.push({ id: "new-job", agentId: "old-agent" });
+        await harness.emit("tool_result", { ...call, isError: false });
+        if (mode === "delayed-dm") {
+          jobs.push({ id: "new-job", agentId: "old-agent" });
+          await harness.emit("message_start", { message: { role: "custom", customType: "async-result",
+            details: { jobs: [{ jobId: "new-job", agentId: "old-agent", type: "task", status: "completed" }] } } });
+        }
+      }
+      const rows = readFileSync(first.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      const resumed = rows.filter((row) => row.type === "dispatch").at(-1);
+      expect(resumed).toMatchObject({
+        assignmentId: original.assignmentId, attempt: 2,
+        recommendedModel: original.recommendedModel, chosenModel: original.chosenModel,
+        chosenEffort: original.chosenEffort, ownership: original.ownership,
+      });
+    });
+  }
+
   test("spawn·settle 뒤에만 수용되고 held 뒤 명시수용과 reload 복원이 이어진다", async () => {
     const harness = createHarness({
       judgeAnswers: {
@@ -1752,6 +1802,15 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   const OWNER_TASK = `${GUARDED_TASK}\n\n# Acceptance\n- 기존 a.ts 검사 통과\n\n# Notes\n본문 내용은 judge에 보내지 않는다.`;
   const answer = (choice: string) => ({
     ownerInstruction: { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 0.9 },
+  });
+
+  test("empty owner guard fields do not adopt the following field as their contract", async () => {
+    const harness = createHarness();
+    await registerLiveMaker(harness, "Existing",
+      "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE:\nOWNED_PATHS:\nFINDING_ID: F-empty\n\nWork.");
+    await harness.emit("tool_call", ownerMessage("Adjust the acceptance criteria."));
+    await flushOwnerJudgment();
+    expect(ownerJudgments(harness)[0]?.state.contract).toMatchObject({ primaryDeliverable: null, ownedPaths: [] });
   });
 
   test("known owner 지시는 전송을 붙잡지 않고 원 계약 대비 분류를 뒤에 advisory로 보낸다", async () => {

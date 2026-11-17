@@ -1349,9 +1349,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   ): Map<number, { identity: AttemptIdentity; ownership: DispatchOwnership }> {
     const tasks = (Array.isArray(input.tasks) ? input.tasks : [input]) as Record<string, unknown>[];
     const dispatched = new Map<number, { identity: AttemptIdentity; ownership: DispatchOwnership }>();
-    // 같은 session 원장에서 이름별 assignment·최대 attempt를 읽어 FINDING_ID 재작업만 같은 assignment로 잇는다.
-    // 원장에서 읽으므로 reload 뒤에도 연결이 유지되고, 관측되지 않은 준비만으로는 연결하지 않는다.
-    const known = assignmentsByName(deps.ledger?.read() ?? [], sessionId);
+    // FINDING_ID가 있는 배치만 전체 세션 이력을 한 번 읽고, 배치 앞 항목의 발주를 메모리에서도 잇는다.
+    const hasRework = tasks.some((item) => readGuardField(
+      extractGuardBlock(typeof item.task === "string" ? item.task : "")?.block ?? "", "FINDING_ID",
+    ) !== undefined);
+    let known: Map<string, { assignmentId: string; lastAttempt: number }> | undefined;
     let candidateLock = lockFor(sessionId.trim());
     const reserved = reservations.get(callId) ?? [];
     for (const [index, item] of tasks.entries()) {
@@ -1365,7 +1367,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (!draft) continue;
       // 다른 guard가 막은 뒤 다른 selector로 다시 낸 발주는 그 호출의 beforeTask 초안만 맞는다.
       if (item.model !== `${draft.chosenModel}:${draft.chosenEffort}`) continue;
-      const linked = sessionId && contract.findingId !== null ? known.get(name) : undefined;
+      if (hasRework && sessionId) {
+        known ??= assignmentsByName(deps.ledger?.read(sessionId) ?? [], sessionId);
+      }
+      const linked = sessionId && contract.findingId !== null ? known?.get(name) : undefined;
       const assignmentId = linked?.assignmentId ?? `${sessionId}#${callId}#${index}`;
       const attempt = linked ? linked.lastAttempt + 1 : 1;
       const identity: AttemptIdentity = {
@@ -1379,7 +1384,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       };
       deps.ledger?.append({ ...draft, ...identity, ts: new Date().toISOString() });
       dispatched.set(index, { identity, ownership: draft.ownership });
-      known.set(name, { assignmentId, lastAttempt: attempt });
+      known?.set(name, { assignmentId, lastAttempt: attempt });
     }
     contractLock ??= candidateLock;
     // 시작한 child는 이제 호출부의 live owner 목록이 소유한다. 이 호출의 예약은 여기서 넘긴다.

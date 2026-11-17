@@ -882,7 +882,11 @@ function getRuntimeLinuxIdentity(): { bootId: string; startTicks: number } | nul
 /**
  * `waitingSessionIds`는 실행 중이지만 사용자 답(ask·승인)을 기다리는 세션 id다. 답·승인값·대화 원문은 쓰지 않는다.
  */
-export function recordRuntimeActivity(runningSessionIds: string[], waitingSessionIds: string[] = []): void {
+export function recordRuntimeActivity(
+  runningSessionIds: string[],
+  waitingSessionIds: string[] = [],
+  restrictTools: Record<string, readonly string[]> = {},
+): void {
   const uniqueIds = normalizeSessionIds(runningSessionIds);
   const server = globalThis.__cueloRuntimeServer;
   const linuxIdentity = getRuntimeLinuxIdentity();
@@ -899,9 +903,16 @@ export function recordRuntimeActivity(runningSessionIds: string[], waitingSessio
         origin: server.origin,
         startedAtMs: server.startedAtMs,
         waitingSessionIds: normalizeSessionIds(waitingSessionIds).filter((id) => uniqueIds.includes(id)),
+        // 도구 제한 세션만 적는다(빈 목록도 제한). 급사 뒤 복구가 같은 제한으로 세션을 다시 띄운다.
+        ...(restrictedIn(restrictTools, uniqueIds) ? { restrictTools: restrictedIn(restrictTools, uniqueIds) } : {}),
       },
     } : {}),
   });
+}
+
+function restrictedIn(restrictTools: Record<string, readonly string[]>, ids: readonly string[]): Record<string, string[]> | undefined {
+  const kept = Object.entries(restrictTools).filter(([id, names]) => ids.includes(id) && Array.isArray(names) && names.every((name) => typeof name === "string"));
+  return kept.length > 0 ? Object.fromEntries(kept.map(([id, names]) => [id, [...names]])) : undefined;
 }
 
 export interface PriorGenerationActivity {
@@ -909,6 +920,8 @@ export interface PriorGenerationActivity {
   startedAtMs: number;
   runningSessionIds: string[];
   waitingSessionIds: string[];
+  /** 영수증을 쓸 때 도구 제한을 쥐고 있던 세션의 허용 도구. 제한 없는 세션은 없다. */
+  restrictTools?: Record<string, string[]>;
 }
 
 /** 프로세스 한 개의 생존·시작 identity. `unknown`은 확인하지 못한 경우이며 호출자는 수동 경계로 둔다(fail-closed). */
@@ -969,11 +982,13 @@ export function readPriorGenerationActivity(
     if (!Number.isFinite(startedAtMs) || startedAtMs >= ownStartedAtMs) continue;
     if (latest && startedAtMs <= latest.startedAtMs) continue;
     const ids = (value: unknown) => Array.isArray(value) ? normalizeSessionIds(value.filter((id): id is string => typeof id === "string")) : [];
+    const restricted = receiptRestrictions(recovery.restrictTools);
     latest = {
       processId: Number(receipt.processId),
       startedAtMs,
       runningSessionIds: ids(receipt.runningSessionIds),
       waitingSessionIds: ids(recovery.waitingSessionIds),
+      ...(Object.keys(restricted).length > 0 ? { restrictTools: restricted } : {}),
       consumed: typeof recovery.consumedAtUtc === "string",
     };
   }
@@ -986,6 +1001,16 @@ export function readPriorGenerationActivity(
   if (identity.state === "dead") return prior;
   if (identity.state === "alive" && Math.abs(identity.startedAtMs - prior.startedAtMs) > PROCESS_START_TOLERANCE_MS) return prior;
   return null;
+}
+
+function receiptRestrictions(value: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [id, names] of Object.entries(value)) {
+      if (Array.isArray(names) && names.every((name) => typeof name === "string")) out[id] = names;
+    }
+  }
+  return out;
 }
 
 /**

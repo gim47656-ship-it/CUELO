@@ -34,6 +34,18 @@ describe("task progress 공유 메타데이터", () => {
     });
   });
 
+  test("empty metadata fields never consume the next physical line", () => {
+    const metadata = readTaskProgressMetadata('TASK_TITLE:   \r\nTODO_TASKS: ["검증"]');
+    expect(metadata.taskTitleValid).toBe(false);
+    expect(metadata.taskTitle).toBeUndefined();
+    expect(metadata.taskTitleFieldPresent).toBe(true);
+    expect(metadata.todoTasks).toEqual(["검증"]);
+    const emptyTodo = readTaskProgressMetadata('TODO_TASKS:\n["검증"]');
+    expect(emptyTodo.todoTasksFieldPresent).toBe(true);
+    expect(emptyTodo.todoTasksValid).toBe(false);
+    expect(readTaskProgressMetadata('TASK_TITLE:\nTASK_TITLE: 제목\nTODO_TASKS: ["검증"]').taskTitleValid).toBe(false);
+  });
+
   test("중복·공백·비JSON TODO는 exact binding으로 채택하지 않는다", () => {
     for (const value of [
       '["같은 항목","같은 항목"]',
