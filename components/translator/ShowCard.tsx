@@ -29,9 +29,12 @@ interface ShowCardProps {
 
 /** 이번 페이지에서 받아 온 발음(`null`은 물었지만 못 받음). 같은 줄을 다시 열면 다시 묻지 않는다. */
 const readingCache = new Map<string, string | null>();
+/** An opened card, then the user's own interpretations, then heard originals. */
+export type ReadingPriority = "foreground" | "background" | "later";
+const READING_RANK: Record<ReadingPriority, number> = { foreground: 0, background: 1, later: 2 };
 interface ReadingJob {
   key: string;
-  priority: "foreground" | "background";
+  priority: ReadingPriority;
   promise: Promise<string | null>;
   resolve: (reading: string | null) => void;
   load: () => Promise<string | null>;
@@ -40,11 +43,11 @@ const readingRequests = new Map<string, ReadingJob>();
 const readingQueue: ReadingJob[] = [];
 let readingActive = false;
 
-/** One model request at a time; an explicitly opened card goes ahead of queued history. */
+/** One model request at a time; the highest priority goes first, in arrival order within a priority. */
 function nextReading() {
   if (readingActive || !readingQueue.length) return;
-  const foreground = readingQueue.findIndex((job) => job.priority === "foreground");
-  const [job] = readingQueue.splice(foreground < 0 ? 0 : foreground, 1);
+  const next = readingQueue.reduce((best, job, index) => READING_RANK[job.priority] < READING_RANK[readingQueue[best].priority] ? index : best, 0);
+  const [job] = readingQueue.splice(next, 1);
   readingActive = true;
   void job.load().then((reading) => {
     readingCache.set(job.key, reading);
@@ -56,11 +59,11 @@ function nextReading() {
 }
 
 /** A pending or completed reading is shared; a failed optional reading never blocks the next one. */
-export function loadReading(key: string, text: string, language: TranslatorLanguage, priority: "foreground" | "background" = "foreground"): Promise<string | null> {
+export function loadReading(key: string, text: string, language: TranslatorLanguage, priority: ReadingPriority = "foreground"): Promise<string | null> {
   if (readingCache.has(key)) return Promise.resolve(readingCache.get(key) ?? null);
   const running = readingRequests.get(key);
   if (running) {
-    if (priority === "foreground") running.priority = priority;
+    if (READING_RANK[priority] < READING_RANK[running.priority]) running.priority = priority;
     return running.promise;
   }
   const { promise, resolve } = Promise.withResolvers<string | null>();

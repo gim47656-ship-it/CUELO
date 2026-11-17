@@ -3,13 +3,16 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Maximize2, Volume2, Square } from "lucide-react";
 import { READING_LANGUAGES } from "@/lib/translator-context";
-import { loadReading, type ShowCardContent } from "./ShowCard";
+import { loadReading, type ReadingPriority, type ShowCardContent } from "./ShowCard";
 import { useTranslatorText } from "./i18n";
 import type { Speech } from "./useSpeech";
 import type { BubbleText, ConversationTurn } from "./conversation-display";
 import { VOICE_COPY } from "./voice-copy";
 
-function Translation({ line, renderText, load }: { line: BubbleText; renderText: (text: string) => ReactNode; load: boolean }) {
+/** A voice line with its Hangul reading underneath once final and on screen. */
+function ReadingLine({ line, className, only, priority, renderText, load }: {
+  line: BubbleText; className: string; only?: boolean; priority: ReadingPriority; renderText: (text: string) => ReactNode; load: boolean;
+}) {
   const [fetched, setFetched] = useState<{ text: string; reading: string } | null>(null);
   const textRef = useRef<HTMLSpanElement>(null);
   const language = line.language;
@@ -25,17 +28,17 @@ function Translation({ line, renderText, load }: { line: BubbleText; renderText:
       if (!entries.at(-1)?.isIntersecting) return;
       timer = window.setTimeout(() => {
         observer.disconnect();
-        void loadReading(`${language.code}\u0000${line.text}`, line.text, language, "background").then((reading) => {
+        void loadReading(`${language.code}\u0000${line.text}`, line.text, language, priority).then((reading) => {
           if (current && reading) setFetched({ text: line.text, reading });
         });
       }, 400);
     });
     observer.observe(element);
     return () => { current = false; observer.disconnect(); window.clearTimeout(timer); };
-  }, [language, line.final, line.loadReading, line.text, load]);
+  }, [language, line.final, line.loadReading, line.text, load, priority]);
   const reading = line.reading ?? (fetched?.text === line.text ? fetched.reading : undefined);
   return <>
-    <span ref={textRef} className="translator-translation" lang={language?.tag}>{renderText(line.text)}</span>
+    <span ref={textRef} className={className} data-only={only ? "true" : undefined} lang={language?.tag}>{renderText(line.text)}</span>
     {reading ? <span className="translator-reading" lang="ko">{reading}</span> : null}
   </>;
 }
@@ -54,8 +57,8 @@ export function ConversationBubble({ turn, latest, visible, speech, onShow, onCo
     {turn.speakerStart ? <span className="translator-speaker">{tt(turn.side === "me" ? "translator.me" : "translator.them")}</span> : null}
     <button type="button" className="translator-bubble" title={onCorrect ? voiceCopy.correctSpeaker : tt("translator.cardTitle")} onClick={() => { if (onCorrect) onCorrect(); else if (card) onShow(card); }}>
       <span className="sr-only">{onCorrect ? voiceCopy.correctSpeaker : tt("translator.cardTitle")}</span>
-      {turn.translations.map((line) => <Translation key={line.key} line={line} renderText={renderText} load={visible} />)}
-      {turn.originals.map((line) => <span key={line.key} className="translator-original" data-only={!turn.translations.length ? "true" : undefined} lang={line.language?.tag}>{renderText(line.text)}</span>)}
+      {turn.translations.map((line) => <ReadingLine key={line.key} line={line} className="translator-translation" priority="background" renderText={renderText} load={visible} />)}
+      {turn.originals.map((line) => <ReadingLine key={line.key} line={line} className="translator-original" only={!turn.translations.length} priority="later" renderText={renderText} load={visible} />)}
     </button>
     {onCorrect && turn.voiceLines.some((line) => line.segment.translationError) ? <button type="button" className="translator-voice-retry" onClick={onCorrect}>{voiceCopy.translationFailed}</button> : null}
     {children}

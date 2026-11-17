@@ -77,3 +77,26 @@ test("a stalled reading times out and an opened card moves ahead of queued histo
     timeout.mockRestore();
   }
 });
+
+test("heard originals wait behind the user's own interpretations queued after them", async () => {
+  const originalFetch = globalThis.fetch;
+  const order: string[] = [];
+  const first = Promise.withResolvers<void>();
+  globalThis.fetch = Object.assign(async (_input: string | URL | Request, init?: RequestInit) => {
+    const text = JSON.parse(init!.body as string).text as string;
+    order.push(text);
+    if (text === "running") await first.promise;
+    return Response.json({ reading: text });
+  }, { preconnect: originalFetch.preconnect });
+  try {
+    const ja = findTranslatorLanguage("ja")!;
+    const running = loadReading("later-a", "running", ja, "background");
+    const heard = loadReading("later-b", "heard", ja, "later");
+    const mine = loadReading("later-c", "mine", ja, "background");
+    first.resolve();
+    await Promise.all([running, heard, mine]);
+    expect(order).toEqual(["running", "mine", "heard"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
