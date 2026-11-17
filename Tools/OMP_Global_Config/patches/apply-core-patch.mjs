@@ -26067,27 +26067,99 @@ EDITS.push({
 	patched: "\t\tif (sandboxCleanupError) throw sandboxCleanupError;\n\t}\n}\n\nfunction buildSessionKey(",
 });
 // External service/PTY/Python paths already launch an executable; force the same wrappers and bootstrap policy.
-for (const [file, anchor, patched] of [
-	["src/launch/services.ts", '\tconst shell = session.settings.getShellConfig();', '\tconst shell = { ...session.settings.getShellConfig() };\n\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(session.settings);\n\tif (forceSandbox) shell.shell = path.join(session.settings.getAgentDir(), "sandbox/bash");'],
-	["src/launch/services.ts", '\t\tenv: { ...shell.env, ...params.env },', '\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(shell.shell) ? prepareCueloSandboxEnv({ ...shell.env, ...params.env }, session.cwd, session.settings.getAgentDir(), shell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...shell.env, ...params.env },'],
-	["src/tools/bash-interactive.ts", '\tconst { shell: resolvedShell, env: shellEnv } = settings.getShellConfig();', '\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);\n\tconst { shell: configuredShell, env: shellEnv } = settings.getShellConfig();\n\tconst resolvedShell = forceSandbox ? path.join(settings.getAgentDir(), "sandbox/bash") : configuredShell;'],
-	["src/tools/bash-interactive.ts", '\t\t\t\t\t\t\tenv: { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },', '\t\t\t\t\t\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell) ? prepareCueloSandboxEnv({ ...interactiveShellEnv, TERM: "xterm-256color", ...options.env }, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },'],
-	["src/eval/py/index.ts", '\treturn cfgPythonInterpreter.get(session)?.trim() || undefined;', '\treturn process.platform === "linux" && cfgSandboxEnabled.get(session) ? path.join(session.settings.getAgentDir(), "sandbox/python") : cfgPythonInterpreter.get(session)?.trim() || undefined;'],
-	["src/eval/py/kernel.ts", '\t\tspawnEnv.PYTHONUNBUFFERED = "1";', '\t\tif (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) {\n\t\t\tconst settings = await Settings.init();\n\t\t\tprepareCueloSandboxEnv(spawnEnv, options.cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\t}\n\t\tspawnEnv.PYTHONUNBUFFERED = "1";'],
-	["src/eval/py/kernel.ts", "\t\tconst result = await probeCandidates(", '\t\tfor (const runtime of runtimes) if (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) prepareCueloSandboxEnv(runtime.env, cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\tconst result = await probeCandidates('],
-	["src/exec/bash-executor.ts", '\t\t\tdirenvSetting: virtualCwd ? "off" : cfgBashDirenv.get(settings),', '\t\t\tdirenvSetting: virtualCwd || /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? "off" : cfgBashDirenv.get(settings),'],
-	["src/tools/bash-interactive.ts", '\t\treturn result;\n\t} finally {', '\t\tif (/[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell)) result.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn result;\n\t} finally {'],
-	["src/tools/bash.ts", "\t\t\tconst daemon = service.daemon;", "\t\t\tconst daemon = service.daemon;\n\t\t\tconst sandboxWarning = checkCueloSandboxGit(this.session.cwd);\n\t\t\tif (sandboxWarning) pendingNotices.push(sandboxWarning);"],
-	["src/tools/bash.ts", "\t\t\t\t\t\tdirenvSetting: cfgBashDirenv.get(this.session.settings),", '\t\t\t\t\t\tdirenvSetting: cfgSandboxEnabled.get(this.session.settings) || /[/\\\\]sandbox[/\\\\]bash$/.test(this.session.settings.getShellConfig().shell) ? "off" : cfgBashDirenv.get(this.session.settings),'],
-	["src/tools/bash.ts", "\t\t\t\tconst bridgeEnv = backendPreflight?.env;", '\t\t\t\tconst bridgeShell = { ...this.session.settings.getShellConfig() };\n\t\t\t\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(this.session.settings);\n\t\t\t\tif (forceSandbox) bridgeShell.shell = path.join(this.session.settings.getAgentDir(), "sandbox/bash");\n\t\t\t\tconst bridgeEnv = forceSandbox || /[/\\\\]sandbox[/\\\\]bash$/.test(bridgeShell.shell) ? prepareCueloSandboxEnv({ ...bridgeShell.env, ...backendPreflight?.env }, this.session.cwd, this.session.settings.getAgentDir(), bridgeShell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : backendPreflight?.env;'],
-	["src/tools/bash.ts", "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, this.session.settings.getShellConfig());", "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, bridgeShell);"],
+for (const { file, anchor, patched } of [
+	{
+		file: "src/launch/services.ts",
+		anchor: '\tconst shell = session.settings.getShellConfig();',
+		patched: '\tconst shell = { ...session.settings.getShellConfig() };\n\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(session.settings);\n\tif (forceSandbox) shell.shell = path.join(session.settings.getAgentDir(), "sandbox/bash");',
+	},
+	{
+		file: "src/launch/services.ts",
+		anchor: '\t\tenv: { ...shell.env, ...params.env },',
+		patched: '\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(shell.shell) ? prepareCueloSandboxEnv({ ...shell.env, ...params.env }, session.cwd, session.settings.getAgentDir(), shell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...shell.env, ...params.env },',
+	},
+	{
+		file: "src/tools/bash-interactive.ts",
+		anchor: '\tconst { shell: resolvedShell, env: shellEnv } = settings.getShellConfig();',
+		patched: '\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);\n\tconst { shell: configuredShell, env: shellEnv } = settings.getShellConfig();\n\tconst resolvedShell = forceSandbox ? path.join(settings.getAgentDir(), "sandbox/bash") : configuredShell;',
+	},
+	{
+		file: "src/tools/bash-interactive.ts",
+		anchor: '\t\t\t\t\t\t\tenv: { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },',
+		patched: '\t\t\t\t\t\t\tenv: /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell) ? prepareCueloSandboxEnv({ ...interactiveShellEnv, TERM: "xterm-256color", ...options.env }, settings.getCwd(), settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : { ...interactiveShellEnv, TERM: "xterm-256color", ...options.env },',
+	},
+	{
+		file: "src/eval/py/index.ts",
+		anchor: '\treturn cfgPythonInterpreter.get(session)?.trim() || undefined;',
+		patched: '\treturn process.platform === "linux" && cfgSandboxEnabled.get(session) ? path.join(session.settings.getAgentDir(), "sandbox/python") : cfgPythonInterpreter.get(session)?.trim() || undefined;',
+	},
+	{
+		file: "src/eval/py/kernel.ts",
+		anchor: '\t\tspawnEnv.PYTHONUNBUFFERED = "1";',
+		patched: '\t\tif (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) {\n\t\t\tconst settings = await Settings.init();\n\t\t\tprepareCueloSandboxEnv(spawnEnv, options.cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\t}\n\t\tspawnEnv.PYTHONUNBUFFERED = "1";',
+	},
+	{
+		file: "src/eval/py/kernel.ts",
+		anchor: "\t\tconst result = await probeCandidates(",
+		patched: '\t\tfor (const runtime of runtimes) if (process.platform === "linux" && /[/\\\\]sandbox[/\\\\]python$/.test(runtime.pythonPath)) prepareCueloSandboxEnv(runtime.env, cwd, settings.getAgentDir(), process.env.HOME ?? "", true);\n\t\tconst result = await probeCandidates(',
+	},
+	{
+		file: "src/exec/bash-executor.ts",
+		anchor: '\t\t\tdirenvSetting: virtualCwd ? "off" : cfgBashDirenv.get(settings),',
+		patched: '\t\t\tdirenvSetting: virtualCwd || /[/\\\\]sandbox[/\\\\]bash$/.test(shell) ? "off" : cfgBashDirenv.get(settings),',
+	},
+	{
+		file: "src/tools/bash-interactive.ts",
+		anchor: '\t\treturn result;\n\t} finally {',
+		patched: '\t\tif (/[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell)) result.output += checkCueloSandboxGit(settings.getCwd());\n\t\treturn result;\n\t} finally {',
+	},
+	{
+		file: "src/tools/bash.ts",
+		anchor: "\t\t\tconst daemon = service.daemon;",
+		patched: "\t\t\tconst daemon = service.daemon;\n\t\t\tconst sandboxWarning = checkCueloSandboxGit(this.session.cwd);\n\t\t\tif (sandboxWarning) pendingNotices.push(sandboxWarning);",
+	},
+	{
+		file: "src/tools/bash.ts",
+		anchor: "\t\t\t\t\t\tdirenvSetting: cfgBashDirenv.get(this.session.settings),",
+		patched: '\t\t\t\t\t\tdirenvSetting: cfgSandboxEnabled.get(this.session.settings) || /[/\\\\]sandbox[/\\\\]bash$/.test(this.session.settings.getShellConfig().shell) ? "off" : cfgBashDirenv.get(this.session.settings),',
+	},
+	{
+		file: "src/tools/bash.ts",
+		anchor: "\t\t\t\tconst bridgeEnv = backendPreflight?.env;",
+		patched: '\t\t\t\tconst bridgeShell = { ...this.session.settings.getShellConfig() };\n\t\t\t\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(this.session.settings);\n\t\t\t\tif (forceSandbox) bridgeShell.shell = path.join(this.session.settings.getAgentDir(), "sandbox/bash");\n\t\t\t\tconst bridgeEnv = forceSandbox || /[/\\\\]sandbox[/\\\\]bash$/.test(bridgeShell.shell) ? prepareCueloSandboxEnv({ ...bridgeShell.env, ...backendPreflight?.env }, this.session.cwd, this.session.settings.getAgentDir(), bridgeShell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : backendPreflight?.env;',
+	},
+	{
+		file: "src/tools/bash.ts",
+		anchor: "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, this.session.settings.getShellConfig());",
+		patched: "\t\t\t\tconst shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, bridgeShell);",
+	},
 ]) EDITS.push({ file, marker: patched, anchor, patched });
-for (const [file, extra, anchor] of [
-	["src/launch/services.ts", 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n', 'import * as path from "node:path";'],
-	["src/tools/bash-interactive.ts", 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n', 'import { BashInteractiveOverlayComponent } from "@oh-my-pi/pi-tui/tools/bash-interactive";'],
-	["src/eval/py/index.ts", 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../../exec/settings";\n', 'import type { ToolSession } from "../../tools";'],
-	["src/eval/py/kernel.ts", 'import { cfgSandboxEnabled } from "../../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n', 'import * as path from "node:path";'],
-	["src/tools/bash.ts", 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n', 'import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";'],
+for (const { file, extra, anchor } of [
+	{
+		file: "src/launch/services.ts",
+		extra: 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n',
+		anchor: 'import * as path from "node:path";',
+	},
+	{
+		file: "src/tools/bash-interactive.ts",
+		extra: 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n',
+		anchor: 'import { BashInteractiveOverlayComponent } from "@oh-my-pi/pi-tui/tools/bash-interactive";',
+	},
+	{
+		file: "src/eval/py/index.ts",
+		extra: 'import * as path from "node:path";\nimport { cfgSandboxEnabled } from "../../exec/settings";\n',
+		anchor: 'import type { ToolSession } from "../../tools";',
+	},
+	{
+		file: "src/eval/py/kernel.ts",
+		extra: 'import { cfgSandboxEnabled } from "../../exec/settings";\nimport { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";\n',
+		anchor: 'import * as path from "node:path";',
+	},
+	{
+		file: "src/tools/bash.ts",
+		extra: 'import { cfgSandboxEnabled } from "../exec/settings";\nimport { prepareCueloSandboxEnv, checkCueloSandboxGit } from "@oh-my-pi/pi-utils/env";\n',
+		anchor: 'import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";',
+	},
 ]) EDITS.push({ file, marker: "// CUELO: sandbox runtime imports", anchor, patched: "// CUELO: sandbox runtime imports\n" + extra + anchor });
 
 /**
