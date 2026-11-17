@@ -9,8 +9,8 @@
 // 실제로 반영되는지로 "이 입력이 재판정을 일으켰는가"를 본다. 매 단계는 고정 low 로 턴을 시작해 턴 시작 분류도
 // 건너뛰고, 스트리밍 중(before-model-call 훅)에 auto 로 바꾼 뒤 입력을 넣는다. 내림이 없다는 raise-only 계약은
 // core-agent-thinking-test.ts [raise-only] 가 분류기 경로로 본다.
-// [4] 2026-10-08 사용자 결정: SubAgent 는 부모(Main) IRC 메시지마다 최초 과제+메시지로 auto 를 다시 분류해 오르내린다.
-// 이 단계만 실제 분류기 경로(classifyDifficulty)를 타고, judge role chain 은 메모리 후보 하나로 대체한다.
+// [4]/[5] Parent messages now hold the child's current effort without reclassification.
+// The first dispatch solutionSpace classification remains covered by core-agent-thinking-test.ts.
 // 모델 호출은 하지 않는다: 훅이 provider 요청 직전에 예외로 turn 을 끊는다. 세션·모델 설정은 임시 cwd·agentDir 에만
 // 쓰므로 운영자의 실제 `~/.omp` 는 읽지도 쓰지도 않는다.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -198,20 +198,22 @@ agent.addBeforeModelCallHook(async () => {
 		seen.othersJudged = levelRequests.length - judgedBefore;
 		judgeReply = "xhigh";
 		await deliverToChild(PARENT_ID, "스키마 검증과 마이그레이션까지 맡아 줘");
-		seen.afterParentUp = await levelSettles("xhigh");
+		await flush();
+		seen.afterParentUp = session.thinkingLevel;
 		judgeReply = "low";
 		await deliverToChild(PARENT_ID, "승인합니다");
-		seen.afterParentDown = await levelSettles("low");
+		await flush();
+		seen.afterParentDown = session.thinkingLevel;
 		seen.parentRequests = levelRequests.slice(judgedBefore);
 	} else if (current === "solution") {
 		session.setThinkingLevel("auto");
 		const judgedBefore = levelInputs.length;
 		judgeReply = "high";
 		await deliverToChild(PARENT_ID, "마이그레이션 롤백도 확인해");
-		await inputsSettle(judgedBefore + 1);
+		await flush();
 		judgeReply = "low";
 		await deliverToChild(PARENT_ID, "승인");
-		await inputsSettle(judgedBefore + 2);
+		await flush();
 		seen.solutionInputs = levelInputs.slice(judgedBefore);
 	}
 	// 훅이 모델 호출을 끊으면 이 단계가 큐에 넣은 steer·follow-up(IRC 부모 steer 포함)은 소비되지 않고 남는다. 큐가
@@ -238,15 +240,6 @@ let ircSeq = 0;
 async function deliverToChild(from: string, body: string, wakeRelay = false): Promise<void> {
 	ircSeq += 1;
 	await session.deliverIrcMessage({ id: `irc-${ircSeq}`, from, to: CHILD_ID, body, ts: Date.now(), ...(wakeRelay ? { wakeRelay: true } : {}) });
-}
-/** 재분류는 메시지 전달을 기다리지 않고 뒤에서 돈다. 목표 강도가 되거나 2초가 지나면 그때 강도를 돌려준다. */
-async function levelSettles(target: string): Promise<unknown> {
-	for (let waited = 0; waited < 2_000 && session.thinkingLevel !== target; waited += 20) await flush();
-	return session.thinkingLevel;
-}
-/** 분류 요청이 count 개가 될 때까지(최대 2초) 기다린다. */
-async function inputsSettle(count: number): Promise<void> {
-	for (let waited = 0; waited < 2_000 && levelInputs.length < count; waited += 20) await flush();
 }
 
 async function runPhase(next: Phase, start: "low" | "high", prompt: string, solutionSpace?: string): Promise<void> {
@@ -291,7 +284,7 @@ check("[3] 입력 시점에 턴이 스트리밍 중이었다", seen["fixed:strea
 check("[3] 고정 강도 세션은 auto 가 아니다", seen.fixedAuto === false);
 check("[3] 고정 강도는 사용자 steer 뒤에도 high 다", seen.afterFixedSteer === "high", `after=${seen.afterFixedSteer}`);
 
-console.log("\n[4] SubAgent 는 부모 메시지마다 auto 를 다시 분류해 오르내리고, 다른 입력으로는 분류하지 않는다");
+console.log("\n[4] Parent messages preserve the child's current effort without judging");
 await runPhase("parent", "low", "로그 파서를 고쳐 (child 과제)");
 check("[4] 입력 시점에 턴이 스트리밍 중이었다", seen["parent:streaming"] === true);
 check(
@@ -304,32 +297,24 @@ check(
 	seen.othersJudged === 0 && seen.afterOthers === seen.parentProvisional,
 	`judged=${seen.othersJudged} after=${seen.afterOthers}`,
 );
-check("[4] 부모 메시지는 다시 분류해 강도를 올린다", seen.afterParentUp === "xhigh", `after=${seen.afterParentUp}`);
-check("[4] 짧은 부모 답도 다시 분류하고, 낮게 나오면 내려간다", seen.afterParentDown === "low", `after=${seen.afterParentDown}`);
+check("[4] substantive parent instructions hold the current effort", seen.afterParentUp === seen.parentProvisional, `after=${seen.afterParentUp}`);
+check("[4] short parent replies also hold the current effort", seen.afterParentDown === seen.parentProvisional, `after=${seen.afterParentDown}`);
 const parentRequests = Array.isArray(seen.parentRequests) ? (seen.parentRequests as string[]) : [];
 check(
-	"[4] each parent classification contains the assignment and only the latest parent message",
-	JSON.stringify(parentRequests) === JSON.stringify([
-		"로그 파서를 고쳐 (child 과제)\n\n스키마 검증과 마이그레이션까지 맡아 줘",
-		"로그 파서를 고쳐 (child 과제)\n\n승인합니다",
-	]),
+	"[4] parent instructions never call the classifier",
+	JSON.stringify(parentRequests) === "[]",
 	JSON.stringify(parentRequests),
 );
 
-console.log("\n[5] solutionSpace 로 시작한 SubAgent 는 부모 메시지 재분류도 그 solutionSpace 와 부모 메시지로 한다");
-// task 는 child 첫 턴을 위임자의 solutionSpace 로 분류한다. 긴 brief 의 앞부분이 잡음이면 brief+메시지 request 로는 부모
-// 지시가 분류 입력에서 밀린다. 재분류도 같은 기준이어야 한다.
+console.log("\n[5] Later parent messages do not reclassify the initial solutionSpace");
 const SOLUTION_SPACE = "열린 설계: 스키마 이전 방식을 정하고 호환을 지킨다";
 const NOISY_BRIEF = `${"참고 로그 줄 ".repeat(400)}\n실제 과제: 스키마 이전`;
 await runPhase("solution", "low", NOISY_BRIEF, SOLUTION_SPACE);
 check("[5] 입력 시점에 턴이 스트리밍 중이었다", seen["solution:streaming"] === true);
 const solutionInputs = Array.isArray(seen.solutionInputs) ? (seen.solutionInputs as Array<{ request?: string; solutionSpace?: string }>) : [];
 check(
-	"[5] solution space contains only the latest parent message",
-	JSON.stringify(solutionInputs) === JSON.stringify([
-		{ solutionSpace: `${SOLUTION_SPACE}\n\nLater parent instructions:\n마이그레이션 롤백도 확인해` },
-		{ solutionSpace: `${SOLUTION_SPACE}\n\nLater parent instructions:\n승인` },
-	]),
+	"[5] solutionSpace is not reclassified for parent messages",
+	JSON.stringify(solutionInputs) === "[]",
 	JSON.stringify(solutionInputs).slice(0, 600),
 );
 await session.dispose?.();

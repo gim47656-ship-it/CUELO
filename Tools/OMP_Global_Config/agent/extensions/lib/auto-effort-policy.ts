@@ -9,6 +9,8 @@ export interface AutoEffortInput {
   solutionSpace?: string;
   raiseOnly: boolean;
   current?: string;
+  child?: boolean;
+  agentOrigin?: boolean;
 }
 
 export interface AutoEffortConfig {
@@ -17,6 +19,12 @@ export interface AutoEffortConfig {
   tiers: { floor: AutoEffortFloor; models: string[] }[];
   xhighAsMax?: string[];
   capHigh?: string[];
+  raiseAt?: number;
+  holdPrefixes?: string[];
+  escalateMainTools?: number;
+  escalateMainErrors?: number;
+  escalateChildTools?: number;
+  escalateChildErrors?: number;
 }
 
 export interface AutoEffortDecision {
@@ -24,6 +32,10 @@ export interface AutoEffortDecision {
   ceiling?: AutoEffortFloor;
   hold?: boolean;
   xhighAsMax?: true;
+  raiseAt?: number;
+  escalateTools?: number;
+  escalateErrors?: number;
+  holdSource?: "agent" | "prefix" | "notice";
 }
 
 const NOTICE_PREFIXES = ["[자동 재개]", "[하네스 통지]"];
@@ -40,13 +52,20 @@ export function parseAutoEffortConfig(raw: unknown): AutoEffortConfig {
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i]!;
     if (!/^\s/u.test(line) && line.trim() !== "" && !line.startsWith("#")) break;
-    const match = /^ {2}(holdMaxChars|floorMedium|floorHigh|xhighAsMax|capHigh):\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^#"'\r\n]*?))\s*(?:#.*)?$/u.exec(line);
+    const match = /^ {2}(holdMaxChars|floorMedium|floorHigh|xhighAsMax|capHigh|raiseAt|holdPrefixes|escalateMainTools|escalateMainErrors|escalateChildTools|escalateChildErrors):\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^#"'\r\n]*?))\s*(?:#.*)?$/u.exec(line);
     if (match) fields[match[1]!] = (match[2] ?? match[3] ?? match[4] ?? "").trim();
   }
   const chars = fields.holdMaxChars;
   if (chars !== undefined && /^\d+$/u.test(chars)) {
     const value = Number(chars);
     if (Number.isSafeInteger(value)) config.holdMaxChars = value;
+  }
+  const raiseAt = Number(fields.raiseAt);
+  if (fields.raiseAt && Number.isFinite(raiseAt) && raiseAt > 0 && raiseAt <= 1) config.raiseAt = raiseAt;
+  if (fields.holdPrefixes !== undefined) config.holdPrefixes = fields.holdPrefixes.split(",").map(prefix => prefix.trim()).filter(Boolean);
+  for (const key of ["escalateMainTools", "escalateMainErrors", "escalateChildTools", "escalateChildErrors"] as const) {
+    const value = fields[key];
+    if (value !== undefined && /^\d+$/u.test(value) && Number.isSafeInteger(Number(value))) config[key] = Number(value);
   }
   for (const key of ["floorMedium", "floorHigh", "xhighAsMax", "capHigh"] as const) {
     const value = fields[key];
@@ -79,7 +98,17 @@ export function decideAutoEffort(input: AutoEffortInput, config: AutoEffortConfi
   const onlyOneLevel = (floor !== undefined || ceiling !== undefined) && input.supportedEfforts.filter(level =>
     (FLOORS.includes(level) && FLOORS.indexOf(level) >= floorIndex && FLOORS.indexOf(level) <= ceilingIndex) ||
     (promoteMax && level === "max" && ceiling === undefined)).length === 1;
-  const hold = onlyOneLevel || config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ||
+  const holdSource = input.agentOrigin ? "agent" : !fromSolution && config.holdPrefixes?.some(prefix => evidence.startsWith(prefix)) ? "prefix" :
+    !fromSolution && config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ? "notice" : undefined;
+  const hold = holdSource !== undefined || onlyOneLevel || config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ||
     (!fromSolution && [...evidence].length <= config.holdMaxChars);
-  return { ...(floor === undefined ? {} : { floor }), ...(ceiling === undefined ? {} : { ceiling }), ...(hold ? { hold: true } : {}), ...(xhighAsMax ? { xhighAsMax: true } : {}) };
+  return {
+    ...(floor === undefined ? {} : { floor }), ...(ceiling === undefined ? {} : { ceiling }),
+    ...(hold ? { hold: true } : {}), ...(holdSource === undefined ? {} : { holdSource }),
+    ...(xhighAsMax ? { xhighAsMax: true } : {}),
+    ...(config.raiseAt === undefined ? {} : { raiseAt: config.raiseAt }),
+    ...(input.child
+      ? { escalateTools: config.escalateChildTools ?? 0, escalateErrors: config.escalateChildErrors ?? 15 }
+      : { escalateTools: config.escalateMainTools ?? 40, escalateErrors: config.escalateMainErrors ?? 4 }),
+  };
 }

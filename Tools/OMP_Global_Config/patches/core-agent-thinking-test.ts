@@ -348,7 +348,7 @@ try {
 
 	// A session loaded from its file (idle unload, server restart) has no in-memory resolution.
 	Reflect.set(globalThis, policyKey, () => ({ floor: "medium", hold: true }));
-	const userTurn = { type: "message", message: { role: "user" } };
+	const userTurn = { type: "message", message: { role: "user", content: "previous user request" } };
 	const levelChange = (thinkingLevel: string, configured = "auto") => ({ type: "thinking_level_change", thinkingLevel, configured });
 	const loaded = (branch: object[], model: object = full) => controls(model, { branch });
 	const withMax = ladderModel(["low", "medium", "high", "xhigh", "max"]);
@@ -385,6 +385,7 @@ try {
 	assert.deepEqual(observed, {
 		provider: full.provider, modelId: full.id, supportedEfforts: ["low", "medium", "high", "xhigh"],
 		request: "accumulated", added: "new", solutionSpace: "solution", raiseOnly: true, current: "high",
+		child: false, agentOrigin: false,
 	});
 	console.log("  PASS  policy receives model, new evidence, solution space and last resolution");
 
@@ -501,7 +502,7 @@ try {
 		const before = judgeCalls;
 		assert.equal(await held.turn("low"), "high");
 		const restored = controls(full, { branch: [
-			{ type: "message", message: { role: "user" } },
+			{ type: "message", message: { role: "user", content: "previous user request" } },
 			{ type: "thinking_level_change", thinkingLevel: "xhigh", configured: "auto" },
 		] });
 		assert.equal(await restored.turn("low"), "high");
@@ -596,6 +597,10 @@ try {
 	await regression("[auto-thinking-decision] every auto resolution appends one non-context custom entry", async () => {
 		setFloor("medium");
 		Reflect.deleteProperty(globalThis, policyKey);
+		const metadata = (chosen: string | null) => ({
+			probabilities: chosen === null ? null : Object.fromEntries(["low", "medium", "high", "xhigh"].map(level => [level, level === chosen ? 0.6 : (1 - 0.6) / 3])),
+			argmax: chosen, chosen, raiseAt: 0.5, contextUsed: false, agentOrigin: false,
+		});
 		const decisions = (entries: Array<{ customType: string; data: Record<string, unknown> }>) => {
 			assert.equal(entries.every(entry => entry.customType === "auto-thinking-decision"), true);
 			return entries.map(entry => entry.data);
@@ -604,11 +609,12 @@ try {
 		assert.equal(await classified.turn("medium"), "medium", "provisional high 에서 내려간다");
 		assert.equal(await classified.turn("medium"), "medium");
 		assert.deepEqual(decisions(classified.entries), [
-			{ path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: true, raiseOnly: false },
-			{ path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: false, raiseOnly: false },
+			{ ...metadata("medium"), path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: true, raiseOnly: false },
+			{ ...metadata("medium"), path: "classifier", classifier: "medium", floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: false, raiseOnly: false },
 		], "강도가 그대로여도 판정마다 남는다");
 		assert.equal(await classified.turn("fail"), "medium");
 		assert.deepEqual(classified.entries.at(-1)?.data, {
+			...metadata(null),
 			path: "fallback", classifier: null, floor: null, ceiling: null, sessionCeiling: null, applied: "medium", changed: false, raiseOnly: false,
 		});
 
@@ -618,13 +624,14 @@ try {
 		assert.equal(await held.turn("xhigh"), "medium", "first hold starts at the floor");
 		assert.equal(judgeCalls, beforeHold);
 		assert.deepEqual(decisions(held.entries), [
-			{ path: "hold", classifier: null, floor: "medium", ceiling: "high", sessionCeiling: "xhigh", applied: "medium", changed: true, raiseOnly: false },
+			{ ...metadata(null), path: "hold", classifier: null, floor: "medium", ceiling: "high", sessionCeiling: "xhigh", applied: "medium", changed: true, raiseOnly: false },
 		]);
 
 		Reflect.set(globalThis, policyKey, () => ({ floor: "medium", ceiling: "high" }));
 		const capped = controls(full);
 		assert.equal(await capped.turn("xhigh"), "high");
 		assert.deepEqual(capped.entries.at(-1)?.data, {
+			...metadata("xhigh"),
 			path: "classifier", classifier: "xhigh", floor: "medium", ceiling: "high", sessionCeiling: null, applied: "high", changed: false, raiseOnly: false,
 		}, "provisional high 와 같아 changed 는 false. 정책 상한이 낮춘 판정은 classifier 와 applied 가 갈린다");
 
@@ -632,6 +639,7 @@ try {
 		const keyword = controls(ladderModel(["low", "medium", "high", "xhigh", "max"]));
 		assert.equal(await keyword.turn("low", "ultrathink please"), "max");
 		assert.deepEqual(keyword.entries.at(-1)?.data, {
+			...metadata(null),
 			path: "ultrathink", classifier: null, floor: null, ceiling: null, sessionCeiling: null, applied: "max", changed: true, raiseOnly: false,
 		});
 
@@ -648,6 +656,7 @@ try {
 		await raising.control.applyAutoThinkingLevel("steer", 1, undefined, { raiseOnly: true });
 		assert.equal(raising.entries.length, recorded + 1);
 		assert.deepEqual(raising.entries.at(-1)?.data, {
+			...metadata("xhigh"),
 			path: "classifier", classifier: "xhigh", floor: null, ceiling: null, sessionCeiling: null, applied: "xhigh", changed: true, raiseOnly: true,
 		});
 		reply = "low";
