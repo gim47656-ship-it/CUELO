@@ -9,7 +9,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { hasJapaneseTodoProse, requestedTodoJapanese } from "../../cuelo-plugins/todo-language/todo-language";
+import { hasEnglishOnlyTodoProse, hasJapaneseTodoProse, requestedTodoEnglish, requestedTodoJapanese, userWritesKorean } from "../../cuelo-plugins/todo-language/todo-language";
 
 const japanese = ["コア直接変更とアプリ側機能の境界を確認", "現在のパッチ一覧と適用状態を確認", "利用者向けに効果と更新時の注意を整理"];
 
@@ -132,6 +132,46 @@ test("child engineering todos and unrelated tools are outside the guard", async 
   expect(await h.runner.emitToolCall({ type: "tool_call", toolName: "write", toolCallId: "write", input: { content: japanese[0] } })).toBeUndefined();
   expect(await h.runner.emitToolCall({ type: "tool_call", toolName: "todo", toolCallId: "child", input: { op: "init", items: japanese } }, undefined,
     { kind: "subagent", id: "maker", name: "maker" } as never)).toBeUndefined();
+});
+
+test("a Korean-speaking user gets English-only todo prose rejected before mutation", async () => {
+  const english = ["Install agent-desktop in the VM", "Crop marking ROI from originals"];
+  const h = await harness();
+  // No user message yet: the user's language is unknown, so English stays allowed.
+  expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
+  await h.runner.emitInput("vm 에 Hanse 단톡방에들어가서 다자료를받아서정리해바", undefined, "interactive");
+  const before = h.state();
+  await expect(h.call({ op: "init", items: ["정상 작업", english[1]] })).rejects.toThrow("items[1]");
+  await expect(h.call({ op: "append", phase: "Check results", items: ["정상 작업"] })).rejects.toThrow("phase");
+  expect(h.state()).toEqual(before);
+  const neutral = ["`bun run test` 실행", "CI", "README.md 갱신", "src/lib/index.ts", "TypeError: cannot read x 원문 확인"];
+  expect((await h.call({ op: "init", items: neutral })).isError).toBeUndefined();
+  // A real request for English todos lifts the guard until the user asks for Korean again.
+  await h.runner.emitInput("할 일은 영어로 써줘", undefined, "rpc");
+  expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
+  await h.runner.emitInput("할 일을 한국어로 작성해줘", undefined, "rpc");
+  await expect(h.call({ op: "init", items: english })).rejects.toThrow("items[0]");
+  // A user who switches to English prose keeps English todos.
+  await h.runner.emitInput("Please organize the downloaded files by date", undefined, "rpc");
+  expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
+});
+
+test("English-only detection ignores code, paths, quotes and lone identifiers", () => {
+  expect(hasEnglishOnlyTodoProse("Verify counts and report")).toBe(true);
+  expect(hasEnglishOnlyTodoProse('결과 "Verify counts and report" 확인')).toBe(false);
+  expect(hasEnglishOnlyTodoProse("`git push origin main`")).toBe(false);
+  expect(hasEnglishOnlyTodoProse("README")).toBe(false);
+  expect(hasEnglishOnlyTodoProse("REPLAN_WHEN")).toBe(false);
+  expect(hasEnglishOnlyTodoProse("I review")).toBe(true);
+  expect(userWritesKorean("Fix, test, deploy.")).toBe(false);
+  expect(userWritesKorean("Fix a bug now")).toBe(false);
+  expect(userWritesKorean('Translate "안녕하세요"')).toBeUndefined();
+  expect(userWritesKorean("ok")).toBeUndefined();
+  expect(userWritesKorean("이거 고쳐")).toBe(true);
+  expect(userWritesKorean("fix the sidebar please")).toBe(false);
+  expect(requestedTodoEnglish("Write the todos in English")).toBe(true);
+  expect(requestedTodoEnglish("할 일을 영어로 쓰지 마")).toBe(false);
+  expect(requestedTodoEnglish("영어 README를 작성해줘")).toBeUndefined();
 });
 
 test("review exception and protected-span probes", async () => {

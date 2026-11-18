@@ -13,17 +13,30 @@ export function hasJapaneseTodoProse(text: string): boolean {
   return /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(prose(text));
 }
 
+// Standalone Latin words; underscore- or digit-joined identifiers ("REPLAN_WHEN", "x86") are not words.
+const latinWords = (text: string) => text.match(/(?<!\w)[A-Za-z]+(?!\w)/g)?.length ?? 0;
+
+// English prose with no Hangul: two or more Latin words left after code, paths, quotes and raw errors are removed.
+// A lone identifier ("CI", "README", "REPLAN_WHEN") stays neutral.
+export function hasEnglishOnlyTodoProse(text: string): boolean {
+  const direct = prose(text);
+  return !/[\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(direct) && latinWords(direct) >= 2;
+}
+
+type TodoLanguage = "ja" | "ko" | "en";
+
 // Undefined means no new directive; a neutral follow-up must not revoke a real user instruction.
-export function requestedTodoJapanese(text: string): boolean | undefined {
+// True: the user asked for `target` todos. False: the user asked for another language or prohibited `target`.
+function requestedTodoLanguage(text: string, target: TodoLanguage): boolean | undefined {
   const direct = prose(text);
   const todo = "(?:할\\s*일(?:\\s*목록)?|투두|todo(?:\\s*list|s)?|task\\s*list|checklist)";
   const particle = "(?:을|를|은|는|만|도)?";
   const verb = "(?:써|쓰|작성|적어|표시|만들|바꿔|정리|부탁|해|계속)";
   const adverbs = "(?:(?:모두|전부|전체|앞으로|이제부터|항상|반드시|꼭|다시|그냥|계속|자세히|짧게|간단히)\\s*)*";
-  const contrast = `(?:(?:일본어|일문|한국어|한글)(?:로|으로)\\s*${verb}[하해\\s]*지\\s*말고\\s*)?`;
+  const contrast = `(?:(?:일본어|일문|한국어|한글|영어|영문)(?:로|으로)\\s*${verb}[하해\\s]*지\\s*말고\\s*)?`;
   let requested: boolean | undefined;
   for (const clause of direct.split(/[.!?。\n;,]/)) {
-    for (const [language, japanese] of [["일본어|일문", true], ["한국어|한글", false]] as const) {
+    for (const [language, code] of [["일본어|일문", "ja"], ["한국어|한글", "ko"], ["영어|영문", "en"]] as const) {
       const lang = `(?:${language})(?:로|으로)`;
       const match = new RegExp(`${todo}${particle}\\s*${contrast}${adverbs}${lang}\\s*${adverbs}${verb}|${lang}\\s*${adverbs}${todo}${particle}\\s*${adverbs}${verb}`, "i").exec(clause);
       if (!match) continue;
@@ -31,19 +44,35 @@ export function requestedTodoJapanese(text: string): boolean | undefined {
       const required = /^[하해\s]*지\s*않으면\s*안\s*(?:돼|되|됩|된|됨)/.test(tail);
       const prohibited = !required && (/^[하해서주시어아지진는도록게기가것건걸을를은면\s]*(?:않|못|금지|안\s*(?:돼|되|됩|된|됨))/.test(tail)
         || /^[하해서주시어아는도록게기가것건걸을를은면\s]*(?:지(?:는|도)?|진)\s*(?:말|마)/.test(tail));
-      if (prohibited && japanese) requested = false;
-      else if (!prohibited) requested = japanese;
+      if (prohibited && code === target) requested = false;
+      else if (!prohibited) requested = code === target;
     }
-    const english = /\b(?:write|create|show|keep|switch|change)\s+(?:(?:the|my|your|all|every|future)\s+)*(?:todos?|todo\s*(?:list|items?)|task\s*list|checklist)\s+(?:in|to)\s+(japanese|korean)\b/i.exec(clause);
+    const english = /\b(?:write|create|show|keep|switch|change)\s+(?:(?:the|my|your|all|every|future)\s+)*(?:todos?|todo\s*(?:list|items?)|task\s*list|checklist)\s+(?:in|to)\s+(japanese|korean|english)\b/i.exec(clause);
     if (english) {
-      const japanese = english[1]!.toLowerCase() === "japanese";
+      const code = ({ japanese: "ja", korean: "ko", english: "en" } as const)[english[1]!.toLowerCase() as "japanese" | "korean" | "english"];
       // A bounded adverb list may sit between the negation and the verb ("do not ever write"); anything else ends its reach.
       const prohibited = /\b(?:don't|do not|not|never)(?:\s+(?:ever|again|really|actually|just|even))*\s*$/i.test(clause.slice(0, english.index));
-      if (prohibited && japanese) requested = false;
-      else if (!prohibited) requested = japanese;
+      if (prohibited && code === target) requested = false;
+      else if (!prohibited) requested = code === target;
     }
   }
   return requested;
+}
+
+export function requestedTodoJapanese(text: string): boolean | undefined {
+  return requestedTodoLanguage(text, "ja");
+}
+
+export function requestedTodoEnglish(text: string): boolean | undefined {
+  return requestedTodoLanguage(text, "en");
+}
+
+// Undefined leaves the previous judgement: messages without Hangul or three English words say nothing about the user's language.
+// Hangul inside quotes or code is quoted material, not the language the user writes in.
+export function userWritesKorean(text: string): boolean | undefined {
+  const direct = prose(text);
+  if (/\p{Script=Hangul}/u.test(direct)) return true;
+  return latinWords(direct) >= 3 ? false : undefined;
 }
 
 type DisplayField = { location: string; text: string };
