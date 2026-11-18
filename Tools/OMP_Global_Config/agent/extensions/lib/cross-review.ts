@@ -1508,7 +1508,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
     })(),
     ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
-    `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required reviewer failed on a provider rate or usage limit (quote that decision, the reviewId and the raw error), and is recorded in the routing ledger.`,
+    `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required reviewer hit a provider limit and the required Hydrogen substitute also failed or could not be called (quote that decision, the reviewId and the raw errors), and is recorded in the routing ledger.`,
   ].join("\n"));
 }
 
@@ -1937,7 +1937,7 @@ export interface ReviewDeps {
   snapshotRoot: string;
   /** reviewer 한 명을 부른다. 실패는 ReviewerCallError(model 포함)로 던진다. */
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
-  /** 필수 자리 slot이 가리키는 모델. 보조 검토자가 이 라운드의 필수 reviewer와 같은 모델이면 부르지 않는 데만 쓴다. */
+  /** 필수 자리 slot이 가리키는 모델. 보조와 필수 대체 호출에서 같은 모델을 피하는 데 쓴다. */
   requiredModels?: Partial<Record<Lane, string>>;
   /**
    * 보조 검토자(modelRoles.crossReviewAdvisory). slot이 비어 있으면 없고, 그러면 보조 호출이 없다. model은 해석한 provider/id(못 풀면 selector)이며
@@ -1999,7 +1999,7 @@ function describeProgress(round: number, reviewers: ReviewProgress["reviewers"],
 export interface ReviewResult {
   reviewId: string;
   round: number;
-  reviewers: { family: Lane; model: string; status: CrossReviewReviewer["status"]; elapsedSec: number; raw?: string; rawChars?: number; rawFile?: string; error?: string }[];
+  reviewers: (Pick<CrossReviewReviewer, "model" | "status" | "raw" | "rawFile" | "error" | "resolvedModel" | "limitSubstitute"> & { family: Lane; elapsedSec: number; rawChars?: number })[];
   /** 이 라운드의 보조 검토자 결과. ok면 그 지적(advisory: true, R<n>-ADV-k)이 findings에 합쳐졌고, 그 밖의 상태는 기록만 했다. */
   advisory: CrossReviewAdvisoryOutcome;
   /** 2026-10-29 전 자문이 앞 라운드에 늦게 붙은 옛 체인에서만: 그 자문 finding(열린 지적으로 다룬다). 지금의 보조 검토자는 늦은 답을 기록하지 않는다. */
@@ -2110,15 +2110,16 @@ interface NextState {
   verdicts: readonly CrossReviewVerdict[];
   /** subagent 세션: resolve를 부를 수 없으므로 보고와, 라운드 소진 뒤에도 남은 일을 끝내는 길을 안내한다. */
   maker: boolean;
-  /** 실패한 필수 reviewer 가운데 공급자 사용량·속도 한도로 실패한 첫 자리의 원문 오류(2026-11-09 사용자 결정의 waiver 안내용). */
-  limitError?: string;
-  /** 실패한 필수 reviewer 가운데 한도 예외가 덮지 않는 자리(시간 초과·해석 불가·일반 오류)의 `자리: 상태` 목록. 비어 있지 않으면 waiver는 전체 변경을 덮지 않는다. */
+  /** 공급자 한도 때문에 실패한 필수 자리와 Hydrogen 대체 호출의 결과. */
+  limitFailures: readonly string[];
+  /** 실패한 필수 reviewer 가운데 한도 예외가 덮지 않는 자리의 목록. */
   uncoveredFailures: readonly string[];
 }
 
 /** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
 export const LIMIT_ERROR = /\b429\b|rate[_ -]?limit|usage[_ -]?limit|insufficient_quota|quota exceeded|exceed your account/i;
-const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-09: 「아그리고 교차검토 한도초과일때는 걍넘기자」)";
+const HYDROGEN_MODEL_ID = "gemini-4-hydrogen";
+const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-19: 「다른세션에서넘어온건데이거할때같이해줘」; replaces 2026-11-09)";
 
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
 // 10-30 UpkeepCollector는 non-probe 라운드를 다 쓴 체인에 finding이 남자 Main 전용 resolve 안내만 받고 남은 일을 둔 채 partial로 끝났다.
@@ -2126,18 +2127,15 @@ const MAKER_REPORT = "report the reviewId chain (newest last) to Main with a pro
 const MAKER_AFTER_LIMIT = "Running out of rounds never ends your slice: fix or refute the remaining findings, finish the remaining acceptance work, run the focused check on each code file's final content, and list every file changed after this round with that check as evidence so Main can resolve with unreviewedAcknowledgements.";
 
 function describeNext(state: NextState): string {
-  const hitLimit = state.limitError !== undefined;
-  if (!state.passable && hitLimit && state.uncoveredFailures.length > 0) {
-    // 11-09 사용자 결정은 공급자 한도 예외만 덮는다. 필수 자리에 시간 초과·해석 불가가 섞였으면 전체 변경을 waiver로 넘기라고 안내하지 않는다.
-    return `Required reviewers failed for different reasons, so the provider-limit waiver does not cover this review: ${state.uncoveredFailures.join(", ")} did not fail on a rate or usage limit (${state.limitError.length > 300 ? `${state.limitError.slice(0, 300)}…` : state.limitError} did). This chain can never pass, and a later round with previousReviewId is refused for the same reason. Do not commit this change under the standing limit waiver: first make the other required reviewer answer (or fix what made its answer unusable) and review a new round without previousReviewId, or get a separate explicit decision from the user for the uncovered failure and record it in the work record. ${state.maker
+  if (!state.passable && state.limitFailures.length > 0 && state.uncoveredFailures.length > 0) {
+    return `Required reviewers failed for different reasons, so the provider-limit waiver does not cover this review: ${state.uncoveredFailures.join(", ")} did not fail on a rate or usage limit. ${state.limitFailures.join("; ")}. This chain can never pass, and a later round with previousReviewId is refused for the same reason. Do not commit this change under the standing limit waiver: first make the other required reviewer answer (or fix what made its answer unusable) and review a new round without previousReviewId, or get a separate explicit decision from the user for the uncovered failure and record it in the work record. ${state.maker
       ? "Report this reviewId, both raw errors and the uncovered failure to Main."
       : "This decision is Main's: the user's standing limit waiver covers only the rate or usage limit."}`;
   }
-  if (!state.passable && hitLimit) {
-    const raw = state.limitError!.length > 300 ? `${state.limitError!.slice(0, 300)}…` : state.limitError!;
-    return `The required reviewer hit a provider rate or usage limit (${raw}). This chain can never pass. Under ${LIMIT_WAIVER_DECISION}, do not wait for the limit to reset and do not switch to another reviewer: ${state.maker
-      ? "report this reviewId and the raw error to Main, which commits with crossReviewWaiver (git_finalize is Main-only), and finish the rest of your slice."
-      : "commit with git_finalize (or git_integrate) crossReviewWaiver quoting that decision, this reviewId and the raw error, and say in the work record and report that the change went in without a cross-family review."} Other reviewer failures (timeouts, unparsable answers) are not covered.`;
+  if (!state.passable && state.limitFailures.length > 0) {
+    return `${state.limitFailures.join("; ")}. This chain can never pass. Under ${LIMIT_WAIVER_DECISION}: ${state.maker
+      ? "report this reviewId and the raw errors to Main, which commits with crossReviewWaiver (git_finalize is Main-only), and finish the rest of your slice."
+      : "commit with git_finalize (or git_integrate) crossReviewWaiver quoting that decision, this reviewId and the raw errors in reviewers[], and say in the work record and report that the change went in without a completed cross-family review."} A primary reviewer failure unrelated to provider limits is not covered.`;
   }
   if (!state.passable) return "At least one required reviewer answer could not be used (see reviewers[].status). This chain can never pass. Fix the cause (or the input) and start a new review without previousReviewId.";
   const roundsLeft = state.round < MAX_ROUNDS;
@@ -2363,7 +2361,7 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
  * reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다.
  * family advisory는 보조 검토자이며 stopReason은 그 실패가 출력 한도 잘림(length)인지 가르는 데 쓴다.
  */
-interface ReviewerOutcome<F extends Lane | "advisory" = Lane> { family: F; model: string; text: string; elapsedMs: number; error?: string; stopReason?: string; batches?: string[] }
+interface ReviewerOutcome<F extends Lane | "advisory" = Lane> { family: F; model: string; text: string; elapsedMs: number; error?: string; stopReason?: string; batches?: string[]; limitSubstitute?: CrossReviewReviewer["limitSubstitute"] }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
@@ -2718,17 +2716,35 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
       report();
     };
-    try {
-      const completion = await askLane((prompt, attempt) => deps.complete(family, prompt, attempt), signal);
-      finish("answered");
-      return { family, model: completion.model, text: completion.text, elapsedMs: Date.now() - started, ...(completion.batches ? { batches: completion.batches } : {}) };
-    } catch (error) {
-      // review가 취소됐으면 취소로 알린다. 600 s 제한 초과는 오류 문구로만 구분된다.
-      finish(signal.aborted ? "cancelled" : "failed");
-      const placeholder = `@${SLOT[family]}`;
-      const named = error instanceof ReviewerCallError && error.model !== placeholder ? error.model : undefined;
-      return { family, model: named ?? placeholder, text: error instanceof ReviewerCallError ? error.partial ?? "" : "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+    const placeholder = `@${SLOT[family]}`;
+    const askRequired = async (call: Parameters<typeof askLane>[0], fallbackModel: string): Promise<ReviewerOutcome> => {
+      try {
+        const completion = await askLane(call, signal);
+        return { family, ...completion, elapsedMs: Date.now() - started };
+      } catch (error) {
+        const called = error instanceof ReviewerCallError ? error : undefined;
+        return { family, model: called?.model ?? fallbackModel, text: called?.partial ?? "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    let outcome = await askRequired((prompt, attempt) => deps.complete(family, prompt, attempt), placeholder);
+    if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)) {
+      const requiredModel = deps.requiredModels?.[family];
+      const primary = { primaryModel: outcome.model === placeholder ? requiredModel ?? placeholder : outcome.model, primaryError: outcome.error };
+      let skippedReason: string | undefined;
+      if (!advisor || modelKey(advisor.model).id !== HYDROGEN_MODEL_ID) skippedReason = `modelRoles.${ADVISORY_SLOT} does not supply a Hydrogen route`;
+      else if (modelKey(primary.primaryModel).id === HYDROGEN_MODEL_ID || (requiredModel && modelKey(requiredModel).id === HYDROGEN_MODEL_ID)) skippedReason = "the required slot already used Hydrogen";
+      else if (chainAuthors.some((author) => modelKey(author).id === HYDROGEN_MODEL_ID)) skippedReason = "Hydrogen is an author of this chain";
+      else if (coolingOf(advisor.model)) skippedReason = `${advisor.model} is in provider-limit cooldown`;
+      if (advisor && !skippedReason) {
+        // 보조 호출과 별개로 필수와 같은 본문 전체를 이 자리의 취소 신호로 다시 심사한다.
+        outcome = await askRequired((prompt, attempt) => advisor.complete(prompt, attempt), advisor.model);
+        if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)) rememberLimit(advisor.model, outcome.error);
+      }
+      outcome.limitSubstitute = { ...primary, ...(skippedReason ? { skippedReason } : {}) };
     }
+    // review가 취소됐으면 취소로 알린다. 600 s 제한 초과는 오류 문구로만 구분된다.
+    finish(outcome.error === undefined ? "answered" : signal.aborted ? "cancelled" : "failed");
+    return outcome;
   });
   // 보조 검토자는 자기 취소 신호를 쓴다: 도구 취소를 따르고, 유예가 끝나면 이 호출이 직접 끊는다. 실패는 던지지 않고 결과로 돌려준다.
   const advisoryCancel = new AbortController();
@@ -2803,6 +2819,10 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const rawChars: Partial<Record<Lane, number>> = {};
   for (const item of settled) {
     const read = readReviewerOutcome(item, round, snapshotDir);
+    if (item.limitSubstitute) {
+      read.reviewer.limitSubstitute = item.limitSubstitute;
+      if (!item.limitSubstitute.skippedReason) read.reviewer.resolvedModel = item.model;
+    }
     reviewers.push(read.reviewer);
     findings.push(...read.findings);
     if (read.rawChars !== undefined) rawChars[item.family] = read.rawChars;
@@ -2872,17 +2892,29 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     : advisory.status !== "ok" && advisory.status !== "skipped"
       ? `NOTE: the advisory reviewer ${advisory.model} gave no usable answer (${advisory.status}); it is only recorded, does not affect passable, and nothing from it carries over to later rounds.`
       : undefined;
-  // 한도 예외 안내는 실패한 필수 자리만 보고 정한다: 성공한 필수 자리는 한도 안내를 막지 않고, 보조 검토자는 이 배열에 없다.
-  const failedRequired = reviewers.filter((reviewer) => reviewer.status !== "ok");
-  const limitFailed = failedRequired.filter((reviewer) => reviewer.status === "error" && LIMIT_ERROR.test(reviewer.error ?? ""));
-  const uncoveredFailures = failedRequired
-    .filter((reviewer) => !limitFailed.includes(reviewer))
-    .map((reviewer) => `${reviewer.family} (${reviewer.status}${reviewer.error ? `: ${reviewer.error.slice(0, 120)}` : ""})`);
+  // 한도 예외는 원래 필수 자리가 한도였을 때만 고려한다. 대체 결과가 정상이면 예외가 필요 없다.
+  const limitFailures: string[] = [];
+  const uncoveredFailures: string[] = [];
+  const excerpt = (text: string) => text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  for (const reviewer of reviewers) {
+    if (reviewer.status === "ok") continue;
+    const substitute = reviewer.limitSubstitute;
+    if (substitute && !signal.aborted) {
+      const result = substitute.skippedReason
+        ? `Hydrogen substitute was skipped: ${substitute.skippedReason}`
+        : `required Hydrogen substitute ${reviewer.model} also failed (${reviewer.error ? excerpt(reviewer.error) : reviewer.status})`;
+      limitFailures.push(`Required reviewer ${substitute.primaryModel} hit a provider rate or usage limit (${excerpt(substitute.primaryError)}); ${result}`);
+    } else {
+      uncoveredFailures.push(`${reviewer.family} (${reviewer.status}${reviewer.error ? `: ${reviewer.error.slice(0, 120)}` : ""})`);
+    }
+  }
   return {
     reviewId, round, reviewers: reviewers.map((reviewer) => ({
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
       ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
       ...(reviewer.error ? { error: reviewer.error } : {}),
+      ...(reviewer.limitSubstitute ? { limitSubstitute: reviewer.limitSubstitute } : {}),
+      ...(reviewer.resolvedModel ? { resolvedModel: reviewer.resolvedModel } : {}),
     })),
     advisory,
     ...(earlierAdvisoryFindings.length > 0 ? { earlierAdvisoryFindings } : {}),
@@ -2895,7 +2927,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     nextStep: [withInputWarning(describeNext({
       round, passable, findings: findings.length, runFindings: findings.filter(needsRun).length, recipeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
-      limitError: limitFailed[0]?.error,
+      limitFailures,
       uncoveredFailures,
     }), skippedInputs), ...(advisoryNote ? [advisoryNote] : []), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };

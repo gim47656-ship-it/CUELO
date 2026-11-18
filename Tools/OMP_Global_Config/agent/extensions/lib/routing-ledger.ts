@@ -384,6 +384,10 @@ export interface CrossReviewReviewer {
   family: "openai" | "anthropic" | "advisory" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
+  /** 실제로 대체 호출에 사용된 provider/id. 필수 자리(`family`)는 그대로다. */
+  resolvedModel?: string;
+  /** 필수 자리의 공급자 한도 원문. 대체 호출을 못 했으면 그 이유도 남긴다. */
+  limitSubstitute?: { primaryModel: string; primaryError: string; skippedReason?: string };
   /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. pending은 2026-10-29 전 기록에서 필수 reviewer가 끝났을 때 아직 답하지 않은 자문 자리다. */
   status: "ok" | "unparsable" | "error" | "pending";
   elapsedMs: number;

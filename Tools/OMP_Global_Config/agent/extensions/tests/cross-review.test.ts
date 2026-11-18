@@ -407,18 +407,18 @@ describe("runReview", () => {
     expect(records.at(-1)).toMatchObject({ reviewId: all.reviewId, passable: false });
   });
 
-  test("필수 reviewer가 한도로 실패하면 기다리거나 바꾸지 말고 crossReviewWaiver로 넘기라고 안내한다(2026-11-09 사용자 결정)", async () => {
+  test("필수 reviewer 한도 뒤 Hydrogen 경로가 없으면 crossReviewWaiver로 넘기라고 안내한다(2026-11-19)", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    // 11-09 클라우드 야간에서 실제로 받은 오류 원문
     const limit = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} retry-after-ms=31807000';
     const result = await runReview(input(), deps(env, { openai: new Error(limit) }), signal);
     expect(result.passable).toBe(false);
     expect(result.nextStep).toContain("crossReviewWaiver");
-    expect(result.nextStep).toContain("걍넘기자");
+    expect(result.nextStep).toContain("2026-11-19");
+    expect(result.nextStep).toContain("does not supply a Hydrogen route");
     expect(result.nextStep).toContain("rate_limit_error");
     const maker = await runReview(input({ maker: true }), deps(env, { openai: new Error("usage limit reached for this plan") }), signal);
-    expect(maker.nextStep).toContain("report this reviewId and the raw error to Main");
+    expect(maker.nextStep).toContain("report this reviewId and the raw errors to Main");
     expect(maker.nextStep).not.toContain("commit with git_finalize");
     // 한도가 아닌 실패는 예외가 아니다.
     const down = await runReview(input(), deps(env, { openai: new Error("down") }), signal);

@@ -52,7 +52,7 @@ description: Before implementation, validation, cleanup or approval decisions.
 <!-- main-only -->
 - 커밋과 push는 Main의 `git_finalize`로 한다. 소스, 설정, 데이터 변경 턴은 커밋과 별개로 종료 전 `rule://docs-handoff`대로 문서를 마감한다. **검증한 변경은 기본 commit과 push 뒤 `stage: complete`를 확인한다(2026-11-11 사용자 지적).** 사용자 명시 Git 보류나 실제 실패만 예외이며 배포와 장비 대기는 해당하지 않는다. push는 배포 승인이 아니고 소유 불명 dirty 파일은 빼둔다.
 - 게이트가 고른 코드의 계열 교차검토, finding 마감과 면제는 `rule://cross-review-procedure`가 정본이다.
-  검토는 자문이며 사용자 명시 지시와 2026-11-09 공급자 한도 예외 외에는 면제하지 않는다.
+  검토는 자문이며 사용자 명시 지시와 2026-11-19 Hydrogen 대체 검토를 포함한 공급자 한도 예외 외에는 면제하지 않는다.
 - 검토, 검증, 게이트 판정 모델은 사용자가 정한 경로(`modelRoles`의 `crossReview*` 슬롯)만 쓴다(사용자 지적 2026-10-26). 새 검토 기능이나 Maker 지시서에 비용이나 속도를 이유로 다른 모델을 지정하지 않고, 경로 밖 모델의 결과를 교차 검토라 부르지 않는다. 경로를 바꾸려면 먼저 사용자에게 묻는다.
 - raw Git fallback은 `rule://subagent` 「프로젝트와 Git 경계」의 네 조건을 모두 확인한 뒤에만 쓴다.
 <!-- /main-only -->

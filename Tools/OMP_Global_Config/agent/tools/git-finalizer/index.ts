@@ -296,7 +296,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Main-only commit/push exact cwd-relative files in one repo, no globs/directories. message required; crossReviewHighRisk uses paths from files. Review/slop passes bind current content. crossReviewWaiver: explicit user instruction OR 2026-11-09 reviewer rate/usage-limit exception (decision, reviewId, raw error). slopGateWaiver: explicit user instruction only. Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
+    "Main-only commit/push exact cwd-relative files in one repo, no globs/directories. message required; crossReviewHighRisk uses paths from files. Review/slop passes bind current content. crossReviewWaiver: explicit user instruction OR 2026-11-19 provider-limit exception after required Hydrogen also failed or could not be called (decision, reviewId, raw errors). slopGateWaiver: explicit user instruction only. Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),

@@ -364,3 +364,99 @@ describe("보조 검토자가 공급자 한도로 실패하면", () => {
     expect(t.advisoryCalls).toBe(2);
   });
 });
+
+describe("required Hydrogen limit substitute", () => {
+  const HYDROGEN = "aistudio/gemini-4-hydrogen";
+  const PRIMARY_LIMIT = "429 rate_limit_error: required reviewer exhausted";
+  function fixture(reply: string | Error, requiredError = new ReviewerCallError(PRIMARY_LIMIT, ASTRA)) {
+    const env = repo();
+    const d = deps(env, trace());
+    const prompts: string[] = [];
+    const requiredPrompts: string[] = [];
+    d.complete = async (_lane, prompt) => {
+      requiredPrompts.push(prompt);
+      throw requiredError;
+    };
+    d.advisory = {
+      model: HYDROGEN,
+      complete: async (prompt) => {
+        prompts.push(prompt);
+        if (prompts.length === 1) return { model: HYDROGEN, text: clean };
+        if (reply instanceof Error) throw reply;
+        return { model: HYDROGEN, text: reply };
+      },
+    };
+    return { env, d, prompts, requiredPrompts };
+  }
+
+  test("runs a fresh required attempt on the same prompt and records the serving model", async () => {
+    const { env, d, prompts, requiredPrompts } = fixture(clean);
+    const result = await runReview(input, d, signal);
+    const expected = {
+      family: "openai", model: HYDROGEN, resolvedModel: HYDROGEN, status: "ok",
+      limitSubstitute: { primaryModel: ASTRA, primaryError: PRIMARY_LIMIT },
+    };
+    expect(prompts).toEqual([requiredPrompts[0]!, requiredPrompts[0]!]);
+    expect(result.reviewers).toMatchObject([expected]);
+    expect(result.passable).toBe(true);
+    expect(result.nextStep).not.toContain("crossReviewWaiver");
+    const record = recordOf(env, result.reviewId);
+    expect(record).toMatchObject({ passable: true, reviewers: [expected] });
+    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: true });
+  });
+
+  test("blocks resolve on Hydrogen's required findings", async () => {
+    const { d } = fixture(finding("relative deletion"));
+    const result = await runReview(input, d, signal);
+    expect(result.findings).toMatchObject([{ id: "R1-OAI-1", reviewer: HYDROGEN }]);
+    expect(result.findings[0]?.advisory).toBeUndefined();
+    expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: false, open: ["R1-OAI-1"] });
+  });
+
+  test.each([
+    [new ReviewerCallError("429 Hydrogen exhausted", HYDROGEN), "429 Hydrogen exhausted"],
+    [new ReviewerCallError("Hydrogen timed out", HYDROGEN), "Hydrogen timed out"],
+    ["not review JSON", "unparsable"],
+  ])("offers the waiver only after an unusable required Hydrogen answer: %s", async (reply, failure) => {
+    const { d, prompts } = fixture(reply);
+    const result = await runReview(input, d, signal);
+    expect(prompts).toHaveLength(2);
+    expect(result.advisory.status).toBe("ok");
+    expect(result.passable).toBe(false);
+    expect(result.nextStep).toContain(PRIMARY_LIMIT);
+    expect(result.nextStep).toContain(failure);
+    expect(result.nextStep).toContain("commit with git_finalize");
+    expect(result.nextStep).toContain("2026-11-19");
+  });
+
+  test("keeps non-limit required failures outside the waiver", async () => {
+    const { d, prompts } = fixture(clean, new ReviewerCallError("required reviewer timed out", ASTRA));
+    const result = await runReview(input, d, signal);
+    expect(prompts).toHaveLength(1);
+    expect(result.reviewers[0]).toMatchObject({ model: ASTRA, status: "error", error: "required reviewer timed out" });
+    expect(result.passable).toBe(false);
+    expect(result.nextStep).not.toContain("crossReviewWaiver");
+  });
+
+  test("does not ask the required substitute when Hydrogen is already cooling down", async () => {
+    const { d, prompts } = fixture(clean);
+    d.advisoryCooldown!.set(HYDROGEN, { until: Date.now() + 60_000, error: "429 Hydrogen exhausted earlier" });
+    const result = await runReview(input, d, signal);
+    expect(prompts).toHaveLength(0);
+    expect(result.passable).toBe(false);
+    expect(result.nextStep).toContain("cooldown");
+    expect(result.nextStep).toContain("commit with git_finalize");
+  });
+
+  test("does not substitute the same Hydrogen model or a chain author", async () => {
+    const misconfigured = fixture(clean, new ReviewerCallError(PRIMARY_LIMIT, "google-vertex/gemini-4-hydrogen"));
+    const same = await runReview(input, misconfigured.d, signal);
+    expect(misconfigured.prompts).toHaveLength(1);
+    expect(same.nextStep).toContain("already used Hydrogen");
+    const own = fixture(clean);
+    const author = await runReview({ ...input, authors: [HYDROGEN] }, own.d, signal);
+    expect(own.prompts).toHaveLength(0);
+    expect(author.nextStep).toContain("author of this chain");
+    expect(author.nextStep).toContain("commit with git_finalize");
+  });
+});

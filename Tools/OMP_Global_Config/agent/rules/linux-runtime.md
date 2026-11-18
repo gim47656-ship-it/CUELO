@@ -25,7 +25,7 @@ Install this file only as `~/.omp/agent/APPEND_SYSTEM.md` for native Linux (e.g.
   User-named existing tabs use `app: "http://127.0.0.1:32899"` and top-level `target`; new CDP pages need `newWindow: true` to avoid PWA tabs.
   Relay exists only on PCs with its extension. Without it set `browser.relay: false` and omit `browser.cdpUrl`.
   Linux Electron ego has no `Page.printToPDF` (2026-11-11: `'Page.printToPDF' wasn't found`), and draft PDF is WSL-only.
-  Report that PDF blocker rather than bypassing the browser path. Read `ego-browser-verify-recipes` and close only your TaskSpace with `finish: true`.
+  For HTML/page-to-PDF output and PDF checks, use system `/usr/bin/chromium --headless --print-to-pdf` with a throwaway `--user-data-dir` under `/tmp` and local `file://` input (user decision, 2026-11-19: 「왜막혔냐 걍해도됨」). It never opens a visible window or the user's profile. Other browser work stays in ego TaskSpaces. Read `ego-browser-verify-recipes` and close only your TaskSpace with `finish: true`.
 - `computer` uses Linux AT-SPI and X11 input. Mint Cinnamon's X11 session is assumed; Wayland limits per-window input and `raise()`. Ask before changing session type or accessibility settings.
 
 ## Network and Tailscale

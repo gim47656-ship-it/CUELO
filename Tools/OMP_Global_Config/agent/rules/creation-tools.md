@@ -11,6 +11,7 @@ description: Before UI, HTML, slides, Office/PDF creation or template reuse.
 - 관련 스킬은 직접 읽고 현재 설치된 도구의 지원 형식과 실행 경로를 확인한다. 다른 PC의 설치 기록이나 예제 성공을 이 환경의 실행 증거로 쓰지 않는다. 없는 도구를 설치된 것처럼 쓰지 않는다.
 - UI·화면 산출물의 필수 스킬 세트와 언어·운영자 화면 조건은 `rule://frontend` 「산출물별 필수 스킬」이 단일 정본이다. Main이 아직 읽지 않았어도 브리프에 인계하고, 제외 사유와 실제 읽기·절차 수행 근거를 구분한다.
 - 기존 도구·템플릿·오픈소스 부품을 먼저 검토하되 이번 결과에 필요 없는 패키지·프레임워크를 추가하지 않는다. 필요한 도구가 없으면 기존 승인 경계 안에서 준비하거나 필요한 승인만 요청한다. MCP 등록·인증·권한·비용·외부 게시 승인은 별개다.
+- 사용자 브랜드나 기존 원본·디자인 시스템이 없으면 `skill://design-assets`의 공용 에셋에서 시작한다(2026-11-19 사용자 요청: 「윈폼은 따로 에셋을 조사해서받았거든 다른것들도 마찬가지로해줘」). 토큰(`tokens/`), 한글 글꼴(`fonts/`), 편집형 PPTX 마스터(`pptx/`), Word `reference.docx`·Typst 템플릿(`documents/`), HTML 보고 슬라이드(`html-slides/`), 웹 페이지 뼈대(`web/`), 아이콘(`icons/`), WinForms 테마(`winforms/`)가 있다. 색과 글꼴은 `tokens/tokens.json` 하나가 정본이고 각 템플릿은 그 값을 따른다. 기존 `frontend-slides` 템플릿 팩의 기본 사용 가능 여부는 `html-slides/CURATION.md`를 따른다.
 
 ## 산출물별 경로
 
