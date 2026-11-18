@@ -12804,6 +12804,110 @@ function parentSubagentServiceTiers(
 ): ServiceTierByFamily {
 	if (inheritedServiceTier === undefined) {`,
 	},
+	// 2026-11-19 사용자 결정(Sol Fast 방식 B): `task.agentServiceTierOverrides` 값에 계열별 map 을 허용한다.
+	// `maker: { openai: priority }` 는 Maker 가 OpenAI 모델(Sol)일 때만 Fast 를 켜고, Opus·Sonnet Maker 는
+	// 계열이 map 에 없으므로 원래 상속(위 openai=priority 좁힘)을 그대로 따른다. 단일 문자열 값은 기존 동작이다.
+	{
+		file: "src/config/service-tier.ts",
+		marker: "export type AgentServiceTierOverride =",
+		anchor: `export function validateAgentServiceTierOverrides(value: unknown): Record<string, ServiceTierInheritSettingValue> {
+	const overrides: Record<string, ServiceTierInheritSettingValue> = {};`,
+		patched: `/**
+ * One \`task.agentServiceTierOverrides\` entry: a single tier for whatever family the resolved model
+ * belongs to, or (CUELO) a per-family map such as \`{ openai: "priority" }\`. Families missing from
+ * the map keep the tiers the agent would inherit without an override.
+ */
+export type AgentServiceTierOverride =
+	| ServiceTierInheritSettingValue
+	| Partial<Record<ServiceTierFamily, ServiceTierInheritSettingValue>>;
+
+export function validateAgentServiceTierOverrides(value: unknown): Record<string, AgentServiceTierOverride> {
+	const overrides: Record<string, AgentServiceTierOverride> = {};`,
+	},
+	{
+		file: "src/config/service-tier.ts",
+		marker: "// CUELO: per-family override entry.",
+		anchor: `	for (const [agentName, setting] of Object.entries(value)) {
+		if (!isServiceTierInheritSettingValue(setting)) {`,
+		patched: `	for (const [agentName, setting] of Object.entries(value)) {
+		// CUELO: per-family override entry.
+		if (setting !== null && typeof setting === "object" && !Array.isArray(setting)) {
+			const byFamily: Partial<Record<ServiceTierFamily, ServiceTierInheritSettingValue>> = {};
+			for (const [family, tier] of Object.entries(setting)) {
+				if (!isServiceTierFamily(family) || !isServiceTierInheritSettingValue(tier)) {
+					throw new Error(
+						\`Invalid service tier for task.agentServiceTierOverrides.\${agentName}.\${family}: \${String(tier)}. Expected a family (openai, anthropic, google) mapped to one of: \${SERVICE_TIER_INHERIT_SETTING_VALUES.join(", ")}.\`,
+					);
+				}
+				byFamily[family] = tier;
+			}
+			overrides[agentName] = byFamily;
+			continue;
+		}
+		if (!isServiceTierInheritSettingValue(setting)) {`,
+	},
+	{
+		file: "src/config/service-tier.ts",
+		marker: "// CUELO: a per-family entry applies only to the resolved model's family;",
+		anchor: `export function resolveAgentServiceTierOverride(
+	setting: ServiceTierInheritSettingValue,
+	model: Model | undefined,
+	inherited: ServiceTierByFamily,
+): ServiceTierByFamily {
+	if (setting === "inherit") return inherited;`,
+		patched: `export function resolveAgentServiceTierOverride(
+	setting: AgentServiceTierOverride,
+	model: Model | undefined,
+	inherited: ServiceTierByFamily,
+): ServiceTierByFamily {
+	// CUELO: a per-family entry applies only to the resolved model's family; a family it does not
+	// list (or an unresolved model) keeps the inherited tiers, as if the agent had no override.
+	if (typeof setting === "object") {
+		const family = model ? serviceTierFamily(model) : undefined;
+		const own = family ? setting[family] : undefined;
+		return own === undefined ? inherited : resolveAgentServiceTierOverride(own, model, inherited);
+	}
+	if (setting === "inherit") return inherited;`,
+	},
+	{
+		file: "src/task/settings.ts",
+		marker: 'import { type AgentServiceTierOverride, validateAgentServiceTierOverrides } from "../config/service-tier";',
+		anchor: 'import { type ServiceTierInheritSettingValue, validateAgentServiceTierOverrides } from "../config/service-tier";',
+		patched: 'import { type AgentServiceTierOverride, validateAgentServiceTierOverrides } from "../config/service-tier";',
+	},
+	{
+		file: "src/task/settings.ts",
+		marker: "const EMPTY_AGENT_SERVICE_TIER_OVERRIDES: Record<string, AgentServiceTierOverride> = {};",
+		anchor: "const EMPTY_AGENT_SERVICE_TIER_OVERRIDES: Record<string, ServiceTierInheritSettingValue> = {};",
+		patched: "const EMPTY_AGENT_SERVICE_TIER_OVERRIDES: Record<string, AgentServiceTierOverride> = {};",
+	},
+	{
+		file: "src/task/structured-subagent.ts",
+		marker: 'import { type AgentServiceTierOverride, validateAgentServiceTierOverrides } from "../config/service-tier";',
+		anchor: 'import { type ServiceTierInheritSettingValue, validateAgentServiceTierOverrides } from "../config/service-tier";',
+		patched: 'import { type AgentServiceTierOverride, validateAgentServiceTierOverrides } from "../config/service-tier";',
+	},
+	{
+		file: "src/task/structured-subagent.ts",
+		marker: "	serviceTierOverride?: AgentServiceTierOverride;",
+		anchor: "	serviceTierOverride?: ServiceTierInheritSettingValue;",
+		patched: "	serviceTierOverride?: AgentServiceTierOverride;",
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: `	type AgentServiceTierOverride,
+} from "../config/service-tier";`,
+		anchor: `	type ServiceTierInheritSettingValue,
+} from "../config/service-tier";`,
+		patched: `	type AgentServiceTierOverride,
+} from "../config/service-tier";`,
+	},
+	{
+		file: "src/task/executor.ts",
+		marker: "	serviceTierOverride?: AgentServiceTierOverride;",
+		anchor: "	serviceTierOverride?: ServiceTierInheritSettingValue;",
+		patched: "	serviceTierOverride?: AgentServiceTierOverride;",
+	},
 	// 2026-09-30: 공식 preserved-thinking 문서(platform.claude.com/docs/en/build-with-claude/preserved-thinking)는
 	// Opus 5.5도 Fable 5.1·Sonnet 5.5처럼 thinking 서명을 앞선 system·tools·messages에 묶는다고 한다. 18.4.x
 	// catalog는 Opus 5.5에 thinking-prefix-binding을 빠뜨려, prefix가 바뀐 요청이 drop_block 없이 나가고 신규

@@ -53,7 +53,7 @@ setAgentDir(join(fixtureRoot, "home", ".omp", "agent"));
 const { runSubprocess, createSubagentSettings } = await import(`${CORE}/task/executor.ts`);
 const { Settings } = await import(`${CORE}/config/settings.ts`);
 const { cfgTierOpenai, cfgTierAnthropic, cfgTierGoogle } = await import(`${CORE}/session/settings.ts`);
-const { buildServiceTierByFamily } = await import(`${CORE}/config/service-tier.ts`);
+const { buildServiceTierByFamily, validateAgentServiceTierOverrides } = await import(`${CORE}/config/service-tier.ts`);
 const { resolveModelServiceTier } = await import(`${PACKAGES}/pi-ai/src/types.ts`);
 const { buildTransformedCodexRequestBody } = await import(`${PACKAGES}/pi-ai/src/providers/openai-codex-responses.ts`);
 const { getBundledModel } = await import(`${PACKAGES}/pi-catalog/src/models.ts`);
@@ -81,7 +81,7 @@ async function childPayload(
 	name: string,
 	model: string,
 	parentServiceTier: Tiers | null,
-	opts: { settings?: Record<string, unknown>; serviceTierOverride?: string } = {},
+	opts: { settings?: Record<string, unknown>; serviceTierOverride?: string | Record<string, string> } = {},
 ): Promise<Payload | undefined> {
 	const root = mkdtempSync(join(fixtureRoot, `${name}-`));
 	const work = join(root, "work");
@@ -191,6 +191,25 @@ console.log("[7] priority 를 광고하지 않는 Codex 모델은 상속돼도 w
 	check("child 상속 tier 는 openai=priority", JSON.stringify(tiers) === JSON.stringify({ openai: "priority" }), JSON.stringify(tiers));
 	check("미지원 Codex body 에 service_tier 없음", bodyUnsupported.service_tier === undefined, JSON.stringify(bodyUnsupported.service_tier));
 	check("지원 Codex body 는 service_tier=priority", bodySupported.service_tier === "priority", JSON.stringify(bodySupported.service_tier));
+}
+
+console.log("[8] 계열별 override 는 그 계열 모델에만 적용된다(maker: { openai: priority })");
+{
+	const perFamily = { openai: "priority" };
+	const o = await childPayload("family-oai", OAI, null, { serviceTierOverride: perFamily });
+	check("Main Fast OFF 에서도 OpenAI child 는 service_tier=priority", o?.service_tier === "priority", JSON.stringify(o?.service_tier));
+	const a = await childPayload("family-anthropic", ANTHROPIC, null, { serviceTierOverride: perFamily });
+	check("Anthropic child 는 speed 없음", a !== undefined && a.speed === undefined, JSON.stringify(a?.speed));
+	const aInherit = await childPayload("family-anthropic-main-fast", ANTHROPIC, { anthropic: "priority" }, { serviceTierOverride: perFamily });
+	check("Main Anthropic Fast 여도 목록에 없는 계열은 상속 규칙대로 speed 없음", aInherit !== undefined && aInherit.speed === undefined, JSON.stringify(aInherit?.speed));
+	const parsed = validateAgentServiceTierOverrides({ maker: perFamily, other: "none" });
+	check("검증은 map 과 문자열 값을 그대로 돌려준다", JSON.stringify(parsed) === JSON.stringify({ maker: { openai: "priority" }, other: "none" }), JSON.stringify(parsed));
+	let badFamily = "";
+	try { validateAgentServiceTierOverrides({ maker: { mistral: "priority" } }); } catch (e) { badFamily = String(e); }
+	check("모르는 계열은 거절", badFamily.includes("task.agentServiceTierOverrides.maker.mistral"), badFamily);
+	let badTier = "";
+	try { validateAgentServiceTierOverrides({ maker: { openai: "turbo" } }); } catch (e) { badTier = String(e); }
+	check("모르는 tier 는 거절", badTier.includes("task.agentServiceTierOverrides.maker.openai"), badTier);
 }
 
 console.log(`\n결과: ${pass} pass / ${fail} fail`);

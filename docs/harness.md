@@ -380,6 +380,8 @@ upstream 18.3.3부터 코어는 `task`·`bash`를 가진 SubAgent에 `wait`를 �
 
 SubAgent의 service tier는 `tier.subagent: inherit`으로 Main을 따르되, 패치된 내장 코어는 Main의 OpenAI Fast(`priority`)만 새 SubAgent에 넘깁니다. Main의 Anthropic·Google Fast와 Ultrafast·flex는 SubAgent로 자동 상속하지 않습니다. `tier.subagent`에 값을 직접 적거나 agent별 override를 두면 그 값이 그대로 적용됩니다. Fast를 지원하지 않는 모델에는 요청에 싣지 않습니다.
 
+에이전트별 재정의 설정인 `task.agentServiceTierOverrides`에는 단일 티어 대신 제공자 계열별 값 맵을 지정할 수 있습니다. 패치된 내장 코어에서는 `maker: { openai: priority }`와 같이 작성하면 해당 에이전트가 OpenAI 모델에서 실행될 때만 `priority`를 전송하며, 목록에 없는 계열(Anthropic 또는 Google 모델에서 실행되는 Maker)은 재정의가 없을 때와 동일한 상속 규칙을 따릅니다. CUELO 기본 프로필은 이 설정을 사용하여 Sol Maker만 Fast로 실행되도록 하며, 그만큼 Codex 측 사용량이 표준 처리보다 빠르게 소모됩니다.
+
 Maker는 자신이 바꾼 범위의 focused check와 실제 변경 표면 검증을 수행하고 원문 증거 locator를 보고합니다. Main은 확정된 변경분을 중간 검수하고, 마지막에는 각 수용 조건과 그 증거를 대조해 직접 판정합니다. Main은 Maker의 focused check를 같은 조건에서 반복하지 않으며, 필요할 때 공통 환경의 통합·전체 수용 검사를 수행합니다. 검사되지 않은 revision을 통과로 처리하지 않습니다. 자세한 책임 경계는 [검수와 수용](../Tools/OMP_Global_Config/agent/rules/subagent.md) 절과 policy의 `mainLane.workerReview`, `routing.reviewPacket`에 규정돼 있습니다.
 
 전체 실행 묶음이나 N회 안정성 반복과 같이 오래 걸리는 최종 확인은 교차 검토에서 열린 지적이 모두 해결된 뒤, 진단 코드를 제거한 최종 빌드에서 한 번만 수행합니다. 검토 과정의 수정이 시험 도구, 진단, 보고 문구에만 영향을 미쳤다면 해당 수정이 닿는 항목만 한 번 다시 확인합니다. N회 안정성 반복은 통신, 저장, 판정, 상태와 같은 제품 로직이 변경되었을 때만 다시 진행합니다.
