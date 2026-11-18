@@ -214,21 +214,31 @@ function parseSkillUsage(value: unknown): SkillUsageReport {
   };
 }
 
+/**
+ * 예산은 차례로 나눈다: 모든 묶음에 최신 발췌 하나씩, 남으면 둘째, 그다음 셋째. 묶음 순서대로 3개씩 채우면 앞쪽 관찰 후보가
+ * 예산을 다 써서 뒤 순위 실패 묶음이 통째로 빠졌다(11-19 두 PC 묶음에서 각각 상위 20개 중 11개). 앞 발췌가 안 들어간 묶음은 뒤 것도 싣지 않는다.
+ */
 function parseExcerpts(list: unknown): FailureExcerptGroup[] {
-  let budget = EXCERPT_TOTAL_LIMIT;
-  return rows(list).slice(0, FAILURE_LIMIT + OBSERVED_LIMIT).flatMap((g) => {
+  const groups = rows(list).slice(0, FAILURE_LIMIT + OBSERVED_LIMIT).flatMap((g) => {
     const tool = str(g.tool, 60);
     if (!tool) return [];
-    const excerpts: FailureExcerpt[] = [];
-    for (const e of rows(g.excerpts).slice(0, EXCERPTS_PER_GROUP)) {
-      const excerpt = { args: str(e.args, EXCERPT_ARGS_LIMIT) ?? "", error: str(e.error, EXCERPT_ERROR_LIMIT) ?? "", recovery: str(e.recovery, EXCERPT_ARGS_LIMIT) };
-      const size = excerpt.args.length + excerpt.error.length + (excerpt.recovery?.length ?? 0);
-      if (size > budget) break;
-      budget -= size;
-      excerpts.push(excerpt);
-    }
-    return excerpts.length ? [{ tool, key: str(g.key, SAMPLE_LIMIT) ?? "", excerpts }] : [];
+    const candidates = rows(g.excerpts).slice(0, EXCERPTS_PER_GROUP).map((e): FailureExcerpt => ({
+      args: str(e.args, EXCERPT_ARGS_LIMIT) ?? "", error: str(e.error, EXCERPT_ERROR_LIMIT) ?? "", recovery: str(e.recovery, EXCERPT_ARGS_LIMIT),
+    }));
+    return candidates.length ? [{ tool, key: str(g.key, SAMPLE_LIMIT) ?? "", candidates, excerpts: [] as FailureExcerpt[] }] : [];
   });
+  let budget = EXCERPT_TOTAL_LIMIT;
+  for (let round = 0; round < EXCERPTS_PER_GROUP; round++) {
+    for (const group of groups) {
+      const excerpt = group.candidates[round];
+      if (!excerpt || group.excerpts.length !== round) continue;
+      const size = excerpt.args.length + excerpt.error.length + (excerpt.recovery?.length ?? 0);
+      if (size > budget) continue;
+      budget -= size;
+      group.excerpts.push(excerpt);
+    }
+  }
+  return groups.flatMap(({ tool, key, excerpts }) => (excerpts.length ? [{ tool, key, excerpts }] : []));
 }
 
 /** 받은 묶음을 믿지 않고 모양을 다시 맞춘다. v1과 v2를 읽는다. 맞지 않으면 null. */
