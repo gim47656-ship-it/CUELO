@@ -773,7 +773,7 @@
         "HARD_CODE_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "HARD" },
         "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
         "HARD_CODE_TERRA": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" },
-        "HARD_CODE_SOL61": { "modelConfigPath": "modelRoles.implSol61", "workClass": "HARD" }
+        "HARD_CODE_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" }
       },
       "criteria": {
         "NORMAL": "goal-preserved-behavior-and-checks-are-clear-and-an-existing-specification-or-reusable-pattern-settles-the-approach-or-bounded-causal-diagnosis-or-implementation-choice-remains-within-existing-contracts-and-local-evidence-can-resolve-it-bounded-discovery-caller-lookup-implementation-validation-and-local-repair-are-allowed-without-main-pre-solving-every-line-a-slice-that-local-discovery-fix-and-verification-close-with-existing-solutions-is-NORMAL-and-unknown-cause-or-several-candidate-bugs-alone-is-normal",

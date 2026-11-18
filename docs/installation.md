@@ -200,7 +200,7 @@ node install.mjs harness-update
 
 설치 기록은 이 기능이 적용된 `setup`과 컨테이너 기동에서 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
-`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 한정된 설계, 깊은 원인 추적과 실패 재작업 자리(`NORMAL_SOL`, `HARD_CODE_SOL61`)로 유지합니다. 일반 구현과 보통 UI는 `implSonnet`에 지정합니다. 하루 사용 몫을 이유로 UI 담당을 바꾸지 않으며, 역할 설정은 `harness-update`가 덮어쓰지 않습니다.
+`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 한정된 설계, 깊은 원인 추적과 실패 재작업 자리(`NORMAL_SOL`, `HARD_CODE_SOL`)로 유지합니다. 예전 `implSol61` 키는 더 읽지 않으니 지워도 됩니다. 일반 구현과 보통 UI는 `implSonnet`에 지정합니다. 하루 사용 몫을 이유로 UI 담당을 바꾸지 않으며, 역할 설정은 `harness-update`가 덮어쓰지 않습니다.
 
 
 ### 다른 프로필에 설치(`--home`)

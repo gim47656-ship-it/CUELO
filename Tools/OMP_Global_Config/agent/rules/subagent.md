@@ -63,9 +63,9 @@ description: Before delegation, child review or Git handoff.
     `DIFFICULT`는 구현자에게 아직 정해지지 않은 큰 시각·상호작용 설계 판단이 있다는 사실이 있을 때다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
     접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. UI 파일, HARD 등급, 작업 크기, UI 경계의 존재만으로는 아니다.
     기존 화면 패턴·명세·Main이 준비한 방향이 배치·문구·동작을 정했으면 `ROUTINE`이며 Sonnet(`NORMAL_SONNET`, HARD면 `HARD_UI_SONNET`)을 추천한다(2026-11-11 사용자 결정). 한정된 설계나 한정된 실패 재작업이 함께면 Sol이 먼저다. Sonnet 후보가 없거나 관측 소진이면 DeepSeek·Opus로 자동 대체하지 않고 추천 없이 Main이 다시 판단한다. 남은 UI 판단이 없으면 `NONE`이며 다른 우선 조건이 없는 한 일반 구현 순서를 따른다. 사실이 너무 얇아 보통인지 어려운지 정할 수 없으면 둘 중 어느 쪽으로도 추측하지 않고 `UNKNOWN`이다(추천 없이 Main에게 알리고 막지 않는다).
-  - 한정된 설계(`boundedDesign`이 `BOUNDED`)는 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL61`)을 추천한다. 구현자가 알고리즘, 상태 모델, 배치 가운데 골라야 하거나 아직 열려 있는 근본 원인을 찾아야 하지만 목표와 수용 조건, 승인된 계약이 분명하고 선택이 기존 상태 소유자와 공개 계약, 모듈 경계 안에서 끝나는 경우다.
+  - 한정된 설계(`boundedDesign`이 `BOUNDED`)는 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL`)을 추천한다. 구현자가 알고리즘, 상태 모델, 배치 가운데 골라야 하거나 아직 열려 있는 근본 원인을 찾아야 하지만 목표와 수용 조건, 승인된 계약이 분명하고 선택이 기존 상태 소유자와 공개 계약, 모듈 경계 안에서 끝나는 경우다.
     Main이 접근과 계약을 정해 구현·검증만 남았으면 복잡한 상태 처리여도 `NONE`이라 일반 구현 순서를 따른다. 실패한 테스트나 반복 수정만으로 `BOUNDED`가 되지 않는다(실패 재작업은 `reworkNature`가 본다). 사실이 얇으면 `UNKNOWN`이며 추천 없이 Main에게 알리고 막지 않는다.
-  - `FINDING_ID` 재작업은 Jev의 `reworkNature`가 `BOUNDED_FAILURE`(이전 구현이 이름 붙은 한정된 원인으로 실패했고 남은 수정이 기존 설계 안)일 때 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL61`)을 추천한다.
+  - `FINDING_ID` 재작업은 Jev의 `reworkNature`가 `BOUNDED_FAILURE`(이전 구현이 이름 붙은 한정된 원인으로 실패했고 남은 수정이 기존 설계 안)일 때 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL`)을 추천한다.
     의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정(`NOT_FAILURE`)은 실패한 구현이 아니므로 일반 추천 기준을 따른다. 판단은 `failureEvidence`·facts·원장 이력(`history`)에 적힌 사실에서만 하고 재시도 횟수 같은 숫자 기준은 만들지 않는다.
   - 큰 교차 경계 재설계(`designOpen` 0.5 이상. 새 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계 변경이 필요하거나 제품·구조 방향 자체가 열린 경우. 기존 소유자와 승인된 계약 안의 한정된 설계는 해당하지 않는다)와 같은 검사가 수정 뒤에도 다시 실패하거나 원인이 불명·모순인 반복 실패(`RETURN_TO_MAIN`, UI 여부와 무관)는 추천 없이(`profile: null`, 사유 포함) Main으로 돌아온다. Main이 근거·원인·남은 판단을 정리해 접근을 바꾸고 `maker_route`를 다시 실행하며, Sonnet·Opus가 난제를 끝없이 재시도하거나 frontier Maker로 올라가지 않는다.
     이 두 결정만 `beforeTask`에서 발주를 막는다. 임의의 `ROUTING_REASON`이나 다른 후보 선택으로 우회할 수 없고, 사실이나 확정 구현이 바뀐 새 준비에서 결정이 풀렸을 때만 발주된다. 과거 실패 기록만으로 계속 막지 않으며 이미 실행 중인 owner와 모델은 바꾸지 않는다.

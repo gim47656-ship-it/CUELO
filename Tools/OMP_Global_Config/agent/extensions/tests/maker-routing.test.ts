@@ -51,7 +51,7 @@ const candidates = [
   { profile: "HARD_CODE_DEEPSEEK", model: DEEPSEEK, efforts: allStrengths },
   { profile: "NORMAL_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
   { profile: "HARD_CODE_TERRA", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
-  { profile: "HARD_CODE_SOL61", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
+  { profile: "HARD_CODE_SOL", model: "openai-codex/gpt-6.1-sol", efforts: allStrengths },
 ];
 const without = (...profiles: string[]) => candidates.filter((candidate) => !profiles.includes(candidate.profile));
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
@@ -1558,7 +1558,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     HARD_CODE_DEEPSEEK: DEEPSEEK,
     NORMAL_SOL: "openai-codex/gpt-6.1-sol",
     HARD_CODE_TERRA: "openai-codex/gpt-6.1-sol",
-    HARD_CODE_SOL61: "openai-codex/gpt-6.1-sol",
+    HARD_CODE_SOL: "openai-codex/gpt-6.1-sol",
   };
   const strengths = ["low", "medium", "high", "xhigh", "max"];
   const normalAnswers = {
@@ -1683,7 +1683,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_TERRA", "HARD_CODE_SOL61"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_TERRA", "HARD_CODE_SOL"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_SONNET", model: SONNET },
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1717,7 +1717,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["HARD 라벨·UI_UX 분야만으로는 Opus가 아니다", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "NONE" }, "HARD_CODE_SONNET"],
       ["HARD + 어려운 UI → HARD UI Opus", { workClass: "HARD", hardFocuses: ["UI_UX"], uiDifficulty: "DIFFICULT" }, "HARD_UI_OPUS"],
       ["Bounded design uses Sol", { boundedDesign: "BOUNDED" }, "NORMAL_SOL"],
-      ["HARD bounded design uses Sol61", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SOL61"],
+      ["HARD bounded design uses Sol", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED" }, "HARD_CODE_SOL"],
       ["준비된 복잡한 상태 구현(boundedDesign NONE)은 DeepSeek", { uiDifficulty: "NONE", boundedDesign: "NONE", designOpen: 0.2 }, "NORMAL_DEEPSEEK"],
       ["한정된 설계도 큰 교차 경계 재설계(designOpen 높음)면 Main이 먼저다", { boundedDesign: "BOUNDED", designOpen: 0.8 }, null],
       ["한정된 설계도 반복 실패면 Main이 먼저다", { boundedDesign: "BOUNDED", reworkNature: "RETURN_TO_MAIN" }, null],
@@ -1732,7 +1732,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       ["HARD에서도 UI 난이도 모름이면 추천 없음", { workClass: "HARD", hardFocuses: ["CODE_SYSTEM"], uiDifficulty: "UNKNOWN" }, null],
       ["열린 설계는 UI 난이도 모름보다 먼저 Main으로 돌아온다", { designOpen: 0.9, uiDifficulty: "UNKNOWN" }, null],
       ["Bounded failed rework uses Sol", { ...rework, reworkNature: "BOUNDED_FAILURE" }, "NORMAL_SOL"],
-      ["HARD bounded rework uses Sol61", { ...rework, reworkNature: "BOUNDED_FAILURE", workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SOL61"],
+      ["HARD bounded rework uses Sol", { ...rework, reworkNature: "BOUNDED_FAILURE", workClass: "HARD", hardFocuses: ["CODE_SYSTEM"] }, "HARD_CODE_SOL"],
       ["반복 실패 → Main", { ...rework, reworkNature: "RETURN_TO_MAIN" }, null],
       ["반복 실패는 어려운 UI여도 Main이 먼저다", { ...rework, reworkNature: "RETURN_TO_MAIN", uiDifficulty: "DIFFICULT", uiUxBoundary: 1 }, null],
       ["의도한 RED·인프라·검증 보정은 실패가 아니라 일반 구현으로 판단", { ...rework, uiDifficulty: "NONE", reworkNature: "NOT_FAILURE" }, "NORMAL_DEEPSEEK"],
@@ -1821,7 +1821,7 @@ describe("HARD 분야와 NORMAL 한도 기반 배정", () => {
       providers: { "openai-codex": [{ credentialId: 17, disabled: false, limitReached: true, autoBlockedUntilMs: null, fetchedAt: 1,
         limits: [{ id: "openai-codex:primary", windowId: "7d", shared: true, resetsAt: 100, usedFraction: 1, daySlot: null }] }] },
     }) as never;
-    for (const [workClass, expected] of [["NORMAL", "NORMAL_SOL"], ["HARD", "HARD_CODE_SOL61"]] as const) {
+    for (const [workClass, expected] of [["NORMAL", "NORMAL_SOL"], ["HARD", "HARD_CODE_SOL"]] as const) {
       const h = harness({ workClass, hardFocuses: ["CODE_SYSTEM"], boundedDesign: "BOUNDED", quota: codexSpent });
       const [route] = await h.prepare("Sol 사용률 소진", [h.task], {} as never);
       expect(route!.profile, workClass).toBe(expected);
