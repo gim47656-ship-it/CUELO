@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { existsSync, mkdirSync, realpathSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { promisify } from "util";
 import { allowFileRoot } from "./allowed-roots";
 import { selectGitExecutor, type GitExecutor } from "./wsl-git";
@@ -107,17 +107,22 @@ async function git(cwd: string, args: string[], executor?: GitExecutor, timeout 
 const WORKTREE_WRITE_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * addWorktree() places worktrees in `<repoRoot>-worktrees/<dir>`. When such a
- * directory no longer exists (worktree removed), group its sessions back
- * under the main repo instead of letting them dangle as a phantom project.
- * The dir name is the sanitized branch name — close enough for display.
+ * addWorktree() places worktrees in `<repoRoot>-worktrees/<dir>`. When a cwd
+ * at or under such a directory no longer exists (worktree removed), group its
+ * sessions with the matching main-repo path instead of letting them dangle as
+ * a phantom project. The dir name is the sanitized branch name — close enough
+ * for display.
  */
 function inferRemovedWorktree(cwd: string): ProjectInfo | null {
-  const parent = dirname(cwd);
-  if (!parent.endsWith("-worktrees")) return null;
-  const repoRoot = parent.slice(0, -"-worktrees".length);
-  if (!repoRoot || !existsSync(join(repoRoot, ".git"))) return null;
-  return { projectRoot: repoRoot, branch: basename(cwd), isWorktree: true, isTopLevel: true };
+  for (let tree = cwd; dirname(tree) !== tree; tree = dirname(tree)) {
+    const parent = dirname(tree);
+    if (!parent.endsWith("-worktrees")) continue;
+    const repoRoot = parent.slice(0, -"-worktrees".length);
+    if (!repoRoot || !existsSync(join(repoRoot, ".git"))) continue;
+    const sub = relative(tree, cwd);
+    return { projectRoot: sub ? join(repoRoot, sub) : repoRoot, branch: basename(tree), isWorktree: true, isTopLevel: !sub };
+  }
+  return null;
 }
 
 export async function resolveProject(cwd: string): Promise<ProjectInfo> {
@@ -146,16 +151,20 @@ export async function resolveProject(cwd: string): Promise<ProjectInfo> {
     let realCwd = cwd;
     try { realCwd = realpathSync(cwd); } catch { /* keep as-is */ }
     // For a linked worktree, --git-dir differs from --git-common-dir.
-    // Only collapse *worktree toplevels* into the main repo. A session whose
-    // cwd is a subdirectory of a repo keeps its own project identity —
-    // grouping subdirs under the repo root would change where new sessions
-    // are created for existing users.
+    // Collapse a worktree toplevel into the main repo, and a worktree
+    // subdirectory into the same subdirectory of the main repo. A session
+    // whose cwd is a subdirectory of a repo keeps that subdirectory as its
+    // project identity — grouping subdirs under the repo root would change
+    // where new sessions are created for existing users.
     const isTopLevel = toplevel === realCwd;
-    const isWorktreeTopLevel = gitDir !== commonDir && isTopLevel;
+    const isLinked = gitDir !== commonDir;
+    const sub = relative(toplevel, realCwd);
+    const insideTop = sub !== "" && sub !== ".." && !sub.startsWith(`..${sep}`) && !isAbsolute(sub);
+    const isWorktree = isLinked && (isTopLevel || insideTop);
     info = {
-      projectRoot: isWorktreeTopLevel ? dirname(commonDir) : cwd,
+      projectRoot: isWorktree ? join(dirname(commonDir), isTopLevel ? "" : sub) : cwd,
       branch: ref && ref !== "HEAD" ? ref : null,
-      isWorktree: isWorktreeTopLevel,
+      isWorktree,
       isTopLevel,
     };
   } catch {
