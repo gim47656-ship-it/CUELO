@@ -66,10 +66,10 @@ export const MAX_PROBE_COMMAND_CHARS = 1_000;
  * 이만큼만 커진다. 답 전체가 모델 출력 한도에 닿지 않도록 프롬프트는 이보다 훨씬 짧게 쓰라고 한다.
  */
 export const MAX_PROBE_TEXT_CHARS = 2_000;
-/** 모델 한 번 호출에 넣는 변경 본문 상한(UTF-8 바이트). 약 7만~10만 토큰이며 한 번의 심사가 10분 안에 끝나는 크기다. */
+/** 모델 한 번 호출에 넣는 변경 본문 상한(UTF-8 바이트). 약 7만~10만 토큰이다. */
 export const MAX_INPUT_BYTES = 300 * 1024;
 export const SAMPLE_MODULUS = 10;
-export const REVIEW_TIMEOUT_MS = 600_000;
+export const REVIEW_TIMEOUT_MS = 1_200_000;
 export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic" };
 export const LANE_TAG: Record<Lane, string> = { openai: "OAI", anthropic: "ANT" };
 /** 보조 검토자 slot. 비어 있으면 보조 호출이 없다. */

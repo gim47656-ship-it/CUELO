@@ -24677,6 +24677,16 @@ for (const { file, extra, anchor } of [
 		anchor: "{{/each}}\n{{#if firstCallPreludes}}\nNo `read` needed before first use; the guide follows the first call's result (full reference linked):\n" + firstCall + "\n- `{{name}}`: {{summary}} → `xd://eval/{{name}}`\n{{/each}}\n{{/if}}\n</namespaces>\n{{#each inlinePreludes}}",
 		patched: "{{/each}}\n" + firstCall + "\n{{name}}=xd://eval/{{name}} (guide follows first call)\n{{/each}}\n{{#each inlinePreludes}}",
 	}, firstCall);
+
+	// 18.22.2: keep partial-output result types in the framed supervisor.
+	const supervisor = one(entry => entry.file === "src/tools/computer/supervisor.ts" && entry.marker === "\tComputerFrameReader,\n\ttype ComputerRunOk,");
+	const prior = supervisor.alternates.at(-1);
+	const resultType = text => swap(text, "type ComputerRunOk,", "type ComputerRunResult,");
+	alternate(supervisor, { marker: resultType(prior.marker), anchor: resultType(prior.anchor), patched: resultType(prior.patched) }, "type ComputerRunResult,");
+
+	const skip18222 = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&yje(c))continue';
+	alternate(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')),
+		{ marker: skip18222, anchor: skip18222, patched: skip18222 }, skip18222);
 }
 
 /**
