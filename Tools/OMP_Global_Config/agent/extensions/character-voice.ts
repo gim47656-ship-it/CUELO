@@ -1117,7 +1117,42 @@ export function injectCharacterVoice(payload: unknown, alias: CharacterAlias): u
     next.messages = [{ role: "system", content: block }, ...next.messages];
     return next;
   }
+  if (Array.isArray(next.input)) {
+    // core 18.22부터 Codex는 instructions를 input 앞 developer 항목(model.base_instructions)으로 옮겨 보낸다.
+    // 이 본문에 바깥 system 필드를 더하면 Codex가 `Unsupported parameter: system`으로 거절하므로 voice를 그 항목 뒤에 둔다.
+    next.input = injectVoiceIntoCodexInput(next.input, block);
+    return next;
+  }
   return { ...next, system: block };
+}
+
+const CODEX_BASE_INSTRUCTIONS_KIND = "model.base_instructions";
+
+function isCodexBaseInstructions(item: unknown): boolean {
+  if (!item || typeof item !== "object" || !("internal_chat_message_metadata_passthrough" in item)) return false;
+  const meta = item.internal_chat_message_metadata_passthrough;
+  if (!meta || typeof meta !== "object" || !("content_item_kinds" in meta)) return false;
+  return Array.isArray(meta.content_item_kinds) && meta.content_item_kinds.includes(CODEX_BASE_INSTRUCTIONS_KIND);
+}
+
+/** instructions 없는 Codex input에서 옛 voice를 걷고 기본 지시 항목 바로 뒤에 voice developer 항목 하나를 둔다. */
+function injectVoiceIntoCodexInput(input: readonly unknown[], block: string): unknown[] {
+  const cleaned: unknown[] = [];
+  for (const item of input) {
+    // 항목별로 걷어야 비워져 빠진 항목이 있어도 원본과 짝이 맞는다.
+    const [next] = cleanSystemRoleItems([item]);
+    if (next === undefined) continue;
+    // 기본 지시 항목의 id는 본문에서 계산된다. 본문이 바뀌면 낡은 id 대신 id 없는 형태(codex-rs와 같음)로 보낸다.
+    if (next !== item && isCodexBaseInstructions(next) && next && typeof next === "object" && "id" in next) {
+      const { id: _staleId, ...rest } = next;
+      cleaned.push(rest);
+    } else {
+      cleaned.push(next);
+    }
+  }
+  const voiceItem = { type: "message", role: "developer", content: [{ type: "input_text", text: block }] };
+  const baseIndex = cleaned.findIndex(isCodexBaseInstructions);
+  return [...cleaned.slice(0, baseIndex + 1), voiceItem, ...cleaned.slice(baseIndex + 1)];
 }
 
 function activeAccounts(ctx: ExtensionContext, provider: string): OAuthAccountLike[] {

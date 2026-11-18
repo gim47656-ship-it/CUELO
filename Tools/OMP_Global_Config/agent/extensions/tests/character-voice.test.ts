@@ -1011,6 +1011,34 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("RIN(린)");
   });
 
+  // core 18.22부터 Codex 본문은 instructions 없이 base instructions를 input 첫 developer 항목으로 싣는다.
+  // 이때 바깥 system 필드가 생겨 Codex가 `Unsupported parameter: system`으로 모든 요청을 거절했다(2026-11-18).
+  test("Codex payload without instructions gets the voice after the base-instructions item and no system field", async () => {
+    const harness = createRuntimeHarness();
+    const baseItem = {
+      id: "msg_base",
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: `base contract\n\n${renderCharacterVoice("RIN(린)")}` }],
+      internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"] },
+    };
+    const { instructions: _moved, ...rest } = codexPayload(1, "MIO(미오)");
+    const payload = { ...rest, input: [baseItem, ...rest.input] };
+    const result = await harness.emit("before_provider_request", { type: "before_provider_request", payload });
+    if (!result || typeof result !== "object" || !("input" in result) || !Array.isArray(result.input)) {
+      throw new Error("Codex payload shape was lost");
+    }
+    expect("system" in result).toBe(false);
+    expect("instructions" in result).toBe(false);
+    const { id: _staleId, ...baseWithoutId } = baseItem;
+    const [first, second] = result.input;
+    // 본문이 바뀐 기본 지시 항목은 낡은 id 없이 나간다.
+    expect(first).toEqual({ ...baseWithoutId, content: [{ type: "input_text", text: "base contract" }] });
+    expect(second).toEqual(developerItem(renderCharacterVoice("YUKI(유키)")));
+    expect(voiceCount(result.input.filter((item: unknown) => itemRole(item) === "developer"))).toBe(1);
+    expect(result.input.filter((item: unknown) => itemRole(item) !== "developer")).toEqual(otherItems(payload));
+  });
+
   // 세션 전환 뒤에도 이전 선택이 새 컨텍스트로 새지 않는다: 선택 alias는 현재 model/계정과 맞을 때만 쓰이고,
   // 그때 값은 provider별 기본 alias와 같다. 그래서 session_switch에서 지우지 않는다.
   test("an earlier selection never leaks across new/resume/fork or a model/account change", async () => {
