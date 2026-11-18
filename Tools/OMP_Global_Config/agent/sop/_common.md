@@ -13,13 +13,9 @@
   sits in an adjacent file that the brief did not enumerate. When the user or the brief restricts
   the change to named files, that list is the boundary: read access is never write permission,
   and unrelated cleanup, unrelated features, and other owners' files stay untouched.
-- Run only the validation that the brief or role-specific rules authorize. The Maker runs the
-  minimum focused checks its own slice needs and builds no separate environment; Main owns the
-  common isolation environment and any needed full build, integration, or acceptance check, runs
-  them once on the frozen revision without editing it, owns the mid-flight and final review from
-  the owner's immutable raw artifacts and locators, and never repeats the slice's focused check in
-  the same environment or edits a path a live child owns. A slice never closes with no check at
-  all. When a command is authorized, run it exactly and report its output and exit code.
+- Run only validation authorized by the brief and your role. Main owns common integration checks;
+  never run a project-wide suite while siblings edit concurrently unless the brief delegates it.
+  The Maker Contract defines your scoped proof and exact-command reporting duties.
   Measurement, audit, and diagnostic reports are no exception: list each command or script you ran
   and its exit code next to the result it produced.
 - Read exact edit ranges with `read` before patching. A declaration-only read or snapshot tag does not
@@ -73,16 +69,11 @@
   `<memories>` with `(id: …)`; apply the matching ones before repeating that operation, and list
   the ids you actually applied with their evidence locators in the terminal report. Keep evidence
   locators and the changed action, not private raw output.
-- Rework invalidates only what it touched. Redo the check it invalidates, review the diff, inputs,
-  impact-bearing callers, and domain evidence Main marks invalidated, and reuse the unaffected
-  source, caller, and raw evidence.
 - Main owns the final orchestration verdict. Never declare it, and never report `PASS`/`FAIL` on
   someone else's work; report facts and let the caller judge.
-- Results auto-deliver; never send a duplicate completion message. You have no `wait` tool: jobs
-  you launched re-wake your session, so keep working and never build a substitute for waiting (no
-  repeated `read proc://` checks without a changed decision point, no timer/sleep waiting). Elapsed
-  time is not failure evidence or permission to reduce scope or validation
-  (`mainLane.waitContract`).
+- Results auto-deliver; never send a duplicate completion message or repeat `read proc://` without
+  a changed decision point. Never substitute timer/sleep for waiting; elapsed time is not failure
+  evidence or permission to reduce scope or validation (`mainLane.waitContract`).
 - A job expected to finish within a few minutes is not observed at all. For a long external build,
   install, or test (ten minutes or more), observe the work directly (`read proc://<id>`, output
   directories, evidence files, log tails, process liveness) at intervals picked up front (about half
@@ -94,18 +85,10 @@
 - Routine started, milestone, and job progress stay inside your own session. You MUST NOT DM or wake Main
   for routine progress, job launch, or intermediate completion. Keep launch evidence (job ID,
   scope, write effects, next decision point) and observed progress for the final report.
-  Notify Main only for a real blocker, approval need, contract or scope change, terminal task
-  result, a Main-requested revision/evidence relay, the one confirmed-delta DM you own
-  (`mainLane.workerReview.deliveryGuarantee`): one `write agent://Main` message per frozen revision when you keep
-  working past that delta, or the one pre-edit steering checkpoint DM you own
-  (`mainLane.workerReview.steeringCheckpoint`): one `write agent://Main` message per slice before your first edit.
-  Never per-step progress, a diff body, or a second DM for an unchanged revision or per edit
-  step. A pending-user-device-check handoff notice is not progress chatter: it rides your existing
-  terminal result or confirmed-delta DM and is never an extra DM
-  (`implementationOwnership.writerValidation.deviceVerificationHandoff`).
-  Review status chatter such as "review started", "review done", or "waiting for
-  evidence" stays out of Main's inbox.
-  Normal progress must not require parent barrier re-entry. User steering handling is unchanged.
+  Notify Main only through the permitted channels in `mainLane.parentNotifications`; the Writer
+  Rules specify the single confirmed-delta and pre-edit checkpoint messages. Terminal results
+  auto-deliver. Device handoffs ride the existing terminal result or delta message, never an extra DM.
+  Routine progress must not require parent barrier re-entry. User steering handling is unchanged.
 
 ## Conversation
 

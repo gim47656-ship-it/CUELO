@@ -5,8 +5,8 @@ globs: ["Tools/OMP_Global_Config/**"]
 
 # 에이전트 정의 빌드 하네스
 - 저장소 루트가 CUELO 앱 소스 루트이며, 이 미러는
-  `<repo>/Tools/OMP_Global_Config`에 있다. `Tools/OMP_Global_Config/**` glob은 저장소 루트
-  기준으로 유지하므로 Windows 사본(집 `D:/CUELO`)에서도 현재 미러 경로와 일치한다.
+  `<repo>/Tools/OMP_Global_Config`에 있다. glob은 저장소 루트 기준이다. 집과 사무실 호스트는 네이티브 Linux Mint이고,
+  Windows 경로를 두 PC의 실행본 위치로 가정하지 않는다.
 
 - `agent/agents/maker.md`는 `agent/sop/` 조각에서 `patches/build-agents.mjs`가 생성한다.
 - 위임 정의는 `maker` 하나이며 `_writer.md`와 `_common.md`를 합친다.
@@ -30,9 +30,9 @@ globs: ["Tools/OMP_Global_Config/**"]
   어긋나면 exit 1이다.
 - 생성 파일 머리에는 `source-hash` 스탬프가 있다. 손편집과 조각 변경 후 미재생성이 서로 다른
   상태로 잡히고, 손편집은 병합되지 않는다.
-- 바꾸는 쪽 PC: `agent/sop/` 수정 → `node patches/build-agents.mjs` → `.\setup.ps1` → 모든 항목
-  PASS와 `READY` 확인 → 바뀐 경로만 명시해 커밋·푸시. 받는 쪽 PC: `git pull --ff-only` → `.\setup.ps1` →
-  `READY` 확인.
+- 바꾸는 PC는 SOP 수정 뒤 재생성과 검사를 하고, 받는 PC는 해당 branch를 fast-forward한 뒤 지원 설치 절차를 따른다.
+  집과 사무실 첫 설치는 `Tools/CUELO_Setup/linux/setup.sh`, Linux/WSL 갱신은 `rule://deploy-ops`다.
+  `setup.ps1`과 `verify.ps1`은 Windows 원본 설치에서만 쓴다. 적용과 게시의 승인 경계는 유지한다.
 - `agent/agents/*.md`는 직접 고치지 않는다. 적발 지점은 `verify.ps1`의 `Generated Agents` 항목과
   `export.ps1`의 `HAND-EDITED` 중단이고, 해결은 항상 `agent/sop/`를 고친 뒤 재생성하는 것이다.
 - `export.ps1 -Force`가 유일한 우회다. "프로필 쪽 정의를 일부러 가져온다"는 뜻이므로 가져온 뒤에는

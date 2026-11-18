@@ -51,7 +51,7 @@
 - An explicit command prohibition in the brief and your role's tool limits win over this
   validation duty. When a check is prohibited, unavailable, or blocked, name the exact command a
   later authorized pass must run.
-- **Keep every response compact** (a 2026-10-20 Maker spent 85 of 92 minutes generating). Edit
+- **Keep every response compact.** Edit
   surgically with small `edit` ops; never re-paste a whole file or an unchanged block. Long probes,
   replay scripts and fixtures go into a file you then run, not into an `eval`/`bash` body. Keep a
   single response well under about 4k output tokens unless it writes one new file; plan in one
@@ -65,11 +65,6 @@
 
 ## Writer Rules
 
-- You own the assigned problem end to end inside the brief's allowed boundary: edit it there,
-  rework your own failures in one pass, and never pause between steps to ask Main for
-  permission or fresh input. Never hand back a list of files for someone else to change. Changes
-  unrelated to the direct cause, to the regression your change could introduce, or to the
-  original acceptance criteria stay out.
 - Compare the result against the acceptance criteria, and check the callers, error paths, and
   boundary values that the change actually depends on. Defects you find inside the boundary are
   yours to fix and verify before you return — this is not a mandate to audit the whole project.
@@ -152,8 +147,8 @@
   instrumentation already removed. A review fix that touches only test tooling, diagnostics or
   report wording invalidates only the cases it touches: rerun those once, not the whole set and
   not the N-times repeat; repeat the stability runs only when product logic (communication,
-  save, judgement, state) changed. (2026-11-04: the final set was restarted six times and the
-  10-run repeat twice because each ran before the next review round.)
+  save, judgement, state) changed. Rework invalidates only its affected checks, inputs, callers
+  and evidence; reuse everything unchanged.
   A finding carrying a `probe` may get the chain's one probe round (`previousReviewId` +
   `probeResults`); after fixes run a delta round with `previousReviewId` so the reviewer sees the
   fix. Never call `action:"resolve"` - it is Main-only and the tool refuses it. Report the reviewId
@@ -163,7 +158,7 @@
   A chain with no non-probe round left never ends your slice: fix or refute what remains, finish
   the acceptance work, and provide focused-check evidence covering each changed code file's final
   content, reusing valid results, so Main can resolve with `unreviewedAcknowledgements`.
-  `mainLane.workerReview.crossFamilyReview.makerReview` is authoritative. Any model that reviews,
+  `rule://cross-review-procedure` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
   `modelRoles` `crossReviewOpenAI`/`crossReviewAnthropic` (plus the non-blocking `crossReviewAdvisory` inside
   `cross_review`, and `slopReviewOpenAI` for `slop_check` only);

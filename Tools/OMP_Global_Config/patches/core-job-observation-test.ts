@@ -1,4 +1,4 @@
-// Required observation of a long Main-owned background job (harness-policy mainLane.waitContract.requiredObservation).
+// Required observation of a long Main-owned background job (rule://subagent 「병렬과 대기」; runtime contract in lib/job-observation.ts).
 // Actual AgentSession, bash async job, WaitTool, proc:// read and async delivery with jev-runtime loaded as an
 // inline extension. Only the observation clock is virtual; the provider is a local scripted SSE server.
 // OMP_CORE_PATCH_TARGET=<isolated patched core> bun run patches/core-job-observation-test.ts

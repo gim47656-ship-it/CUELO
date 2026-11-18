@@ -6,26 +6,29 @@ description: Before new/rewritten prose, draft or slop_check.
   이상 다시 쓰는 글은 Main·Maker 모두 먼저 `draft`로 쓴다. README·CHANGELOG·`docs/`·보고서·안내서·소개 글·게시물,
   `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
   UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
-  Gemini가 작성해 cwd 안에 저장하고, 실패하면 `modelRoles.draftFallback`이 가리키는 모델(소스 프로필은 AI Studio 중계기의 Gemini 4 Argon, 미설정 설치는
-  Hive의 DeepSeek 1017)로 한 번 대체한다. 주 모델이 사용량 한도로 막혔고 프로필 `retry.fallbackChains`의 그 모델 항목에 같은 모델의 다른
-  경로(집과 사무실은 Vertex Hydrogen)가 있으면 대체 모델보다 그 경로를 먼저 한 번 시도한다(2026-11-11 사용자 결정).
-  설정한 대체가 실패하면 DeepSeek로 넘어가지 않는다(참고 텍스트는 Google 또는 대체 모델의 제공자로
+  초안 모델과 한 번의 대체 모델은 `config.yml`의 `modelRoles.draft`, `draftFallback`을 따른다.
+  주 모델이 한도에 걸리면 `retry.fallbackChains`에 같은 모델의 다른 경로가 있을 때 먼저 한 번 쓴다(2026-11-11 사용자 결정).
+  설정한 대체가 실패하면 임의의 다른 모델로 넘어가지 않는다(참고 텍스트는 해당 제공자로
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐
   `edit`로 반영한다. 코드·설정·규칙 파일(`RULES.md`·`AGENTS.md`·`rules/`·SOP), 몇 줄 이하의 정확한 수정, 사용자에게
   하는 대화 답변은 대상이 아니다. draft와 OCR 모델의 현재 값은 PC별 `modelRoles.draft`·`ocr`이 정본이다.
-  집과 사무실의 2026-11-07·11-08 사용자 결정은 AI Studio 중계기의 Gemini 4 Argon이었고, 2026-11-13 사용자 결정으로 Hydrogen으로 바뀌었다. 폰의 당시 값은 Vertex Gemini 4 Argon이었다. 이미지 질문(vision)은 Opus를 유지한다.
+  2026-11-13 사용자 결정으로 집과 사무실의 draft/OCR 경로를 바꿨으며 현재 값은 PC별 `config.yml`만 참조한다.
+  2026-11-07과 2026-11-08 사용자 결정의 집과 사무실 역할 경로는 해당 프로필 설정으로 관리한다.
+  2026-10-26 사용자 결정: Vertex 초안과 OCR은 같은 Cloud 프로젝트를 쓰고 크레딧으로 과금된다.
   `slop_check`가 같은 기준을 자동 적용해 통과했더라도 작성자가 `humanizer`·`kill-ai-slop` 등
   스킬의 직접 읽기와 절차(범위 안 문구 전수 점검, 해당 화면 확인, 수정·의미 보존 확인)를 수행한
   증거로 보지 않는다. 런타임의 읽기 목록도 읽었다는 관측일 뿐이며 수행 범위와 결과는 별도로 확인한다.
-  **바깥에서 사람이 실제로 보는 산출물만 AI 슬롭 게이트를 통과한다(2026-10-26 사용자 지시, 2026-10-29 범위 축소로
-  2026-10-27 결정을 대체).** 대상은 형식으로 정한다: 슬라이드·PPTX, HTML, DOCX·XLSX·PDF·HWPX, 보고서 csv, 언어 팩의
+  **바깥에서 사람이 실제로 보는 산출물만 AI 슬롭 게이트를 통과한다(2026-10-26 사용자 지시, 2026-10-29 범위 축소).**
+  대상은 형식으로 정한다: 슬라이드, PPTX, HTML, DOCX, XLSX, PDF, HWPX, 보고서 csv, 언어 팩의
   화면·메뉴 문구, 매뉴얼이다. **마크다운은 README·CHANGELOG·`docs/`·문서 지도를 포함해 위치와 관계없이 대상이 아니다.**
   `.slop-gate.json` `visible` glob이 선언한 마크다운만 대상이 된다. 공개 저장소에 올라가는지, `.publicignore` 선언이
-  있는지는 따지지 않는다. 고객·사용자에게 파일로 건네는 덱·보고서·문서는 대상이다(2026-10-27: 공개 선언이 없다는 이유로
-  고객용 덱이 빠진 사례를 사용자가 바로잡았다). 제외는 선언 없는 마크다운과 소스 내부다: 코드·주석·로그·테스트·fixture·
+  있는지는 따지지 않는다. 고객과 사용자에게 파일로 건네는 덱과 보고서, 문서도 대상이다.
+  제외는 선언 없는 마크다운과 소스 내부다: 코드, 주석, 로그, 테스트, fixture,
   생성물·vendor, 내부 프롬프트·규칙·SOP·스킬, `HANDOFF.md`·`doc/history`·`doc/README.md`. `.slop-gate.json` `visible`은
   대상을 더하기만 한다. 위 초안 작성·직접 교정 규칙과 코드 변경의 `cross_review`는 그대로 유지한다.
+  2026-10-28 사용자 결정: 400,000바이트를 넘는 csv는 원시 데이터로 제외하고 이유를 알린다.
+  같은 날 사용자 결정: humanizer 패턴 3(연결 어미 뒤 쉼표) 단독 지적은 버리며 쉼표 밀도는 패턴 1로 판단한다.
   새 산문의 가운뎃점(U+00B7) 기준은 `RULES.md`를 따른다. 기존 `slop_check` 검사 대상에는 언어와
   관계없이 공통 판정 기준으로 전달하며, 단순한 문자 존재가 아니라 낱말을 잇는 산문인지 판단한다.
   원문 인용, 오류, 경로, 코드, 데이터, 단위와 변경하지 않은 내용은 보존한다. 이 기준만으로 기존
@@ -37,9 +40,8 @@ description: Before new/rewritten prose, draft or slop_check.
   적용 가능한 HTML, UI 문구, 슬라이드 디자인 검사는 계속하지만 문체 미지원 파일의 지적은 진단으로 남기고 전체 통과나 반박 통과를 만들지 않는다.
   짧은 지원 언어 글은 기존 문체 기준 분량 조건을 따르며, 명시한 `lang`으로 그 언어의 기준을 선택할 수 있다.
   대상 분류, 기존 동일 해시 통과 재사용과 반박 절차는 유지한다. 대화 답변이나 내부 파일을 새 검사 대상으로 만들지 않는다.
-  검토 모델은 slop 전용 slot `slopReviewOpenAI`(GPT-6 Luna) 단독이다
-  (2026-10-29 사용자 결정: slop에는 Opus·Astra를 쓰지 않고 Gemini Flash와 모든 자문도 없앴다). Anthropic·Gemini·그 밖 저자는 Luna가 필수다.
-  OpenAI 저자는 Luna를 못 쓰므로(같은 계열) 그 자리가 `crossReviewAnthropic`으로 간다. slot이 비었거나 풀리지 않으면 그
+  2026-10-29 사용자 결정: slop 전용 `modelRoles.slopReviewOpenAI` 단독이고 자문은 없다.
+  실제 모델을 이 문서에 복사하지 않는다. OpenAI 저자는 같은 계열 검토를 피하려고 `crossReviewAnthropic`으로 간다. slot이 비었거나 풀리지 않으면 그
   자리는 `cross_review`와 같은 옛 slot(`crossReviewOpenAI`·`crossReviewAnthropic`)으로 돌아가고, 풀린
   slot이 계열이 맞지 않으면 호출 없이 거절한다. `cross_review`는 이 slot을 읽지 않는다. 규칙 본문은 system 메시지에 고정하고
   파일 글만 user 메시지에 실어 제공자 프리픽스 캐시가 맞게 한다. 지적이 없으면

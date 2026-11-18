@@ -6,7 +6,8 @@ CUELO는 공개 저장소 `gim47656-ship-it/CUELO`의 GitHub Releases로 웹 소
 
 1. `package.json`의 CUELO 버전과 `CHANGELOG.md`의 해당 버전 항목을 함께 갱신합니다. OMP SDK 버전은 별도입니다.
 2. 웹 실행·설치 호환 코드의 버전 계약도 맞추고, 타입·lint·테스트·production 빌드 및 실제 웹 동작을 검증합니다.
-3. 변경을 공개 `main`에 올립니다. 게시할 버전만 올리면 되고, 따로 실행할 명령은 없습니다.
+3. 사용자에게 보이는 기능이 바뀐 릴리스는 게시 전에 `site/`의 설명을 `README.md`와 `CHANGELOG.md`에 대조합니다. 영어와 한국어 내용이 같은지 확인하고, 바뀐 내용에 맞춰 `site/llms.txt`와 `site/sitemap.xml`의 `<lastmod>`도 갱신합니다.
+4. 변경을 공개 `main`에 올립니다. 게시할 버전만 올리면 되고, 따로 실행할 명령은 없습니다.
 
 ## 게시
 

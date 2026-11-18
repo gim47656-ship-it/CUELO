@@ -1086,7 +1086,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     const bashJobs = new Map<string, string>();
     const bashServices = new LiveServices();
     /**
-     * 장기 background bash/eval job의 관측 요구(harness-policy mainLane.waitContract.requiredObservation). 관측 기한이 지난
+     * 장기 background bash/eval job의 관측 요구(rule://subagent 「병렬과 대기」; 세부 정본 lib/job-observation.ts). 관측 기한이 지난
      * job이 있으면 Main의 `wait` 진입만 막고, 이 session의 wait 실행 중 기한이 오면 aside 하나로 wait를 돌려준다
      * (upstream은 extension aside가 interruptible wait를 끝내게 한다). job·전달 경로는 건드리지 않고 judge도 부르지 않는다.
      */

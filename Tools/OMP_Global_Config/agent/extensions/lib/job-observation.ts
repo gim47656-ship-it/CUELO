@@ -1,4 +1,4 @@
-// Main이 띄운 장기 background bash/eval job의 관측 시점 원장(harness-policy mainLane.waitContract.requiredObservation).
+// Main이 띄운 장기 background bash/eval job의 관측 시점 원장(rule://subagent 「병렬과 대기」; 세부 조건은 이 구현이 정본).
 // 2026-10-15 실측: Main이 공개 CI watch job 하나에 `wait`로 약 8분을 막힌 채 중간 관측 없이 지냈다. `wait`는 job 정산·메시지·
 // service 종료·30분 상한에만 깨고, 기존 SubagentActivityWatch(core patch)는 task child만 본다. 이 원장은 jev-runtime이
 // wait 진입 차단과 대기 중 aside 깨우기를 결정론적으로 판단하도록 job incarnation(id+startTime)별 관측 근거만 기록한다.

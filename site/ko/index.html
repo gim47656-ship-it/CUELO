@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CUELO — omp(oh-my-pi)를 위한 AI 코딩 에이전트 작업 공간과 하네스</title>
-<meta name="description" content="CUELO는 omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스입니다. 터미널의 omp 세션을 브라우저에서 이어 가고, 공개 멀티 에이전트 하네스 규칙을 씁니다.">
+<title>CUELO: omp 터미널 세션을 브라우저에서 이어 가기</title>
+<meta name="description" content="터미널의 omp 세션을 브라우저에서 이어 가고 다시 돌아옵니다. CUELO는 작업 중 겪은 실패를 기억, 규칙, 절차로 남겨 다음 작업에 반영하려는 오픈소스 작업 공간이자 하네스입니다.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/ko/">
 <link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
@@ -15,8 +15,8 @@
 <meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="CUELO">
-<meta property="og:title" content="CUELO — omp를 위한 AI 코딩 에이전트 작업 공간과 하네스">
-<meta property="og:description" content="omp의 세션·계정·모델 설정을 그대로 쓰는 오픈소스 브라우저 작업 공간과, CUELO가 쓰는 공개 멀티 에이전트 하네스.">
+<meta property="og:title" content="CUELO: omp 터미널 세션을 브라우저에서 이어 가기">
+<meta property="og:description" content="터미널의 omp 세션을 브라우저에서 이어 가고 다시 돌아옵니다. CUELO는 작업 중 겪은 실패를 기억, 규칙, 절차로 남겨 다음 작업에 반영하려는 오픈소스 작업 공간이자 하네스입니다.">
 <meta property="og:url" content="https://gim47656-ship-it.github.io/CUELO/ko/">
 <meta property="og:image" content="https://gim47656-ship-it.github.io/CUELO/assets/og.jpg">
 <meta property="og:image:width" content="1200">
@@ -33,7 +33,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
   "name": "CUELO",
-  "description": "omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스. 웹 앱은 omp SDK를 서버 안에서 실행하고 omp CLI와 같은 ~/.omp/agent의 세션·계정·모델 설정을 공유합니다.",
+  "description": "터미널의 omp 세션을 브라우저에서 이어 가고 다시 돌아옵니다. CUELO는 작업 중 겪은 실패를 기억, 규칙, 절차로 남겨 다음 작업에 반영하는 것을 목표로 합니다. omp(oh-my-pi)를 위한 오픈소스 AI 코딩 에이전트 작업 공간이자 하네스로, 웹 앱이 omp SDK를 서버 안에서 실행하고 omp CLI와 같은 ~/.omp/agent 세션, 계정, 모델 설정을 공유합니다.",
   "url": "https://gim47656-ship-it.github.io/CUELO/ko/",
   "codeRepository": "https://github.com/gim47656-ship-it/CUELO",
   "programmingLanguage": "TypeScript",
@@ -69,9 +69,9 @@
     <div class="wrap">
       <h1>
         <span class="word">CUELO</span>
-        <span class="what">omp(oh-my-pi)를 위한 AI 코딩 에이전트 작업 공간과 하네스</span>
+        <span class="what">omp 터미널 세션을 브라우저에서 이어 가고 다시 돌아오기</span>
       </h1>
-      <p class="lede">CUELO는 <a href="https://github.com/can1357/oh-my-pi">omp</a> SDK를 로컬 웹 서버 안에서 그대로 실행하고, <code>omp</code> CLI와 같은 <code>~/.omp/agent</code> 디렉터리를 씁니다. <strong>터미널에서 하던 세션을 브라우저에서 이어 가고, 다시 터미널로 돌아가도</strong> 기록·계정·모델 설정이 하나로 유지됩니다.</p>
+      <p class="lede"><a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a> CLI와 브라우저 사이에서 기록, 계정, 모델 설정이 그대로 공유됩니다. 작업 중 겪은 실수와 막힘을 기억, 규칙, 절차로 남겨 다음 작업에 반영하는 것도 목표로 합니다.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">GitHub에서 소스 보기</a>
         <a class="btn" href="#run">소스에서 실행하기</a>
@@ -87,7 +87,6 @@
   <section aria-labelledby="purpose">
     <div class="wrap">
       <h2 id="purpose">CUELO의 목적</h2>
-      <p>작업 중 확인한 실패와 막힘을 기억·작업 규칙·실행 절차에 반영해, 사람이 같은 문제를 다시 지적하지 않아도 다음 작업에서 실수를 줄이는 것입니다.</p>
       <ol class="loop">
         <li><strong>실제로 일어난 일을 기록</strong><p>관측한 실패와 막힘을 있는 그대로 남깁니다.</p></li>
         <li><strong>원인인 부분만 수정</strong><p>기억·규칙·절차 가운데 원인이 된 곳만 바꿉니다.</p></li>
@@ -100,12 +99,12 @@
 
   <section aria-labelledby="differs">
     <div class="wrap">
-      <h2 id="differs">CUELO가 다른 점</h2>
+      <h2 id="differs">CUELO의 작업 방식</h2>
       <p>CUELO는 omp(oh-my-pi)용 웹 UI이자, 일을 나누어 맡기고 그 과정을 들여다볼 수 있는 멀티 에이전트 하네스입니다. 따로 떨어진 대화 앱으로 바꾸지 않고 쓰던 터미널 작업 흐름을 그대로 이어 갑니다.</p>
       <ul>
         <li><strong>CLI와 같은 세션</strong> — CUELO는 로컬 웹 서버 안에서 omp SDK를 직접 실행하고, 터미널 CLI와 같은 <code>~/.omp/agent</code> 세션·계정·모델 설정을 씁니다. CLI 화면 출력을 긁어 오는 방식이 아니어서 터미널에서 시작한 세션을 브라우저에서 이어 가고 다시 터미널로 돌아갈 수 있습니다.</li>
         <li><strong>들여다볼 수 있는 위임</strong> — Main 에이전트가 요구사항과 최종 판단을 맡고 세부 작업을 Maker 에이전트에게 나누어 맡기며, 가드가 배정된 파일 경계를 확인합니다. 맡긴 작업마다 실시간 상태, 바뀐 파일, Main의 검수 판정이 카드로 보이고, 한 모델 계열이 쓴 코드를 커밋 전에 다른 계열 모델이 검토하게 할 수 있습니다.</li>
-        <li><strong>자기 기록에서 배우기</strong> — 로컬 보수 점검판이 최근 7일과 직전 7일을 견주어 병목, 비용, 반복된 사용자 지적을 보여 줍니다. 스킬을 연 뒤의 도구 오류도 보여 주지만 스킬이 원인이라는 뜻은 아닙니다. 일반 세션은 백그라운드에서 프로젝트를 스스로 고치지 않습니다. 선택적으로 예약하는 야간 세션은 별도 git worktree에서 열린 이슈와 근거 있는 개선을 검토하고, 두 세션 이상에서 확인한 복구 절차를 스킬 작성 재료로 씁니다. 아침 요약을 남기고 변경을 릴리스로 게시하되 어떤 PC에도 설치하거나 서버를 재시작하지 않습니다. 예약 동기화가 설정된 PC에서는 아침 세션이 공개 CI를 통과한 새 릴리스를 설치합니다.</li>
+        <li><strong>예약 보수:</strong> 일반 세션은 백그라운드에서 프로젝트를 스스로 고치지 않습니다. 선택적으로 예약하는 야간 세션은 별도 git worktree에서 열린 이슈와 근거 있는 개선을 검토하고, 두 세션 이상에서 확인한 복구 절차를 스킬 작성 재료로 씁니다. 아침 요약을 남기고 변경을 릴리스로 게시하되 어떤 PC에도 설치하거나 서버를 재시작하지 않습니다. 예약 동기화가 설정된 PC에서는 아침 세션이 공개 CI를 통과한 새 릴리스를 설치합니다.</li>
         <li><strong>켜고 끄는 플러그인</strong> — 플러그인은 매니페스트와 선택 항목인 도구, 확장, 샌드박스 사이드 패널을 묶은 폴더로 프로필과 함께 설치됩니다. 에이전트는 새 플러그인을 저장소에 바로 쓰고 검사와 검토를 거쳐 릴리스합니다. 오른쪽 덱에서 바꾼 상태는 새 세션이나 유휴 상태의 <code>/reload</code>부터 적용됩니다. 이때 서버가 아니라 세션을 다시 시작합니다. 설정에서 관리하는 별도의 omp 플러그인은 다릅니다. 이미 불러온 플러그인을 끄려면 CUELO 런타임을 재시작해야 하며 <code>/reload</code>로는 해제되지 않습니다.</li>
       </ul>
     </div>
@@ -118,15 +117,23 @@
         <div>
           <h3>작업 공간</h3>
           <p class="where">웹 앱 · 저장소 루트</p>
+          <h4>세션과 모델</h4>
           <ul>
-            <li>프로젝트별로 지난 omp 세션을 찾아 이어 가고, 실시간 대화에서 도구 호출·비용·컨텍스트 사용량을 봅니다.</li>
+            <li>프로젝트별로 지난 omp 세션을 찾아 이어 가고, 실시간 대화에서 도구 호출과 비용, 컨텍스트 사용량을 봅니다.</li>
             <li>이전 메시지에서 갈래를 나누거나 별도 세션으로 fork합니다. 저장소가 이미 사용 중이면 새 세션은 별도 Git worktree에서 시작합니다.</li>
-            <li>역할(<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> 등)별 모델을 TUI와 같은 <code>config.yml</code>로 지정·전환합니다.</li>
-            <li>provider·<code>models.yml</code>·플러그인·스킬 관리, 파일 미리보기, Git worktree 전환.</li>
+            <li>역할(<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> 등)별 모델을 TUI와 같은 <code>config.yml</code>로 지정하고 전환합니다.</li>
+          </ul>
+          <h4>도구와 루틴</h4>
+          <ul>
+            <li>provider와 <code>models.yml</code>, 플러그인, 스킬을 관리하고, 파일을 미리 보거나 Git worktree를 전환합니다.</li>
             <li>공개 GitHub 저장소의 외부 스킬을 설치하거나 업데이트할 때 SkillSpector로 정적 검사를 합니다. 경고가 있거나 검사기가 없으면 설치 전에 확인을 받습니다.</li>
             <li>선택한 PC에서 루틴으로 세션을 예약 실행하고 별도로 설정한 비공개 Git 저장소 기반 게시판에 결과를 모읍니다.</li>
+            <li>로컬 보수 점검판이 최근 7일과 직전 7일을 비교해 병목, 비용, 반복된 사용자 지적을 보여 주며, 스킬을 연 뒤의 도구 오류도 함께 표시하되 스킬이 원인이라고 단정하지 않습니다.</li>
+          </ul>
+          <h4>음성과 접근</h4>
+          <ul>
             <li>에이전트와 음성으로 통화하거나 ChatGPT 계정으로 한국어와 영어, 중국어, 베트남어, 일본어, 태국어 사이를 대면 통역합니다.</li>
-            <li>비밀번호 잠금, 브라우저 알림, PWA 설치. 한국어가 기본이고 영어도 고를 수 있습니다.</li>
+            <li>비밀번호 잠금, 브라우저 알림, PWA 설치를 지원합니다. 한국어가 기본이고 영어도 고를 수 있습니다.</li>
           </ul>
         </div>
         <div>

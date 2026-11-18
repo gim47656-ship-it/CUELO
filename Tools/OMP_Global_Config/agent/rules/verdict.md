@@ -31,15 +31,9 @@ description: Before multi-file contracts, verdicts or efficiency comparisons.
   위치)이나 미확인(막힌 이유 + 필요한 확인)을 revision과 함께 남긴다. "테스트 통과"는 조건 하나의
   증거일 수 있어도 조건 전체의 증거가 아니다. 최종 수용에서 Main이 빠진 조건을 확인한다.
 - 하위 에이전트 보고가 부족하면 전체를 다시 시키지 말고 빠진 증거만 요청한다.
-- 위임한 Maker는 source·contract·caller 증거와 자기 검증의 exact command·cwd·exit status·관측·raw
-  artifact locator·재사용 근거·미검증 조건을 제공한다. `routine`은 Main이 직접 구현하고 검증해
-  같은 증거를 남긴다. 위임 조각의 검수와 통합 검증 소유권은 다음 항목을 따른다.
-- 검수는 Main이 소유한다. Main은 owner의 불변 raw artifact와 locator를 검수 대상으로 쓰고,
-  owner의 집중 검사를 같은 환경·조건에서 반복하지 않는다. 공통 격리 환경과 필요한 전체
-  빌드·통합·수용 검사는 Main이 frozen revision에서 실행하며, 검사가 도는 동안 그 revision을
-  수정하지 않는다. 아직 실행 중인 필수 검사는 gap이 아니라 pending으로 남기고 그 revision을
-  PASS로 닫지 않는다. 검수 주체를 다른 역할이나 다른 세션으로 넘기지 않는다. 절차는
-  `rule://subagent`의 「검수와 수용」이 정본이다.
+- source, contract와 caller, exact command와 raw artifact의 보고 및 검증 소유권은 `rule://subagent` 「검증 소유권」을 따른다.
+  Main은 불변 원문 증거로 판단하며 같은 조건의 owner 검사를 반복하지 않는다. 실행 중 필수 검사는 pending이고 PASS가 아니다.
+  검수 절차의 정본은 같은 문서 「검수와 수용」이다.
 
 `large` 분해 트리거와 검수 트리거는 다르다. public/shared interface, cross-module contract,
 shared state, data flow, complex state transition, 여러 조각이 한 실행 경로로 합류, meaningful
@@ -52,14 +46,9 @@ large에는 별도 검수를 요구하지 않는다. material/high-risk는 모�
 
 검수는 Main이 중간과 최종 두 단계로 소유한다. 아래는 Main이 검수할 때 적용하는 기준이다.
 
-Maker 보고를 받은 뒤 Main 검수에 들어가기 직전의 `pre-review`는 런타임(`jev-runtime`)이 로컬 구조 관측으로
-처리한다(`harness-policy.json` `routing.typedJudgmentRouting.batching`·`observation.localStructuralPlacements`).
-metadata 유효성·검증 증거 존재·권한 충돌 같은 셀 수 있는 신호만 `[JevRuntime:pre-review]` advisory로 싣고
-`judge()`를 호출하지 않는다. Main도 같은 보고에 수동 `judge()`를 따로 부르지 않는다. 요구-증거 정합,
-미확인 수용 조건, 증거를 넘는 보고 주장은 advisory가 판정하지 않는 의미 판단이므로 아래 결정론적
-검수에서 Main이 원본 증거로 직접 확인한다. 관측할 수 없는 의미는 unknown으로 두고 개수나 키워드로
-추정하지 않는다. exit status·파일·경로 소유권·권한·test result·배포 승인은 결정론 증거가 정본이고,
-high-risk 분류·승인과 최종 판정은 Main만 소유한다.
+`pre-review` advisory는 `routing.typedJudgmentRouting.observation`이 정한 로컬 구조 관측이며 judge를 부르지 않는다.
+Main도 같은 보고에 중복 judge를 부르지 않는다. 요구와 증거의 정합, 미확인 조건과 과장 주장은 Main이 원문으로 판단한다.
+미관측 의미는 unknown이고 개수나 키워드로 추정하지 않는다. 결정론 증거와 Main의 승인, 최종 판정 권한은 유지한다.
 
 - **증거 요구사항.** 판정 전에 검수 대상과 계약, 변경 경로, 최종 Diff, 영향 경계, raw 출력이
   있는 검증 증거, 알려진 미검증 항목을 갖춘다. `TARGET`·`CHANGED PATHS`·`FINAL DIFF`·
@@ -160,7 +149,6 @@ Main은 근거가 있는 finding을 각각 다음 중 하나로 닫는다.
   새 벤치마크는 별도 승인 없이 시작하지 않는다.
 - 이미 승인된 평가에서는 정답·채점 기준·비교 대상 이름을 후보가 읽을 수 있는 파일과 프롬프트 밖에 둔다.
   후보에게는 평범한 과제만 주고, 이미 쓰는 판정 모델에는 모델·변형 이름 대신 익명 라벨만 보인다.
-  2026-10-17 docmap A/B는 정답 경로가 든 질문 파일이 후보 저장소 안에 있어 격리 사본으로 30회를 다시 돌렸다.
 - 마지막에는 관측된 실패마다 기존 규칙의 누락인지 실행 위반인지 판별하고, 바꿀 행동과
   예상 효과를 구분해 제안한다. 가설 나열로 끝내거나 반대로 규칙·스킬을 무조건 늘리지 않는다.
   보완했다면 같은 수용 조건을 유지하는지 확인하고, 새 지침의 실제 효율 개선은 후속 동등 작업의

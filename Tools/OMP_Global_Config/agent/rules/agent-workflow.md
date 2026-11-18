@@ -4,7 +4,7 @@ description: Before delegation, job monitoring, character routing or reports.
 
 # Global Agent Instructions
 
-도구 모양과 런타임 가드가 지키는 규칙은 그 도구 설명과 안내가 정본이다. 여기에는 판단 기준만 둔다. 규칙마다 지키는 장치는 `rule://rule-enforcement`에 있다.
+도구와 가드의 세부는 도구 설명, 판단 기준과 승인 경계는 `rule://execution-detail`, 장치 목록은 `rule://rule-enforcement`를 따른다.
 
 ## 최우선: 사용자 메시지에 먼저 답한다
 
@@ -68,7 +68,8 @@ RIN과 MIO의 OAuth 계정은 세션 단위 정확한 pin이며 쓸 수 없으�
 
 ## 문서와 인코딩
 
-`.vb/.frm/.bas/.cfg/.csv/.resx`의 인코딩, BOM, 줄바꿈을 증거로 판별해 보존한다(`rule://legacy-encoding`). 문서 역할과 소유권은 `rule://docs-handoff`를 따른다. 규칙은 그 행동을 정했을 때 열고 `rule://subagent`는 발주 직전과 child 검수 때 읽는다(2026-10-18 사용자 결정).
+레거시 인코딩은 `rule://legacy-encoding`, 문서 역할과 소유권은 `rule://docs-handoff`가 정본이다.
+규칙은 그 행동을 정했을 때 열고 `rule://subagent`는 발주 직전과 child 검수 때 읽는다(2026-10-18 사용자 결정).
 
 ## 사용자 보고
 

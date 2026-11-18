@@ -65,7 +65,7 @@ test("missing subscription credentials return auth failure without paid fallback
     const response = await POST(request(input));
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "live-auth" });
-    expect(selected).toEqual(["openai-codex", "gpt-6.1-sol"]);
+    expect(selected).toEqual(["openai-codex", "gpt-6.2-sol"]);
   } finally { globalThis.__ompRuntimePromise = saved; }
 });
 
@@ -74,7 +74,7 @@ async function withProviderStream(createStream: CustomStreamSimpleFn, check: (re
   const api = "interpreter-stream-unit";
   registerCustomApi(api, createStream, api);
   globalThis.__ompRuntimePromise = Promise.resolve({ modelRegistry: {
-    find: () => ({ api, provider: "openai-codex", id: "gpt-6.1-sol", maxTokens: 8192, contextWindow: 400000, input: ["text"], reasoning: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+    find: (provider: string, id: string) => ({ api, provider, id, maxTokens: 8192, contextWindow: 400000, input: ["text"], reasoning: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
     getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "unit-test" }),
   } } as never);
   try {

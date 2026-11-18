@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CUELO — AI coding agent workspace and harness for omp (oh-my-pi)</title>
-<meta name="description" content="CUELO is an open-source AI coding agent workspace and harness for omp (oh-my-pi). Continue omp sessions in the browser and use its public multi-agent rules.">
+<title>CUELO: Continue omp terminal sessions in the browser</title>
+<meta name="description" content="Continue omp terminal sessions in the browser and back. CUELO is an open-source workspace and harness that aims to carry real-work failures into memory, rules and procedures for the next task.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://gim47656-ship-it.github.io/CUELO/">
 <link rel="alternate" hreflang="en" href="https://gim47656-ship-it.github.io/CUELO/">
@@ -15,8 +15,8 @@
 <meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="CUELO">
-<meta property="og:title" content="CUELO — AI coding agent workspace and harness for omp">
-<meta property="og:description" content="Open-source browser workspace that shares omp's sessions and settings, plus the public multi-agent harness CUELO works with.">
+<meta property="og:title" content="CUELO: Continue omp terminal sessions in the browser">
+<meta property="og:description" content="Continue omp terminal sessions in the browser and back. CUELO is an open-source workspace and harness that aims to carry real-work failures into memory, rules and procedures for the next task.">
 <meta property="og:url" content="https://gim47656-ship-it.github.io/CUELO/">
 <meta property="og:image" content="https://gim47656-ship-it.github.io/CUELO/assets/og.jpg">
 <meta property="og:image:width" content="1200">
@@ -33,7 +33,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
   "name": "CUELO",
-  "description": "Open-source AI coding agent workspace and harness for omp (oh-my-pi). The web app runs the omp SDK in-process and shares the ~/.omp/agent sessions, credentials and model settings with the omp CLI.",
+  "description": "Continue omp terminal sessions in the browser and back. CUELO aims to turn real-work failures into memory, rules and procedures for the next task. It is an open-source AI coding agent workspace and harness for omp (oh-my-pi). The web app runs the omp SDK in-process and shares ~/.omp/agent sessions, credentials and model settings with the omp CLI.",
   "url": "https://gim47656-ship-it.github.io/CUELO/",
   "codeRepository": "https://github.com/gim47656-ship-it/CUELO",
   "programmingLanguage": "TypeScript",
@@ -69,9 +69,9 @@
     <div class="wrap">
       <h1>
         <span class="word">CUELO</span>
-        <span class="what">An AI coding agent workspace and harness for omp (oh-my-pi)</span>
+        <span class="what">Continue omp terminal sessions in the browser and back</span>
       </h1>
-      <p class="lede">CUELO runs <a href="https://github.com/can1357/oh-my-pi">omp</a>'s own SDK inside a local web server and reads the same <code>~/.omp/agent</code> directory as the <code>omp</code> CLI. <strong>Start a session in the terminal, continue it in the browser, and go back</strong> — history, accounts and model settings stay in one place.</p>
+      <p class="lede">History, accounts and model settings stay shared between the <a href="https://github.com/can1357/oh-my-pi">omp (oh-my-pi)</a> CLI and the browser. CUELO also aims to turn mistakes and blockers from real work into memory, rules and procedures for the next task.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">View source on GitHub</a>
         <a class="btn" href="#run">Run from source</a>
@@ -87,7 +87,6 @@
   <section aria-labelledby="purpose">
     <div class="wrap">
       <h2 id="purpose">What CUELO is for</h2>
-      <p>CUELO aims to turn the failures and blockers found during real work into memory, working rules and procedures, so the next task avoids the same mistake without someone having to point it out again.</p>
       <ol class="loop">
         <li><strong>Record what happened</strong><p>A failure or blocker is written down from what was actually observed.</p></li>
         <li><strong>Change only the cause</strong><p>The part that caused it is updated: a memory, a rule, or a procedure.</p></li>
@@ -100,12 +99,12 @@
 
   <section aria-labelledby="differs">
     <div class="wrap">
-      <h2 id="differs">How CUELO differs</h2>
+      <h2 id="differs">How CUELO works</h2>
       <p>CUELO is a local web UI for omp (oh-my-pi) and an inspectable multi-agent harness for coding work. It keeps your terminal workflow instead of replacing it with a separate chat app.</p>
       <ul>
         <li><strong>Same sessions as the CLI</strong> — CUELO runs omp's own SDK inside a local web server and shares the <code>~/.omp/agent</code> sessions, credentials and model settings with the CLI. It does not scrape CLI output, so a session started in the terminal continues in the browser and back.</li>
         <li><strong>Delegation you can inspect</strong> — A Main agent owns requirements and the final judgement and delegates slices to Maker agents; guards check assigned file boundaries. Each task gets a card with live status, changed files and Main's review verdict, and code written by one model family can be reviewed by another family before commit.</li>
-        <li><strong>Learning from its own records</strong> — A local maintenance board compares the last 7 days with the 7 days before: bottlenecks, cost and repeated corrections. It also shows tool errors associated with opening a skill, not proof that the skill caused them. Ordinary sessions do not repair the project in the background on their own. An optional scheduled nightly session works in a separate git worktree, reviews open issues and evidence-backed improvements, and uses recovery procedures seen in at least two sessions as material for skills. It leaves a morning summary and publishes changes as a release, but does not install them or restart any PC's server. On PCs configured for scheduled sync, a morning session installs new releases that have passed public CI.</li>
+        <li><strong>Scheduled maintenance:</strong> Ordinary sessions do not repair the project in the background on their own. An optional scheduled nightly session works in a separate git worktree, reviews open issues and evidence-backed improvements, and uses recovery procedures seen in at least two sessions as material for skills. It leaves a morning summary and publishes changes as a release without installing them or restarting any PC's server. On PCs configured for scheduled sync, a morning session installs new releases that have passed public CI.</li>
         <li><strong>Plugins you can switch on and off</strong> — A plugin is a folder with a manifest and optional tools, extensions and sandboxed side panels, installed alongside the profile. Agents write new plugins directly to the repository and release them after checks and review. Right-deck plugin toggles apply to new sessions or through <code>/reload</code> while idle, which restarts the session rather than the server. The separate omp plugins in Settings behave differently: disabling an already-loaded plugin requires a CUELO runtime restart; <code>/reload</code> does not unload it.</li>
       </ul>
     </div>
@@ -118,13 +117,21 @@
         <div>
           <h3>The workspace</h3>
           <p class="where">Web app · repository root</p>
+          <h4>Sessions and models</h4>
           <ul>
             <li>Find and continue past omp sessions per project, with live streaming of tool calls, cost and context use.</li>
             <li>Branch from an earlier message or fork into a separate session. New sessions use a separate Git worktree when the repository is already in use.</li>
             <li>Assign models to roles (<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> …) using the same <code>config.yml</code> as the TUI.</li>
+          </ul>
+          <h4>Tools and routines</h4>
+          <ul>
             <li>Manage providers, <code>models.yml</code>, plugins and skills; preview files; switch Git worktrees.</li>
             <li>Install and update external skills from public GitHub repositories with a static SkillSpector check. Warnings or an unavailable scanner require confirmation before installation.</li>
             <li>Schedule sessions on a selected PC with routines and collect their results on a board backed by a separately configured private Git repository.</li>
+            <li>A local maintenance board compares the last 7 days with the 7 days before for bottlenecks, cost and repeated corrections, and shows tool errors associated with opening a skill without claiming causation.</li>
+          </ul>
+          <h4>Voice and access</h4>
+          <ul>
             <li>Call the agent by voice, or use a ChatGPT account for face-to-face interpreting between Korean and English, Chinese, Vietnamese, Japanese or Thai.</li>
             <li>Password lock, browser notifications and PWA install. The interface is Korean-first, with English available.</li>
           </ul>

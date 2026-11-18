@@ -1,6 +1,6 @@
 # CUELO
 
-> CUELO is an open-source browser workspace and multi-agent harness for omp (oh-my-pi) coding agents; it runs omp's own SDK in a local web server and shares the ~/.omp/agent sessions, credentials and model settings with the omp CLI. MIT license.
+> Continue omp terminal sessions in the browser and back. CUELO is an open-source browser workspace and multi-agent harness that aims to turn real-work failures into memory, rules and procedures for the next task. It runs omp's own SDK in a local web server and shares ~/.omp/agent sessions, credentials and model settings with the omp CLI. MIT license.
 
 Key facts:
 - Runs locally on Linux. Native Windows server installation is unsupported, with no Windows CI or Windows release binaries. macOS operation and support are not guaranteed; not all Linux distributions are verified.
@@ -10,7 +10,8 @@ Key facts:
 - Model roles (default, smol, slow, plan, task, …) shared with the omp TUI config.yml.
 - Account usage cards, live voice call and a face-to-face interpreter between Korean and English, Chinese, Vietnamese, Japanese or Thai using a ChatGPT account.
 - Installable as a PWA with password lock.
-- Local maintenance board and an optional scheduled nightly session that reviews open issues and evidence-backed improvements in a separate git worktree, using recovery procedures seen in at least two sessions as material for skills. It publishes changes as a release without installing them or restarting any PC's server. On PCs configured for scheduled sync, a morning session installs new releases that have passed public CI. Ordinary sessions do not repair projects in the background on their own.
+- An optional scheduled nightly session reviews open issues and evidence-backed improvements in a separate git worktree, using recovery procedures seen in at least two sessions as material for skills. It leaves a morning summary and publishes changes as a release without installing them or restarting any PC's server. On PCs configured for scheduled sync, a morning session installs new releases that passed public CI. Ordinary sessions do not repair projects in the background.
+- A local maintenance board compares the last 7 days with the prior 7 days for bottlenecks, cost and repeated corrections, and shows tool errors associated with opening a skill without claiming causation.
 - Right-deck plugin toggles apply to new sessions or through /reload while idle, restarting the session rather than the server. Disabling an already-loaded omp plugin in Settings requires a CUELO runtime restart; /reload does not unload it.
 - Routines schedule sessions on a selected PC and collect results on a board backed by a separately configured private Git repository.
 - External skills install and update from public GitHub repositories with a static SkillSpector check; warnings or an unavailable scanner require confirmation before installation.

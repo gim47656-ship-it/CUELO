@@ -85,8 +85,8 @@ const requiredRoutingModes = [
   "high-risk",
 ];
 
-// 역할 종류는 Main·maker 둘뿐이다. 여기 적힌 이름 외의 child 역할이 정책에 다시 생기거나,
-// 은퇴한 역할의 정의 파일이 되살아나는 것이 이 검사기가 막는 드리프트다.
+// 정식 역할은 Main·maker 둘이다. phone-operator는 폰 프로필에만 있는 제한된 child 예외이며
+// 정식 역할이나 이 미러의 생성 정의로 추가하지 않는다.
 const canonicalRoles = ["main", "maker"];
 const retiredRoles = ["planner", "scout", "designer", "interaction-tester", "validator", "maker-deep", "checker-deep", "sonic", "checker"];
 
@@ -1235,6 +1235,28 @@ if (policy !== null) {
     declaredRoles.length === canonicalRoles.length &&
       canonicalRoles.every((role, index) => declaredRoles[index] === role),
     `roles.set은 ${canonicalRoles.join(", ")} 순서 그대로여야 한다: ${declaredRoles.join(", ")}`,
+  );
+  const childExceptions = policy.roles?.childExceptions;
+  check(
+    isPlainObject(childExceptions) &&
+      Object.keys(childExceptions).join(",") === "phone-operator",
+    "roles.childExceptions는 phone-operator 예외 하나만 선언해야 한다.",
+  );
+  const phoneOperator = childExceptions?.["phone-operator"];
+  check(
+    isPlainObject(phoneOperator) &&
+      Object.keys(phoneOperator).sort().join(",") ===
+        ["profile", "definition", "guard", "modelOverride", "isolationOverride", "countsAsChild", "scope", "fileWrites", "authority"].sort().join(",") &&
+      phoneOperator.profile === "phone-only" &&
+      phoneOperator.definition === "Tools/CUELO_Phone_Bridge/agents/phone-operator.md" &&
+      phoneOperator.guard === "isPhoneOperatorCall" &&
+      phoneOperator.modelOverride === false &&
+      phoneOperator.isolationOverride === false &&
+      phoneOperator.countsAsChild === true &&
+      phoneOperator.scope === "app-operation-only" &&
+      phoneOperator.fileWrites === false &&
+      isNonEmptyString(phoneOperator.authority),
+    "phone-operator는 폰 앱 조작과 읽기 전용이며 모델과 격리 override 없이 child 예산에 포함돼야 한다.",
   );
   for (const role of ["maker"]) {
     check(knownRoles.has(role), `roles.set의 ${role}에 해당하는 agent/sop + agent/agents 정의가 없다.`);

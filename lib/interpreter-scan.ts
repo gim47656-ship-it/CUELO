@@ -156,7 +156,7 @@ function scanInstructions(request: ScanRequest): string {
 /** One bounded subscription request with an image. No work session, tools or paid-provider fallback. */
 export async function scanImage(request: ScanRequest, signal?: AbortSignal): Promise<ScanResult> {
   const { modelRegistry } = await getOmpRuntime();
-  const model = modelRegistry.find("openai-codex", "gpt-6.1-sol");
+  const model = modelRegistry.find("openai-codex", "gpt-6.2-sol");
   if (!model) throw new InterpreterTextError("Codex text model unavailable", "live-upstream", 502);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) throw new InterpreterTextError("Codex sign-in required", "live-auth", 401);

@@ -4,12 +4,36 @@ description: After publication; before CI, deploy, restart or Windows sync.
 
 # 배포·CI 감시·Windows 사본 반영
 
-`RULES.md`의 승인 경계(삭제·배포·비용 발생·호환성 파괴는 사전 승인)를 그대로 따르며, 아래는 그 안에서의 운영 절차다. 프로젝트 `AGENTS.md`의 상시 승인처럼 더 구체적인 사용자 결정이 있으면 그것이 우선한다.
+승인 경계는 `RULES.md`를 따르고, 프로젝트 `AGENTS.md`에 확인된 상시 승인이 있으면 그 범위에서 적용한다.
 
-- 배포 확인(사용자, 2026-09-26·2026-09-29·2026-09-30): 집 PC(hostname `KYS`)와 사무실 PC(hostname은 비공개 배포 표에 있다)는 같은 확인 절차를 따른다. 그 PC의 CUELO 세션이 소스 변경을 검증하고 커밋·push했으면, 그 커밋의 GitHub CI가 끝날 때까지 지켜본 뒤 결과를 보고하고 배포 여부를 묻는다. 사용자가 승인하면 같은 revision으로 아래 「WSL 배포」를 실행한다. 라이브 서버는 Settings를 시작 때 한 번만 읽어 파일 변경·touch로는 반영되지 않으므로, 배포 없이 프로필만 바꿨으면 지원되는 프로필 갱신 뒤 서버를 재시작하고 `/api/models` 역할을 확인한다. 실행 전 `hostname`으로 PC를 확인한다. 예약 작업 같은 자동 배포는 두지 않는다. 프로젝트 `AGENTS.md`가 예약 작업의 커밋·push를 승인했더라도(예: CUELO 야간 개선 루프) 그 작업은 배포·재시작을 하지 않고, 배포는 사용자 승인을 따로 받는다. stage·rollback 삭제, 이 두 PC 밖의 배포, CLI 업데이트, 비용이 드는 작업은 따로 승인받는다.
-- WSL 배포(사용자, 2026-10-07): 두 PC 모두 WSL의 CUELO 하나로 돈다(집 배포판 `Ubuntu-24.04`, 사무실 `Ubuntu`). 재시작을 알리고 WSL에서 `systemd-run --user --unit=cuelo-update-$(date +%s) --collect --setenv=WSL_DISTRO_NAME="$WSL_DISTRO_NAME" bash ~/cuelo-run/Tools/CUELO_Setup/wsl/update.sh <revision> "$PI_SESSION_ID"`을 실행한다(Windows 세션이면 `wsl.exe -d <배포판> --exec bash -lc '…'`로 배포판 이름을 적어서). CUELO 세션 안에서는 두 번째 인자로 현재 세션 id를 꼭 넘긴다. 빠지면 drain이나 배포가 실패했을 때 깨우기가 `no-initiator`로 건너뛰어져 배포를 시작한 세션이 멈춘 채 남는다(2026-10-25). 세션 정지·빌드·WSL 프로필 반영·재시작·대기 화면 복귀까지 이 스크립트가 맡는다. `Tools/CUELO_Setup/deploy-live.ps1`과 앱 전체 `setup.ps1`은 지운 Windows 앱을 다시 설치하므로 두 PC에서 실행하지 않는다. `verify.ps1 -StrictRuntime`·`setup.ps1 -ProfileOnly`는 Windows 쪽 프로필·런타임을 보므로 WSL 배포의 증거가 아니다. 완료는 최신 `~/.omp/wsl-update/*.log`의 `READY <revision>`, `wsl\launch.ps1 -Status`의 `matched: true`(배포판이 기본값이 아니면 `-Distribution <배포판>`), `node install.mjs health` 4/4, `/api/models?cwd=<세션 cwd>` 역할 selector와 WSL `~/.omp/agent/config.yml` `modelRoles`의 일치로 본다(`cwd`가 없으면 403). 이 네 가지는 읽기 전용 도구 `deploy_verify`(`revision`, 세션 `cwd`, 필요하면 `distro`)를 한 번 불러 확인하고, 일회용 스크립트를 따로 짜지 않는다. exit 2(되돌림)·3(되돌리기 실패)은 배포 실패로 보고한다. 세부 절차와 함정은 `Tools/CUELO_Setup/WSL-SETUP.md` 「운영」에 있다.
-- 네이티브 Linux 배포(사용자, 2026-11-01): WSL이 아닌 Linux에서 도는 CUELO도 위와 같은 `update.sh` 명령으로 배포한다. 스크립트가 WSL 신호(`WSL_INTEROP`·`WSL_DISTRO_NAME`·`/proc/sys/fs/binfmt_misc/WSLInterop`)로 실행 환경을 판별해 `wsl.exe` 홀드·Windows helper·NAT 다리를 건너뛰고 `Tools/CUELO_Setup/linux/launch.sh`로 다시 띄운다. 완료 기준도 같고, 런처 상태만 `bash ~/cuelo-run/Tools/CUELO_Setup/linux/launch.sh status`(일치 exit 0·`matched: true`, 불일치 exit 3)로 본다. `deploy_verify`가 실행 환경에 맞는 쪽을 고른다.
-- CI 감시(사용자, 2026-09-28·2026-10-03): 커밋의 CI를 지켜볼 때는 기다릴 워크플로를 이름으로 지정하고(`gh run list --workflow <이름>` 등), 그 run이 끝나는 즉시 결과를 보고한다. 같은 SHA에 걸린 run 전체의 완료를 조건으로 삼지 않는다. CI 성공이 트리거하는 릴리스·배포 run(`workflow_run`)이 몇 초 뒤 같은 SHA로 생겨 CI 완료 보고를 붙잡기 때문이다. 이어 붙는 run은 보고한 뒤 따로 지켜본다. 감시는 `bash`의 `gh run watch <id> --exit-status`나 `gh run list` 직접 조회로 하고, `eval` 커널 안에서 `gh`를 subprocess로 부르는 폴링 루프로 짜지 않는다. 2026-10-03 그런 루프가 빈 출력을 "run 없음"으로 읽어, CI가 끝난 뒤에도 20분 넘게 보고하지 못했다. 직접 짠 폴링은 빈 출력·0이 아닌 exit를 즉시 오류로 끝낸다. 공개 미러 CI는 headSha가 원본 커밋과 다르므로 run 제목으로 찾는다.
+- 배포 확인(사용자, 2026-09-26, 2026-09-29, 2026-09-30): 집과 사무실은 현재 네이티브 Linux Mint이며 같은 절차를 따른다.
+  실제 hostname과 런타임을 확인하고 검증, 커밋과 push 뒤 해당 CI 결과를 보고해 배포 승인을 받는다.
+  예약 작업의 commit/push 승인은 배포나 재시작 승인이 아니다. stage/rollback 삭제, 다른 PC 배포, CLI 갱신과 비용은 별도 승인이다.
+  폰과 클라우드 런타임은 이 규칙에서 확인하지 못했으므로 unknown이다. 경로나 옛 READY를 다른 PC의 증거로 쓰지 않는다.
+- Linux/WSL 배포(사용자, 2026-10-07, 2026-11-01): 재시작을 먼저 알리고
+  `systemd-run --user --unit=cuelo-update-$(date +%s) --collect bash ~/cuelo-run/Tools/CUELO_Setup/wsl/update.sh <revision> "$PI_SESSION_ID"`를 쓴다.
+  WSL에서만 `--setenv=WSL_DISTRO_NAME="$WSL_DISTRO_NAME"`를 추가한다. Windows에서 WSL로 호출할 때는 배포판을 명시한다.
+  현재 세션 id는 반드시 두 번째 인자로 넘긴다. drain, 빌드, 프로필 반영, 재시작과 복귀는 스크립트가 소유한다.
+  네이티브 Linux는 Windows helper와 NAT 다리를 건너뛰고 `linux/launch.sh`로 돌아온다.
+  집과 사무실에서는 Windows 앱을 되살리는 `deploy-live.ps1`, 앱 `setup.ps1`을 쓰지 않으며 Windows 프로필 검사도 배포 증거가 아니다.
+  완료는 `deploy_verify`에 revision과 세션 cwd(WSL이면 필요 시 distro)를 주어 한 번 확인한다:
+  최신 갱신 로그의 `READY <revision>`, 런처 `matched: true`, `node install.mjs health` 4/4,
+  `/api/models?cwd=<세션 cwd>` selector와 해당 프로필 `modelRoles` 일치다. cwd 없이 API를 부르면 403이다.
+  Linux 런처 조회는 `bash ~/cuelo-run/Tools/CUELO_Setup/linux/launch.sh status`(일치 0, 불일치 3),
+  WSL은 `wsl/launch.ps1 -Status`와 필요한 `-Distribution`이다. update exit 2와 3은 실패다.
+  설정 파일 touch는 실행 중 Settings를 바꾸지 않으므로 프로필만 바꿨어도 지원되는 갱신과 재시작 뒤 역할을 확인한다.
+  자세한 운영 절차는 `Tools/CUELO_Setup/LINUX-SETUP.md`와 `WSL-SETUP.md`를 따른다.
+- CI 감시(사용자, 2026-09-28, 2026-10-03): 기다릴 워크플로를 이름으로 지정하고 그 run이 끝나면 즉시 보고한다.
+  같은 SHA에 나중에 붙는 릴리스와 배포 run 전체를 기다리지 않는다. `bash`의 `gh run watch <id> --exit-status`나 직접 조회를 쓰고
+  eval subprocess 폴링을 만들지 않는다. 직접 만든 폴링의 빈 출력과 0이 아닌 exit는 오류다. 공개 미러는 원본과 SHA가 다르므로 run 제목으로 찾는다.
 - 경로 필터로 생략된 push(사용자 승인, 2026-10-28): private `CI`(`ci.yml`)와 `Publish public mirror`(`publish-public.yml`)는 `on.push` 경로 필터가 있어, 변경 파일이 전부 필터에 걸리는 push(작업 기록 `doc/`, HANDOFF·PC-SETUP, `Tools/*/*.md`, 기억 내보내기, 미러에 가지 않는 비공개 Tools 등)에는 run이 아예 생기지 않는다. run이 없다는 이유만으로 타임아웃까지 기다리거나 실패로 보고하지 않는다. run이 없으면 그 커밋의 변경 파일(`git show --name-only --format= <sha>`)을 그 시점 워크플로 파일의 필터와 대 보고, 모두 걸러지면 「CI 없음」으로 보고하고 통과로 센다. 필터 판정은 `.github/scripts/paths-filter.ts`의 `pushStartsWorkflow`를 쓴다. 이 상태는 코드가 바뀌지 않았다는 뜻일 뿐 배포 결정을 바꾸지 않는다. 배포는 이전처럼 바뀐 파일이 실행본·프로필에 닿을 때만 묻는다. 병합 커밋처럼 변경 파일 목록을 믿을 수 없는 push는 run이 곧 생기는지 따로 확인한다. 워크플로 파일 자체나 `.publicignore`·`.publicdeny`가 바뀌면 필터에 걸리지 않으므로 run이 생긴다.
-- WSL 작업 결과의 Windows 반영(사용자, 2026-10-11, 모든 세션): 대응하는 기존 Windows 프로젝트 사본이 확인된 WSL 작업은 완료할 때 검증·커밋·게시한 소스와 문서를 Windows 사본에도 같은 커밋으로 자동 반영한다. UNC로 같은 WSL 폴더를 여는 것은 이 반영을 대신하지 않는다. 대상은 프로젝트 운영 문서의 명시 대응 경로와 실제 Git origin·branch로 확인하며, 경로를 추정해 다른 프로젝트를 갱신하거나 새 사본을 만들지 않는다. Main이 `git_finalize`로 게시를 마친 뒤 `bun ~/.omp/agent/tools/git-finalizer/sync-checkout.ts --source <WSL 저장소 루트> --target <대응 Windows 사본의 /mnt 경로> --revision <게시한 전체 SHA>`를 호출한다. 명령은 수정 없는 동일 origin·branch의 사본만 정확한 커밋으로 fast-forward하고 결과를 확인한다. 미커밋 수정·미추적 파일·분기 이력·락·인증 실패는 보존하고 막힌 이유를 알린다. reset·stash·강제 덮어쓰기·자동 rebase로 우회하지 않는다. 원본 작업 완료와 Windows 반영 완료는 구분해 보고하며 실패를 성공으로 감추지 않는다. 실시간·양방향 동기화나 감시 작업은 만들지 않고, 실행 산출물·설치된 프로필·인증 DB·세션·기억·독립 CLI를 복사하지 않는다. WSL 단일 CUELO의 실행본·활성 하네스 프로필 갱신은 기존 WSL 배포 절차를 따르며 Windows 앱을 다시 설치하지 않는다. Windows 전용 MSBuild·VB6·COM·장비 프로젝트의 기존 위치와 도구를 임의로 바꾸지 않는다.
+- Linux 작업 결과의 Windows 사본 반영(사용자, 2026-10-11, 모든 세션; 2026-11-18 방향 정정):
+  **Linux가 소스 정본이고 Windows가 받는 사본이다.** 대응하는 기존 사본이 확인되면 검증, 커밋과 게시를 마친 소스와 문서를 같은 커밋으로 반영한다.
+  대상은 프로젝트 운영 문서의 대응 경로와 실제 origin/branch로 확인하며 새 사본이나 추정 경로는 만들지 않는다.
+  Main은 게시 뒤 `bun ~/.omp/agent/tools/git-finalizer/sync-checkout.ts --source <Linux worktree> --target <Windows 사본의 /mnt 경로> --revision <게시한 전체 SHA>`를 쓴다.
+  도구는 수정 없는 동일 origin/branch 사본만 fast-forward한다. 미커밋 수정, 미추적 파일, 분기, 락과 인증 실패는 보존해 보고하고
+  reset, stash, 강제 덮어쓰기나 자동 rebase로 우회하지 않는다. 원본 완료와 사본 반영 완료는 구분한다.
+  실시간 감시와 양방향 동기화는 만들지 않고 산출물, 설치 프로필, 인증 DB, 세션, 기억과 독립 CLI는 복사하지 않는다.
+  활성 런타임은 위 배포 절차를 따르며 Windows 앱을 다시 설치하거나 Windows 전용 프로젝트의 위치와 도구를 임의 변경하지 않는다.
+  WinBoat 빌드 사본의 `vm_build` 계약은 `rule://linux-runtime`의 별도 절차다.
 - `git_integrate` 게시(2026-10-31): worktree 세션이 `git_integrate`로 대상 branch(기본 `main`)에 올린 SHA는 `git_finalize`로 게시한 커밋과 똑같이 다룬다. 그 SHA로 위 CI 감시와 배포 확인을 하고, Windows 사본 반영은 원본 branch(`wt/<주제>`)가 대상 branch와 다르므로 `sync-checkout.ts --source <그 worktree 폴더> --target <대응 Windows 사본의 /mnt 경로> --revision <게시한 전체 SHA> --branch <대상 branch>`로 부른다. `git_integrate`가 충돌로 멈췄거나 검사·게이트에서 실패했으면 게시된 커밋이 없으므로 CI를 기다리지 않고 그 결과를 보고한다.

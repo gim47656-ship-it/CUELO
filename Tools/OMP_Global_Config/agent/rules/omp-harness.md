@@ -9,7 +9,9 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
   `$PSScriptRoot`에서 계산한다. 이 규칙의 `Tools/OMP_Global_Config/**` glob은 저장소 루트 기준이다.
 - 공개 npm 설치는 `cuelo harness-diff`·`cuelo harness-update`, 공개 소스 설치는 저장소 루트의 `node install.mjs harness-diff`·`node install.mjs harness-update`를 사용한다. 아래의 `setup.ps1`·`export.ps1`·source manifest 절차는 해당 도우미가 있는 유지보수 사본용이며, 공개본에 없는 파일을 실행하거나 개인 프로필을 복사하지 않는다. 앱 SDK 패치는 별도 설치한 `omp` CLI에 적용되지 않는다.
 
-- 미러(`Tools/OMP_Global_Config`)가 기준이다. Windows 원본 설치에서는 미러를 프로필로 밀 때 `setup.ps1`, 프로필 변경을 미러로 당길 때 `export.ps1`을 쓴다. WSL로 이관한 PC에는 아래 WSL 절차를 쓴다. 모든 세션의 작업 완료 후 대응 Windows 소스 사본 반영은 `rule://deploy-ops`의 「WSL 작업 결과의 Windows 반영」을 따른다. 소스 사본 갱신과 설치된 Windows 프로필·앱 갱신은 다르다.
+- 미러(`Tools/OMP_Global_Config`)가 기준이다. Windows 원본 설치의 push/pull은 `setup.ps1`과 `export.ps1`,
+  Linux/WSL 프로필 갱신은 아래 호스트 절차를 쓴다. Linux 소스의 Windows 사본 반영은 `rule://deploy-ops`가 정본이다.
+  소스 사본 반영과 설치 프로필, 앱 갱신은 구별한다.
 - 집·사무실 모두 같은 적용 계약을 따른다. 대상 PC에서 최신 미러·`HANDOFF.md`와 실제 런타임을 먼저 대조하고, 실제 OS·`HOME`/`USERPROFILE`·설치 경로·버전·저장소 branch/upstream으로 적용 경로를 정한다. 진행 작업을 보존해 해당 branch를 `git pull --ff-only`로 갱신하며 자동 reset·rebase로 우회하지 않는다. 다른 PC의 경로·PID·세션·과거 `READY`는 대상 PC의 증거가 아니다.
 - Windows 원본 설치에서만 pull 뒤 `setup.ps1`로 managed `rules`를 설치하고 `verify.ps1 -StrictRuntime`으로 확인한다. WSL 단일 CUELO의 프로필 갱신·완료 판정은 아래 WSL 항목을 따른다. 런타임 설치·업그레이드는 필요하고 승인된 경우에만 수행하며, 설정만 바뀌면 지원되는 프로필 갱신을 사용하고 웹을 매번 빌드·설치하지 않는다. 두 절차는 같은 PC에서 겹쳐 돌리지 않는다. 무거운 설치·빌드와 동시에 돌던 검증의 timeout 실패는 timeout·gate·테스트를 바꿀 근거가 아니라 부하를 걷은 뒤 격리 재실행으로 재판정할 대상이다. 자원을 다투지 않는 가벼운 읽기·조회는 그대로 병행한다.
 - Git Bash나 OMP `bash` tool에서 Windows PowerShell을 호출할 때 `-File .\script.ps1`처럼 역슬래시 상대 경로를 넘기지 않는다. Bash가 `\`를 escape로 소비해 `.script.ps1`로 변형한다. 이 경로에서는 `powershell.exe ... -File ./script.ps1`처럼 `/` 상대 경로를 사용하고, PowerShell 셸 안에서 직접 실행할 때만 `.\script.ps1` 표기를 쓴다. WSL의 `bash`는 진짜 `/bin/bash`라 같은 이유가 그대로 적용되며, 거기서는 Windows 프로그램에 넘기는 경로를 `"$(wslpath -w <파일>)"`로 변환한다(`Tools/CUELO_Setup/wsl/APPEND_SYSTEM.md`).
@@ -17,20 +19,26 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 - `export.ps1`은 미러 파일이나 `config.yml` 키가 사라지는 방향이면 대상을 출력하고 중단한다. 프로필이 미러보다 오래된 경우이므로 `setup.ps1`을 먼저 실행한다. 삭제가 의도된 경우에만 `-Force`를 쓴다.
 - `agent/agents/*.md`는 `agent/sop/`에서 생성된 빌드 산출물이다. 직접 고치지 말고 `agent/sop/`를 고친 뒤 `node patches/build-agents.mjs`로 재생성한다. 절차 전체는 `rule://meta-harness`.
 - source manifest(`Tools/CUELO_Setup/files/source-integrity.json`)와 `Tools/CUELO_Setup/files/source-build-helper.js`가 있는 유지보수 사본에서만 다음 절차를 적용한다. manifest가 덮는 파일(앱 코드, `CHANGELOG`·`README`·`docs/`, 이 미러의 규칙·확장 일부)을 고쳤으면 마지막 수정 뒤 `git_finalize` 전에 cwd `Tools/CUELO_Setup`에서 `node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json`과 `node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json`을 돌리고 `source-integrity.json`을 같은 커밋에 넣는다. manifest는 `git ls-files`만 보므로 새 파일이 있으면 `cuelo-release-deploy` 스킬의 manifest 절차를 따른다. 릴리스의 `set-release-version.js`는 이 둘을 함께 돌린다.
-- 코드·설정 변경의 검증은 그 변경의 owner가 맡는다. routine이면 Main, 위임한 조각이면 그 Maker가 별도 환경 구축 없이 가능한 집중 검사와 결정론적 HTTP/API·화면 smoke를 실행한다. 공통 격리 환경과 필요한 전체 빌드·통합·수용 검사는 Main이 소유·실행하고, 여러 조각이 한 실행 경로로 합치면 Main이 수렴 뒤 frozen revision에서 1회 실행한다. Main은 지원되는 setup·재시작 절차와 그 내부 설치 검사를 유지하며, 위임한 조각의 집중 검사를 같은 환경에서 반복해 확인하지 않고 증거를 판단한다. 웹 화면 확인 경로는 `RULES.md` 브라우저 항목을 따른다(ego TaskSpace 검증 프로필, 없으면 headless). 빌드가 깨진 중간 상태가 사용자 화면에 뜨지 않게 하고, 사용자 세션이 실제로 필요하거나 완성된 표면을 사용자가 판단해야 할 때만 사용자 프로필의 새 작업 공간·탭을 쓰며, 기존 relay 탭을 대상으로 할 때만 최상위 `target`을 명시한다.
-- 적합한 동일 revision 빌드·서버·결과를 먼저 재사용한다. 2026-09-19의 dev CSS 파싱 실패를 현재 트리의 영구 제한으로 보지 않는다. 2026-09-25에 Next host의 `NODE_ENV=production`·`PORT`·`NEXT_RUNTIME`·private env 유출을 원인으로 확인해 자식 셸에서 제거했고, 2026-09-26에는 `NODE_ENV=development`, host Next env 제거, 격리 HOME/USERPROFILE로 package의 dev script를 실행해 실제 CSS·desktop/mobile 화면을 확인했다. cold compile이 길 수 있으므로 readiness만 보고 재시작하거나 같은 navigation을 반복하지 말고 로그로 컴파일 상태를 구분한다. 실제 환경을 교정해도 dev가 불가하거나 동일 revision production 산출물이 있으면 build/start를 사용한다. production build는 격리 source 또는 `CUELO_DIST_DIR`을 사용하고 HOME·USERPROFILE도 격리해 Windows 보호 junction의 `EPERM`을 피한다. 직접 만든 일회성 부산물만 정리하며 기존 유효 cache/stage는 보존한다. 자동 변경된 `tsconfig.json` include·`next-env.d.ts`를 정본에 섞지 않는다.
+- 검증 소유권과 변경 범위별 종료 조건은 `rule://subagent` 「검증 소유권」이 정본이다.
+  브라우저 경로와 사용자 화면 보호는 `rule://surface-verification-procedure`를 따른다.
+  cold compile은 로그로 구분하고 같은 navigation이나 재시작을 반복하지 않는다. dev가 실제 환경 교정 뒤에도 불가하면
+  동일 revision production 산출물을 재사용하거나 격리 source/CUELO_DIST_DIR와 HOME/USERPROFILE로 build/start한다.
+  기존 cache와 stage를 보존하고 자동 생성된 tsconfig include와 next-env를 소스 변경에 섞지 않는다.
 - `modelRoles`나 `models.yml`의 provider 정의를 바꾼 뒤에는 `omp`를 재시작한다. 실행 중인 Main·세션의 역할 스냅샷과 ModelRegistry가 디스크 변경만으로 교체된다고 가정하지 않는다. SubAgent spawn 때 일부 설정을 다시 읽더라도 전체 런타임 반영의 증거는 아니다. 새 API 응답과 새 세션에서 실제 역할·설정과 저장된 자격증명 해석을 확인한다.
   - 새 모델 ID는 예전 ID의 `modelOverrides`를 상속하지 않는다. 모델을 추가·교체하면 실제 등록된 selector별 `contextWindow`와 core의 압축 발동점을 각각 대조하고, 기존에 승인한 창 정책의 누락인지 새 변경인지 구분한다. 표시 한도를 맞췄다는 사실만으로 제공자의 최대 크기 요청까지 검증했다고 보고하지 않는다.
 - 컨텍스트 창과 압축 시작점은 별개다. 먼저 실제 모델 ID에 적용된 창과 core의 `compaction.thresholdPercent`·`modelThresholds` 해석을 확인한다. 지원되는 core 설정으로 해결할 수 있으면 새 hook·JEV 호출을 붙이지 않는다. 임계값 조정은 같은 기준의 실제 요청·압축 후 재탐색·보고 비용과 품질 근거로 판단하며, cache read/write·압축 뒤 재작성 비용을 구분하고 없는 값은 unknown으로 남긴다. API 가격 환산을 구독 사용 한도로, 외부 개인 사례의 절감률을 이 하네스의 보장으로 바꾸지 않는다.
 - **하네스 동작 변경은 편집 전에 예측을 적는다(2026-10-30 사용자 결정).** 규칙·SOP·가드·extension·도구 설명·설정처럼 세션 행동을 바꾸는 변경은 편집 전에 작업 기록(`doc/history/.../main.md`)에 볼 지표와 현재 값, 기대 방향·크기, 재는 명령, 다시 잴 날짜를 적는다. 마감 때 그 예측을 `HANDOFF.md` 관찰 행의 종료 조건(`rule://docs-handoff`)으로 옮기고, 다시 잰 날 실제 값과 적중·빗나감을 같은 기록에 남긴다. 빗나가면 되돌릴지, 원인을 기록하고 조건을 고칠지 정한다. 근거: 수정마다 반증 가능한 예측을 먼저 적고 다음 관측과 대조한 루프가 하네스 개선을 수렴시켰다(AHE, arXiv 2604.25850). 예측은 관문이 아니며, 측정할 지표가 없는 문구 정리·문서 정합 수정은 해당하지 않는다.
 - omp는 CLI 실행마다 프로필 `config.yml`에 자기 기본값을 덧붙인다. 그래서 `verify.ps1`은 파일 완전일치가 아니라 미러 키·값이 프로필에 반영됐는지만 본다.
 - 인증 정보, 세션, 로그, 캐시, 플러그인 데이터는 미러에 넣지 않는다. 새 PC에서는 manifest로 다시 설치한다.
-- 완료 증거는 변경이 실제로 도달하는 범위에 맞춘다. 미러 문서·문구만 바꾼 작업은 diff 확인으로 닫는다. 프로필에 실제로 설치돼야 의미가 있는 변경은 `setup.ps1` 적용 결과와 그 범위를 덮는 `verify.ps1` 항목의 실제 출력까지 확인한다. 런타임 동작이 바뀌는 변경은 새 세션·실제 응답을 직접 구동해 확인한다. 이 우선순위는 `implementationOwnership.writerValidation.endConditions`·`reuseScope`와 같은 계약이다 — 가벼운 종료가 필요한 무거운 검사를 대체하지 않고, 무거운 검사도 변경이 닿지 않는 범위로 번지지 않는다. 같은 입력의 통과한 검사·빌드·서버는 재사용하고 재작업이 무효화한 범위만 다시 본다.
+- 완료 증거의 범위와 동일 입력 결과 재사용은 `rule://subagent` 「검증 소유권」을 따른다.
 - 환경 전체 `READY`는 과제 수용 조건과 별개 상태다. 과제 범위가 통과해도 남은 `PARTIAL`·`FAIL`·`AUTH REQUIRED`는 상태 그대로 보고하고 PASS로 바꿔 적지 않는다. 과제 범위와 관련된 실패는 계속 완료를 막고, 인증 안내는 실제 `Provider Auth` 결과가 요구할 때만 낸다.
 - 사용자가 승인한 CUELO 영향 설정·런타임 변경은 미러 적용 → 지원되는 reload 또는 프로세스 재시작 → HTTP 200·브라우저 동작과 실제 역할·설정 확인까지 수행한다. 프로필 동기화나 `verify.ps1` 성공만으로 웹 적용을 완료했다고 보고하지 않는다.
 - (앱이 Windows에서 도는 PC) CUELO 재시작은 작업을 보존한 뒤 `CUELO` 프로세스 계보 밖에서 수행한다. Git Bash·OMP `bash` tool 같은 비대화형 자동화는 `powershell.exe ... -File C:/Users/<user>/.omp/restart-ompweb.ps1`처럼 배치된 PowerShell 정본을 `/` 경로로 직접 실행한다. `restart-ompweb.cmd`는 ASCII·CRLF wrapper로 유지하고 Win+R 또는 `CUELO-Restart` 작업 스케줄러에서만 사용한다. 스케줄러의 접수 성공만으로 재시작을 판정하지 말고 재시작 로그와 실제 HTTP·브라우저 응답을 확인한다. PC 재부팅을 기본 해결책으로 요구하지 않는다.
-- (앱이 Windows에서 도는 PC) 세션 안에서 재시작하거나 `deploy-live.ps1`로 배포할 때는 **항상 `-InitiatorSessionId <현재 session id>`를 넘긴다.** 두 스크립트 모두 이 인자가 없으면 자동 재개 없이 끝나 진행 중인 턴이 끊긴 채 남는다(2026-09-25 배포 `ffcae674…`, `initiatorSession=(none)`). 스크립트가 READY 뒤 그 세션에 `[자동 재개]` prompt를 넣어 작업이 이어진다(스케줄 작업 인계 시에는 `~/.omp/restart-ompweb.resume.json`으로 전달). 결과는 `restart-ompweb.log`의 `RESUME_SENT`/`RESUME_FAILED`로 확인한다. 재시작 전에 사용자에게 잠깐 끊긴다고 먼저 알린다.
-- (앱이 WSL에서 도는 PC: 집 `KYS`·사무실) `setup.ps1`·`deploy-live.ps1`·`restart-ompweb.ps1`·`verify.ps1 -StrictRuntime`은 제거한 Windows 앱·프로필 기준이라 쓰지 않는다. 프로필 갱신·재시작·배포는 `Tools/CUELO_Setup/wsl/update.sh`와 `Tools/CUELO_Setup/WSL-SETUP.md` 「운영」, 완료 판정은 `rule://deploy-ops`의 WSL 배포 항목을 따른다. CUELO 세션 안에서는 `update.sh <revision> <현재 session id>`로 주도 세션을 명시한다. 진행 중 세션은 drain으로 보존하고, 명시한 주도 세션은 복귀 확인 뒤 기존 wake 경로로 한 번 깨운다. 이 인자를 지원하지 않는 옛 실행본의 첫 갱신은 검증·게시된 개발 사본의 스크립트를 사용한다.
+- Windows 앱에서만 세션 안 재시작과 deploy-live에 `-InitiatorSessionId <현재 session id>`를 넘긴다.
+  자동 재개 결과는 재시작 로그의 `RESUME_SENT`와 `RESUME_FAILED`로 확인하고 재시작 전에 사용자에게 알린다.
+- 집과 사무실은 네이티브 Linux Mint다. 첫 설치는 `Tools/CUELO_Setup/linux/setup.sh`, 갱신은 `wsl/update.sh`를 쓴다.
+  Windows 설치와 StrictRuntime 검사를 Linux의 완료 증거로 쓰지 않는다. 실행 명령과 완료 기준은 `rule://deploy-ops`가 정본이다.
+  폰과 클라우드 런타임은 이 규칙에서 확인되지 않았다. WSL 지원은 유지하며 WSL에서만 WSL 전용 규칙을 설치한다.
 - 웹 런타임에 영향 없는 문구 변경만으로 재시작하지 않는다. 무관한 진행 중 작업이나 인증 상태를 자동 변경하지 않는다.
 
 ## CUELO 화면 검증 경로
@@ -48,7 +56,7 @@ globs: ["Tools/OMP_Global_Config/**", "Tools/CUELO_Setup/**"]
 - 재빌드를 유발할 코드·계약 finding이 남아 있으면 먼저 수정한다. 필요한 독립 코드 검토는
   frozen diff와 caller가 준비되면 가벼운 검사와 병행할 수 있다(high-risk 직렬 경계 유지).
   통과한 무거운 검사는 같은 입력이면 재사용한다. 추가 검수 단계는 `git_finalize`의 계열 교차검증
-  gate(`mainLane.workerReview.crossFamilyReview`) 하나뿐이며, 그 밖의 영구 gate를 새로 두지 않는다.
+  gate(`rule://cross-review-procedure`) 하나뿐이며, 그 밖의 영구 gate를 새로 두지 않는다.
 - 유료 외부 호출 대신 실제 handler·저장소·화면 callback에 일회성 입력을 주입했다면 그
   경계와 미검증 구간을 보고한다. 주입용 route·export·fixture는 정본이나 배포물에 넣지 않는다.
 

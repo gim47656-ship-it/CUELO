@@ -229,41 +229,19 @@ dannywon.dev의 Tailwind 기본값 분석). 이 조항은 위 필수 세트 전�
   작업(웹 앱, WPF·WinForms 운영·공장 화면, 대시보드·보고서)에 쓰일 것, 외부 엔진·네트워크에 의존하지 않을 것.
   들인 스킬은 고정 commit에서 upstream 본문을 그대로 두고 「OMP local contract」 한 절만 더하며, 위 필수 경로를
   대체하지 않는 선택 참고다. 충돌하면 이 규칙과 프로젝트의 기존 디자인 시스템이 이긴다.
-- **목록 비용도 기준이다.** 스킬마다 세션 목록에 설명이 실린다. 2026-10-10 측정으로 선별 12종은 +462토큰,
-  통째 45종은 +2,054토큰(당시 주입 목록 943토큰의 두 배 이상)이었다. 설명은 한 문장 150자 이하로 줄인다.
-- **채택한 묶음.**
-  - UI·화면의 필수 세트와 언어·운영자 화면 조건은 위 「산출물별 필수 스킬」 블록이 정본이다.
-  - 제품 UX·업무 도구 12종(dembrandt-skills 선별, 2026-10-10): app-shell, coordinated-data-views,
-    data-display-and-selection, domain-expert-configuration, modal-and-overlay-patterns,
-    operational-expert-tool-ui, repeated-component-alignment, scroll-areas, status-colors-and-errors,
-    surface-separation, ui-context-and-scope, ui-density.
-  - 플랫폼별(2026-10-17): material-3(Android Compose·Flutter), refactoring-ui(팔레트·척도가 없을 때),
-    WPF·MVVM 4종, 직접 쓴 factory-measurement-hmi(공장 측정기 OK/NG 화면). Android 공식 스킬은
-    2026-10-22에 들였고 Android 앱 작업에서만 고른다.
+- 목록 설명은 한 문장 150자 이하로 줄인다. 필수 세트와 플랫폼별 조건은 위 「산출물별 필수 스킬」이 정본이다.
+  설치 목록과 도입 근거는 registry와 각 `UPSTREAM.json`을 따른다.
 - **제외한 대안과 이유.**
   - dembrandt-skills 45종 통째: 목록 비용이 현 카탈로그의 두 배를 넘고, 33종은 기존과 주제가 겹치며,
     오케스트레이터 `dembrandt`의 트리거가 이 필수 경로와 경쟁하고, 3종은 엔진·Figma·Penpot이 필요하다.
   - upstream과 기존 규칙이 충돌하는 조항(버튼 눌림 scale 금지, 모션 linear 금지, 토스트 지속 시간):
     들이지 않고 기존 ui-ux-pro-max 규칙을 유지한다.
-  - impeccable 상시 설치: omp에서는 훅이 동작하지 않아 「산출 전 자동 점검」 이점이 없고 시각 슬롭은
-    kill-ai-slop이 덮는다. 대비·작은 글자 같은 렌더링 검사가 필요할 때만 `detect`를 임시로 돌린다(2026-10-19
-    시험에서 화면 5건을 찾아 고쳤다). 영구 gate·CI 검사로 만들지 않는다.
+  - impeccable 상시 설치: omp 훅이 없고 시각 슬롭은 kill-ai-slop이 덮는다. 렌더링 검사가 필요할 때만 `detect`를 임시 실행하고 영구 gate나 CI로 만들지 않는다.
   - im-not-ai: 에이전트 정의 9개가 Main/Maker 두 역할 정책과 부딪힐 수 있어 들이지 않았다(분류 체계만 참고).
   - Taste 계열의 그림·모션 하한은 앱 화면에 맞지 않아 보편 기준으로 쓰지 않는다.
   - 엔진·외부 도구가 필수인 스킬(extract-design, clone-website, generate-ui-from-brand): 설치가 비목표다.
 - **적용 범위.** 시각 판단이 없는 동작·백엔드·문구 작업은 대상이 아니다. 웹 코드 예시는 WPF·WinForms에서
   규칙만 적용한다. 장비 화면은 표시만 바꾸고 판정·공차·교정 계산은 바꾸지 않으며 실제 장비 확인으로 닫는다.
-- **출처와 기준일.** 아래는 결정일 기준이다. 설치한 스킬의 고정 commit·라이선스·로컬 변경은 각 스킬의 `UPSTREAM.json`을 따른다.
-
-  | 결정일 | 출처(upstream) | 결과 |
-  |---|---|---|
-  | 2026-10-10 | `dembrandt/dembrandt-skills` (MIT, 2026-10-08판) | 45종 비교, 12종 선별 |
-  | 2026-10-16 | `DaleSeo/korean-skills` humanizer (MIT) | 들임(감지·교정 두 모드) |
-  | 2026-10-16 | `pbakaus/impeccable` 4.6.0 | 조사, 상시 설치 안 함 |
-  | 2026-10-17 | `hamen/material-3-skill`, `s0xDk/refactoring-ui-skill`, `github/awesome-copilot`(mvvm-toolkit), `novotnyllc/dotnet-artisan`, `christian289/dotnet-with-claudecode`, `timhok/hmi-design`(고쳐 씀) | 들임 |
-  | 2026-10-22 | `android/skills` | 들임(Android 앱 작업 한정) |
-  | 2026-11-02 | [`heydamir/unslop`](https://github.com/heydamir/unslop/tree/a6f121eee5f29c2f74976b75456feae8b66afb3a/skills/unslop) (CC BY 4.0, Damir Sokolovsky) | 들임(`unslop-ui` 선택 스킬, 본문 그대로에 OMP local contract 추가, 스크립트는 보관만 하고 실행 안 함) |
-  | 2026-11-02 | [`theclaymethod/unslop`](https://github.com/theclaymethod/unslop/blob/17ed39c9d0b522f44190ff0c6233867eadee192a/references/core-contract.md) (README 기준 MIT) | 글쓰기 수리·보존 흐름은 `unslop-prose`와 `writing-review-procedure`에서 다룸 |
 
 ## 모델 폴백
 

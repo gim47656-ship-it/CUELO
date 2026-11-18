@@ -108,7 +108,7 @@ export function createReadingSplitter() {
 /** One bounded subscription request. No work session, tools or paid-provider fallback. */
 export async function streamInterpreterText(request: InterpreterTextRequest, signal?: AbortSignal): Promise<AsyncGenerator<InterpreterTextEvent>> {
   const { modelRegistry } = await getOmpRuntime();
-  const model = modelRegistry.find("openai-codex", request.mode === "voice" ? "gpt-6.1-terra" : "gpt-6.1-sol");
+  const model = modelRegistry.find("openai-codex", request.mode === "voice" ? "gpt-6.1-terra" : "gpt-6.2-sol");
   if (!model) throw new InterpreterTextError("Codex text model unavailable", "live-upstream", 502);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) throw new InterpreterTextError("Codex sign-in required", "live-auth", 401);
@@ -171,7 +171,7 @@ export async function streamInterpreterText(request: InterpreterTextRequest, sig
 /** 발음만 따로 받는 요청 하나(보여주기 카드에서 발음이 없는 줄). 번역하지 않고 읽는 소리만 한글로 받는다. */
 export async function fetchInterpreterReading(text: string, language: TranslatorLanguage, signal?: AbortSignal): Promise<string | undefined> {
   const { modelRegistry } = await getOmpRuntime();
-  const model = modelRegistry.find("openai-codex", "gpt-6.1-sol");
+  const model = modelRegistry.find("openai-codex", "gpt-6.2-sol");
   if (!model) throw new InterpreterTextError("Codex text model unavailable", "live-upstream", 502);
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) throw new InterpreterTextError("Codex sign-in required", "live-auth", 401);

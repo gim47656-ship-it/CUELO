@@ -6,8 +6,22 @@ description: Before any cross_review call.
 
 보조 검토자가 공급자 한도(429, rate limit, usage limit)로 실패하면 대체 순서(`retry.fallbackChains`)의 그 모델 키에 적힌 같은 모델의 다른 공급자 경로를 한 번만 더 부른다(2026-11-11 사용자 결정 「버택스로 넘겨」). 다른 모델로는 가지 않고, 저자나 이 라운드 필수 reviewer와 같은 경로는 건너뛰며, 60초 유예도 그대로다. 넘어갔으면 결과 advisory.model은 실제로 부른 경로이고 advisory.limited{model, error}에 한도로 실패한 원래 경로가 남는다. 그 경로도 실패하거나 적힌 경로가 없으면, 그리고 한도가 아닌 실패는 위와 같이 기록만 한다.
 
-files에 섞인 문서(마크다운·txt·HANDOFF.md, 저장소 맨 위 doc/·docs/ 아래 기록, 작업 기록 데이터)는 게이트 대상이 아니고 통과가 덮지도 않으므로, 코드 파일이 함께 있으면 심사 대상에서 빠져 references(맥락)로 자동 옮겨진다(2026-10-29: 측정 7일에 기록 문서를 files에 넣은 체인 14개가 지적 115건과 추가 라운드 25회를 만들었다). 결과의 docsMovedToReferences와 nextStep NOTE가 그 경로를 알리고 reviewer는 그 문서에 지적을 내지 않는다. 문서뿐인 요청은 준 그대로 심사하고, 이미 inputs·references로 준 문서는 그 자리에 남으며, references 한도(10개)를 넘는 문서는 skippedReferences로 알린다. marker는 블록 주석(`/* */`·`<!-- -->`·PowerShell `<# #>`, Python은 def·class 바로 아래 docstring) 안의 줄을 코드로 보지 않는다(여는 표시가 줄 맨 앞일 때만, 삭제된 줄은 HEAD 내용으로 판정하며 닫는 표시 뒤에 코드가 있는 줄과 블록 밖 코드 줄은 그대로 걸린다). Main·Maker가 edit·write로 게이트 대상 코드 파일을 고쳐 바뀐 줄이 marker에 맞으면, 그 파일이 git_finalize 전에 cross_review가 필요하다는 `cross_review early notice`가 파일당 세션에 한 번 aside로 온다(게이트가 아니며, 통과가 현재 내용을 이미 덮으면 오지 않고, 1/10 표본은 미리 알 수 없어 다루지 않는다). 알림을 받으면 마지막 publish 직전이 아니라 파일이 정착된 때 다른 코드 파일과 함께 한 번에 심사해 긴 대기를 피한다.
+2026-10-29 문서 처리: files에 섞인 문서와 작업 기록 데이터는 코드와 함께 심사할 때 references로 옮기고 게이트 통과가 덮지 않는다.
+결과의 docsMovedToReferences와 nextStep이 이를 알리며 reviewer는 문서에 지적을 내지 않는다. 문서뿐인 요청은 그대로 심사하고 기존 inputs/references는 유지한다.
+참조 한도를 넘으면 skippedReferences로 알린다. marker의 블록 주석 처리와 early notice의 세부는 `extensions/lib/cross-review.ts`가 정본이다.
+early notice는 gate가 아니며 통과가 현재 blob을 이미 덮으면 오지 않는다. 파일이 정착되면 관련 코드를 함께 검토한다.
 
 믿기 어려운 작은 diff(되돌리기 어려운 상태 변경, 여러 호출자가 기대는 계약, 실행 순서·시점에 기대는 수정)는 저자가 cross_review 전에 `blast-radius` 스킬로 사전 점검한다: 그 변경이 안전한 근거가 되는 사실 하나를 찾아 실제 코드에 돌리는 스크립트로 증명하고, 증명이 멈춘 단계와 남은 위험·확인한 항목을 작업 기록에 남긴다. 그 스크립트와 출력은 acceptance·resolve 근거로 쓸 수 있지만 review·resolve를 대신하지 않는다.
 
 필수 reviewer가 공급자 사용량이나 속도 한도로 실패하면(오류 원문에 429, `rate_limit`, usage limit 같은 표시가 있으면) 결과 nextStep이 그 사실과 다음 단계를 알린다. 2026-11-09 사용자 결정(「아그리고 교차검토 한도초과일때는 걍넘기자」)으로 이때는 한도가 풀리길 기다리거나 다른 reviewer로 바꾸지 않는다. Main이 `git_finalize`(또는 `git_integrate`) `crossReviewWaiver`에 그 인용과 reviewId, 원문 오류를 적어 커밋하고, 작업 기록과 보고에 교차 검토 없이 들어갔다고 밝힌다. Maker는 reviewId와 원문 오류를 Main에 보고하고 나머지 조각을 끝낸다. 시간 초과나 해석 불가 같은 다른 실패는 이 예외가 아니다.
+
+## Maker의 보고 전 검토
+
+2026-10-26 사용자 결정: 모든 코드 조각이 아니라 지시서의 high-risk 선언 또는 교차검토 요구, 변경 줄의 gate marker,
+Main이 전달한 finalizer 표본 적중에서만 Maker가 자기 집중 검사 뒤 보고 전에 review한다. 경로명만으로 marker가 되지 않는다.
+Main은 Maker 소유 코드를 직접 review하지 않고 지적과 다음 라운드를 owner에게 전달한 뒤 증거를 확인해 resolve한다.
+owner를 다시 깨울 수 없을 때만 Main이 대신한다. authors는 Maker 자신의 selector이고 Main-only resolve는 호출하지 않는다.
+Maker는 finding별 제안 status와 근거, reviewId 체인을 보고하고 마지막 검토 뒤 코드를 바꾸면 같은 체인의 delta로 다시 보인다.
+검토 범위와 제외는 위 gate 계약을 따르고 바뀌지 않은 caller와 계약은 inputs/references로 보낸다.
+2026-10-27 사용자 결정의 표본 범위와 2026-10-28 사용자 결정의 주석/semver 면제 및 입력 승계는 위 계약을 따른다.
+참고 파일 상한은 파일당 200 KiB, inputs 우선 합계 200 KiB다. 옛 64kb 표기는 적용하지 않는다.

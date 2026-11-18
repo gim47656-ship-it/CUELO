@@ -1,6 +1,6 @@
-// Anthropic account selection regression (2026-11-15): fresh sessions follow the configured account priority
-// (auth.accountPolicies), then storage order; the next account is used only when an earlier one cannot serve
-// (limit reached, blocked, reserve), and keep the serving account until real unavailability.
+// Anthropic account selection regression (2026-11-18): fresh sessions prefer the lowest measured weekly
+// usage, skipping 5h >=85% while cooler measured accounts exist; unmeasured follows measured.
+// Ties use auth.accountPolicies priority, then storage order. Healthy serving pins remain unchanged.
 // Login, pool reordering, restart and idle time must not change a working session's credential identity.
 // [상속] summon marker 없는 일반 maker child는 부모 세션의 Anthropic pin(warm·exact)을 물려받지 않는다.
 //        summon child는 지정 위치 exact pin, 다른 provider 상속과 maker 아닌 child 상속은 그대로다.
@@ -88,6 +88,65 @@ const applied = spawnSync("node", [script], {
 	env: { ...process.env, OMP_CORE_PATCH_TARGET: fixture, HOME: patchHome, USERPROFILE: patchHome },
 });
 if (applied.status !== 0) throw new Error(`격리 패치 실패 (${applied.status}):\n${applied.stdout}\n${applied.stderr}`);
+
+// Upgrade an independently preserved 0.10.259..0.10.316 selection body in the isolated fixture.
+if (!baseline) {
+	const selectionPath = join(fixture, "../pi-ai/src/auth/select.ts");
+	const patchedSelection = readFileSync(selectionPath, "utf8");
+	const prioritySelection = `		// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.
+		// Accounts that cannot serve (blocked, expired, ineligible, reserve, limit reached) keep upstream slots.
+		if (provider === "anthropic" && shouldRank && strategy) {
+			const nowMs = Date.now();
+			const usable = candidates.map(candidate => {
+				const credential = candidate.selection.credential;
+				if (
+					candidate.inReserve === true ||
+					(credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) ||
+					this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes) ||
+					(planGate && planGate(candidate.usage) === false)
+				) return false;
+				const usage = candidate.usage;
+				return !(usage && isUsageLimitReached(reserveUsageLimits(strategy, usage, rankingContext)));
+			});
+			const slots = candidates.flatMap((_candidate, pos) => usable[pos] ? [pos] : []);
+			const preferred = [...slots].sort((left, right) => {
+				const a = candidates[left]!;
+				const b = candidates[right]!;
+				return (b.accountPriority ?? 0) - (a.accountPriority ?? 0) || a.selection.index - b.selection.index;
+			}).map(pos => candidates[pos]!);
+			slots.forEach((pos, order) => { candidates[pos] = preferred[order]!; });
+		}
+		const preflightFailures = new Set<OAuthCandidate>();`;
+	const weeklyBody = /\t\t\/\/ CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage\.[\s\S]*?\t\tconst preflightFailures = new Set<OAuthCandidate>\(\);/;
+	if (!weeklyBody.test(patchedSelection)) throw new Error("Missing weekly selection upgrade target");
+	writeFileSync(selectionPath, patchedSelection.replace(weeklyBody, prioritySelection));
+	const runPatch = (args: string[]) => spawnSync("node", [script, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, OMP_CORE_PATCH_TARGET: fixture, HOME: patchHome, USERPROFILE: patchHome },
+	});
+	const legacy = runPatch(["--check"]);
+	check("priority-body upgrade: --check reports legacy", legacy.status === 1 && /legacy\s+\.\.\/pi-ai\/src\/auth\/select\.ts/.test(legacy.stdout), legacy.stdout + legacy.stderr);
+	const upgraded = runPatch([]);
+	check("priority-body upgrade: apply restores the weekly body byte-for-byte",
+		upgraded.status === 0 && readFileSync(selectionPath, "utf8") === patchedSelection, upgraded.stdout + upgraded.stderr);
+	const reapplied = runPatch([]);
+	const checked = runPatch(["--check"]);
+	check("weekly apply is idempotent and --check is clean",
+		reapplied.status === 0 && checked.status === 0 && readFileSync(selectionPath, "utf8") === patchedSelection,
+		reapplied.stdout + reapplied.stderr + checked.stdout + checked.stderr);
+	const reverted = runPatch(["--revert"]);
+	if (reverted.status !== 0) throw new Error(reverted.stdout + reverted.stderr);
+	const pristineSelection = readFileSync(selectionPath, "utf8");
+	writeFileSync(selectionPath, patchedSelection.replace(weeklyBody, prioritySelection));
+	const legacyReverted = runPatch(["--revert"]);
+	check("priority-body direct revert matches the pristine selection bytes",
+		legacyReverted.status === 0 && readFileSync(selectionPath, "utf8") === pristineSelection,
+		legacyReverted.stdout + legacyReverted.stderr);
+	const restored = runPatch([]);
+	check("re-apply after priority-body revert restores weekly selection",
+		restored.status === 0 && readFileSync(selectionPath, "utf8") === patchedSelection,
+		restored.stdout + restored.stderr);
+}
 console.log(`격리 패치 exit ${applied.status}${baseline ? " (기준선: 설치본 원본을 읽는다)" : ""}`);
 
 // Import resolution stays anchored to the installed packages; only the contents of
@@ -168,8 +227,10 @@ async function selected(tag: string, opts: {
 	pinAccount?: number;
 	provider?: string;
 	modelId?: string;
-	pin?: "warm" | "cold" | "exact";
+	pin?: "warm" | "automatic" | "cold" | "exact";
 	block?: boolean;
+	blockAccount?: number;
+	authFailure?: boolean;
 	rinReservePct?: number;
 	/** auth.accountPolicies priority per fixture account (reservePct 0, as in the profile config). */
 	priority?: Partial<Record<"rin" | "mio" | "third", number>>;
@@ -195,6 +256,12 @@ async function selected(tag: string, opts: {
 		);
 	}
 	const auth = await AuthStorage.create(join(temp, `${tag}.db`), {
+		...(opts.authFailure ? {
+			refreshOAuthCredential: async (_provider: unknown, _id: unknown, value: { access: string; refresh: string; expires: number }) => {
+				if (value.access.startsWith("third-")) throw new Error("invalid_grant");
+				return value;
+			},
+		} : {}),
 		usageProviderResolver: (current: string) => current === provider ? {
 			id: current,
 			fetchUsage: async ({ credential }: { credential: { accessToken?: string } }) => {
@@ -228,47 +295,52 @@ async function selected(tag: string, opts: {
 		const sessionId = `session-${tag}`;
 		if (opts.pin) auth.sessions.pin(provider, sessionId, accounts[opts.pinAccount ?? 1]!.credentialId, {
 			...(opts.pin === "cold" ? { restoredAtMs: Date.now() - 2 * 3_600_000 } : {}),
+			...(opts.pin === "automatic" ? { restoredAtMs: Date.now() } : {}),
 			...(opts.pin === "exact" ? { exactLabel: "MIO" } : {}),
 		});
 		if (opts.pinBlock) await auth.limits.markReached(provider, sessionId, {
 			credentialId: accounts[opts.pinAccount ?? 1]!.credentialId,
 			retryAfterMs: 3_600_000,
 		});
-		if (opts.block) await auth.limits.markReached(provider, sessionId, {
-			credentialId: accounts[0]!.credentialId,
+		if (opts.block || opts.blockAccount !== undefined) await auth.limits.markReached(provider, sessionId, {
+			credentialId: accounts[opts.blockAccount ?? 0]!.credentialId,
 			retryAfterMs: 3_600_000,
 		});
-		return await auth.keys.get(provider, sessionId, { modelId: opts.modelId ?? "claude-opus-5" });
+		return await auth.keys.get(provider, sessionId, { modelId: opts.modelId ?? "claude-opus-5", ...(opts.authFailure ? { forceRefresh: true } : {}) });
 	} finally {
 		auth.close();
 	}
 }
 
-console.log("[Selection] Configured priority, then storage order; only unusable accounts move behind.");
+console.log("[Selection] Lowest measured weekly, 5h-hot behind cool, unmeasured last; priority/storage ties.");
 const RIN3_FIRST = { third: 30, rin: 20, mio: 10 } as const;
 const cases = [
-	["no policy: storage order, not lowest weekly", "rin", { rin: { weekly: 0.81 }, mio: { weekly: 0.03 } }],
-	["no policy: higher weekly first account still first", "rin", { rin: { weekly: 0.9, weeklyReset: 20 }, mio: { weekly: 0.1, weeklyReset: 150 } }],
-	["priority: top account wins over lower usage elsewhere", "third", { priority: RIN3_FIRST, third: { five: 0.2, weekly: 0.7 }, rin: { weekly: 0.01 }, mio: { weekly: 0.01 } }],
-	["priority beats storage order", "mio", { priority: { mio: 30, rin: 10 }, rin: { weekly: 0.01 }, mio: { weekly: 0.6 } }],
-	["priority: 5h-hot top account stays first", "third", { priority: RIN3_FIRST, third: { five: 0.95, weekly: 0.2 }, rin: { weekly: 0.01 } }],
-	["priority: reservePct 0 keeps 95% weekly account first", "third", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 0.95 }, rin: { weekly: 0.01 } }],
-	["priority: top 5h exhausted falls to second", "rin", { priority: RIN3_FIRST, third: { five: 1, weekly: 0.2 }, mio: { weekly: 0.01 } }],
-	["priority: top weekly exhausted falls to second", "rin", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, mio: { weekly: 0.01 } }],
-	["priority: top two exhausted falls to third", "mio", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, rin: { five: 1 }, mio: { weekly: 0.9 } }],
-	["priority: recovered top account is first again", "third", { priority: RIN3_FIRST, third: { five: 0, weekly: 0.4 }, rin: { weekly: 0.01 } }],
-	["priority: blocked top account skipped", "mio", { priority: { rin: 30, mio: 20 }, block: true, rin: { weekly: 0.01 } }],
-	["priority: unmeasured top account keeps its place", "third", { priority: RIN3_FIRST, third: { report: false }, rin: { weekly: 0.01 } }],
+	["lowest weekly beats storage order", "mio", { rin: { weekly: 0.81 }, mio: { weekly: 0.03 } }],
+	["reset urgency does not override lowest weekly", "mio", { rin: { weekly: 0.9, weeklyReset: 20 }, mio: { weekly: 0.1, weeklyReset: 150 } }],
+	["weekly beats configured priority", "rin", { priority: RIN3_FIRST, third: { five: 0.2, weekly: 0.7 }, rin: { weekly: 0.01 }, mio: { weekly: 0.02 } }],
+	["weekly tie uses priority", "mio", { priority: { mio: 30, rin: 10 }, rin: { weekly: 0.2 }, mio: { weekly: 0.2 } }],
+	["weekly and priority tie uses storage order", "rin", { rin: { weekly: 0.2 }, mio: { weekly: 0.2 } }],
+	["5h 85% skips lowest weekly", "mio", { rin: { five: 0.85, weekly: 0.01 } }],
+	["5h below 85% keeps lowest weekly", "rin", { rin: { five: 0.8499, weekly: 0.01 } }],
+	["all 5h-hot falls back to lowest weekly", "mio", { priority: RIN3_FIRST, third: { five: 0.9, weekly: 0.4 }, rin: { five: 0.85, weekly: 0.3 }, mio: { five: 0.99, weekly: 0.2 } }],
+	["observed 83/43/blocked 100 selects 43", "mio", { priority: RIN3_FIRST, blockAccount: 2, rin: { five: 0.67, weekly: 0.83 }, mio: { five: 0.11, weekly: 0.43 }, third: { five: 0.1, weekly: 1 } }],
+	["reservePct 0 permits lowest weekly above 90%", "third", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 0.95 }, rin: { weekly: 0.97 }, mio: { weekly: 0.99 } }],
+	["top 5h exhausted uses lowest available weekly", "mio", { priority: RIN3_FIRST, third: { five: 1, weekly: 0.2 }, mio: { weekly: 0.01 } }],
+	["top weekly exhausted uses lowest available weekly", "mio", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, mio: { weekly: 0.01 } }],
+	["top two exhausted uses remaining account", "mio", { priority: RIN3_FIRST, third: { five: 0.1, weekly: 1 }, rin: { five: 1 }, mio: { weekly: 0.9 } }],
+	["blocked lowest account skipped", "mio", { priority: { rin: 30, mio: 20 }, block: true, rin: { weekly: 0.01 } }],
+	["unmeasured high priority follows measured", "rin", { priority: RIN3_FIRST, third: { report: false }, rin: { weekly: 0.01 } }],
+	["all unmeasured uses priority", "mio", { priority: { rin: 10, mio: 30 }, rin: { report: false }, mio: { report: false } }],
+	["all unmeasured and equal priority uses storage", "rin", { rin: { report: false }, mio: { report: false } }],
 	["clockless measured 0% 5h remains eligible", "rin", { rin: { fiveReset: null, weekly: 0.2 }, mio: { weekly: 0.85 } }],
 	["clockless measured weekly remains eligible", "rin", { rin: { weekly: 0.02, weeklyReset: null } }],
 	["exhausted weekly excluded", "mio", { rin: { weekly: 1 } }],
 	["exhausted 5h excluded", "mio", { rin: { five: 1 } }],
-	["5h-hot first account stays first", "rin", { rin: { five: 0.85, weekly: 0.01 } }],
 	["blocked account excluded", "mio", { block: true, rin: { weekly: 0.01 } }],
 	["reserve policy still applies at start", "mio", { rinReservePct: 25, rin: { weekly: 0.8 }, mio: { weekly: 0.9 } }],
-	["unknown weekly keeps storage place", "rin", { rin: { weekly: undefined } }],
-	["unknown 5h keeps storage place", "rin", { rin: { five: undefined, weekly: 0.01 } }],
-	["failed measurement keeps storage place", "rin", { rin: { report: false } }],
+	["unknown weekly follows measured", "mio", { rin: { weekly: undefined } }],
+	["unknown 5h follows measured", "mio", { rin: { five: undefined, weekly: 0.01 } }],
+	["failed measurement follows measured", "mio", { rin: { report: false } }],
 	["measured 5h-hot still before unmeasured", "rin", { rin: { five: 0.9 }, mio: { report: false } }],
 	["Fable exhausted tier excluded", "mio", { modelId: "claude-fable-5", rin: { tier: 1 }, mio: { tier: 0.4 } }],
 	["Fable ignores irrelevant exhausted Sonnet tier", "rin", { modelId: "claude-fable-5", rin: { weekly: 0.01, tier: 1, tierKind: "sonnet" }, mio: { weekly: 0.4 } }],
@@ -278,8 +350,13 @@ const cases = [
 	["idle >1h real 5h exhaustion switches", "rin", { pin: "cold", mio: { five: 1 } }],
 	["idle >1h real weekly exhaustion switches", "rin", { pin: "cold", mio: { weekly: 1 } }],
 	["idle >1h real block switches", "rin", { pin: "cold", pinBlock: true, mio: { report: false } }],
-	["R1-ANT-1: three accounts, exhausted pin falls to first usable by storage", "rin", { pin: "cold", pinAccount: 2, rin: { five: 0.99, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 1, weekly: 0.2 } }],
-	["R1-ANT-1: three accounts, blocked pin follows priority", "mio", { pin: "cold", pinAccount: 2, pinBlock: true, priority: { mio: 30, rin: 20, third: 10 }, rin: { weekly: 0.1 }, mio: { five: 0.1, weekly: 0.9 }, third: { report: false } }],
+	["three accounts: exhausted 5h pin falls to lowest weekly, not priority", "mio", { pin: "cold", pinAccount: 2, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 1, weekly: 0.2 } }],
+	["three accounts: exhausted weekly automatic pin falls to lowest weekly, not priority", "mio", { pin: "automatic", pinAccount: 2, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 0.1, weekly: 1 } }],
+	["explicit user pin exhaustion retains existing priority fallback", "rin", { pin: "warm", pinAccount: 2, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 0.1, weekly: 1 } }],
+	["three accounts: blocked pin falls to lowest weekly, not priority", "rin", { pin: "cold", pinAccount: 2, pinBlock: true, priority: { mio: 30, rin: 20, third: 10 }, rin: { weekly: 0.1 }, mio: { five: 0.1, weekly: 0.9 }, third: { report: false } }],
+	["healthy automatic pin stays despite lower weekly sibling", "third", { pin: "automatic", pinAccount: 2, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 0.1, weekly: 0.2 } }],
+	["three accounts: auth-failed automatic pin falls to lowest weekly, not priority", "mio", { pin: "automatic", pinAccount: 2, authFailure: true, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 0.1, weekly: 0.2 } }],
+	["definitive auth failure removes explicit pin and selects fresh by lowest weekly", "mio", { pin: "warm", pinAccount: 2, authFailure: true, priority: RIN3_FIRST, rin: { five: 0.1, weekly: 0.9 }, mio: { five: 0.1, weekly: 0.1 }, third: { five: 0.1, weekly: 0.2 } }],
 	["warm pin remains", "mio", { pin: "warm", rin: { weekly: 0.01 } }],
 	["exact summon remains", "mio", { pin: "exact", rin: { weekly: 0.01 } }],
 	["other provider still reranks idle pin", "rin", { provider: "openai-codex", pin: "cold", rin: { weekly: 0.2, weeklyReset: 20 }, mio: { weekly: 0.85, weeklyReset: 150 } }],
@@ -290,14 +367,16 @@ for (let index = 0; index < cases.length; index++) {
 	check(label, actual === `${expected}-case-${index}`, `expected=${expected}-case-${index} actual=${actual}`);
 }
 
-console.log("[Recovery] One auth store: top priority serves, falls through while blocked, serves new sessions again once unblocked.");
+console.log("[Recovery] One auth store: lowest weekly serves, block switches by weekly, recovery only affects new sessions.");
 {
 	const provider = "anthropic";
 	const tag = "recovery";
+	let thirdWeekly = 0.1;
 	const auth = await AuthStorage.create(join(temp, `${tag}.db`), {
 		usageProviderResolver: (current: string) => current === provider ? {
 			id: current,
-			fetchUsage: async () => makeReport(provider, { five: 0.1, weekly: 0.2 }),
+			fetchUsage: async ({ credential }: { credential: { accessToken?: string } }) =>
+				makeReport(provider, { five: 0.1, weekly: credential.accessToken?.startsWith("third-") ? thirdWeekly : credential.accessToken?.startsWith("mio-") ? 0.2 : 0.8 }),
 		} : undefined,
 		rankingStrategyResolver: (current: string) => current === provider ? claudeRankingStrategy : undefined,
 		accountPolicies: Object.entries(RIN3_FIRST).map(([identity, priority]) => ({
@@ -315,13 +394,20 @@ console.log("[Recovery] One auth store: top priority serves, falls through while
 		const top = auth.oauth.accounts(provider)[2]!;
 		const pick = (session: string) => auth.keys.get(provider, session, { modelId: "claude-opus-5" });
 		const first = await pick("recovery-a");
-		check("recovery: top priority serves first", first === `third-${tag}`, `actual=${first}`);
+		check("recovery: lowest weekly serves first", first === `third-${tag}`, `actual=${first}`);
 		await auth.limits.markReached(provider, "recovery-a", { credentialId: top.credentialId, retryAfterMs: 500 });
-		const blocked = await pick("recovery-b");
-		check("recovery: blocked top falls through to second", blocked === `rin-${tag}`, `actual=${blocked}`);
+		const blocked = await pick("recovery-a");
+		check("recovery: serving block switches to lowest weekly, not next priority", blocked === `mio-${tag}`, `actual=${blocked}`);
 		await Bun.sleep(800);
 		const recovered = await pick("recovery-c");
-		check("recovery: new session returns to top once its block ended", recovered === `third-${tag}`, `actual=${recovered}`);
+		check("recovery: new session returns to lowest weekly once its block ended", recovered === `third-${tag}`, `actual=${recovered}`);
+		const serving = await pick("recovery-a");
+		check("recovery: existing session keeps its replacement after sibling recovers", serving === `mio-${tag}`, `actual=${serving}`);
+		thirdWeekly = 1;
+		await auth.usage.invalidate(provider);
+		const exhausted = await pick("recovery-c");
+		check("same-store weekly exhaustion: automatically selected serving account switches by lowest weekly",
+			exhausted === `mio-${tag}`, `actual=${exhausted}`);
 	} finally {
 		auth.close();
 	}
@@ -504,7 +590,7 @@ const show = (value: unknown) => JSON.stringify(value);
 	check("부모 warm MIO pin: 일반 maker child는 Anthropic pin 없이 시작", start !== undefined && start.anthropic === null, show(start));
 	check("부모 warm openai-codex pin(위치 1)은 일반 maker child에 그대로 상속", start?.codex === 1, show(start));
 	check("일반 maker child의 첫 요청은 exact 아님(새 선택)", request !== undefined && request.exact === null, show(request));
-	check("maker selects fresh by priority/storage (position 0), not parent's account", request?.anthropic === 0, show(request));
+	check("maker selects fresh by lowest weekly (position 0), not parent's account", request?.anthropic === 0, show(request));
 }
 {
 	const { start, request } = await childAccounts("exact-maker", { parent: "exact" });

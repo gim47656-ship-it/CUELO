@@ -276,7 +276,7 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     seed: 3,
     alias: ACCOUNT_FACES[3].alias,
     provider: "openai-codex",
-    model: "gpt-6-astra",
+    model: "gpt-6.2-astra",
     voice: "빠른 판단·선명한 결론·영리한 장난기",
     summonExample: "유키 불러와",
     switchExample: "유키로 교체해",

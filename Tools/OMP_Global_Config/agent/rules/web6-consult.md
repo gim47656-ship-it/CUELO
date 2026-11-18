@@ -32,26 +32,12 @@ description: When user names 6 Pro/SHION or in a 6PRO session.
 
 ## 호출 경로
 
-호출은 exact `completion(model="web6/gpt-6-pro")` 경로다. core provider가 현재 OMP
-sessionId를 `X-OMP-Session-Id`로 싣고, `CUELO_Setup/web6/web6-server.js`가 세션을 확인하고
-바인딩 통지를 남긴다. 발급된 handleKey는 로컬 요청 메모리에만 두고 브라우저 프롬프트에
-넣지 않는다. 상담 프롬프트에 도구 멘션이나 게시 지시를 추가하지 않는다.
-
-relay는 자신이 만든 전용 ChatGPT 탭에서만 새 상담을 시작하고, 전송 POST의 model과 user
-message id를 확인한다. 답 수집 전에도 현재 경로가 exact conversationId인지 확인한 뒤 그
-대화 JSON을 읽는다. current_node의 부모 사슬에서 처음 만나는 user가 전송 anchorId여야 하고,
-답은 `status=finished_successfully`, `end_turn=true`, 존재하는 finish_details가 stop인 최종
-text여야 한다. 다른 모델·다른 대화·중간 답을 성공으로 채택하지 않는다.
-
-권한/안전 승인 modal은 자동 승인하지 않고 조회 전에 fail closed한다. 완료를 DOM 내용 안정,
-임의 대기 시간, 버튼 노출만으로 추정하지 않는다. 취소된 상담은 새 게시를 하지 않으며 조회 실패는
-원래 이유를 보존해 실패로 끝낸다. 과거 차단/실패 요청을 자동으로 재수집·재게시하지 않는다.
-
-수집한 답은 같은 세션의 기존 `/api/gpt6/reply`에 Bearer 인증으로 한 번만 게시한다. 이 토큰과
-본문은 loopback HTTP(S)에만 보내고 redirect를 따르지 않는다. 게시 확인 뒤에만 provider 응답을
-성공으로 끝낸다. session-native `gpt6-reply` entry가 화면 정본이고 전역 JSONL 성공 기록을
-다시 투영하지 않는다. 6 Pro가 MCP 도구로 세션을 조회·지시하던 원격 제어 경로는 제거했다.
-Main의 raw HTTP·clipboard·수동 붙여넣기로 이 경로를 대체하지 않는다.
+호출은 exact `completion(model="web6/gpt-6-pro")`만 쓴다. task child나 Main 모델 전환, raw HTTP,
+clipboard와 수동 붙여넣기로 대체하지 않는다. shim, relay의 세션/대화 신원 확인과 최종 답 수집,
+인증된 loopback 투영은 `mainLane.web6Consult`와 구현(`extensions/consult.ts`, `web6-server.js`)이 정본이다.
+도구 멘션이나 게시 지시, 로컬 handleKey를 브라우저 상담 본문에 넣지 않는다.
+권한과 안전 승인은 자동 허용하지 않는다. 중간 답이나 DOM 안정, 임의 대기만으로 완료를 판단하지 않고
+실패 이유를 보존하며 취소되거나 실패한 요청을 자동 재게시하지 않는다.
 
 task child를 만들거나 Main 모델을 바꾸지 않는다. shim·relay·로그인·수집·투영이 실패하면
 상담 없이 기존 경로로 진행하고 실패 사실만 남긴다.
@@ -62,22 +48,6 @@ task child를 만들거나 Main 모델을 바꾸지 않는다. shim·relay·로�
 build·test 원문 출력, 파일 내용, 사용자 secret은 넣지 않는다. 로컬 발급 handleKey와 Bearer는
 브라우저 상담 본문·로그·인계 문서로 보내지 않는다.
 
-상담 답변은 인라인에서 SHION(시온)의 발화로 사용자에게 보인다. WEB6 요청의 effective prompt에서
-기존 `<character-voice>`와 남아 있는 legacy `<report-style>` block을 제거하고 아래 block을 끝에 정확히 한 번 넣는다.
-
-```text
-<character-voice alias="SHION(시온)">
-당신이 사용자 화면에 보이는 캐릭터는 **SHION(시온)**다.
-- 성격: 우아하고 전략적이며, 긴 흐름을 읽고 여유 있게 허점을 짚는 상담가형
-- 표현: 정돈된 문장, 넓은 시야의 해석, 은근한 장난기와 확신이 섞인 조언
-- 일반 대화·진행 발화·task child 인라인 응답은 자연스러운 한국어로 말한다. 고정된 보고 구조나 상태표 형식을 쓰지 않는다.
-- 이 말투는 첫 응답에서 끝나지 않는다. 도구 결과 설명·검증 실패·위험·미확인 보고·사용자 interjection 이후 답변·진행·최종 답변 전체에서 유지한다. 검증·증거·todo·child 상태 계약은 전달할 정보를 정할 뿐 사용자 답변 템플릿을 정하지 않는다.
-- 이 설명은 대사집이 아니라 성격의 범위다. 상황에 맞춰 어휘·문장 길이·말끝·감정 강도·유머를 다양하게 바꾸고, 같은 추임새나 도입문을 습관처럼 반복하지 않는다.
-- 캐릭터성은 표현 방식을 바꾸지만 사실·위험·실패·불확실성은 정확하게 말한다. 코드·명령·경로·API·원본 오류는 정확히 보존한다. 사용자가 현재 대화에서 지정한 말투가 이 기본값보다 우선한다.
-</character-voice>
-```
-
-**요청당 3회**를 넘기지 않는다 — 왕복이
-분 단위라 상한이 없으면 세션이 멈춘다. shim 오류·타임아웃·탭 부재는 **막지 않는다**: 기존 경로로
-진행하고 "상담 없이 판정함"만 남긴다. 상담은 조언이고 분할·진단·판정은 여전히 Main이 소유하며,
-상담했다는 사실은 PASS 증거가 아니다. 사용을 사용자에게 그 턴에 알리는 것은 다른 모델 사용과 같다.
+응답의 말투와 인라인 투영은 `extensions/character-voice.ts`가 소유하며 같은 답을 다시 투영하지 않는다.
+횟수와 실패 처리는 `mainLane.web6Consult.cap`과 `failOpen`을 따른다. 실패하면 상담 없이 기존 경로로 진행했다고 밝힌다.
+상담은 조언이며 Main의 분할, 진단, 판정이나 PASS 증거를 대신하지 않는다. 사용 사실은 그 턴에 사용자에게 알린다.
