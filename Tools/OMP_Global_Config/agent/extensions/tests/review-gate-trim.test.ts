@@ -220,9 +220,9 @@ const AUTHOR = "anthropic/fixture-author";
 const ids = (prompt: string) => [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
 /** 언어 판별 요청(답 모양에 "languages")은 여기서 ko로 답하고(이 묶음의 글은 한국어뿐), 심사 요청만 각 테스트의 가짜로 넘긴다. */
 function slopDeps(cwd: string, complete: Complete): SlopDeps {
-  const identifying: Complete = async (family, system, prompt, signal, slot) => system.includes('"languages"')
+  const identifying: Complete = async (family, system, prompt, signal) => system.includes('"languages"')
     ? { model: `fixture/${family}`, text: JSON.stringify({ files: ids(prompt).map((id) => ({ id, languages: ["ko"] })) }) }
-    : complete(family, system, prompt, signal, slot);
+    : complete(family, system, prompt, signal);
   return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: identifying, mainModel: AUTHOR, head: async () => undefined };
 }
 
@@ -278,29 +278,15 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
     const complete: Complete = async (family, _system, prompt) => {
       asked.push({ family, prompt });
       const first = asked.filter((item) => item.family === family).length === 1;
-      return { model: `fixture/${family}`, text: family === "openai" && first ? TRUNCATED : JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [] })) }) };
+      return { model: `fixture/${family}`, text: first ? TRUNCATED : JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [] })) }) };
     };
     const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
     expect(out.files[0]!.status).toBe("pass");
-    const openai = asked.filter((item) => item.family === "openai");
-    expect(openai).toHaveLength(2);
-    expect(openai[1]!.prompt).toContain("Your previous answer to this request could not be read");
-    expect(out.reviewers?.find((status) => status.family === "openai")).toMatchObject({ status: "ok", retry: true });
-    expect(out.failedAttempts).toMatchObject([{ family: "openai", status: "unparsable", raw: TRUNCATED, error: expect.stringContaining("invalid JSON") }]);
-  });
-
-  test("다시 묻는 호출도 같은 slot으로 부른다(slop 전용 slot이 풀린 필수 reviewer)", async () => {
-    const cwd = scratch();
-    writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
-    writeFileSync(join(cwd, "a.md"), KO);
-    const slots: (string | undefined)[] = [];
-    const complete: Complete = async (family, _system, prompt, _signal, slot) => {
-      if (family === "openai") slots.push(slot);
-      return { model: `fixture/${family}`, text: family === "openai" && slots.length === 1 ? TRUNCATED : JSON.stringify({ files: ids(prompt).map((id) => ({ id, findings: [] })) }) };
-    };
-    const out = await reviewFiles(["a.md"], undefined, { ...slopDeps(cwd, complete), slopSlots: { openai: "openai-codex/gpt-6-luna" } }, signal);
-    expect(out.files[0]!.status).toBe("pass");
-    expect(slots).toEqual(["slopReviewOpenAI", "slopReviewOpenAI"]);
+    const required = asked.filter((item) => item.family === "anthropic");
+    expect(required).toHaveLength(2);
+    expect(required[1]!.prompt).toContain("Your previous answer to this request could not be read");
+    expect(out.reviewers?.find((status) => status.family === "anthropic")).toMatchObject({ status: "ok", retry: true });
+    expect(out.failedAttempts).toMatchObject([{ family: "anthropic", status: "unparsable", raw: TRUNCATED, error: expect.stringContaining("invalid JSON") }]);
   });
 
   test("자문 reviewer와 호출 오류는 다시 묻지 않는다", async () => {
@@ -310,11 +296,11 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
     const asked: string[] = [];
     const complete: Complete = async (family) => {
       asked.push(family);
-      if (family === "openai") throw new ReviewerCallError("Model stopped: length", "fixture/openai", TRUNCATED);
+      if (family === "anthropic") throw new ReviewerCallError("Model stopped: length", "fixture/anthropic", TRUNCATED);
       return { model: `fixture/${family}`, text: "not json" };
     };
-    const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
-    expect(asked.sort()).toEqual(["openai"]);
+    const out = await reviewFiles(["a.md"], undefined, { ...slopDeps(cwd, complete), advisory: async () => ({ model: "fixture/advisory" }) }, signal);
+    expect(asked.sort()).toEqual(["advisory", "anthropic"]);
     expect(out.files[0]!.status).toBe("error");
   });
 });

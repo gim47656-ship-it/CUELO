@@ -509,7 +509,20 @@ export interface StartRejectRecord {
   repeat: boolean;
 }
 
-export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord | StartRejectRecord;
+/** Maker-only continuation after a DeepSeek usage-limit response, not a new dispatch. */
+export interface DeepSeekUsageLimitRecord {
+  type: "deepseek-usage-limit";
+  ts: string;
+  sessionId: string;
+  agentId: string;
+  stage: "switched" | "no-replacement" | "replacement-failed";
+  fromModel: string;
+  error: string;
+  toModel?: string;
+  replacementError?: string;
+}
+
+export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord | StartRejectRecord | DeepSeekUsageLimitRecord;
 
 export interface RoutingLedger {
   /** 실패해도 던지지 않는다. 기록 실패가 발주를 막으면 안 된다. 저장 성공 여부를 돌려준다. */

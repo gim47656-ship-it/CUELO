@@ -333,7 +333,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
         `slop-gate: ${uncovered.length} visible artifact(s) have no AI-slop check pass for their current content:`,
         ...uncovered.map((file) => `- ${file.input}${file.note ? ` [${file.note}]` : ""}`),
         ...rawData.map((file) => `(not gated) ${file.path}: ${file.reason}`),
-        `Next: run slop_check {files:${names}, authors:[<the model selectors that wrote the text, or "main">]} (reviewers follow the same author-family rule as cross_review; only text changed since HEAD is reviewed for tracked files), fix or refute every finding (a clean review records the pass by itself; refuted findings are closed with slop_check {action:"resolve"}), then call git_finalize again with the same files. Do not edit these files after the pass: it is tied to their exact content (sha256).`,
+        `Next: run slop_check {files:${names}, authors:[<the model selectors that wrote the text, or "main">]} (only text changed since HEAD is reviewed for tracked files). Fix or refute every required finding. Advisory findings do not block. A clean required review records the pass; use slop_check {action:"resolve"} to close refuted required findings. Then call git_finalize again with the same files. Do not edit these files after the pass: it is tied to their exact content (sha256).`,
         "A waiver (slopGateWaiver) is allowed only on the user's explicit instruction and is recorded in the slop-gate ledger.",
       ].join("\n"));
     }

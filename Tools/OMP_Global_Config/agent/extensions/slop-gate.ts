@@ -1,28 +1,39 @@
+import { createConnection } from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { completeReviewer } from "./cross-review";
+import { ADVISORY_SLOT } from "./lib/cross-review";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
-import { reviewFiles, resolveFindings, SLOP_OPENAI_SLOT, type Lang, type SlopDeps, type SlopLane } from "./slop-gate/review";
+import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
 
-/**
- * slop_check 전용 reviewer slot(사용자 결정 2026-10-29: Opus·Astra 대신 GPT-6 Luna 단독, Gemini Flash와 자문은 제거). slopReviewOpenAI가 풀리면 그 모델(provider/id)이고,
- * 설정이 없거나 풀리지 않으면 비어서 그 자리는 cross_review와 같은 옛 slot으로 돌아간다. cross_review는 이 slot을 읽지 않는다.
- */
-export async function slopSlotsOf(ctx: Pick<ExtensionContext, "models" | "cwd">): Promise<{ openai?: string }> {
-  // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 cross-review.ts처럼 지연 import한다. 설정에 없는 role은 풀기 전에 비어 있는 것으로 본다.
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const settings = findScopedSettings(ctx.cwd);
-  const named = (slot: string): string | undefined => {
-    if (!settings?.getModelRole(slot)) return undefined;
-    const model = ctx.models.resolve(`@${slot}`);
-    return model ? `${model.provider}/${model.id}` : undefined;
-  };
-  return { openai: named(SLOP_OPENAI_SLOT) };
+// A registered local provider can outlive its relay. Check the socket before submitting prose
+// so the provider client's retry policy does not turn an absent relay into a long wait.
+function relayListening(url: URL, signal: AbortSignal): Promise<boolean> {
+  const host = url.hostname === "[::1]" ? "::1" : url.hostname;
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const socket = createConnection({ host, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
+    autoSelectFamily: true, signal });
+  socket.once("error", () => resolve(false));
+  socket.once("close", () => resolve(false));
+  socket.once("connect", () => { socket.destroy(); resolve(true); });
+  return promise;
 }
 
-/** 한 reviewer 호출. slot이 없으면 lane의 기본 slot(cross_review와 같다)이다. slopReviewOpenAI는 completeReviewer의 OpenAI 계열 검사를 그대로 받는다. */
-export async function completeSlopReviewer(lane: SlopLane, system: string, prompt: string, signal: AbortSignal, slot: string | undefined, ctx: ExtensionContext) {
-  return completeReviewer(lane, prompt, ctx, signal, { system, purpose: "slop-gate", ...(slot ? { slot } : {}) });
+async function slopAdvisory(ctx: ExtensionContext, signal: AbortSignal) {
+  // The legacy extension loader rewrites this import to the host SDK at runtime.
+  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+  const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_SLOT);
+  if (!selector) return { skipped: "Advisory slot is not configured." };
+  const model = ctx.models.resolve(`@${ADVISORY_SLOT}`);
+  if (!model) return { model: selector, skipped: "Could not resolve the configured advisory model." };
+  const name = `${model.provider}/${model.id}`;
+  if (model.provider === "aistudio") {
+    const url = new URL(model.baseUrl);
+    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && !(await relayListening(url, signal))) {
+      return { model: name, skipped: "AI Studio relay is not listening." };
+    }
+  }
+  return { model: name };
 }
 
 /**
@@ -71,11 +82,13 @@ export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<Extens
   const errors = outcome.files.filter((file) => file.status === "error");
   const skipped = outcome.files.filter((file) => file.status === "internal");
   const reviewed = outcome.files.length - skipped.length;
-  const next = errors.length > 0 ? "Some files could not be reviewed (see error); none of them has a pass. For a reviewer failure read reviewers[].error and raw: it says whether the answer was invalid JSON (with the parser error) or valid JSON in the wrong shape. Do not retry with unchanged input and do not change the artifact's punctuation as a protocol workaround. diagnosticFindings come from a reviewer that did answer: they are real style findings you may fix, but they are not a review and never a pass."
+  const next = errors.length > 0 ? "Some files could not be reviewed (see error); none of them has a pass. For a required reviewer failure read reviewers[].error and raw: it says whether the answer was invalid JSON (with the parser error) or valid JSON in the wrong shape. Do not retry with unchanged input or change the artifact's punctuation as a protocol workaround. diagnosticFindings do not count as a pass."
     : open.length > 0 ? "Fix each finding in the file (then run slop_check again on the new content), or, for a false positive, have Main close it with slop_check {action:\"resolve\", reviewId, resolutions:[{id, status:\"refuted\", evidence}]}. A changed file needs a new review."
       : reviewed > 0 ? "Every visible artifact reviewed has a pass for its exact content." : "No visible artifact was reviewed.";
   const note = skipped.length === 0 ? "" : ` ${skipped.length} file(s) are not visible artifacts or are raw data (markdown not declared in .slop-gate.json visible, internal record, code, test, generated, not a visible format, or a csv over 400000 bytes; see reason): they were not read, not sent to a reviewer and have no pass; the slop gate does not apply to them.`;
-  return { text: JSON.stringify({ ...outcome, next: next + note }, null, 2), isError: errors.length > 0 };
+  const advisoryNote = outcome.reviewers?.some((reviewer) => reviewer.family === "advisory")
+    ? " advisoryFindings are suggestions only; they do not affect the required review or need resolution." : "";
+  return { text: JSON.stringify({ ...outcome, next: next + note + advisoryNote }, null, 2), isError: errors.length > 0 };
 }
 
 const list = (pending: readonly PendingArtifact[]) => pending.map((item) => `- ${item.path} (${item.reason})`).join("\n");
@@ -99,7 +112,7 @@ export default function slopGate(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "slop_check", label: "Slop Check", loadMode: "essential", approval: "read",
-    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to reviewer provider. Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
+    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to reviewer providers. The Anthropic slot alone judges; advisory findings never block. Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
     parameters: z.object({
       action: z.string().optional().describe("review(default) or resolve"),
       files: z.array(z.string()).optional().describe("cwd or home,/mnt/<drive>; excludes /tmp,~/.omp,~/.cache,node_modules,.git"),
@@ -110,11 +123,10 @@ export default function slopGate(pi: ExtensionAPI): void {
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const abort = signal ?? new AbortController().signal;
-      const slopSlots = await slopSlotsOf(ctx);
       const result = await executeSlopCheck(params as SlopCheckParams, ctx, {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx),
-        complete: (lane, system, prompt, attempt, slot) => completeSlopReviewer(lane, system, prompt, attempt, slot, ctx),
-        slopSlots,
+        complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
+        advisory: (attempt) => slopAdvisory(ctx, attempt),
       }, abort);
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };
     },

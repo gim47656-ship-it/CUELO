@@ -52,8 +52,8 @@ description: Before delegation, child review or Git handoff.
   확률이 없으면 기존 선택을 유지하며 `ultrathink`는 누적 승격에서 제외한다.
   **2026-11-11 사용자 결정: Main이 요구, 전체 설계, 발주와 수용을 맡고 Maker 배분은 아래 추천 조건을 따른다.**
   Main의 프론티어와 alias의 실제 모델은 `config.yml`의 `modelRoles.default`와 alias 설정이 정한다.
-  사용자가 명시한 세션 모델과 alias 선택, 실행 중 Main과 child는 사용자 지시 없이 바꾸지 않는다.
-  Anthropic 계정의 하루 몫 소진은 Maker 추천과 발주를 바꾸지 않는다. 어려운 UI는 계정 상태와 무관하게 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천하고, Main이 명시한 Anthropic Maker 후보도 하루 몫 때문에 추가 근거를 요구하거나 대체되지 않는다(2026-11-11 사용자 정정: 메이커는 동작해야 한다). 하루 몫은 새 최상위 세션의 모델도 바꾸지 않는다(2026-11-11 사용자 결정으로 하루 몫 예외와 YUKI 시작 전환을 뺐다). 실제 한도 도달이나 사용 불가 계정은 기존 폴백이 처리하고 한도 표시는 그대로다. 실행 중, 재개, fork, child와 명시 모델 선택은 바꾸지 않는다.
+  사용자가 명시한 세션 모델과 alias 선택, 실행 중 Main과 child의 모델은 사용자 지시나 아래에 명시한 폴백 없이 바꾸지 않는다.
+  Anthropic 계정의 하루 몫 소진은 Maker 추천과 발주를 바꾸지 않는다. 어려운 UI는 계정 상태와 무관하게 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천하고, Main이 명시한 Anthropic Maker 후보도 하루 몫 때문에 추가 근거나 대체를 요구하지 않는다(2026-11-11 사용자 정정: 메이커는 동작해야 한다). 하루 몫은 새 최상위 세션의 모델도 바꾸지 않는다(2026-11-11 사용자 결정으로 하루 몫 예외와 YUKI 시작 전환을 뺐다). 실제 한도 도달이나 사용 불가 계정에는 기존 폴백을 적용하고 한도 표시를 유지한다.
   Main은 설계·원인·상태 소유자·호출 계약·수용 조건을 구현 가능한 범위로 먼저 정리한다(모든 줄을 미리 풀지는 않는다). Maker는 국소 탐색·구현·검증을 맡는다.
   수행 주체를 모델보다 먼저 정한다. 위치와 접근이 명확하고 위임의 실질적 이득이 없는 작은 작업은 Main이 직접 구현하고 검증한다. 이를 확인하려고 `maker_route`를 부르지 않는다. 기존 담당자의 국소 수정은 그 담당자와 모델을 유지하며, 아래 모델 추천은 근거를 갖춘 새 발주에만 적용한다.
   한정된 실패 재작업을 다른 담당자에게 넘길 때는 Main이 실패 근거와 바뀐 접근을 정하고, 기존 담당자가 쓰기를 멈춘 뒤 미완 변경과 유효한 검증 결과를 인계한다. 동일 범위의 추가 지시나 통상적 검증 보정만으로 새 작업자를 만들지 않는다. 원인이 해소되지 않은 반복 실패는 기존 Main 반환 기준을 따른다.
@@ -74,7 +74,8 @@ description: Before delegation, child review or Git handoff.
     Sol은 관측 사용률이나 계정 신호로 소진 판정하지 않는다(2026-11-11 사용자 결정: 「sol 한도도 크레딧이있으니까 실제 발주가 나갔다가 거절되면 돌리는걸로하자」).
     추천 조건이면 그대로 발주하고 실제 거절은 `config.yml`의 `retry.fallbackOn`과 해당 `retry.fallbackChains`가 받는다.
     다음 발주도 다시 시도하며 core의 계정 차단과 쿨다운은 유지한다.
-    첫 모델 요청이 공급자 거절로 끝난 Maker(stopReason error, 도구 호출 0, 파일 변경 없음)는 같은 child 안에서 `retry.fallbackChains`의 다음 모델로 한 번 자동 재발주된다(2026-11-18 사용자 결정: 「시작하자마자 거절되고 한 일이 없는 Maker는 대체 순서의 다음 모델로 한 번 자동 재발주하고, Main과 너에게 그 사실과 원래 오류를 바로 알림」, `extensions/lib/start-reject-fallback.ts`). 사용 한도는 기존 체인, 중단과 네트워크·시간 초과·5xx는 기존 재시도, 도구를 쓴 뒤의 실패는 기존 동작 그대로다. Main은 원래 모델·원문 오류·새 모델이 담긴 알림을 받으면 수동으로 다시 발주하지 않는다(재발주가 도는 동안 같은 이름 발주는 막힌다). 대체 모델도 첫 요청에서 거절되거나 다음 모델이 없으면 두 오류를 알리고 멈추며, 그 child는 owner·placement 후보에서 빠지므로 Main이 같은 준비(preparedId·이름)로 다시 발주할 수 있다.
+    첫 모델 요청이 공급자 거절로 끝난 Maker(stopReason error, 도구 호출 0, 파일 변경 없음)는 같은 child 안에서 `retry.fallbackChains`의 다음 모델로 한 번 자동 재발주된다(2026-11-18 사용자 결정: 「시작하자마자 거절되고 한 일이 없는 Maker는 대체 순서의 다음 모델로 한 번 자동 재발주하고, Main과 너에게 그 사실과 원래 오류를 바로 알림」, `extensions/lib/start-reject-fallback.ts`). Main은 원래 모델, 원문 오류, 새 모델이 담긴 알림을 받으면 수동으로 다시 발주하지 않는다. 대체 모델도 첫 요청에서 거절되거나 다음 모델이 없으면 그 사실을 알리고 멈춘다. 이 시작 실패 child는 owner와 placement 후보에서 빠지므로 Main이 같은 준비(preparedId와 이름)로 다시 발주할 수 있다.
+    DeepSeek로 시작한 Maker가 실제 요청에서 core 분류상 사용 한도 오류를 받으면, 첫 요청이든 작업 중이든 같은 child에서 `NORMAL_SONNET`(`modelRoles.implSonnet`, auto)으로 한 번 전환한다(2026-11-18 사용자 결정). 대화와 완료한 도구 작업은 보존하고 child가 끝날 때까지 DeepSeek로 돌아가지 않는다. Main에 원 모델, 원문 오류, 새 모델을 알리고 라우팅 원장에 남긴다. Sonnet을 쓸 수 없거나 Sonnet도 끝내 실패하면 더 전환하지 않고 오류를 알린다. 일시적인 429, 네트워크 오류, 다른 Maker와 Main 및 helper의 동작은 기존 정책을 따른다.
   - `HARD_CODE_OPUS`, `HARD_CODE_TERRA`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. Gemini와 GLM은 2026-11-11 사용자 결정으로 Maker 후보가 아니다. `implGemini`는 HIKARI 호출과 사전 점검에만 쓰고, 두 모델로 발주하면 후보 밖이라 근거를 적어도 거절된다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다.
     라우팅 슬롯 식별자는 유지하고 실제 모델과 alias, 교차검토 모델은 `config.yml`을 참조한다.
     일반 Maker 추천 후보와 helper 슬롯은 구별하며 다른 모델의 과거 평가를 현재 슬롯의 성능 증거로 옮기지 않는다.

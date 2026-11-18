@@ -5,11 +5,14 @@ import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as zod from "@oh-my-pi/omptype/zod";
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { AuthStorage, ModelRegistry, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
+import type { ReviewOutcome } from "../slop-gate/review";
 import slopGate, { CONTINUATION_TYPE, executeSlopCheck, WARNING_TYPE } from "../slop-gate";
 import { appendSlopRecord, candidatesOf, classify, loadSlopConfig, mergeGateBlobs, passFor, readSlopRecords, runSlopGate, sha256, SlopGateRefusal, trackable } from "../lib/slop-gate";
 import { htmlText, jsonStrings, literalStrings, pythonPath, extractVisible } from "../slop-gate/extract";
-import { buildReviewRequest, MAX_BATCH_CHARS, MAX_FILE_CHARS, MAX_PARALLEL_BATCHES, parseAnswer, planReviewers, resolveFiles, reviewFiles, resolveFindings, segmentText, SPLIT_CHARS, type Complete, type SlopDeps } from "../slop-gate/review";
+import { buildReviewRequest, MAX_BATCH_CHARS, MAX_FILE_CHARS, MAX_PARALLEL_BATCHES, parseAnswer, resolveFiles, reviewFiles, resolveFindings, segmentText, SPLIT_CHARS, type Complete, type SlopDeps } from "../slop-gate/review";
 import { ReviewerCallError } from "../lib/cross-review";
 
 // 모델은 가짜다(결정론). 심사 흐름·원장·추적은 실제 코드가 실제 파일로 돈다.
@@ -46,7 +49,6 @@ function fakeReviewer(answer: (ids: string[], prompt: string, family: string) =>
   };
   return { calls, all, complete };
 }
-/** 저자는 Anthropic 계열 fixture라 필수 reviewer는 openai 자리 하나다. */
 const AUTHOR = "anthropic/fixture-author";
 const clean = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [] })) });
 const dirty = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [{ quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", fix: "무엇을 하는지 구체적으로 쓴다" }] })) });
@@ -55,8 +57,8 @@ const dirty = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [{ q
  * 언어 판별 요청(답 모양에 "languages"가 있는 system)에만 답하는 가짜: 한글은 ko, 라틴 낱말은 en, 한자·가나는 zh로 본다. 심사 요청은 그대로 넘기므로
  * 이 파일의 가짜 reviewer·호출 수는 예전처럼 심사 호출만 센다. 판별 실패·미지원 언어는 slop-language.test.ts가 본다.
  */
-const withLanguages = (complete: Complete): Complete => async (family, system, prompt, signal, slot) => {
-  if (!system.includes('"languages"')) return complete(family, system, prompt, signal, slot);
+const withLanguages = (complete: Complete): Complete => async (family, system, prompt, signal) => {
+  if (!system.includes('"languages"')) return complete(family, system, prompt, signal);
   const files = [...prompt.matchAll(/<artifact id="([^"]+)"[^>]*>\n([\s\S]*?)\n<\/artifact>/g)].map(([, id, body]) => ({ id, languages: [/[가-힣]/.test(body!) && "ko", /[A-Za-z]{2,}/.test(body!) && "en", /[\u3040-\u30ff\u4e00-\u9fff]/.test(body!) && "zh"].filter(Boolean) }));
   return { model: `fixture/${family}`, text: JSON.stringify({ files }) };
 };
@@ -65,6 +67,143 @@ const withLanguages = (complete: Complete): Complete => async (family, system, p
 function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): SlopDeps {
   return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: withLanguages(complete), mainModel: AUTHOR, head: async () => undefined, ...extra };
 }
+
+describe("Hydrogen advisory and Opus verdict through registered slop_check", () => {
+  const HYDROGEN = "aistudio/gemini-4-hydrogen";
+  const OPUS = "anthropic/claude-opus-5-5";
+  const LUNA = "openai-codex/gpt-6-luna";
+  type Scenario = "both" | "unavailable" | "relay-down" | "error" | "malformed" | "opus-error" | "opus-finding";
+
+  async function run(author: string, scenario: Scenario) {
+    const cwd = scratch();
+    const ledger = join(cwd, "ledger.jsonl");
+    writeFileSync(join(cwd, "a.md"), KO_SLOP);
+    process.env.OMP_SLOP_GATE_LEDGER = ledger;
+    const hits: string[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const provider = new URL(request.url).pathname.split("/")[1];
+      const body = await request.json() as { model: string; messages: { content: string }[] };
+      const name = `${provider}/${body.model}`;
+      const identifying = JSON.stringify(body.messages[0]).includes("languages");
+      hits.push(`${identifying ? "language" : "review"}:${name}`);
+      if ((!identifying && name === OPUS && scenario === "opus-error") || (name === HYDROGEN && scenario === "error")) {
+        return Response.json({ error: { message: "scripted outage", code: 400 } }, { status: 400 });
+      }
+      const answer = identifying ? { files: [{ id: "a1", languages: ["ko"] }] }
+        : name === HYDROGEN || (name === OPUS && scenario === "opus-finding") ? dirty(["a1"]) : clean(["a1"]);
+      const content = name === HYDROGEN && scenario === "malformed" ? "not JSON" : JSON.stringify(answer);
+      const base = { id: "scripted", object: "chat.completion.chunk", created: 0, model: body.model };
+      return new Response([
+        { ...base, choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }] },
+        { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    } });
+    const relay = scenario === "relay-down" ? Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }) : server;
+    const relayPort = relay.port;
+    if (relay !== server) await relay.stop(true);
+    try {
+      const registry = new ModelRegistry(await AuthStorage.create(join(cwd, "agent.db")), join(cwd, "models.yml"));
+      for (const selector of [OPUS, LUNA, ...(scenario === "unavailable" ? [] : [HYDROGEN])]) {
+        const [provider, id] = selector.split("/") as [string, string];
+        const port = selector === HYDROGEN ? relayPort : server.port;
+        const host = selector === HYDROGEN && scenario === "both" ? "localhost" : "127.0.0.1";
+        registry.registerProvider(provider, { baseUrl: `http://${host}:${port}/${provider}/v1`, apiKey: "test", api: "openai-completions", models: [
+          { id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+        ] });
+      }
+      const settings = Settings.isolated({ modelRoles: { crossReviewOpenAI: LUNA, crossReviewAnthropic: OPUS, crossReviewAdvisory: HYDROGEN, slopReviewOpenAI: LUNA } });
+      return await withActiveSettings(settings, async () => {
+        const model = registry.find("anthropic", "claude-opus-5-5");
+        const ctx = { cwd, agent: { kind: "main" }, model, modelRegistry: registry,
+          models: createExtensionModelQuery(registry, findScopedSettings(cwd), () => model),
+          sessionManager: { getSessionId: () => "slop-hydrogen", getLeafId: () => null } } as never;
+        let tool!: Parameters<ExtensionAPI["registerTool"]>[0];
+        slopGate({ zod, registerTool: (value: typeof tool) => { tool = value; }, on: () => {} } as unknown as ExtensionAPI);
+        const response = await tool.execute("slop-smoke", { files: ["a.md"], authors: [author] } as never, signal, undefined, ctx);
+        const text = response.content[0];
+        if (text?.type !== "text") throw new Error("slop_check did not return text");
+        const result = JSON.parse(text.text) as ReviewOutcome;
+        return { hits, result, records: readSlopRecords(ledger), cwd, toolError: response.isError ?? false };
+      });
+    } finally {
+      server.stop(true);
+    }
+  }
+
+  test.each([OPUS, "openai-codex/gpt-6.2-sol", HYDROGEN])("both models answer for author %s, but only Opus judges", async (author) => {
+    const { hits, result, records, toolError } = await run(author, "both");
+    expect(hits[0]).toBe(`language:${OPUS}`);
+    expect(hits.slice(1).sort()).toEqual([`review:${HYDROGEN}`, `review:${OPUS}`]);
+    expect(toolError).toBe(false);
+    expect(result.authors).toEqual([author]);
+    expect(result.files[0]).toMatchObject({ status: "pass", findings: [], advisoryFindings: [{ id: "A-ADV-1", reviewer: "advisory", quoteFound: true }] });
+    expect(result.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: HYDROGEN, status: "ok" }));
+    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(OPUS);
+    expect(records.find((record) => record.type === "slop-review")).toMatchObject({ model: OPUS, reviewers: expect.arrayContaining([
+      expect.objectContaining({ model: HYDROGEN, status: "ok" }), expect.objectContaining({ model: OPUS, status: "ok" }),
+    ]) });
+  });
+
+  test.each(["unavailable", "relay-down", "error", "malformed"] as const)("Hydrogen %s cannot block the Opus verdict", async (scenario) => {
+    const { hits, result, records, toolError } = await run(OPUS, scenario);
+    const skipped = scenario === "unavailable" || scenario === "relay-down";
+    expect(hits[0]).toBe(`language:${OPUS}`);
+    expect(hits.slice(1).sort()).toEqual([...(skipped ? [] : [`review:${HYDROGEN}`]), `review:${OPUS}`]);
+    expect(toolError).toBe(false);
+    expect(result.files[0]).toMatchObject({ status: "pass", findings: [] });
+    const status = result.reviewers?.find((entry) => entry.family === "advisory");
+    expect(status).toMatchObject({ model: HYDROGEN, status: skipped ? "skipped" : scenario === "malformed" ? "unparsable" : "error" });
+    if (scenario === "relay-down") expect(status?.error).toContain("relay is not listening");
+    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(OPUS);
+  });
+
+  test("advisory findings cannot be resolved or replace a failed Opus verdict", async () => {
+    for (const scenario of ["opus-error", "opus-finding"] as const) {
+      const { result, records, cwd, toolError } = await run(OPUS, scenario);
+      expect(toolError).toBe(scenario === "opus-error");
+      expect(result.files[0]).toMatchObject({ status: scenario === "opus-error" ? "error" : "findings", advisoryFindings: [{ id: "A-ADV-1" }] });
+      expect(records.some((record) => record.type === "slop-pass")).toBe(false);
+      const resolution = resolveFindings(result.reviewId!, [{ id: "A-ADV-1", status: "refuted", evidence: "This advice cannot close a required finding." }], { ledgerPath: join(cwd, "ledger.jsonl") });
+      expect(resolution).toMatchObject({ passed: [], rejected: [{ id: "A-ADV-1" }] });
+    }
+  });
+
+  test("Hydrogen starts first; a late opinion does not hold up Opus or change the verdict", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "a.md"), KO_PLAIN);
+    const late = Promise.withResolvers<{ model: string; text: string }>();
+    const started: string[] = [];
+    let advisorySignal: AbortSignal | undefined;
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, async (family, _, _prompt, attempt) => {
+      started.push(family);
+      if (family === "advisory") { advisorySignal = attempt; return late.promise; }
+      expect(advisorySignal?.aborted).toBe(false);
+      return { model: OPUS, text: JSON.stringify(clean(["a1"])) };
+    }, { advisory: async () => ({ model: HYDROGEN }), advisoryTimeoutMs: 30 }), signal);
+    late.resolve({ model: HYDROGEN, text: JSON.stringify(dirty(["a1"])) });
+    expect(started).toEqual(["advisory", "anthropic"]);
+    expect(advisorySignal?.aborted).toBe(true);
+    expect(out.files[0]).toMatchObject({ status: "pass", findings: [] });
+    expect(out.files[0]?.advisoryFindings).toBeUndefined();
+    expect(out.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: HYDROGEN, status: "late" }));
+  });
+
+  test("a stalled advisory preflight cannot consume the full opinion budget before Opus starts", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "a.md"), KO_PLAIN);
+    const stalled = Promise.withResolvers<{ model: string }>();
+    let started = 0;
+    let requiredDelay = Infinity;
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, async (family) => {
+      expect(family).toBe("anthropic");
+      requiredDelay = performance.now() - started;
+      return { model: OPUS, text: JSON.stringify(clean(["a1"])) };
+    }, { advisory: () => { started = performance.now(); return stalled.promise; }, advisoryTimeoutMs: 1500 }), signal);
+    expect(requiredDelay).toBeLessThan(1250);
+    expect(out.files[0]).toMatchObject({ status: "pass" });
+    expect(out.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", status: "late" }));
+  });
+});
 
 describe("classify: 보이는 산출물과 내부·코드", () => {
   test.each([
@@ -131,8 +270,8 @@ describe("심사와 통과 기록", () => {
     const reviewer = fakeReviewer((ids) => dirty(ids));
     const first = await reviewFiles(["guide.md"], undefined, deps(cwd, reviewer.complete), signal);
     expect(first.files[0]).toMatchObject({ file: "guide.md", status: "findings" });
-    expect(first.files[0]!.findings![0]).toMatchObject({ id: "R-OAI-1", file: "guide.md", quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", quoteFound: true, reviewer: "openai" });
-    expect(first.files[0]!.findings!.map((finding) => finding.id)).toEqual(["R-OAI-1"]);
+    expect(first.files[0]!.findings![0]).toMatchObject({ id: "R-ANT-1", file: "guide.md", quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", quoteFound: true, reviewer: "anthropic" });
+    expect(first.files[0]!.findings!.map((finding) => finding.id)).toEqual(["R-ANT-1"]);
     expect(passFor(readSlopRecords(join(cwd, "ledger.jsonl")), sha256(KO_SLOP))).toBeUndefined();
     // 규칙 본문이 그대로 실린다(의역 없음).
     expect(reviewer.all[0]!.system).toContain("humanizer: 한국어 AI 작문 패턴 감지 및 교정기");
@@ -140,7 +279,7 @@ describe("심사와 통과 기록", () => {
     writeFileSync(file, KO_PLAIN);
     const second = await reviewFiles(["guide.md"], undefined, deps(cwd, fakeReviewer(clean).complete), signal);
     expect(second.files[0]).toMatchObject({ status: "pass", sha256: sha256(KO_PLAIN) });
-    expect(passFor(readSlopRecords(join(cwd, "ledger.jsonl")), sha256(KO_PLAIN))).toMatchObject({ model: "fixture/openai", findings: [] });
+    expect(passFor(readSlopRecords(join(cwd, "ledger.jsonl")), sha256(KO_PLAIN))).toMatchObject({ model: "fixture/anthropic", findings: [] });
   });
 
   test("통과한 내용은 모델을 다시 부르지 않고, 한 바이트만 바뀌어도 새로 심사한다", async () => {
@@ -172,7 +311,7 @@ describe("심사와 통과 기록", () => {
     writeFileSync(join(cwd, "a.md"), `${KO_SLOP}한 줄을 더 고쳤다.\n`);
     await reviewFiles(["a.md"], undefined, deps(cwd, reviewer.complete), signal);
     expect(reviewer.calls[1]).toContain("<previous-round");
-    expect(reviewer.calls[1]).toContain("R-OAI-1 humanizer:14 AI 어휘");
+    expect(reviewer.calls[1]).toContain("R-ANT-1 humanizer:14 AI 어휘");
   });
 
   test("추출·모델·해석 실패와 빠진 파일은 통과가 아니다", async () => {
@@ -215,33 +354,16 @@ describe("심사와 통과 기록", () => {
   });
 });
 
-describe("reviewer 배정: cross_review와 같은 reviewerLanes(보조 자문 없음)", () => {
+describe("required reviewer and historical findings", () => {
   const write = (cwd: string) => writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-  const families = (reviewer: ReturnType<typeof fakeReviewer>) => reviewer.all.map((call) => call.family).sort();
-
-  test("Anthropic 저자는 openai 필수 하나만, OpenAI·Google 저자는 anthropic 필수 하나만 부른다", async () => {
-    const cwd = scratch();
-    write(cwd);
-    const first = fakeReviewer(clean);
-    await reviewFiles(["a.md"], undefined, deps(cwd, first.complete), signal);
-    expect(families(first)).toEqual(["openai"]);
-    const second = fakeReviewer(clean);
-    writeFileSync(join(cwd, "a.md"), `${KO_PLAIN} `);
-    await reviewFiles(["a.md"], undefined, deps(cwd, second.complete, { authors: ["openai-codex/fixture-author"] }), signal);
-    expect(families(second)).toEqual(["anthropic"]);
-    const gemini = fakeReviewer(clean);
-    writeFileSync(join(cwd, "a.md"), `${KO_PLAIN}  `);
-    await reviewFiles(["a.md"], undefined, deps(cwd, gemini.complete, { authors: ["google-vertex/gemini-fixture"] }), signal);
-    expect(families(gemini)).toEqual(["anthropic"]);
-  });
 
   test("필수 reviewer의 실패·해석 불가는 통과가 아니다", async () => {
     const cwd = scratch();
     write(cwd);
     for (const mode of ["throw", "junk"] as const) {
-      const out = await reviewFiles(["a.md"], undefined, deps(cwd, fakeReviewer(clean, { openai: mode }).complete), signal);
+      const out = await reviewFiles(["a.md"], undefined, deps(cwd, fakeReviewer(clean, { anthropic: mode }).complete), signal);
       expect(out.files[0]!.status).toBe("error");
-      expect(out.files[0]!.error).toContain("required reviewer (openai)");
+      expect(out.files[0]!.error).toContain("required reviewer (anthropic)");
     }
     expect(readSlopRecords(join(cwd, "ledger.jsonl")).some((record) => record.type === "slop-pass")).toBe(false);
   });
@@ -251,8 +373,8 @@ describe("reviewer 배정: cross_review와 같은 reviewerLanes(보조 자문 �
     write(cwd);
     const out = await reviewFiles(["a.md"], undefined, deps(cwd, fakeReviewer(dirty).complete), signal);
     const ledger = join(cwd, "ledger.jsonl");
-    writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"family":"openai"', '"family":"google"').replaceAll('"reviewer":"openai"', '"reviewer":"google"').replaceAll("R-OAI-1", "R-GGL-1"));
-    expect(resolveFindings(out.reviewId!, [{ id: "R-OAI-1", status: "refuted", evidence: "공식 상품명 인용이라 바꿀 수 없다" }], deps(cwd, fakeReviewer(clean).complete))).toMatchObject({ passed: [], open: ["R-GGL-1"], rejected: [{ id: "R-OAI-1" }] });
+    writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"family":"anthropic"', '"family":"google"').replaceAll('"reviewer":"anthropic"', '"reviewer":"google"').replaceAll("R-ANT-1", "R-GGL-1"));
+    expect(resolveFindings(out.reviewId!, [{ id: "R-ANT-1", status: "refuted", evidence: "공식 상품명 인용이라 바꿀 수 없다" }], deps(cwd, fakeReviewer(clean).complete))).toMatchObject({ passed: [], open: ["R-GGL-1"], rejected: [{ id: "R-ANT-1" }] });
     const closed = resolveFindings(out.reviewId!, [{ id: "R-GGL-1", status: "refuted", evidence: "공식 상품명 인용이라 바꿀 수 없다" }], deps(cwd, fakeReviewer(clean).complete));
     expect(closed.passed).toEqual([join(cwd, "a.md")]);
   });
@@ -555,7 +677,7 @@ describe("심사 정확성: 같은 바이트·중복 id·html 크기와 속성",
     const twice = (ids: string[]) => ({ files: [...clean(ids).files, { id: ids[0]!, findings: [{ quote: "저장 버튼", rule: "humanizer:1 x", fix: "y" }] }] });
     const required = await reviewFiles(["a.md"], undefined, deps(cwd, fakeReviewer(twice).complete), signal);
     expect(required.files[0]).toMatchObject({ status: "error" });
-    expect(required.files[0]!.error).toContain("required reviewer (openai) unparsable");
+    expect(required.files[0]!.error).toContain("required reviewer (anthropic) unparsable");
     expect(readSlopRecords(join(cwd, "ledger.jsonl")).some((record) => record.type === "slop-pass")).toBe(false);
   });
 
@@ -710,7 +832,7 @@ describe("큰 산출물: 겹치는 조각으로 나눠 빠짐없이 심사한다
     const failing = await reviewFiles(["list.html"], undefined, deps(cwd, partReviewer(() => [], (prompt) => prompt.includes('part="3/')).complete, { extract: undefined }), signal);
     expect(failing.files[0]!.status).toBe("error");
     expect(failing.files[0]!.error).toContain("part 3/");
-    expect(failing.files[0]!.error).toContain("required reviewer (openai)");
+    expect(failing.files[0]!.error).toContain("required reviewer (anthropic)");
     const skipping: Complete = async (family, _system, prompt) => {
       const ids = [...prompt.matchAll(/<artifact id="(a\d+(?:p\d+)?)"/g)].map((match) => match[1]!).filter((id) => id !== "a1p2");
       return { model: `fixture/${family}`, text: JSON.stringify({ files: ids.map((id) => ({ id, findings: [] })) }) };
@@ -736,7 +858,7 @@ describe("큰 산출물: 겹치는 조각으로 나눠 빠짐없이 심사한다
     expect(file.status).toBe("findings");
     const quotes = file.findings!.map((finding) => finding.quote).sort();
     expect(quotes).toEqual(["결론적으로 지속가능한 경험", "입고 화면 0번 줄에서", "혁신적인 솔루션"]);
-    expect(file.findings!.map((finding) => finding.id).sort()).toEqual(["R-OAI-1", "R-OAI-2", "R-OAI-3"]);
+    expect(file.findings!.map((finding) => finding.id).sort()).toEqual(["R-ANT-1", "R-ANT-2", "R-ANT-3"]);
     expect(file.findings!.every((finding) => finding.quoteFound)).toBe(true);
     expect(ledgerPasses(cwd)).toEqual([]);
     const resolved = resolveFindings(out.reviewId!, file.findings!.map((finding) => ({ id: finding.id, status: "refuted", evidence: "고객이 지정한 원문 문구라 바꿀 수 없다" })), deps(cwd, reviewer.complete));
@@ -847,29 +969,6 @@ describe("reviewer 요청 구성: 규칙·지시는 system에 고정, 파일 글
     expect(buildReviewRequest([item("a1", "x")], ["stop-slop"]).system).not.toContain('<rubric name="humanizer">');
   });
 });
-
-describe("slop_check reviewer 자리 계획(planReviewers)", () => {
-  const LUNA = "slopReviewOpenAI";
-  const slots = { openai: "openai-codex/gpt-6-luna" };
-  const plan = (authors: string[], withSlots?: { openai?: string }) => planReviewers(authors, undefined, withSlots);
-
-  test("slot이 없으면 cross_review와 같은 옛 경로 그대로다", () => {
-    expect(plan(["anthropic/claude-opus-5-5"])).toEqual({ lanes: ["openai"], slots: {} });
-    expect(plan(["openai-codex/gpt-6-astra"], {})).toEqual({ lanes: ["anthropic"], slots: {} });
-  });
-
-  test("Luna slot이 있으면 Anthropic·Gemini·그 밖 저자는 Luna 하나, OpenAI 저자는 같은 계열이라 crossReviewAnthropic 하나다", () => {
-    expect(plan(["anthropic/claude-opus-5-5"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
-    expect(plan(["other-provider/some-model"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
-    expect(plan(["aistudio/gemini-4-argon"], slots)).toEqual({ lanes: ["openai"], slots: { openai: LUNA } });
-    expect(plan(["openai-codex/gpt-6-astra"], slots)).toEqual({ lanes: ["anthropic"], slots: {} });
-  });
-
-  test("저자가 섞이면 OpenAI 저자 몫은 Opus, 나머지 저자 몫은 Luna로 둘 다 돈다", () => {
-    expect(plan(["anthropic/claude-opus-5-5", "openai-codex/gpt-6-astra"], slots)).toEqual({ lanes: ["anthropic", "openai"], slots: { openai: LUNA } });
-  });
-});
-
 describe("보이는 산출물은 공개 선언 없이 대상이다: .publicignore가 지운 파일도, 내부 기록만 읽기 전에 빠진다(2026-10-27)", () => {
   const git = (cwd: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
   const put = (cwd: string, path: string, text: string) => { mkdirSync(join(cwd, path, ".."), { recursive: true }); writeFileSync(join(cwd, path), text); };
@@ -923,7 +1022,7 @@ describe("보이는 산출물은 공개 선언 없이 대상이다: .publicignor
 
   test("필수 reviewer가 실패하면 공개 파일은 여전히 통과가 없다", async () => {
     const cwd = mirror();
-    const out = await reviewFiles(["README.md"], undefined, deps(cwd, fakeReviewer(clean, { openai: "throw" }).complete), signal);
+    const out = await reviewFiles(["README.md"], undefined, deps(cwd, fakeReviewer(clean, { anthropic: "throw" }).complete), signal);
     expect(out.files[0]!.status).toBe("error");
     expect(passes(cwd)).toHaveLength(0);
   });
@@ -1051,17 +1150,14 @@ describe("visible glob의 경계", () => {
 });
 
 describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패는 통과가 될 수 없다", () => {
-  /** 저자가 두 계열에 걸쳐 openai(필수)와 anthropic(필수) 두 자리가 돈다. 한쪽이 깨져도 다른 쪽 finding은 진단으로만 남는다. */
-  const MIXED = [AUTHOR, "openai-codex/fixture-author"];
   const BROKEN = '{"files":[{"id":"a1","findings":[{"quote":"혁신적인 솔루션","rule":"humanizer:14","fix":"구체적으로"}]}';
-  const answering = (openai: (call: number, ids: string[]) => string | Error) => {
+  const answering = (answerFor: (call: number, ids: string[]) => string | Error) => {
     let call = 0;
     const complete: Complete = async (family, _system, prompt) => {
       const ids = [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
-      if (family !== "openai") return { model: `fixture/${family}`, text: JSON.stringify(dirty(ids)) };
-      const answer = openai(call++, ids);
+      const answer = answerFor(call++, ids);
       if (answer instanceof Error) throw answer;
-      return { model: "fixture/openai", text: answer };
+      return { model: `fixture/${family}`, text: answer };
     };
     return complete;
   };
@@ -1071,21 +1167,17 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
     expect(parseAnswer('{"files":[{"id":"a1","findings":[{"quote":"그는 \\"혁신\\"이라 했다","rule":"humanizer:1","fix":"x"}]}]}')?.files[0]!.findings[0]!.quote).toBe('그는 "혁신"이라 했다');
   });
 
-  test("닫는 괄호가 빠진 답은 파서 오류와 원문을 남기고 통과가 없으며, 다른 reviewer의 finding은 진단으로만 보이고 resolve로 통과가 되지 않는다", async () => {
+  test("닫는 괄호가 빠진 필수 답은 파서 오류와 원문을 남기고 통과가 없다", async () => {
     const cwd = scratch();
     writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => BROKEN), { authors: MIXED }), signal);
-    const openai = out.reviewers!.find((status) => status.family === "openai")!;
-    expect(openai).toMatchObject({ status: "unparsable", raw: BROKEN });
-    expect(openai.error).toMatch(/invalid JSON: .*Expected/);
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => BROKEN)), signal);
+    const required = out.reviewers!.find((status) => status.family === "anthropic")!;
+    expect(required).toMatchObject({ status: "unparsable", raw: BROKEN });
+    expect(required.error).toMatch(/invalid JSON: .*Expected/);
     expect(out.files[0]).toMatchObject({ status: "error" });
-    expect(out.files[0]!.diagnosticFindings?.[0]).toMatchObject({ reviewer: "anthropic", quote: "혁신적인 솔루션" });
     expect(out.files[0]!.findings).toBeUndefined();
     const record = readSlopRecords(join(cwd, "ledger.jsonl")).find((item) => item.type === "slop-review");
-    expect(record).toMatchObject({ reviewId: out.reviewId, files: [], failed: [{ reviewer: { status: "unparsable", raw: BROKEN }, diagnostics: [{ reviewer: "anthropic" }] }] });
-    const resolved = resolveFindings(out.reviewId!, [{ id: out.files[0]!.diagnosticFindings![0]!.id, status: "refuted", evidence: "진단 finding을 반박해 통과를 얻으려는 시도" }], deps(cwd, answering(() => BROKEN), { authors: MIXED }));
-    expect(resolved.passed).toEqual([]);
-    expect(resolved.rejected).toHaveLength(1);
+    expect(record).toMatchObject({ reviewId: out.reviewId, files: [], failed: [{ reviewer: { status: "unparsable", raw: BROKEN } }] });
     expect(passes(cwd)).toHaveLength(0);
   });
 
@@ -1094,13 +1186,13 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
       const cwd = scratch();
       writeFileSync(join(cwd, "a.md"), KO_PLAIN);
       const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => answer)), signal);
-      expect(out.reviewers!.find((status) => status.family === "openai")!.error).toContain(cause);
+      expect(out.reviewers!.find((status) => status.family === "anthropic")!.error).toContain(cause);
       expect(passes(cwd)).toHaveLength(0);
     }
     const cwd = scratch();
     writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => new ReviewerCallError("Model stopped: length", "fixture/openai", '{"files":['))), signal);
-    expect(out.reviewers!.find((status) => status.family === "openai")).toMatchObject({ status: "error", model: "fixture/openai", raw: '{"files":[' });
+    const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => new ReviewerCallError("Model stopped: length", "fixture/anthropic", '{"files":['))), signal);
+    expect(out.reviewers!.find((status) => status.family === "anthropic")).toMatchObject({ status: "error", model: "fixture/anthropic", raw: '{"files":[' });
   });
 
   test("묶음이 둘일 때 앞 묶음의 실패는 뒤 묶음의 성공이 덮지 않고, 실패한 파일은 resolve로도 통과가 없다", async () => {
@@ -1108,21 +1200,14 @@ describe("reviewer 실패 진단: 실제 원인과 원문을 남기고, 실패�
     writeFileSync(join(cwd, "a.md"), KO_PLAIN);
     writeFileSync(join(cwd, "b.md"), "Press Save to store the file in the Downloads folder. Press it again and the app adds a number to the name.\n".repeat(4));
     // 첫 묶음(a.md, a1)은 한 번 다시 물은 답까지 해석할 수 없다. 뒤 묶음은 깨끗하다. 묶음은 동시에 갈 수 있으므로 호출 순서가 아니라 묶음 내용으로 고른다.
-    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((_call, ids) => (ids.includes("a1") ? "not json" : JSON.stringify(clean(ids)))), { authors: MIXED }), signal);
-    expect(out.reviewers!.find((status) => status.family === "openai")!.status).toBe("unparsable");
+    const out = await reviewFiles(["a.md", "b.md"], undefined, deps(cwd, answering((_call, ids) => (ids.includes("a1") ? "not json" : JSON.stringify(dirty(ids))))), signal);
+    expect(out.reviewers!.find((status) => status.family === "anthropic")!.status).toBe("unparsable");
     expect(out.files.find((file) => file.file === "a.md")!.status).toBe("error");
     const b = out.files.find((file) => file.file === "b.md")!;
     expect(b.status).toBe("findings");
-    const resolved = resolveFindings(out.reviewId!, [{ id: b.findings![0]!.id, status: "refuted", evidence: "공식 안내 문구를 그대로 옮긴 문장이다" }], deps(cwd, answering(() => ""), { authors: MIXED }));
+    const resolved = resolveFindings(out.reviewId!, [{ id: b.findings![0]!.id, status: "refuted", evidence: "공식 안내 문구를 그대로 옮긴 문장이다" }], deps(cwd, answering(() => "")));
     expect(resolved.passed).toEqual([join(cwd, "b.md")]);
     expect(passes(cwd).some((record) => record.path === join(cwd, "a.md"))).toBe(false);
-  });
-
-  test("필수 reviewer가 파일을 빠뜨리면 다른 필수 reviewer의 finding은 진단으로 보인다", async () => {
-    const cwd = scratch();
-    writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, answering(() => '{"files":[]}'), { authors: MIXED }), signal);
-    expect(out.files[0]).toMatchObject({ status: "error", diagnosticFindings: [{ reviewer: "anthropic" }] });
   });
 });
 

@@ -103,18 +103,18 @@ describe("언어 범위: 기준이 없는 언어는 영어 기준으로 심사�
     }
   });
 
-  test("언어 판별도 한국어 글까지 빠짐없이, 심사와 같은 필수 자리·slot으로 묻는다", async () => {
+  test("언어 판별은 한국어 글도 빼지 않고 심사와 같은 필수 자리에 묻는다", async () => {
     const cwd = scratch();
     writeFileSync(join(cwd, "ko.md"), KO);
-    const seen: { identifying: boolean; family: string; slot?: string }[] = [];
+    const seen: { identifying: boolean; family: string }[] = [];
     const inner = fake().complete;
-    const complete: Complete = async (family, system, prompt, sig, slot) => {
-      seen.push({ identifying: system.includes("\"languages\""), family, slot });
-      return inner(family, system, prompt, sig, slot);
+    const complete: Complete = async (family, system, prompt, sig) => {
+      seen.push({ identifying: system.includes("\"languages\""), family });
+      return inner(family, system, prompt, sig);
     };
-    const out = await reviewFiles(["ko.md"], undefined, deps(cwd, complete, { slopSlots: { openai: "openai-codex/fixture-luna" } }), signal);
+    const out = await reviewFiles(["ko.md"], undefined, deps(cwd, complete), signal);
     expect(out.files[0]).toMatchObject({ status: "pass" });
-    expect(seen).toEqual([{ identifying: true, family: "openai", slot: "slopReviewOpenAI" }, { identifying: false, family: "openai", slot: "slopReviewOpenAI" }]);
+    expect(seen).toEqual([{ identifying: true, family: "anthropic" }, { identifying: false, family: "anthropic" }]);
   });
 
   test("html 원문 층도 판별한다: 보이는 영어 글은 그대로인데 script 안 문구만 스페인어로 바뀌면(전체·delta 모두) 통과가 없다", async () => {

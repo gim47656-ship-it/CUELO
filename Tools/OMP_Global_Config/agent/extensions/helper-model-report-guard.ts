@@ -79,13 +79,13 @@ type LedgerLine = {
   advisory?: unknown;
 };
 
-type Answer = { model?: unknown; status?: unknown };
+type Answer = { model?: unknown; status?: unknown; answered?: unknown };
 
 /** 실제로 답한 자리의 모델. 모양이 다른 원장 줄(손으로 고친 줄, 옛 형식)은 조용히 건너뛴다. */
 function answeredModel(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { model, status } = value as Answer;
-  return status === "ok" && typeof model === "string" && model.length > 0 ? model : undefined;
+  const { model, status, answered } = value as Answer;
+  return (status === "ok" || answered === true) && typeof model === "string" && model.length > 0 ? model : undefined;
 }
 
 /**
@@ -177,8 +177,8 @@ export function scanBranch(entries: readonly BranchEntry[], into: HelperModels):
       }
       continue;
     }
-    if (message?.role !== "toolResult" || message.toolName !== "slop_check" || message.isError) continue;
-    // 결과 JSON의 reviewers[] 중 status ok인 자리의 model.
+    if (message?.role !== "toolResult" || message.toolName !== "slop_check") continue;
+    // A failed file or batch does not erase a successful answer from another batch.
     try {
       const reviewers = (JSON.parse(textOf(message.content)) as { reviewers?: unknown } | null)?.reviewers;
       for (const reviewer of Array.isArray(reviewers) ? reviewers : []) {

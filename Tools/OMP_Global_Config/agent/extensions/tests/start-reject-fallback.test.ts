@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { cfgRetryFallbackOn } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgRetryFallbackChains, cfgRetryFallbackOn } from "@oh-my-pi/pi-coding-agent/session/settings";
 import {
   classifierFrom,
   createChildFallback,
@@ -83,6 +83,29 @@ describe("child: 첫 응답 판정과 overlay 복원", () => {
     await end.child.onAssistantMessage(rejection());
     end.child.onRunEnd();
     expect(end.settings.value()).toBe("usage-limit");
+  });
+
+  test("a later usage limit in the same child can arm a new attempt if no switch applied", async () => {
+    const from = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+    const to = "anthropic/claude-sonnet-5-5";
+    const parent = Settings.isolated({ modelRoles: { implSonnet: `${to}:auto` }, "retry.fallbackChains": { [from]: [] } });
+    const settings = parent.overlay();
+    const child = createChildFallback({ classify: classifyDep });
+    const model = { provider: "hive", id: from.slice("hive/".length) };
+    const target = { provider: "anthropic", id: to.slice("anthropic/".length) };
+    const ctx = {
+      model,
+      modelRegistry: { find: (provider: string, id: string) => [model, target].find(entry => entry.provider === provider && entry.id === id) },
+      sessionManager: { getEntries: () => [{ type: "model_change", requestedModel: "@implDeepSeek:high" }] },
+    };
+    const message = { ...usageLimit(), provider: model.provider, model: model.id, api: "openai-completions" };
+    await withActiveSettings(settings, () => child.onAssistantMessage(message, ctx as never));
+    expect(cfgRetryFallbackChains.get(settings)[from]).toEqual([`${to}:auto`]);
+    child.onRunEnd();
+    expect(cfgRetryFallbackChains.get(settings)[from]).toEqual([]);
+    await withActiveSettings(settings, () => child.onAssistantMessage(message, ctx as never));
+    expect(cfgRetryFallbackChains.get(settings)[from]).toEqual([`${to}:auto`]);
+    expect(cfgRetryFallbackChains.get(parent)[from]).toEqual([]);
   });
 
   test("도구를 쓴 child는 그 뒤 거절돼도 overlay를 열지 않는다", async () => {
@@ -327,6 +350,46 @@ describe("registerStartRejectFallback", () => {
     const reloaded = registerStartRejectFallback(pi as never, { classify: classifyDep, record: (record) => records.push(record) });
     await fire("session_switch", {}, mainCtx);
     expect(reloaded.replaying().get("Fix")).toBe("anthropic/claude-sonnet-5-5");
+  });
+
+  test("early DeepSeek hop and late limit response reconcile once after busy Main reloads", async () => {
+    const { pi, sent, fire, firstSend, sentCount } = fakePi();
+    const from = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+    const to = "anthropic/claude-sonnet-5-5";
+    registerStartRejectFallback(pi as never, { classify: classifyDep });
+    await fire("session_start", {}, { ...mainCtx, isIdle: () => false });
+    // A station created by the preceding extension release has a Set and no requested-model map.
+    const stations = Reflect.get(globalThis, Symbol.for("cuelo.start-reject-fallback.stations"));
+    const existing = stations.get(pi.events);
+    existing.makers = new Set(existing.makers);
+    delete existing.requestedDeepSeek;
+    const legacy = createStartRejectTracker({ classify: classifyDep, notify: notice => existing.deliver(notice) });
+    existing.tracker = legacy;
+    existing.makers.add("Earlier");
+    await legacy.onChildEvent("Earlier", { type: "message_end", message: rejection() });
+    const records: StartRejectRecord[] = [];
+    const reloaded = registerStartRejectFallback(pi as never, { classify: classifyDep, record: record => records.push(record) });
+    pi.events.emit(LIFECYCLE, started("Fix"));
+    pi.events.emit("task:subagent:progress", { progress: { id: "Fix", modelOverride: "@implDeepSeek:high" } });
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Fix", { type: "retry_fallback_applied", from: `${from}:high`, to: `${to}:auto`, role: from }));
+    const message = { ...usageLimit(), api: "openai-completions", provider: "hive", model: from.slice("hive/".length) };
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Fix", { type: "message_end", message }));
+    await firstSend;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.options).toEqual({ deliverAs: "aside" });
+    expect(sent[0]!.message).toMatchObject({ customType: "deepseek-usage-limit-fallback" });
+    expect(reloaded.replaying().get("Fix")).toBe(to);
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Earlier", applied));
+    await sentCount(2);
+    expect(reloaded.replaying().get("Earlier")).toBe(applied.to);
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Earlier", { type: "message_end", message: okTurn() }));
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Earlier", { type: "agent_end" }));
+    pi.events.emit(LIFECYCLE, started("Again"));
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Again", { type: "message_end", message: rejection() }));
+    pi.events.emit(SUBAGENT_EVENT_CHANNEL, childEvent("Again", applied));
+    await sentCount(3);
+    expect(reloaded.replaying().has("Earlier")).toBe(false);
+    expect(records.map(({ agentId, repeat }) => [agentId, repeat])).toEqual([["Earlier", false], ["Again", true]]);
   });
 
   test("세션이 바뀌기 전에 줄 선 이벤트는 새 세션에 알리거나 기록하지 않는다", async () => {

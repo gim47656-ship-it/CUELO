@@ -132,7 +132,7 @@ export function codeReviewLanes(authors: string[], mainModel: string | undefined
 
 /**
  * 계열 중립적인 "반대 계열" 자리. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google·DeepSeek 포함)는 Anthropic이 본다.
- * slop_check와 argon-preflight가 쓰는 경로이며 2026-11-08 DeepSeek 코드 검토 경로 추가 전후로 동작이 같다.
+ * argon-preflight가 쓰는 경로이며 2026-11-08 DeepSeek 코드 검토 경로 추가 전후로 동작이 같다.
  */
 export function reviewerLanes(authors: string[], mainModel: string | undefined): Lane[] {
   const out = new Set<Lane>();

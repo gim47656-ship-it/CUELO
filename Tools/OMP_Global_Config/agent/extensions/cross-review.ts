@@ -35,7 +35,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: true };
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
-/** system·purpose는 slop_check가 같은 slot 해석·호출·비용 장부 경로를 재사용할 때만 바꾼다. 기본값은 cross_review 그대로다. slot은 slop_check가 lane의 기본 slot 대신 slopReviewOpenAI를 부를 때만 준다. */
+/** system and purpose let slop_check reuse the role resolution, call, and usage ledger. */
 /** lane advisory는 보조 검토자(modelRoles.crossReviewAdvisory)이며 provider 계열 검사를 하지 않는다. 필수 자리는 slot 이름의 계열 모델이어야 한다. */
 /** route는 보조 검토자가 공급자 한도로 실패했을 때 같은 모델을 다른 공급자로 부르는 명시 경로(provider/id)다. 해석된 이름이 정확히 같을 때만 부른다. */
 export async function completeReviewer(

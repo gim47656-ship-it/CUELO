@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { createHelperModelReportGuard, findings, namesOf, readLedgerLines, REMINDER_TYPE, type HelperModels } from "../helper-model-report-guard";
+import { createHelperModelReportGuard, findings, namesOf, readLedgerLines, REMINDER_TYPE, scanBranch, type HelperModels } from "../helper-model-report-guard";
 
 const SESSION = "01a1d7d1-3e0a-73d7-b068-dfcab44fb971";
 const OTHER = "maker-child-session";
@@ -21,7 +21,10 @@ const LEDGER = [
   { type: "dispatch", sessionId: "unrelated", chosenModel: "openai-codex/gpt-6.1-sol" },
 ];
 
-const SLOP_RESULT = JSON.stringify({ reviewId: "slop-1", reviewers: [{ family: "openai", model: "openai-codex/gpt-6-luna", status: "ok" }], files: [] });
+const SLOP_RESULT = JSON.stringify({ reviewId: "slop-1", reviewers: [
+  { family: "anthropic", model: "anthropic/claude-opus-5-5", status: "ok" },
+  { family: "advisory", model: "aistudio/gemini-4-hydrogen", status: "late", answered: true },
+], files: [] });
 const BRANCH = [
   { type: "message", message: { role: "toolResult", toolName: "slop_check", content: [{ type: "text", text: SLOP_RESULT }] } },
   // Maker 보고에 나온 Maker 세션의 검토 id: child 보고이므로 그 검토자도 센다.
@@ -34,7 +37,7 @@ const BRANCH = [
 
 // 2026-11-14 실제 오보.
 const WRONG = "도와준 모델은 아래와 같아요.\n- 구현 Maker 4개: 공용 화면은 Opus, 설정, 보조 패널, VM 장치는 각각 Sonnet\n- 코드 교차 검토: GPT 쪽 검토자\n- 문구 점검: Luna";
-const RIGHT = "- 구현 Maker 4개: 공용 화면은 Opus, 나머지는 Sonnet\n- 코드 교차 검토(필수): 아스트라\n- 코드 교차 검토(보조): 하이드로젠\n- 문구 점검: 루나";
+const RIGHT = "- 구현 Maker 4개: 공용 화면은 Opus, 나머지는 Sonnet\n- 코드 교차 검토(필수): 아스트라\n- 코드 교차 검토(보조): 하이드로젠\n- 문구 점검: 하이드로젠 의견, 오퍼스 판정";
 // 2026-11-14 이 장치 배포 직후 Main의 완료 보고 원문(오탐 회귀용).
 const GUARD_REPORT = "장치를 만들어 0.10.256으로 집 PC에 배포했어요. 공개 CI 성공과 배포 검증 네 항목 통과를 확인했고, 실행 중인 런타임에서 확장이 정상적으로 불러와지는 것까지 봤어요.\n\n**도움 모델 명단 확인 장치:** 제가 작업을 끝내며 보고할 때 교차 검토, 문구 점검, Maker 같은 역할이 나오면, 그 세션에서 실제로 답한 모델을 기록에서 찾아 보고 내용과 맞춰 봐요. 기록은 발주와 검토 원장, 검토 도구 결과예요. 세 경우에 숨은 알림이 와서 실제 이름으로 바로 정정하게 해요.\n- \"GPT 쪽\"처럼 제공사 계열만 적은 경우\n- 그 역할의 실제 모델 이름이 하나도 없는 경우\n- 그 역할로 답하지 않은 모델을 적은 경우\n\n보고를 막지는 않아요. 화면에 이미 나간 뒤에 바로잡는 방식이에요. 오늘 틀렸던 보고 문장을 이 세션의 실제 기록에 넣어 보니 두 가지를 다 잡았어요. 계열만 적은 것과 검토자 이름이 없는 것이에요. 실제 명단도 아스트라, 하이드로젠, 루나, 오퍼스, 소네트로 정확히 나왔고, 고친 보고에는 아무 알림도 뜨지 않았어요.\n\n**만들면서 고친 결함:** 처음 실제 데이터로 돌렸을 때, 제가 원장을 뒤지던 bash 결과에 섞인 다른 날의 검토 기록까지 주워 담았어요. 그래서 이번 세션에 없던 오퍼스와 페이블이 검토자로 끼었어요. 검토 기록은 제가 직접 부른 검토 호출과 Maker 보고에서만 모으게 바꿨고, 그 뒤 명단이 맞게 나왔어요.\n\n**교차 검토:** 필수 검토는 아스트라, 보조 검토는 하이드로젠이 네 번에 걸쳐 맡았어요. 지적은 아홉 건이었어요. 그중 여덟 건은 고쳤고, 각 재현 테스트가 고치기 전 코드에서 실패하는 것도 확인했어요. 마지막 한 건은 의도한 한계로 남겼어요. 역할 줄 다음의 일반 설명 문장까지 검사하면, 정상적인 설명에도 알림이 뜨기 때문이에요. 테스트는 집중 11개와 확장 전체 1918개가 모두 통과했어요.\n\n**정정 한 가지:** 앞선 정정 보고에서 하이드로젠이 Vertex 경로로 답했다고 했는데, 정확히는 제 검토 세 번 중 두 번만 제때 답했어요. 한 번은 늦어서 기록만 남았어요. 장치도 제때 답한 경우만 세요.\n\n**배포 중 생긴 일:** 공개 CI 첫 실행에서 두 작업이 실패했어요. zig 도구를 내려받는 외부 서버가 접속을 거부한 탓이에요. 실패한 작업만 다시 돌리니 모두 통과했고, 그 뒤에 배포했어요.\n\n규칙 표에서 이 규칙은 \"글로만 있음\"에서 \"안내 장치\"로 올렸어요. 다만 몇 개를 썼는지와 왜 썼는지 알리는 부분은 여전히 글 규칙이에요. 실제 사용에서 알림이 틀린 명단에만 붙는지는 11-21까지 지켜보고, 오탐이 없으면 닫을게요. 임시 로그는 지웠어요. 출처를 모르는 `/tmp/ci-watch.txt` 하나는 그대로 뒀어요. 요청하신 장치는 완성됐어요.";
 
@@ -66,7 +69,7 @@ describe("helper-model-report-guard", () => {
     expect(namesOf("hive/deepseek-ai/deepseek-v4.1-flash-1017")).toEqual(["deepseek", "딥시크", "이사나"]);
   });
 
-  test("실제 오보(계열만 적은 검토자)에 알리고 실제 명단을 준다", () => {
+  test("계열만 적거나 답하지 않은 모델을 적으면 실제 명단을 알려 준다", () => {
     const h = harness();
     h.user("장치로만들자.");
     h.assistant(WRONG);
@@ -80,7 +83,9 @@ describe("helper-model-report-guard", () => {
     expect(h.sent[0].content).not.toContain("fable");
     // Main이 resolve한 Maker 체인의 검토자는 든다.
     expect(h.sent[0].content).toContain("솔(openai-codex/gpt-6.1-sol)");
-    expect(h.sent[0].content).toContain("루나(openai-codex/gpt-6-luna)");
+    expect(h.sent[0].content).toContain("오퍼스(anthropic/claude-opus-5-5)");
+    expect(h.sent[0].content).toContain("하이드로젠(aistudio/gemini-4-hydrogen)");
+    expect(h.sent[0].content).not.toContain("루나(openai-codex/gpt-6-luna)");
   });
 
   test("실제 이름을 적은 보고, 역할 말이 없는 답, 도구 사이 진행 문장, 하위 agent에는 알리지 않는다", () => {
@@ -143,7 +148,7 @@ describe("helper-model-report-guard", () => {
     h.user("report");
     expect(() => h.assistant("문구 점검: GPT 쪽")).not.toThrow();
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0].content).toContain("루나(openai-codex/gpt-6-luna)");
+    expect(h.sent[0].content).toContain("오퍼스(anthropic/claude-opus-5-5)");
   });
 
   test("역할 줄에 그 역할에서 답하지 않은 모델을 적으면 알린다", () => {
@@ -162,7 +167,18 @@ describe("helper-model-report-guard", () => {
     h.assistant("- 코드 교차 검토: 아스트라, 하이드로젠");
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].content).toContain("「하이드로젠」");
-    expect(h.sent[0].content).not.toContain("하이드로젠(");
+    expect(h.sent[0].content).not.toContain("하이드로젠(google-vertex/gemini-4-hydrogen)");
+    expect(h.sent[0].content).toContain("하이드로젠(aistudio/gemini-4-hydrogen)");
+  });
+
+  test("slop_check 실패 결과에서도 유효한 답이 있었던 모델만 센다", () => {
+    const result = JSON.stringify({ reviewers: [
+      { model: "anthropic/claude-opus-5-5", status: "error", answered: true },
+      { model: "aistudio/gemini-4-hydrogen", status: "late" },
+    ] });
+    const actual = helpers([]);
+    scanBranch([{ message: { role: "toolResult", toolName: "slop_check", content: result, isError: true } }], actual);
+    expect([...actual.slop]).toEqual(["anthropic/claude-opus-5-5"]);
   });
 
   test("실제 모델을 모르는 역할은 판정하지 않는다", () => {
