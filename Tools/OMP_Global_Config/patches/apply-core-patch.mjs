@@ -79,38 +79,6 @@ const OPUS55_ROW_18410 = {
 };
 
 /**
- * #310의 18.5.1 no-op 후보(RETIRE). upstream #14168이 이 행에 prefixBinding과 binding controls를 둘 다 넣어 18.4.6 적용본과
- * tps(93)만 다르다. 18.4.6 후보의 marker는 tps 뒤 조각이라 이 순정에서도 applied로 읽히고, 그러면 --revert가 없는 patched를
- * 찾다 실패하므로 18.4.6 후보는 이 행이 있는 파일에서 빠진다(EDITS 항목의 excludes).
- */
-const OPUS55_ROW_1851 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":93,');
-
-/**
- * #310의 18.7.0 no-op 후보(RETIRE 유지). upstream이 같은 행의 tps만 93→97로 바꿨고 prefixBinding·binding controls는 그대로다.
- */
-const OPUS55_ROW_1870 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":97,');
-
-// 18.8.4: 측정값만 97→96.2. upstream prefixBinding·binding controls는 그대로라 RETIRE를 유지한다.
-const OPUS55_ROW_1884 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":96.2,');
-
-// 18.9.1: 측정값만 96.2→98.8. 행의 나머지는 18.4.6 적용본과 바이트가 같아 RETIRE를 유지한다.
-const OPUS55_ROW_1891 = OPUS55_ROW_1846.patched.replace('"tps":95.2,', '"tps":98.8,');
-
-// 2026-10-13 18.10.3: 측정값 98.8→95.6, compat 에 honorsClaudeCodeBetaKillSwitch(18.10.2 #15458)가 들어왔다. prefixBinding·binding
-// controls 는 그대로라 RETIRE 를 유지한다(no-op 후보).
-const OPUS55_ROW_18103 = OPUS55_ROW_1891.replace('"tps":98.8,', '"tps":95.6,').replace('"firstPartyProvider":true,', '"firstPartyProvider":true,"honorsClaudeCodeBetaKillSwitch":true,');
-
-// 2026-10-19 18.12.2: 측정값 tps 필드가 행에서 빠졌다(95.6 → 없음). 나머지는 18.10.3 행 그대로라 RETIRE 를 유지한다(no-op 후보).
-const OPUS55_ROW_18122 = OPUS55_ROW_18103.replace('"tps":95.6,', "");
-
-/**
- * 18.4.6 후보의 성립 조건: 행 시작부터 `"tps":95.2,`까지. 18.4.6 anchor와 patched가 모두 이 머리로 시작하므로 그 후보가
- * 원래 성립하던 상태(순정 18.4.6·적용본)에서는 늘 참이다. tps 뒤 조각인 marker만 맞는 다른 판의 행(18.7.0 tps 97)을
- * 18.4.6 적용본으로 잘못 읽어 --revert가 없는 patched를 찾다 실패하는 일을 막는다. tps가 다시 바뀌어도 같다.
- */
-const OPUS55_HEAD_1846 = OPUS55_ROW_1846.anchor.slice(0, OPUS55_ROW_1846.anchor.indexOf('"tps":95.2,') + '"tps":95.2,'.length);
-
-/**
  * learn topic upsert 적용본. 갱신 때 metadata 의 session_id/cwd 는 최초 저장자로 남고,
  * updated_session_id/updated_cwd/updated_at 이 최신 정정자·시점이며 context 는 최신 이유다.
  * first_context/first_timestamp 는 기존 revision 이 명시적으로 1 일 때만 갱신 직전 값으로 보존한다
@@ -119,51 +87,6 @@ const OPUS55_HEAD_1846 = OPUS55_ROW_1846.anchor.slice(0, OPUS55_ROW_1846.anchor.
  * (공개 이슈 #30: 같은 본문 재저장·context 만 바뀐 갱신도 벡터를 지워 다음 store open 이 다시 예약했다).
  * 벡터의 모델 일치는 store open 의 reconcileEmbeddingModel 이 계속 책임진다. 별도 projection(embed_text ≠ 본문)은 기존처럼 지운다.
  */
-/** 이슈 #32 이전에 배포된 learn topic upsert(HEAD b8f1aad, embedding 보존판) 그대로다. */
-const learnTopicUpsertPreEvidenceBlock = `// HANSE: topic-key learn upsert
-function upsertLearnTopic(
-	state: MnemopiSessionState,
-	params: LearnParams,
-	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
-): { id: string; revision: number } {
-	const topic = params.topic!.normalize("NFKC").trim().toLowerCase();
-	if (!topic) throw new Error("Learn topic must not be blank.");
-	if (redactMemorySecrets(topic) !== topic) throw new Error("Learn topic contains a credential.");
-	const db = target.memory.conn;
-	const existing = db.query(
-		"SELECT id, timestamp, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
-	).get(topic) as { id: string; timestamp: string; metadata_json: string } | null;
-	const revision = existing ? (Number(JSON.parse(existing.metadata_json).revision) || 1) + 1 : 1;
-	if (existing) return db.transaction(() => {
-		const content = redactMemorySecrets(params.memory);
-		const stored = JSON.parse(existing.metadata_json);
-		const now = new Date().toISOString();
-		// HANSE: learn topic provenance keeps first and latest source
-		const firstSeen = stored.revision === 1 ? { first_context: stored.context ?? null, first_timestamp: existing.timestamp } : {};
-		const latest = { updated_session_id: state.sessionId, updated_cwd: state.session.sessionManager.getCwd(), updated_at: now };
-		const metadata = JSON.stringify({ ...firstSeen, ...stored, context: params.context == null ? null : redactMemorySecrets(params.context), topic_key: topic, revision, ...latest });
-		// HANSE: learn topic keeps embedding when its input is unchanged
-		// 비교할 본문은 쓰기 lock 을 잡은(immediate) 같은 transaction 안에서 다시 읽는다. 바깥에서 읽은 값이면
-		// 그 사이 다른 프로세스가 바꾼 본문·벡터를 이 갱신이 그대로 남길 수 있다.
-		const current = db.query("SELECT content, embed_text FROM working_memory WHERE id = ?").get(existing.id) as { content: string; embed_text: string | null } | null;
-		if (current?.content === content && (current.embed_text == null || current.embed_text === content)) {
-			db.query("UPDATE working_memory SET timestamp = ?, metadata_json = ? WHERE id = ?").run(now, metadata, existing.id);
-		} else {
-			db.query("UPDATE working_memory SET content = ?, embed_text = NULL, timestamp = ?, metadata_json = ? WHERE id = ?").run(content, now, metadata, existing.id);
-			db.query("DELETE FROM memory_embeddings WHERE memory_id = ?").run(existing.id);
-		}
-		return { id: existing.id, revision };
-	}).immediate();
-	const id = state.rememberScoped(params.memory, {
-		source: "coding-agent-learn", importance: 0.8,
-		metadata: { session_id: state.sessionId, cwd: state.session.sessionManager.getCwd(), context: params.context ?? null, tool: "learn", topic_key: topic, revision },
-		scope: "bank", extract: true, extractEntities: true, veracity: "tool", memoryType: "fact",
-	}, target);
-	return { id, revision };
-}
-
-export class LearnTool implements AgentTool<LearnSchema> {`;
-
 const learnTopicUpsertBlock = `// HANSE: topic-key learn upsert
 function upsertLearnTopic(
 	state: MnemopiSessionState,
@@ -854,169 +777,8 @@ async function learnSimilarHint(
 `;
 /** 새 판에만 있는 줄. #32 판·그 이전 판에는 없다. */
 const LEARN_EVIDENCE_MASKED_MARKER = String.raw`+ " is outside the project root.");`;
-/** #32 판과 새 판에만 있는 줄. 그 이전 판(learnEvidenceLegacyBlock)과 순정에는 없다. */
+/** #32 판과 새 판에만 있는 줄. 그 이전 판과 순정에는 없다. */
 const LEARN_EVIDENCE_SINCE_32 = "// A credential-shaped path or anchor is rejected";
-
-/** 이슈 #32 이전에 배포된 learn 근거 블록(HEAD b8f1aad) 그대로다. 새 판(learnEvidenceBlock)이 이 본문을 대체한다(legacyPatched). */
-const learnEvidenceLegacyBlock = String.raw`// HANSE: learn evidence citations
-type LearnKind = "evidence" | "preference" | "procedure" | "hypothesis";
-type LearnCitation = { path: string; anchor?: string };
-type LearnEvidence = { kind?: LearnKind; citations: LearnCitation[] };
-const LEARN_MAX_CITATIONS = 8;
-const LEARN_MAX_ANCHOR_FILE_BYTES = 8 * 1024 * 1024;
-
-const learnKindSchema = type("'evidence' | 'preference' | 'procedure' | 'hypothesis'").describe(
-	"what the lesson is: evidence = project fact, design decision or failure cause (needs citations in project scope); preference = how the user wants work done; procedure = how to do a task; hypothesis = unverified guess",
-);
-const learnCitationsSchema = type({
-	path: type("string").describe("file path relative to the project root"),
-	"anchor?": type("string").describe("a '## ' heading text, a header field name such as RECORD or SCOPE, or a line range such as 120-140"),
-})
-	.array()
-	.describe("project files that record this lesson; required for kind evidence in project scope; checked for existence only, not for whether the file supports the lesson");
-
-function learnProjectRoot(cwd: string): string {
-	let real = cwd;
-	try {
-		real = fs.realpathSync(cwd);
-	} catch {
-		// An unreadable cwd is reported by the citation path check below.
-	}
-	try {
-		const out = Bun.spawnSync(["git", "-C", real, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "ignore" });
-		const top = out.exitCode === 0 ? out.stdout.toString().trim() : "";
-		if (top) return fs.realpathSync(top);
-	} catch {
-		// No git: the session cwd is the project root.
-	}
-	return real;
-}
-
-function learnPathIgnored(root: string, rel: string): boolean {
-	try {
-		return Bun.spawnSync(["git", "-C", root, "check-ignore", "-q", "--", rel], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
-	} catch {
-		return false;
-	}
-}
-
-function learnHeadings(text: string): string[] {
-	const headings: string[] = [];
-	for (const line of text.split(/\r?\n/)) {
-		const match = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
-		if (match) headings.push(match[1]!.replace(/\s+/g, " "));
-	}
-	return headings;
-}
-
-function learnAnchorFound(text: string, anchor: string): boolean {
-	const lines = text.split(/\r?\n/);
-	const range = /^(\d+)(?:-(\d+))?$/.exec(anchor);
-	if (range) {
-		const start = Number(range[1]);
-		const end = Number(range[2] ?? range[1]);
-		return start >= 1 && end >= start && end <= lines.length;
-	}
-	if (/^(RECORD|DATE|SCOPE|PATHS|STATUS)$/.test(anchor)) {
-		return lines.slice(0, 40).some(line => line.startsWith(anchor + ":") || line.startsWith("*" + anchor + ":"));
-	}
-	const want = anchor.replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim().toLowerCase();
-	if (!want) return false;
-	return learnHeadings(text).some(heading => {
-		const have = heading.toLowerCase();
-		return have === want || have.startsWith(want);
-	});
-}
-
-function resolveLearnEvidence(session: ToolSession, params: LearnParams): LearnEvidence {
-	const given = params.citations ?? [];
-	const projectScope = (params.scope ?? "project") === "project";
-	const kind = params.kind ?? (given.length > 0 ? "evidence" : undefined);
-	if (kind === undefined && projectScope) {
-		throw new Error(
-			"learn needs a kind. Use kind evidence for a project fact, design decision or failure cause, and add citations (a list of path plus optional anchor) naming the project file that records it. Use kind preference (how the user wants work done), procedure (how to do a task) or hypothesis (unverified) when no project file records it.",
-		);
-	}
-	if (kind === "evidence" && projectScope && given.length === 0) {
-		throw new Error(
-			"kind evidence in project scope needs at least one citation: citations = [{ path: <file relative to the project root>, anchor: <optional: a '## ' heading text, a header field such as RECORD or SCOPE, or a line range like 120-140> }]. Cite the file that records it (a doc/history record, HANDOFF.md, source). If no file records it yet, write the record first, or use kind hypothesis.",
-		);
-	}
-	if (given.length > LEARN_MAX_CITATIONS) {
-		throw new Error("learn accepts at most " + LEARN_MAX_CITATIONS + " citations; cite the one or two files that matter most.");
-	}
-	if (given.length === 0) return { kind, citations: [] };
-	const root = learnProjectRoot(session.cwd);
-	const citations: LearnCitation[] = [];
-	const seen = new Set<string>();
-	given.forEach((citation, index) => {
-		const label = "citations[" + index + "]";
-		const raw = citation.path.trim().replaceAll("\\", "/");
-		if (!raw) throw new Error(label + ".path is empty.");
-		let real: string;
-		try {
-			real = fs.realpathSync(path.resolve(root, raw));
-		} catch {
-			throw new Error(label + '.path "' + raw + '" does not exist under the project root ' + root + ". Use a path relative to the project root.");
-		}
-		const rel = path.relative(root, real);
-		if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
-			throw new Error(label + '.path "' + raw + '" is outside the project root ' + root + ".");
-		}
-		const stat = fs.statSync(real);
-		if (!stat.isFile()) throw new Error(label + '.path "' + raw + '" is not a file; cite a file.');
-		const relPosix = rel.split(path.sep).join("/");
-		if (!eligibleFile(relPosix, stat.size, true) || learnPathIgnored(root, relPosix)) {
-			throw new Error(label + '.path "' + raw + '" is a secret, binary, empty, excluded or git-ignored file and cannot be cited.');
-		}
-		const anchor = citation.anchor?.trim();
-		if (anchor) {
-			if (stat.size > LEARN_MAX_ANCHOR_FILE_BYTES) throw new Error(label + '.path "' + raw + '" is too large to check an anchor in; cite it without an anchor or use a line range of a smaller file.');
-			const text = fs.readFileSync(real, "utf8");
-			if (!learnAnchorFound(text, anchor)) {
-				const headings = learnHeadings(text).slice(0, 8);
-				throw new Error(
-					label + '.anchor "' + anchor + '" was not found in ' + relPosix + ". Use the text of a '## ' heading, a header field name (RECORD, DATE, SCOPE, PATHS, STATUS) or a line range inside the file." +
-						(headings.length > 0 ? " Headings in the file: " + headings.join(" | ") : ""),
-				);
-			}
-		}
-		// Store a heading without its "## " prefix so the recall line reads path#heading.
-		const stored = anchor ? anchor.replace(/^#{1,6}\s*/, "") : undefined;
-		const key = relPosix + "#" + (stored ?? "");
-		if (seen.has(key)) return;
-		seen.add(key);
-		citations.push(stored ? { path: relPosix, anchor: stored } : { path: relPosix });
-	});
-	return { kind, citations };
-}
-
-function learnEvidenceMetadata(evidence: LearnEvidence): Record<string, unknown> {
-	return { ...(evidence.kind ? { kind: evidence.kind } : {}), ...(evidence.citations.length > 0 ? { citations: evidence.citations } : {}) };
-}
-
-/** A topic lesson is written by upsertLearnTopic; the evidence of the newest revision replaces the previous one afterwards. */
-function stampLearnTopicEvidence(
-	target: ReturnType<MnemopiSessionState["getScopedRetainTarget"]>,
-	topicInput: string,
-	evidence: LearnEvidence,
-): void {
-	const topic = topicInput.normalize("NFKC").trim().toLowerCase();
-	const db = target.memory.conn;
-	db.transaction(() => {
-		const row = db
-			.query("SELECT id, metadata_json FROM working_memory WHERE json_extract(metadata_json, '$.topic_key') = ? ORDER BY timestamp DESC, id DESC LIMIT 1")
-			.get(topic) as { id: string; metadata_json: string } | null;
-		if (!row) throw new Error("Lesson stored, but its topic row was not found to attach the evidence.");
-		const metadata: Record<string, unknown> = JSON.parse(row.metadata_json);
-		delete metadata.kind;
-		delete metadata.citations;
-		db.query("UPDATE working_memory SET metadata_json = ? WHERE id = ?").run(JSON.stringify({ ...metadata, ...learnEvidenceMetadata(evidence) }), row.id);
-	}).immediate();
-}
-
-const learnSchemaBase = type({
-`;
 
 /** embedding 보존 이전(출처 구분) learn topic upsert 적용본. 새 판(learnTopicUpsertBlock)이 이 본문을 대체한다(legacyPatched). */
 const learnTopicUpsertLegacyBlock = `// HANSE: topic-key learn upsert
@@ -1487,48 +1249,6 @@ const TODO_DEPENDENCY_EDITS = [
 	},
 ];
 
-// Shared by the two deployed ordering upgrades below.
-const ANTHROPIC_LOWEST_WEEKLY_SELECTION = `		// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.
-		// Applicable shared/model weekly rows use their maximum fraction, not drain pressure.
-		// Unknown reports follow every measured candidate; 5h-hot follows measured cool.
-		if (provider === "anthropic" && shouldRank && strategy) {
-			const nowMs = Date.now();
-			const weekly = candidates.map(candidate => {
-				const credential = candidate.selection.credential;
-				if (
-					candidate.inReserve === true ||
-					(credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) ||
-					this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes) ||
-					(planGate && planGate(candidate.usage) === false)
-				) return undefined;
-				const usage = candidate.usage;
-				const limits = usage ? reserveUsageLimits(strategy, usage, rankingContext) : [];
-				if (isUsageLimitReached(limits)) return undefined;
-				const { primary } = usage ? strategy.findWindowLimits(usage, rankingContext) : {};
-				const weeks = limits.filter(limit => limit.scope.windowId === "7d" || limit.window?.id === "7d");
-				const measured = candidate.usageChecked && primary !== undefined && weeks.length > 0 &&
-					limits.every(limit => {
-						const used = resolveUsedFraction(limit);
-						return limit.status !== "unknown" && typeof used === "number" &&
-							Number.isFinite(used) && used >= 0 && used < 1;
-					});
-				return {
-					group: measured ? Number(normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) : 2,
-					used: measured ? Math.max(...weeks.map(limit => resolveUsedFraction(limit)!)) : 0,
-					index: candidate.selection.index,
-				};
-			});
-			// Preserve upstream slots for blocked, exhausted, reserve or ineligible accounts.
-			const slots = candidates.flatMap((_candidate, pos) => weekly[pos] ? [pos] : []);
-			const preferred = [...slots].sort((left, right) => {
-				const a = weekly[left]!;
-				const b = weekly[right]!;
-				return a.group - b.group || a.used - b.used || a.index - b.index;
-			}).map(pos => candidates[pos]!);
-			slots.forEach((pos, order) => { candidates[pos] = preferred[order]!; });
-		}
-		const preflightFailures = new Set<OAuthCandidate>();`;
-
 // 2026-11-15 user decision: fresh Anthropic sessions follow the configured account priority
 // (`auth.accountPolicies[].priority`, emails only in the private profile config), then storage order.
 // The next account is used only when the earlier one cannot serve: blocked, expired without refresh,
@@ -1863,43 +1583,6 @@ const EDITS = [
 			}
 			creditId = selected.id;
 			if (releaseVanished) this.#pendingClaudeResets.delete(accountKey);
-			if (pending && (pending.creditId !== creditId || pending.program === "juniper_tide")) {
-				return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
-			}`,
-		// 2026-11-13 판(#86 이전): 사라진 grant의 첫 기본 재시도에서 대기 상태를 지워, 다음 기본 재시도가 다른 grant를
-		// POST했다. 설치본에 남아 있으면 위 본문으로 올린다.
-		legacyPatched: `			// CUELO: reconcile the pending grant before choosing another usable grant.
-			let pending = this.#pendingClaudeResets.get(accountKey);
-			if (pending) {
-				const previous = list.credits.find(credit => credit.id === pending!.creditId);
-				const spent = previous !== undefined && pending.remainingCount !== undefined &&
-					previous.remainingCount !== undefined && previous.remainingCount < pending.remainingCount;
-				if (!previous || spent) {
-					this.#pendingClaudeResets.delete(accountKey);
-					// Absence can also mean expiry; do not claim a spend or POST another grant.
-					if (!previous && (!creditId || creditId === pending.creditId)) {
-						return { ...identity, ok: false, code: "reset_unconfirmed", creditId: pending.creditId };
-					}
-					if (spent) {
-						this.#deps.usageCache.invalidateAfterReset(provider, options.baseUrl, {
-							resetSpentCredentialId: access.credentialId,
-						});
-						if (!creditId || creditId === pending.creditId) {
-							return { ...identity, ok: false, code: "already_redeemed", creditId: pending.creditId };
-						}
-					}
-					pending = undefined;
-				}
-			}
-			const selected = list.credits.find(credit => credit.id === (creditId ?? list.nextCreditId));
-			if (creditId && (!list.eligible || !selected?.usable)) {
-				return { ...identity, ok: false, code: "offer_changed", creditId };
-			}
-			if (!list.eligible || !selected?.usable) {
-				return { ...identity, ok: false, code: list.availableCount > 0 ? "ineligible" : "no_credit",
-					reason: list.reason };
-			}
-			creditId = selected.id;
 			if (pending && (pending.creditId !== creditId || pending.program === "juniper_tide")) {
 				return { ...identity, ok: false, code: "reset_unconfirmed", creditId };
 			}`,
@@ -2328,14 +2011,6 @@ const EDITS = [
 		// HANSE: queued user steering freezes speculative launches
 		if (this.#steeringFreeze) return { allowed: false, reason: "user steering is queued" };
 `,
-		// 18.4.2 이하에는 authorizeLaunch 가 없다(launch 경로 자체가 없음). 18.4.3 이 import 사이에
-		// `SpeculativeLaunchContext` 를 넣기 전의 이웃 두 줄로 식별하고 아무것도 바꾸지 않는다.
-		alternates: [{
-			file: "../pi-agent-core/src/speculative-execution.ts",
-			marker: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
-			anchor: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
-			patched: "\tSpeculativeCommitContext,\n\tSpeculativeOperationContext,\n",
-		}],
 	},
 	{
 		file: "../pi-agent-core/src/agent.ts",
@@ -2467,7 +2142,7 @@ const EDITS = [
 		// (agent/sop/_writer.md, rule://subagent 「검증 소유권」). 그래서 subagent 에도 Verify 본문(UI·버그·테스트 규칙)을
 		// 그대로 두고 subagent 줄만 앞에 붙인다. 프로젝트 전체 검사 금지는 이 템플릿에 worktree 정보가 없어 여기 두지 않고
 		// subagent-system-prompt.md 의 `{{#unless worktree}}` # Validation 이 맡는다(18.4.10 의미). 18.4.10 에는 subagent
-		// 분기가 없어 할 일이 없다: alternate 는 그 판 Verify 머리의 no-op 이고, 18.4.12 결과와 순정 어디에도 없는 문맥이다.
+		// 분기가 없어 할 일이 없다.
 		file: "src/prompts/system/system-prompt.md",
 		marker: "Scoped proof of your own change is yours:",
 		anchor: `{{#if subagent}}
@@ -2524,17 +2199,11 @@ Non-trivial work: NEVER yield without a smoke run: run the thing, exercise the c
 
 # 6. Cleanup
 After smoke proof: permanent fix/feature`,
-		alternates: [{
-			file: "src/prompts/system/system-prompt.md",
-			marker: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
-			anchor: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
-			patched: "code made obsolete by cutover is in scope.{{/has}}\n\n# 5. Verify\nNon-trivial work:",
-		}],
 	},
 	{
 		// 같은 18.4.12 변경이 project-prompt.md <critical> 의 검증 의무 줄을 subagent 에서 "verification is main agent's job.
 		// NEVER run it yourself …"로 바꿨다. 의무 줄을 모두에게 되돌리고 subagent 범위(집중 증명·exit status 보고·못 돌린
-		// 검사의 exact command)만 덧붙인다. 18.4.10 alternate 는 그 판 의무 줄(바로 뒤 </critical>)의 no-op 이다.
+		// 검사의 exact command)만 덧붙인다.
 		file: "src/prompts/system/project-prompt.md",
 		marker: "- As a subagent, that proof is a scoped check of your own change;",
 		anchor: `{{#if subagent}}
@@ -2546,18 +2215,12 @@ After smoke proof: permanent fix/feature`,
 {{#if subagent}}
 - As a subagent, that proof is a scoped check of your own change; report its command and exit status, and yield the exact command for any check you cannot run so main agent runs it.
 {{/if}}`,
-		alternates: [{
-			file: "src/prompts/system/project-prompt.md",
-			marker: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
-			anchor: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
-			patched: "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.\n</critical>",
-		}],
 	},
 	{
 		// 18.4.11 은 subagent-system-prompt.md 의 # Validation 절을 지웠다. 18.4.10 과 같은 자리·같은 `{{#unless worktree}}`
 		// 조건으로 되돌린다: 작업 트리를 형제와 공유할 때만 프로젝트 전체 빌드·포매터·린터·전체 스위트를 금지한다(형제의 미완
 		// 편집·CPU 경합). 집중 증명은 "fine"(허용)이 아니라 요구로 적는다 — 18.4.12 의 다른 두 템플릿과 같은 계약이고,
-		// 18.4.10 순정 문장과 구분돼 그 판에서 applied 로 보이지 않는다. 18.4.10 alternate 는 그 판 절 끝의 no-op 이다.
+		// 18.4.10 순정 문장과 구분돼 그 판에서 applied 로 보이지 않는다.
 		file: "src/prompts/system/subagent-system-prompt.md",
 		marker: "Scoped proof of your own change (single test file, targeted repro, smoke run) is still required: run it and report the result.",
 		anchor: "You are operating on a piece of work assigned to you by the main agent.\n\n{{#if worktree}}",
@@ -2569,26 +2232,14 @@ Project-wide validation is the main agent's job, run once after all subagents la
 {{/unless}}
 
 {{#if worktree}}`,
-		alternates: [{
-			file: "src/prompts/system/subagent-system-prompt.md",
-			marker: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
-			anchor: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
-			patched: "Scoped proof of your own change (single test file, targeted repro, smoke run) is fine.\n{{/unless}}",
-		}],
 	},
 	{
 		// 18.4.11 은 같은 파일 Completion 의 "investigate, edit, run, verify." 에서 run·verify 를 뺐다. 실행·검증을 되살리되
-		// 범위를 집중 검사로 적는다(18.4.10 문장과도 구분된다). 18.4.10 alternate 는 그 판 문장의 no-op 이다.
+		// 범위를 집중 검사로 적는다(18.4.10 문장과도 구분된다).
 		file: "src/prompts/system/subagent-system-prompt.md",
 		marker: "you MUST continue with another tool call — investigate, edit, run scoped checks, verify.",
 		anchor: "you MUST continue with another tool call — investigate, edit. Save narrative",
 		patched: "you MUST continue with another tool call — investigate, edit, run scoped checks, verify. Save narrative",
-		alternates: [{
-			file: "src/prompts/system/subagent-system-prompt.md",
-			marker: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
-			anchor: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
-			patched: "you MUST continue with another tool call — investigate, edit, run, verify. Save narrative",
-		}],
 	},
 	{
 		// 2026-09-15 실환경: 사용자가 보낸 steer 가 ask 시작 12.7초 전에 큐에
@@ -2659,48 +2310,12 @@ Project-wide validation is the main agent's job, run once after all subagents la
 				this.rootOf(ref.id) === root,
 		);
 	}`,
-		// 2026-10-26 판: 미등록 호출자의 전역(flat) 목록을 없앴다. 그 판은 아래 본문이고, 설치본에 남아 있으면 이 본문으로 올린다.
-		legacyPatched: `	/**
-	 * Root ancestor id of an agent: walk \`parentId\` to the top-level agent that
-	 * owns this subtree. Cycles and missing parents terminate the walk, so an
-	 * orphaned ref resolves to itself. Used to keep peers of one top-level
-	 * session invisible to another when several sessions share one process
-	 * (omp-web hosts N sessions per process; see OMP cross-session IRC routing).
-	 */
-	rootOf(id: string): string {
-		const seen = new Set<string>();
-		let cur = id;
-		for (;;) {
-			if (seen.has(cur)) return cur;
-			seen.add(cur);
-			const parent = this.#refs.get(cur)?.parentId;
-			if (!parent || parent === cur) return cur;
-			cur = parent;
-		}
-	}
-
-	/**
-	 * Returns every alive agent (running | idle) except the caller. Advisor refs
-	 * are observability-only transcripts, never peers, so they are excluded.
-	 * Scoped namespace: only agents sharing the caller's root ancestor are
-	 * visible, so a subagent of one top-level session never sees or addresses
-	 * another session's tree. A caller with no registered ref keeps the legacy
-	 * flat view rather than silently seeing nothing.
-	 */
-	listVisibleTo(id: string): AgentRef[] {
-		const alive = this.list().filter(
-			ref => ref.id !== id && ref.kind !== "advisor" && (ref.status === "running" || ref.status === "idle"),
-		);
-		if (!this.#refs.has(id)) return alive;
-		const root = this.rootOf(id);
-		return alive.filter(ref => this.rootOf(ref.id) === root);
-	}`,
 	},
 	{
 		// 2026-10-26 사고: 재시작 직후 root 세션들이 함께 뜨면 옛 claim(이름이 비었는지 확인 → 수 초 뒤 register 로 덮어쓰기)이
 		// 같은 `Main` 을 여러 root 에 주고, 나중 register 가 앞 root 의 ref 를 지웠다. 그 root 는 `Main` 으로 계속 돌았고 자식
 		// parentId·`Main` 별칭·IrcBus wait/mailbox 키가 모두 다른 root 로 풀렸다. claim 과 등록을 한 동기 구간으로 묶어 즉시 예약하고,
-		// 남의 트리가 아직 부모로 가리키는 id 는 내주지 않는다. 앵커는 upstream 세 줄이고 옛 판(legacyPatched)은 이 판으로 올린다.
+		// 남의 트리가 아직 부모로 가리키는 id 는 내주지 않는다. 앵커는 upstream 세 줄이다.
 		file: "src/sdk.ts",
 		marker: "const reserveTopLevelAgentId = (): string => {",
 		anchor: `	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -2760,32 +2375,6 @@ Project-wide validation is the main agent's job, run once after all subagents la
 	// failure before the registration below still releases it.
 	let registeredAgentRef: AgentRef | undefined = reservedTopLevelRef;
 	if (reservedTopLevelRef) hasRegistered = true;`,
-		legacyPatched: `	/**
-	 * External SDK callers (omp-web, embedders) do not pass \`expectedAgentRef\`,
-	 * so registration below takes the unconditional \`register()\` path and
-	 * overwrites any existing ref with the same id. With the default global
-	 * registry that makes the constant \`Main\` a single process-wide slot: a
-	 * second top-level session silently replaces the first, and every subagent
-	 * addressing \`Main\` is then routed to whichever session registered last.
-	 * Give each additional top-level session its own id instead of clobbering a
-	 * live one. Explicit \`agentId\`, subagents (\`parentTaskPrefix\`) and guarded
-	 * registrations (\`expectedAgentRef\` supplied) keep their requested id.
-	 */
-	const claimTopLevelAgentId = (): string => {
-		if (options.agentId) return options.agentId;
-		if (options.parentTaskPrefix) return options.parentTaskPrefix;
-		if (options.expectedAgentRef !== undefined) return MAIN_AGENT_ID;
-		const heldLive = (id: string): boolean => agentRegistry.get(id)?.session != null;
-		if (!heldLive(MAIN_AGENT_ID)) return MAIN_AGENT_ID;
-		for (let n = 2; n < 1000; n++) {
-			const candidate = \`\${MAIN_AGENT_ID}#\${n}\`;
-			if (!heldLive(candidate)) return candidate;
-		}
-		return MAIN_AGENT_ID;
-	};
-	const resolvedAgentId = claimTopLevelAgentId();
-	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
-	let registeredAgentRef: AgentRef | undefined;`,
 	},
 	{
 		// 위 예약과 짝: 예약한 top-level ref 를 그대로 쓰고, 그 사이 다른 세션이 같은 id 를 덮었으면 되덮지 않고
@@ -3118,40 +2707,6 @@ export function isInArtifactsTree(dir: string, rootDir: string): boolean {
 				matcher: opts.target,
 				preferVisible: !activateForScreenshot,
 			});`,
-		alternates: [{
-			file: "src/tools/browser/tab-supervisor.ts",
-			requires: 'relayJson: browser.kind.kind === "relay"',
-			marker: "createRelayTab",
-			anchor: `	// Connected and relay browsers are user-driven. When no target is requested,
-	// adopt the visible tab and avoid raising it before screenshots. An explicit
-	// target may be backgrounded, so retain activation for target-correct pixels.
-	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
-	const activateForScreenshot = !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
-	const page = await pickElectronTarget(browser.browser, {
-		matcher: opts.target,
-		preferVisible: !activateForScreenshot,
-		relayJson: browser.kind.kind === "relay" ? browser.kind.cdpUrl : undefined,
-		signal: opts.signal,
-	});`,
-			patched: `	// Connected and relay browsers are user-driven. An explicit target may be
-	// backgrounded, so retain activation for target-correct pixels.
-	const userDriven = browser.kind.kind === "connected" || browser.kind.kind === "relay";
-	// Relay with no target used to adopt the user's visible tab and navigate it.
-	// Open our own tab instead (\`newPage\` = \`Target.createTarget\`, which the
-	// relay bridge implements with \`chrome.tabs.create\`). An explicit target
-	// still selects an existing tab, and reopening the same name still reuses
-	// this tab. Still attach mode: release keeps the page, it is never closed.
-	const createRelayTab = browser.kind.kind === "relay" && shouldPreserveConnectedBrowserFocus(opts.target);
-	const activateForScreenshot = createRelayTab || !userDriven || !shouldPreserveConnectedBrowserFocus(opts.target);
-	const page = createRelayTab
-		? await browser.browser.newPage()
-		: await pickElectronTarget(browser.browser, {
-				matcher: opts.target,
-				preferVisible: !activateForScreenshot,
-				relayJson: browser.kind.kind === "relay" ? browser.kind.cdpUrl : undefined,
-				signal: opts.signal,
-			});`,
-		}],
 	},
 	// 2026-10-14 공개 이슈 #25: browser.run 이 끝날 때 run 동안 page.on 으로 붙은 listener 를 모두 떼면서 Puppeteer 가
 	// request 마다 자기 handler 안에서 단 완료 구독(requestfinished·requestfailed·response)까지 뗐다. 앞 run 에서 시작해
@@ -3167,13 +2722,6 @@ export function isInArtifactsTree(dir: string, rootDir: string): boolean {
 		// 2026-10-15 18.11.0 RETIRE: 정식판이 HTTPRequest import 까지 포함한 같은 createRunPageScope(upstream #15495)를 싣는다.
 		// 판은 18.11.0 에만 있는 text()/html() selector 선택 인자 주석으로 가른다. 그 판에서는 no-op 이다.
 		excludes: "Without a selector, reads the page `<body>`.",
-		alternates: [{
-			file: "src/tools/browser/tab-worker.ts",
-			requires: "Without a selector, reads the page `<body>`.",
-			marker: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
-			anchor: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
-			patched: "\tFrame,\n\tHTTPRequest,\n\tHTTPResponse,",
-		}],
 	},
 	{
 		file: "src/tools/browser/tab-worker.ts",
@@ -3520,15 +3068,9 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		anchor: `function B$l(e,t){let n=new Map,{on:s,off:o,once:r,setRequestInterception:i}=e,a=Object.getOwnPropertyDescriptor(e,"on"),l=Object.getOwnPropertyDescriptor(e,"off"),u=Object.getOwnPropertyDescriptor(e,"once"),p=Object.getOwnPropertyDescriptor(e,"removeAllListeners"),c=Object.getOwnPropertyDescriptor(e,"setRequestInterception"),d=!1,f=(g,h)=>{let y=n.get(g);if(y)y.push(h);else n.set(g,[h])},m=(g,h)=>{let y=n.get(g);if(!y)return;if(h===void 0){for(let b of y)Reflect.apply(o,e,[g,b]);n.delete(g);return}let T=y.lastIndexOf(h);if(T<0)return;if(Reflect.apply(o,e,[g,h]),y.splice(T,1),y.length===0)n.delete(g)};return Object.defineProperties(e,{on:{configurable:!0,value:(g,h)=>(Reflect.apply(s,e,[g,h]),f(g,h),e)},once:{configurable:!0,value:(g,h)=>{if(typeof h!=="function")return Reflect.apply(r,e,[g,h]),e;let y=(T)=>{m(g,y),Reflect.apply(h,e,[T])};return f(g,y),Reflect.apply(s,e,[g,y]),e}},off:{configurable:!0,value:(g,h)=>(m(g,h),e)},removeAllListeners:{configurable:!0,value:(g)=>{if(g!==void 0)m(g);else for(let h of n.keys())m(h);return e}},setRequestInterception:{configurable:!0,value:(g)=>(d=!0,Reflect.apply(i,e,[g]))}}),{page:e,detach(){if(a)Object.defineProperty(e,"on",a);else Reflect.deleteProperty(e,"on");if(l)Object.defineProperty(e,"off",l);else Reflect.deleteProperty(e,"off");if(u)Object.defineProperty(e,"once",u);else Reflect.deleteProperty(e,"once");if(p)Object.defineProperty(e,"removeAllListeners",p);else Reflect.deleteProperty(e,"removeAllListeners");if(c)Object.defineProperty(e,"setRequestInterception",c);else Reflect.deleteProperty(e,"setRequestInterception");for(let[g,h]of n)for(let y of h)Reflect.apply(o,e,[g,y]);n.clear()},async restoreInterception(){if(!d)return;try{await ga(t(),D$l,"Timed out restoring browser request interception")}catch(g){throw new ies("Failed to restore browser request interception after browser.run",{error:g instanceof Error?g.message:String(g)})}}}}`,
 		patched: `function B$l(page,restoreInterception){const handlers=new Map;const listeners=new Map;const on=page.on;const off=page.off;const once=page.once;const emit=page.emit;const setRequestInterception=page.setRequestInterception;const onDescriptor=Object.getOwnPropertyDescriptor(page,"on");const offDescriptor=Object.getOwnPropertyDescriptor(page,"off");const onceDescriptor=Object.getOwnPropertyDescriptor(page,"once");const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit");const removeAllDescriptor=Object.getOwnPropertyDescriptor(page,"removeAllListeners");const interceptionDescriptor=Object.getOwnPropertyDescriptor(page,"setRequestInterception");let interceptionChanged=false;let delivering=false;const withDelivering=(value,fn)=>{const outer=delivering;delivering=value;try{return fn()}finally{delivering=outer}};const listenerFor=(handler)=>{let listener=listeners.get(handler);if(!listener){listener=(...args)=>withDelivering(false,()=>Reflect.apply(handler,undefined,args));listeners.set(handler,listener)}return listener};const remember=(type,handler)=>{const owned=handlers.get(type);if(owned)owned.push(handler);else handlers.set(type,[handler]);Reflect.apply(on,page,[type,listenerFor(handler)])};const forget=(type,handler)=>{const owned=handlers.get(type);if(!owned)return false;if(handler===undefined){for(const registered of owned)Reflect.apply(off,page,[type,listenerFor(registered)]);handlers.delete(type);return true}const index=owned.findLastIndex((registered)=>registered===handler);if(index<0)return false;Reflect.apply(off,page,[type,listenerFor(owned[index])]);owned.splice(index,1);if(owned.length===0)handlers.delete(type);return true};Object.defineProperties(page,{on:{configurable:true,value:(type,handler)=>{if(delivering||typeof handler!=="function")Reflect.apply(on,page,[type,handler]);else remember(type,handler);return page}},once:{configurable:true,value:(type,handler)=>{if(delivering||typeof handler!=="function"){Reflect.apply(once,page,[type,handler]);return page}const wrapper=(event)=>{forget(type,wrapper);Reflect.apply(handler,page,[event])};remember(type,wrapper);return page}},off:{configurable:true,value:(type,handler)=>{if(!forget(type,handler)&&handler!==undefined)Reflect.apply(off,page,[type,handler]);return page}},emit:{configurable:true,value:(type,event)=>{const request=type==="request"&&typeof event==="object"?event:null;const enqueue=request?.enqueueInterceptAction;if(!request||typeof enqueue!=="function"){return withDelivering(true,()=>Reflect.apply(emit,page,[type,event]))}const enqueueDescriptor=Object.getOwnPropertyDescriptor(request,"enqueueInterceptAction");Object.defineProperty(request,"enqueueInterceptAction",{configurable:true,value:(action)=>{const queued=delivering;Reflect.apply(enqueue,request,[()=>withDelivering(queued,action)])}});try{return withDelivering(true,()=>Reflect.apply(emit,page,[type,event]))}finally{if(enqueueDescriptor)Object.defineProperty(request,"enqueueInterceptAction",enqueueDescriptor);else Reflect.deleteProperty(request,"enqueueInterceptAction")}}},removeAllListeners:{configurable:true,value:(type)=>{if(type!==undefined)forget(type);else{for(const ownedType of handlers.keys())forget(ownedType)}return page}},setRequestInterception:{configurable:true,value:(value)=>{interceptionChanged=true;return Reflect.apply(setRequestInterception,page,[value])}}});return{page,detach(){if(onDescriptor)Object.defineProperty(page,"on",onDescriptor);else Reflect.deleteProperty(page,"on");if(offDescriptor)Object.defineProperty(page,"off",offDescriptor);else Reflect.deleteProperty(page,"off");if(onceDescriptor)Object.defineProperty(page,"once",onceDescriptor);else Reflect.deleteProperty(page,"once");if(emitDescriptor)Object.defineProperty(page,"emit",emitDescriptor);else Reflect.deleteProperty(page,"emit");if(removeAllDescriptor)Object.defineProperty(page,"removeAllListeners",removeAllDescriptor);else Reflect.deleteProperty(page,"removeAllListeners");if(interceptionDescriptor)Object.defineProperty(page,"setRequestInterception",interceptionDescriptor);else Reflect.deleteProperty(page,"setRequestInterception");for(const[type,owned]of handlers){for(const handler of owned)Reflect.apply(off,page,[type,listenerFor(handler)])}handlers.clear()},async restoreInterception(){if(!interceptionChanged)return;try{await ga(restoreInterception(),D$l,"Timed out restoring browser request interception")}catch(error){throw new ies("Failed to restore browser request interception after browser.run",{error:error instanceof Error?error.message:String(error)})}}}}`,
 		// 2026-10-15 18.11.0 RETIRE: 정식판 dist 가 같은 함수(upstream #15495, emit descriptor 포함)를 이미 싣는다. 판 구분은
-		// `Timed out restoring…` 앞 축약 이름(D$l=18.10.4)이다. 18.10.3 후보는 아래 파일 끝쪽 블록이 토큰 이름만 바꿔 더한다.
+		// `Timed out restoring…` 앞 축약 이름(D$l=18.10.4)이다.
 		requires: ',D$l,"Timed out restoring browser request interception',
 		alternates: [{
-			file: "dist/cli.js",
-			requires: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
-			marker: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
-			anchor: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
-			patched: 'Object.getOwnPropertyDescriptor(e,"once"),d=Object.getOwnPropertyDescriptor(e,"emit"),f=Object.getOwnPropertyDescriptor(e,"removeAllListeners")',
-		}, {
 			// 2026-10-16 18.11.1 RETIRE: 같은 upstream 함수(#15495)가 그대로 있고 번들 축약 이름만 `d=`→`p=` 로 바뀌었다.
 			// 18.11.0 후보와 서로 배타적이다(각 문자열은 다른 판에 없다).
 			file: "dist/cli.js",
@@ -3552,7 +3094,6 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 		file: "src/tools/computer.ts",
 		marker: "inlineDocumentation: false",
 		anchor: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: true,",
-		legacyPatched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: (session.taskDepth ?? 0) === 0,",
 		patched: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: false,",
 	},
 	{
@@ -4251,47 +3792,7 @@ export interface IrcBridgeHost {
 					this.#ircTurnBracketOpen = false;
 					try {
 						await finishObservation?.(turnError, undefined, this.#takeAdoptedParentSteerRecords());`,
-		// 18.5.1(#13703)은 endInFlight() 뒤 settleAsyncWork() 를 기다린 다음 관찰자를 닫아, async 후속 turn 의 yield 까지
-		// 같은 monitor 가 본다. bracket 도 그 구간 끝까지 열어 둔다: 먼저 닫으면 그 사이 continuation 이 관찰자를 하나 더 열고
-		// 관찰자 시작이 공유 yield 상태(resetYieldTurnState)를 지운다. settle 은 agent streaming 만 기다리므로, 그 뒤에도
-		// turn 이 진행 중이면(continuation 이 #beginInFlight 와 agent.continue 사이의 await 에 있음) 그 turn 의 settle
-		// 콜백에서 닫아 그 turn 이 소비한 adopted steer 까지 한 번에 답한다(ADAPT).
 		alternates: [{
-			file: "src/session/agent-session.ts",
-			marker: "const finishWakeObservation = async (): Promise<void> => {",
-			anchor: `				try {
-					await this.settleAsyncWork();
-				} catch (error) {
-					logger.warn("IRC wake async-work settle failed", { error: String(error) });
-				}
-				try {
-					await finishObservation?.(turnError);
-				} catch (error) {
-					logger.warn("IRC wake turn observer failed to finish", { error: String(error) });
-				}`,
-			patched: `				try {
-					await this.settleAsyncWork();
-				} catch (error) {
-					logger.warn("IRC wake async-work settle failed", { error: String(error) });
-				}
-				// The bracket stays open across the settle pause above: this one
-				// monitor owns every turn in it, so a continuation that resumes a
-				// stranded parent steer opens no second observer (starting one resets
-				// the shared yield state). The settle waits for agent streaming only;
-				// a turn still in flight past it (a continuation between
-				// #beginInFlight and agent.continue) is closed at its own settle, so
-				// the adopted steers it consumes ride this one finalization.
-				const finishWakeObservation = async (): Promise<void> => {
-					this.#ircTurnBracketOpen = false;
-					try {
-						await finishObservation?.(turnError, undefined, this.#takeAdoptedParentSteerRecords());
-					} catch (error) {
-						logger.warn("IRC wake turn observer failed to finish", { error: String(error) });
-					}
-				};
-				if (this.#promptInFlightCount > 0) this.#inFlightSettledCallbacks.push(finishWakeObservation);
-				else await finishWakeObservation();`,
-		}, {
 			// 18.6.3: 같은 정산이 #finishTurnObservation(settle 대기)과 #closeTurnObservation(한 번만 finish)으로 옮겨졌다.
 			// settle 뒤에도 turn 이 in-flight 면 그 settle 콜백에서 닫고, 닫을 때 장부를 내리고 adopted steer 를 넘긴다(ADAPT).
 			// 새 wake·사용자 prompt 가 먼저 닫으면(상류 supersede) 미뤄 둔 닫기는 closed 로 끝난다.
@@ -4429,14 +3930,6 @@ export interface IrcBridgeHost {
 		if (bracket?.runningTurn !== true && wakeSources(records, id).some(source => source.from === ownerId)) {
 			registerWakeJob();
 		}`,
-		// 18.6.0 에는 선등록이 없다(job 은 yield 시점에만). 그 판의 no-op.
-		alternates: [{
-			file: "src/task/executor.ts",
-			excludes: "wakeSources(records, id).some(source => source.from === ownerId)",
-			marker: "\t\t\tonYieldAccepted: registerWakeJob,",
-			anchor: "\t\t\tonYieldAccepted: registerWakeJob,",
-			patched: "\t\t\tonYieldAccepted: registerWakeJob,",
-		}],
 	},
 	// relay 본문의 실패/취소 분기는 18.2.1에서 upstream이 가져갔다. `relayWakeTurnOutput`이
 	// `error/aborted/abortReason/finalizeError`를 받고 `buildWakeRelayBody`가 성공·실패·취소를
@@ -4463,12 +3956,6 @@ export interface IrcBridgeHost {
 	snapshotJobs,
 	undeliveredJobs,
 } from "../async/job-control";`,
-		alternates: [{
-			file: "src/tools/wait.ts",
-			marker: `import { buildJobResult, runningAgentsOutsideJobs, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
-			anchor: `import { buildJobResult, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
-			patched: `import { buildJobResult, runningAgentsOutsideJobs, snapshotJobs, undeliveredJobs } from "../async/job-control";`,
-		}],
 	},
 	{
 		// 이미 정산됐으나 아직 전달되지 않은 결과를 즉시 돌려주는 자리.
@@ -4486,23 +3973,6 @@ export interface IrcBridgeHost {
 					[],
 					runningAgentsOutsideJobs(this.session),
 				);`,
-		// 18.5.1: 같은 줄이 루프 밖으로 나와 들여쓰기가 한 단계 얕다. 그 줄은 18.5.0 줄의 부분 문자열이라 excludes 로 가른다.
-		alternates: [{
-			file: "src/tools/wait.ts",
-			excludes: "nothingToWaitForResult",
-			marker: "Same roster source as `read proc://`",
-			anchor: `			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);`,
-			patched: `			// Same roster source as \`read proc://\`: the 6th argument (\`agents\`);
-			// the 5th stays the empty cancel-outcome list.
-			return buildJobResult(
-				this.session,
-				manager,
-				"wait",
-				[...undelivered, ...jobs],
-				[],
-				runningAgentsOutsideJobs(this.session),
-			);`,
-		}],
 	},
 	{
 		// 사건(job 종료)·30분 상한 뒤의 반환. 여기가 Main 이 "## Still Running" 만 받고
@@ -4514,23 +3984,6 @@ export interface IrcBridgeHost {
 			// agent with no job row.
 			if (manager && jobs.length > 0)
 				return buildJobResult(this.session, manager, "wait", jobs, [], runningAgentsOutsideJobs(this.session));`,
-		// 2026-10-21 18.12.5: 메시지 회신 wait(#16445)를 넣으면서 이 return 이 블록 안의
-		// `const result = …` 로 바뀌었다(서비스 종료 깨움이면 useless 를 뗀다). 같은 6번째 인자를 싣는다.
-		alternates: [{
-			file: "src/tools/wait.ts",
-			requires: "const replyWait = messaging !== undefined",
-			marker: "A job-backed wait result must not hide a running agent with no job row.",
-			anchor: `				const result = buildJobResult(this.session, manager, "wait", jobs, []);`,
-			patched: `				// A job-backed wait result must not hide a running agent with no job row.
-				const result = buildJobResult(
-					this.session,
-					manager,
-					"wait",
-					jobs,
-					[],
-					runningAgentsOutsideJobs(this.session),
-				);`,
-		}],
 	},
 	// 18.3.0 RETIRE: 수신 메시지 id 노출·`replyTo` 회신 지시(옛 #57~#59). 18.3.0 메시징 진입점
 	// `write agent://` 는 `replyTo` 를 싣지 못하고(irc/messaging.ts:43-46,66) 회신 안내도
@@ -4787,8 +4240,7 @@ function resolveSubagentRetryFallbackCandidates(
 		// 승인 후보로 돌았어도 세션의 첫 model_change 는 요청 selector 를 함께 남겨야
 		// 한다(코어가 대체한 셀렉터만 남기면 요청과 실제가 구분되지 않는다).
 		// 18.4.10(#14040)은 옵션 빌더 함수를 `sessionSpec: SubagentSessionSpec = { options: { … } }`로 바꿔 한 단계 더
-		// 들여쓴다. 같은 options 객체가 spawn·revive 모두에 쓰이는 점은 그대로다. alternate는 18.4.6 형태다. 두 후보의
-		// marker는 줄 앞 개행과 들여쓰기까지 넣어 서로의 결과에 들어 있지 않게 했다.
+		// 들여쓴다. 같은 options 객체가 spawn·revive 모두에 쓰이는 점은 그대로다.
 		file: "src/task/executor.ts",
 		marker: "\n\t\t\t\t\tmodelPatternRequested: modelPatterns.length > 0",
 		anchor: `					modelPatternAuthFallback:
@@ -4798,17 +4250,6 @@ function resolveSubagentRetryFallbackCandidates(
 					modelPatternAuthFallbackUsed:
 						authFallbackUsed || approvedModelSelection?.substituted === true || undefined,
 					modelPatternRequested: modelPatterns.length > 0 ? modelPatterns.join(", ") : undefined,`,
-		alternates: [{
-			file: "src/task/executor.ts",
-			marker: "\n\t\t\t\tmodelPatternRequested: modelPatterns.length > 0",
-			anchor: `				modelPatternAuthFallback:
-					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,`,
-			patched: `				modelPatternAuthFallback:
-					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
-				modelPatternAuthFallbackUsed:
-					authFallbackUsed || approvedModelSelection?.substituted === true || undefined,
-				modelPatternRequested: modelPatterns.length > 0 ? modelPatterns.join(", ") : undefined,`,
-		}],
 	},
 	{
 		// 대체된 모델로 시작한 세션을 transcript 에서 구분할 수 있게 남긴다. 요청 selector
@@ -5334,12 +4775,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		marker: "Standard model selector for this spawn (item)",
 		anchor: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Caller-provided output schema;",
 		patched: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (item), e.g. \"provider/model-id:max\".\n\t * Forwards to the existing subagent model resolution (`requestModel` first,\n\t * then `task.agentModelOverrides`, then the agent definition); omitted\n\t * preserves existing behavior. Unresolvable values fall through to the next\n\t * source per existing precedence, so callers needing strictness must\n\t * pre-resolve. A `:level` suffix pins exact thinking effort unless\n\t * per-spawn `effort` overrides it.\n\t */\n\tmodel?: string;\n\t/** Caller-provided output schema;",
-		alternates: [{
-			file: "../pi-tui/src/tools/task.ts",
-			marker: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-			anchor: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-			patched: "\t/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-		}],
 	},
 	{
 		// 18.2.5: upstream 이 TaskParams 를 @oh-my-pi/pi-tui 로 옮기고 effort 타입을 인라인했다.
@@ -5347,12 +4782,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		marker: "Standard model selector for this spawn (flat form)",
 		anchor: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Caller-provided output schema;",
 		patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/**\n\t * Standard model selector for this spawn (flat form), e.g. \"provider/model-id:max\".\n\t * Same forwarding and fall-through semantics as the batch item field.\n\t */\n\tmodel?: string;\n\t/** Caller-provided output schema;",
-		alternates: [{
-			file: "../pi-tui/src/tools/task.ts",
-			marker: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-			anchor: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-			patched: "\t/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */\n\teffort?: \"lo\" | \"med\" | \"hi\";\n\t/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */\n\tmodel?: string | string[];",
-		}],
 	},
 	...TASK_SCHEMA_MODEL_EDITS,
 	{
@@ -5392,18 +4821,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 				"isolated?": "boolean",
 				"+": "delete",
 			});`,
-		alternates: [{
-			file: "src/task/types.ts",
-			marker: `				solutionSpace: "string",
-				...effortField,
-				"model?": "string | string[]",`,
-			anchor: `				solutionSpace: "string",
-				...effortField,
-				"model?": "string | string[]",`,
-			patched: `				solutionSpace: "string",
-				...effortField,
-				"model?": "string | string[]",`,
-		}],
 	},
 	{
 		file: "src/task/types.ts",
@@ -5437,18 +4854,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 			...toolsField,
 			"+": "delete",
 		});`,
-		alternates: [{
-			file: "src/task/types.ts",
-			marker: `			solutionSpace: "string",
-			...effortField,
-			"model?": "string | string[]",`,
-			anchor: `			solutionSpace: "string",
-			...effortField,
-			"model?": "string | string[]",`,
-			patched: `			solutionSpace: "string",
-			...effortField,
-			"model?": "string | string[]",`,
-		}],
 	},
 	{
 		file: "src/task/index.ts",
@@ -5673,14 +5078,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 		anchor: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
 		patched: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
 import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";`,
-		// 18.4.2: upstream 이 같은 helper 를 `@oh-my-pi/pi-utils` 에서 직접 import 한다(text stream stall 판별).
-		// 아래 BAI 재시도 항목이 쓰는 이름이 이미 들어와 있으므로 더할 것이 없다.
-		alternates: [{
-			file: "src/session/turn-recovery.ts",
-			marker: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
-			anchor: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
-			patched: `import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
-		}],
 	},
 	{
 		file: "src/session/turn-recovery.ts",
@@ -5757,20 +5154,6 @@ import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 		// (turn-recovery.ts:1623-1636·2630). 합집합으로 둔다: upstream 조건은 그대로 두고 b-ai 전송 장애(2회차 이후,
 		// 내용 없는 끊김, stream read 오류)만 뒤에 덧붙인다.
 		alternates: [{
-			file: "src/session/turn-recovery.ts",
-			excludes: "!refusalWalkRepeats &&",
-			marker: `!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
-				!baiTransportSameModelRetry`,
-			anchor: `				!(retryBudgetExhausted && classifierRefusal) &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
-			) {
-`,
-			patched: `				!(retryBudgetExhausted && classifierRefusal) &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
-				!baiTransportSameModelRetry
-			) {
-`,
-		}, {
 			// 18.9.1: classifier refusal 은 retry budget 이 아니라 refusal walk(모델당 한 번)로 끊는다(!refusalWalkRepeats).
 			// b-ai 전송 장애 조건은 refusal 과 무관하므로 같은 조건 끝에 그대로 덧붙인다(ADAPT).
 			file: "src/session/turn-recovery.ts",
@@ -6378,22 +5761,15 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 	// 이 비교에 exactLabel이 없으면 같은 계정에서 summon label만 바뀐 pin(일반 명시 pin → exact summon, 또는 그 반대)이
 	// DB 행에 반영되지 않아, 다른 프로세스·재시작이 옛 정체성으로 복원한다(RIN exact pin이 사라져 sibling 회전 가능).
 	// 아래 세 항목이 그 비교·기록·복원에 exactLabel을 넣는다. 검증: core-character-affinity-test.ts [7].
-	// 18.4.6 은 record 마다 행을 다시 쓰므로(dedupe 없음) 할 일이 없다: alternate는 그 판의 매번-쓰기 줄 no-op이다.
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
 		marker: "a label-only change must rewrite the row",
 		anchor: "\texplicit: boolean;\n\tlastUsedAtMs: number;\n};\n",
 		patched: "\texplicit: boolean;\n\tlastUsedAtMs: number;\n\t/** CUELO: exact summon label stored in the row; a label-only change must rewrite the row. */\n\texactLabel: string | undefined;\n};\n",
-		alternates: [{
-			file: "../pi-ai/src/auth/affinity.ts",
-			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-		}],
 	},
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
-		// 18.8.0 적용본도 같은 marker 를 가지므로 그 판의 provider 별 LRU 기록 줄로 가른다(아래 alternate).
+		// 18.8.0 적용본도 같은 marker 를 가지므로 그 판의 provider 별 LRU 기록 줄로 가른다.
 		excludes: "persistedSessions.set(sessionId, {",
 		marker: "\t\t\tpersisted.exactLabel === keptExactLabel &&\n",
 		anchor: `			persisted.explicit === isExplicit &&
@@ -6425,11 +5801,6 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 				exactLabel: keptExactLabel,
 			});`,
 		alternates: [{
-			file: "../pi-ai/src/auth/affinity.ts",
-			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-		}, {
 			// 18.8.0 은 persisted row 를 provider 별 LRU(sessionId 키, SESSION_AFFINITY_MAX_SESSIONS_PER_PROVIDER)로 옮겼다.
 			// 같은 비교·기록에 exactLabel 을 넣는 의미는 그대로다.
 			file: "../pi-ai/src/auth/affinity.ts",
@@ -6476,12 +5847,6 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 						lastUsedAtMs: val.lastUsedAtMs,
 						exactLabel: sessionVal.exactLabel,
 					});`,
-		alternates: [{
-			file: "../pi-ai/src/auth/affinity.ts",
-			marker: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			anchor: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-			patched: "\t\t\t\t// Expires in 30 days\n\t\t\t\tconst expiresAtSec = Math.floor(nowMs / 1000) + 30 * 24 * 60 * 60;\n\t\t\t\tthis.#store.setCache(cacheKey, JSON.stringify(sessionCredential), expiresAtSec);\n",
-		}],
 	},
 	{
 		file: "../pi-ai/src/auth/affinity.ts",
@@ -6744,149 +6109,7 @@ import { resolveUsedFraction } from "../usage";`,
 		marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
 		anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
 		excludes: ["// Prefer RIN (first Anthropic account)", "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage."],
-		legacyPatched: `		// Prefer the Anthropic account whose unused weekly quota expires soonest, inside its daily slice.
-		// Only candidates with a complete, healthy usage picture move, and only among the slots they
-		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
-		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
-		// Inside the slice: larger weekly required drain (upstream windowRequiredDrain) first.
-		// Over it: after every in-slice account, smaller overshoot first. Ties: storage order.
-		if (provider === "anthropic" && shouldRank && strategy) {
-			const nowMs = Date.now();
-			const dayMs = 86_400_000;
-			const weekly = candidates.map(candidate => {
-				const usage = candidate.usage;
-				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
-				const credential = candidate.selection.credential;
-				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
-					return undefined;
-				}
-				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
-					return undefined;
-				}
-				if (planGate && planGate(usage) !== true) return undefined;
-				const limits = reserveUsageLimits(strategy, usage, rankingContext);
-				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
-				const measured = limits.every(limit => {
-					const fraction = resolveUsedFraction(limit);
-					return (
-						limit.status !== "unknown" &&
-						typeof fraction === "number" &&
-						Number.isFinite(fraction) &&
-						fraction >= 0 &&
-						fraction < 1
-					);
-				});
-				if (!measured) return undefined;
-				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
-				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
-					return undefined;
-				}
-				const resetAt = secondary.window?.resetsAt;
-				const durationMs = secondary.window?.durationMs;
-				const used = resolveUsedFraction(secondary);
-				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
-				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
-				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
-				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
-				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
-				return {
-					overshoot: Math.max(0, used - allowance),
-					drain: windowRequiredDrain(secondary, nowMs, strategy.windowDefaults.secondaryMs),
-					index: candidate.selection.index,
-				};
-			});
-			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
-			const preferred = [...slots]
-				.sort((left, right) => {
-					const a = weekly[left]!;
-					const b = weekly[right]!;
-					return (
-						Number(a.overshoot > 0) - Number(b.overshoot > 0) ||
-						a.overshoot - b.overshoot ||
-						(a.overshoot > 0 ? 0 : b.drain - a.drain) ||
-						a.index - b.index
-					);
-				})
-				.map(pos => candidates[pos]!);
-			slots.forEach((pos, order) => {
-				candidates[pos] = preferred[order]!;
-			});
-		}
-		const preflightFailures = new Set<OAuthCandidate>();`,
 		patched: ANTHROPIC_PRIORITY_SELECTION,
-		alternates: [{
-			file: "../pi-ai/src/auth/select.ts",
-			marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
-			requires: "// CUELO: fresh Anthropic sessions prefer the lowest measured weekly usage.",
-			anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-			patched: ANTHROPIC_PRIORITY_SELECTION,
-			legacyPatched: ANTHROPIC_LOWEST_WEEKLY_SELECTION,
-		}, {
-			file: "../pi-ai/src/auth/select.ts",
-			marker: "// CUELO: fresh Anthropic sessions follow configured account priority, then storage order.",
-			requires: "// Prefer RIN (first Anthropic account)",
-			anchor: "\t\tconst preflightFailures = new Set<OAuthCandidate>();",
-			patched: ANTHROPIC_PRIORITY_SELECTION,
-			legacyPatched: `		// Prefer RIN (first Anthropic account) while it stays inside its daily slice of the weekly quota.
-		// Only candidates with a complete, healthy usage picture move, and only among the slots they
-		// already hold in the upstream ranking: unknown, partial, blocked, reserve, plan-ineligible or
-		// 5h-hot candidates keep their place. Daily slice = (elapsed whole days + 1) / window days.
-		// Inside the slice: storage order. Over it: smaller overshoot first, then storage order.
-		if (provider === "anthropic" && shouldRank && strategy) {
-			const nowMs = Date.now();
-			const dayMs = 86_400_000;
-			const weekly = candidates.map(candidate => {
-				const usage = candidate.usage;
-				if (!candidate.usageChecked || !usage || candidate.inReserve === true) return undefined;
-				const credential = candidate.selection.credential;
-				if (credential.refresh.trim().length === 0 && nowMs + OAUTH_REFRESH_SKEW_MS >= credential.expires) {
-					return undefined;
-				}
-				if (this.#deps.blocks.isBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
-					return undefined;
-				}
-				if (planGate && planGate(usage) !== true) return undefined;
-				const limits = reserveUsageLimits(strategy, usage, rankingContext);
-				if (limits.length === 0 || isUsageLimitReached(limits)) return undefined;
-				const measured = limits.every(limit => {
-					const fraction = resolveUsedFraction(limit);
-					return (
-						limit.status !== "unknown" &&
-						typeof fraction === "number" &&
-						Number.isFinite(fraction) &&
-						fraction >= 0 &&
-						fraction < 1
-					);
-				});
-				if (!measured) return undefined;
-				const { primary, secondary } = strategy.findWindowLimits(usage, rankingContext);
-				if (!primary || !secondary || normalizeUsageFraction(primary) >= PRIMARY_WINDOW_HOT_FRACTION) {
-					return undefined;
-				}
-				const resetAt = secondary.window?.resetsAt;
-				const durationMs = secondary.window?.durationMs;
-				const used = resolveUsedFraction(secondary);
-				if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= nowMs) return undefined;
-				if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < dayMs) return undefined;
-				if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
-				const elapsedMs = Math.min(durationMs, Math.max(0, durationMs - (resetAt - nowMs)));
-				const allowance = Math.min(1, ((Math.floor(elapsedMs / dayMs) + 1) * dayMs) / durationMs);
-				return { overshoot: Math.max(0, used - allowance), index: candidate.selection.index };
-			});
-			const slots = candidates.flatMap((_candidate, pos) => (weekly[pos] ? [pos] : []));
-			const preferred = [...slots]
-				.sort((left, right) => {
-					const a = weekly[left]!;
-					const b = weekly[right]!;
-					return Number(a.overshoot > 0) - Number(b.overshoot > 0) || a.overshoot - b.overshoot || a.index - b.index;
-				})
-				.map(pos => candidates[pos]!);
-			slots.forEach((pos, order) => {
-				candidates[pos] = preferred[order]!;
-			});
-		}
-		const preflightFailures = new Set<OAuthCandidate>();`,
-		}],
 	},
 	{
 		// 2026-11-12: login/upsert resets pool order, not a working Anthropic session.
@@ -6963,23 +6186,6 @@ import { resolveUsedFraction } from "../usage";`,
 			const credential = this.get(provider, sourceSessionId);
 			if (!credential) continue;`,
 		alternates: [{
-			file: "../pi-ai/src/auth/affinity.ts",
-			requires: "!this.#permits(provider, targetSessionId, credential.index)",
-			marker: "\tinherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {",
-			anchor: `	inherit(sourceSessionId: string, targetSessionId: string): number {
-		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
-		let inherited = 0;
-		for (const provider of this.#pool.providers()) {
-			const credential = this.get(provider, sourceSessionId);
-			if (!credential || !this.#permits(provider, targetSessionId, credential.index)) continue;`,
-			patched: `	inherit(sourceSessionId: string, targetSessionId: string, skipProviders?: readonly string[]): number {
-		if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0;
-		let inherited = 0;
-		for (const provider of this.#pool.providers()) {
-			if (skipProviders?.includes(provider)) continue;
-			const credential = this.get(provider, sourceSessionId);
-			if (!credential || !this.#permits(provider, targetSessionId, credential.index)) continue;`,
-		}, {
 			// 18.8.5: provider 제외는 SDK에서 upstream include 필터와 결합한다. 구현은 그대로 둔다.
 			file: "../pi-ai/src/auth/affinity.ts",
 			marker: "\t\tinclude?: (provider: string, explicit: boolean) => boolean,\n\t): number {",
@@ -7558,301 +6764,35 @@ import { $env, $envExact, getAgentDir, logger } from "@oh-my-pi/pi-utils";
 		if (accountPolicyDenial && currentModel) {`,
 	},
 	// 2026-10-17 RETIRE(사용자 결정: Vercel 판정 모드 제거): `providers.judgmentProvider: vercel` 고정 모드를 받치던 CUELO 전용 항목 전부를
-	// no-op 후보로 둔다(이 세 항목 + 아래 judgment/index.ts·model-settings.ts·settings.ts 항목). 이미 그 패치를 실은 설치(18.11.3 라이브)를
-	// --apply·--revert 가 upstream 줄로 되돌리도록 옛 적용본을 legacyPatched 로 둔다. 후보는 라이브에 배포된 18.11.3 판 하나뿐이다
-	// (이전 판의 Vercel 후보·alternates 는 같은 판의 순정·적용본을 다루던 것이라 함께 지웠다). 회귀 시험은 core-jev-judgment-test.ts 가 맡는다.
+	// no-op 후보로 둔다(이 세 항목 + 아래 judgment/index.ts·model-settings.ts·settings.ts 항목).
+	// 회귀 시험은 core-jev-judgment-test.ts 가 맡는다.
 	{
 		file: "src/judgment/index.ts",
 		marker: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
 		anchor: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
 		patched: "\ttype AssistantMessage,\n\tchatTextBackend,\n",
-		legacyPatched: "\ttype ApiKey,\n\ttype AssistantMessage,\n\tchatTextBackend,\n",
 	},
 	{
 		file: "src/judgment/index.ts",
 		marker: "\ttype Questions,\n\ttype TextBackend,\n",
 		anchor: "\ttype Questions,\n\ttype TextBackend,\n",
 		patched: "\ttype Questions,\n\ttype TextBackend,\n",
-		legacyPatched: "\ttype Questions,\n\tresolveApiKeyOnce,\n\ttype TextBackend,\n",
 	},
 	{
 		file: "src/judgment/index.ts",
 		marker: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
 		anchor: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
 		patched: "\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Host telemetry",
-		legacyPatched:
-			"\tonUsage?: (usage: JudgmentUsage) => void;\n\t/** Injectable transport for deterministic judgment backend tests. */\n\tfetch?: typeof fetch;\n\t/** Host telemetry",
 	},
 	// RETIRE (2026-09-21, 18.2.7): `JudgeKind` 에 `"vercel"` 을 더하던 항목은 없앴다(그 뒤 Vercel 판정 모드 전체도 2026-10-17 에 retire).
 	{
 		// 2026-10-17 RETIRE(사용자 결정: Vercel 판정 모드 제거): 정적 Vercel adapter 블록(VERCEL_JUDGMENT_* 상수·VercelJudge·응답 parser·
-		// usageReportingVercelJudge)을 `LocalTextBackend` 선언 앞에 심던 항목이다. 아래 legacyPatched 는 18.11.3 라이브에 배포된 그 블록
-		// 그대로이고, --apply·--revert 가 upstream 줄(anchor)로 되돌린다. Vercel 판정 요청은 `ai-gateway.vercel.sh` 로 가던 유료 경로였다.
+		// usageReportingVercelJudge)을 `LocalTextBackend` 선언 앞에 심던 항목이다.
+		// Vercel 판정 요청은 `ai-gateway.vercel.sh` 로 가던 유료 경로였다.
 		file: "src/judgment/index.ts",
 		marker: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
 		anchor: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
 		patched: "/** Keyword completions through the shared on-device tiny-model worker. */\nclass LocalTextBackend implements TextBackend {",
-		legacyPatched: `export const VERCEL_JUDGMENT_PROVIDER = "vercel";
-export const VERCEL_JUDGMENT_AUTH_PROVIDER = "vercel-ai-gateway";
-export const VERCEL_JUDGMENT_ENDPOINT = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model";
-export const VERCEL_JUDGMENT_MODEL = "typesafe-ai/jev";
-const VERCEL_JUDGMENT_TIMEOUT_MS = 3_000;
-const VERCEL_JUDGMENT_HEADERS = {
-	"content-type": "application/json",
-	"ai-gateway-protocol-version": "0.0.1",
-	"ai-gateway-auth-method": "api-key",
-	"ai-evaluation-model-specification-version": "4",
-	"ai-model-id": VERCEL_JUDGMENT_MODEL,
-} as const;
-
-interface VercelJudgeOptions {
-	apiKey: ApiKey;
-	fetch?: typeof fetch;
-	timeoutMs?: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function responseError(message: string): AIError.ProviderResponseError {
-	return new AIError.ProviderResponseError(\`Vercel judgment response: \${message}\`, {
-		provider: VERCEL_JUDGMENT_AUTH_PROVIDER,
-		kind: "envelope",
-	});
-}
-
-function probability(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
-		throw responseError(\`\${label} must be a finite number in [0, 1]\`);
-	}
-	return value;
-}
-
-function nonNegativeTokenCount(value: unknown, label: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-		throw responseError(\`\${label} must be a non-negative safe integer\`);
-	}
-	return value;
-}
-
-function exactKeys(record: Record<string, unknown>, expected: readonly string[], label: string): void {
-	const actual = Object.keys(record).sort();
-	const wanted = [...expected].sort();
-	if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-		throw responseError(\`\${label} ids do not exactly match the request\`);
-	}
-}
-
-interface VercelRounding {
-	probabilityDecimals?: number;
-	scoreDecimals?: number;
-}
-
-function parseRounding(value: unknown): VercelRounding {
-	if (value === undefined) return {};
-	if (!isRecord(value)) throw responseError("rounding must be an object");
-	const rounding: VercelRounding = {};
-	for (const key of ["probabilityDecimals", "scoreDecimals"] as const) {
-		const entry = value[key];
-		if (entry === undefined) continue;
-		if (!Number.isInteger(entry) || (entry as number) < 0 || (entry as number) > 15) {
-			throw responseError(\`rounding.\${key} must be an integer in [0, 15]\`);
-		}
-		rounding[key] = entry as number;
-	}
-	return rounding;
-}
-
-function roundedTolerance(decimals: number | undefined, terms = 1): number {
-	return decimals === undefined ? 0.000001 : terms * 0.5 * 10 ** -decimals + Number.EPSILON;
-}
-
-function distribution(
-	value: unknown,
-	keys: readonly string[],
-	label: string,
-	rounding: VercelRounding,
-): Record<string, number> {
-	if (!isRecord(value)) throw responseError(\`\${label} must be an object\`);
-	exactKeys(value, keys, label);
-	const result: Record<string, number> = {};
-	let sum = 0;
-	for (const key of keys) {
-		const entry = probability(value[key], \`\${label}.\${key}\`);
-		result[key] = entry;
-		sum += entry;
-	}
-	if (Math.abs(sum - 1) > roundedTolerance(rounding.probabilityDecimals, keys.length)) {
-		throw responseError(\`\${label} probabilities must sum to one\`);
-	}
-	return result;
-}
-
-function confidenceFor(
-	providerMetadata: unknown,
-	questionId: string,
-): number {
-	if (!isRecord(providerMetadata) || !isRecord(providerMetadata.typesafe) || !isRecord(providerMetadata.typesafe.confidence)) {
-		throw responseError(\`providerMetadata.typesafe.confidence is required for question "\${questionId}"\`);
-	}
-	return probability(
-		providerMetadata.typesafe.confidence[questionId],
-		\`providerMetadata.typesafe.confidence.\${questionId}\`,
-	);
-}
-
-function toWireQuestions(questions: Questions): Record<string, unknown> {
-	const wire: Record<string, unknown> = {};
-	for (const [id, question] of Object.entries(questions)) {
-		wire[id] = question.type === "noul" ? { ...question, type: "boolean" } : question;
-	}
-	return wire;
-}
-
-function parseVercelAnswers<Q extends Questions>(
-	request: JudgmentRequest<Q>,
-	value: unknown,
-	providerMetadata: unknown,
-	rounding: VercelRounding,
-): JudgmentResult<Q>["answers"] {
-	if (!isRecord(value)) throw responseError("answers must be an object");
-	const questionIds = Object.keys(request.questions);
-	exactKeys(value, questionIds, "answer");
-	const answers: Record<string, import("@oh-my-pi/pi-ai").Answer> = {};
-	for (const id of questionIds) {
-		const question = request.questions[id];
-		const answer = value[id];
-		if (!question || !isRecord(answer)) throw responseError(\`answer "\${id}" must be an object\`);
-		const wireType = question.type === "noul" ? "boolean" : question.type;
-		if (answer.type !== wireType) {
-			throw responseError(\`answer "\${id}" must have type "\${wireType}"\`);
-		}
-		if (question.type === "noul") {
-			answers[id] = { type: "noul", noul: probability(answer.probability, \`answers.\${id}.probability\`) };
-			continue;
-		}
-		if (question.type === "choice") {
-			const keys = Object.keys(question.criteria);
-			const probabilities = distribution(answer.probabilities, keys, \`answers.\${id}.probabilities\`, rounding);
-			if (typeof answer.choice !== "string" || !Object.hasOwn(question.criteria, answer.choice)) {
-				throw responseError(\`answer "\${id}" choice is not in the question criteria\`);
-			}
-			const selected = probabilities[answer.choice];
-			if (keys.some(key => probabilities[key] > selected + roundedTolerance(rounding.probabilityDecimals))) {
-				throw responseError(\`answer "\${id}" choice must have maximal probability\`);
-			}
-			answers[id] = {
-				type: "choice",
-				choice: answer.choice,
-				probabilities,
-				confidence: confidenceFor(providerMetadata, id),
-			};
-			continue;
-		}
-		const keys = question.criteria.map((_, index) => String(index));
-		const probabilities = distribution(answer.probabilities, keys, \`answers.\${id}.probabilities\`, rounding);
-		if (
-			typeof answer.score !== "number" ||
-			!Number.isFinite(answer.score) ||
-			answer.score < 0 ||
-			answer.score > question.criteria.length - 1
-		) {
-			throw responseError(\`answer "\${id}" score is outside its rubric\`);
-		}
-		const weighted = keys.reduce((sum, key) => sum + Number(key) * probabilities[key], 0);
-		const scoreTolerance =
-			roundedTolerance(rounding.scoreDecimals) +
-			(question.criteria.length - 1) * roundedTolerance(rounding.probabilityDecimals, keys.length);
-		if (Math.abs(answer.score - weighted) > scoreTolerance) {
-			throw responseError(\`answer "\${id}" score does not match its probability-weighted mean\`);
-		}
-		answers[id] = {
-			type: "score",
-			score: answer.score,
-			probabilities,
-			confidence: confidenceFor(providerMetadata, id),
-		};
-	}
-	return answers as JudgmentResult<Q>["answers"];
-}
-
-/** Fixed Vercel AI Gateway evaluation backend. It performs one request and never falls back to an LLM. */
-export class VercelJudge implements Judge {
-	readonly label = \`\${VERCEL_JUDGMENT_AUTH_PROVIDER}/\${VERCEL_JUDGMENT_MODEL}\`;
-	readonly #apiKey: ApiKey;
-	readonly #fetch: typeof fetch;
-	readonly #timeoutMs: number;
-
-	constructor(options: VercelJudgeOptions) {
-		this.#apiKey = options.apiKey;
-		this.#fetch = options.fetch ?? fetch;
-		this.#timeoutMs = options.timeoutMs ?? VERCEL_JUDGMENT_TIMEOUT_MS;
-	}
-
-	async judge<Q extends Questions>(
-		request: JudgmentRequest<Q>,
-		options: JudgeOptions = {},
-	): Promise<JudgmentResult<Q>> {
-		const apiKey = await resolveApiKeyOnce(this.#apiKey, options.signal);
-		if (!apiKey) throw new Error("judgment: Vercel AI Gateway API key is not configured");
-		options.signal?.throwIfAborted();
-		const timeout = AbortSignal.timeout(this.#timeoutMs);
-		const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-		const response = await this.#fetch(VERCEL_JUDGMENT_ENDPOINT, {
-			method: "POST",
-			headers: { ...VERCEL_JUDGMENT_HEADERS, authorization: "Bearer " + apiKey },
-			body: JSON.stringify({ state: request.state, questions: toWireQuestions(request.questions) }),
-			signal,
-		});
-		if (!response.ok) {
-			throw new Error(\`judgment: Vercel AI Gateway request failed with HTTP \${response.status}\`);
-		}
-		let payload: unknown;
-		try {
-			payload = await response.json();
-		} catch {
-			throw responseError("body is not valid JSON");
-		}
-		if (!isRecord(payload)) throw responseError("body must be an object");
-		const rounding = parseRounding(payload.rounding);
-		if (!isRecord(payload.usage)) throw responseError("usage must be an object");
-		const input = nonNegativeTokenCount(payload.usage.inputTokens, "usage.inputTokens");
-		const output = nonNegativeTokenCount(payload.usage.outputTokens, "usage.outputTokens");
-		return {
-			api: "vercel-evaluation",
-			provider: VERCEL_JUDGMENT_AUTH_PROVIDER,
-			model: VERCEL_JUDGMENT_MODEL,
-			answers: parseVercelAnswers(request, payload.answers, payload.providerMetadata, rounding),
-			usage: tokenUsage(input, output),
-		};
-	}
-}
-
-/** Report each Vercel judgment's usage on the session ledger, matching the TypeSafe adapter. */
-function usageReportingVercelJudge(judge: VercelJudge, onUsage: JudgeDeps["onUsage"]): Judge {
-	return {
-		label: judge.label,
-		async judge<Q extends Questions>(
-			request: JudgmentRequest<Q>,
-			options?: JudgeOptions,
-		): Promise<JudgmentResult<Q>> {
-			const result = await judge.judge(request, options);
-			onUsage?.({
-				role: VERCEL_JUDGMENT_PROVIDER,
-				api: result.api,
-				provider: result.provider,
-				model: result.model,
-				usage: result.usage,
-				stopReason: "stop",
-			});
-			return result;
-		},
-	};
-}
-
-/** Keyword completions through the shared on-device tiny-model worker. */
-class LocalTextBackend implements TextBackend {`,
 	},
 	{
 		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): `#withCandidate` 의 명시 Vercel 분기(18.11.2+ 의 images 배열 인자 판). 후보 loop 는
@@ -7861,26 +6801,6 @@ class LocalTextBackend implements TextBackend {`,
 		marker: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
 		anchor: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
 		patched: "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n",
-		legacyPatched: [
-			"\t\tconst requiresImages = images.length > 0;",
-			"\t\t// Explicit Vercel mode: one fixed evaluation request, resolved before the candidate",
-			"\t\t// chain so a failure, abort, or missing credential reaches the caller instead of",
-			"\t\t// falling back to a chat or local model. Every other value keeps the upstream chain.",
-			"\t\tif (cfgJudgmentProvider.get(this.#deps.settings) === VERCEL_JUDGMENT_PROVIDER) {",
-			"\t\t\t// The fixed evaluation request carries no images; fail like every image-incapable candidate rather than drop them.",
-			'\t\t\tif (requiresImages) throw new Error("judgment: no compatible judge candidate supports images");',
-			"\t\t\tconst vercel = new VercelJudge({",
-			"\t\t\t\tapiKey: this.#deps.registry.authStorage.keys.resolver(VERCEL_JUDGMENT_AUTH_PROVIDER, {",
-			"\t\t\t\t\tsessionId: this.#deps.sessionId,",
-			"\t\t\t\t}),",
-			"\t\t\t\tfetch: this.#deps.fetch,",
-			"\t\t\t});",
-			'\t\t\t// "native" never reads `model` (only the "online" image path does), so the session model stands in for its type.',
-			'\t\t\treturn run(usageReportingVercelJudge(vercel, this.#deps.onUsage), "native", this.#deps.sessionModel as Model);',
-			"\t\t}",
-			"\t\tconst signal = options.signal;",
-			"",
-		].join("\n"),
 	},
 	{
 		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): 위 분기가 읽던 typed handle import.
@@ -7888,49 +6808,23 @@ class LocalTextBackend implements TextBackend {`,
 		marker: 'import type { Settings } from "../config/settings";',
 		anchor: 'import type { Settings } from "../config/settings";',
 		patched: 'import type { Settings } from "../config/settings";',
-		legacyPatched: 'import type { Settings } from "../config/settings";\nimport { cfgJudgmentProvider } from "../config/model-settings";',
 	},
 	// 2026-10-17 RETIRE(사용자 결정: Experiential 탈퇴): typesafe 경로를 Experiential Labs gateway 로 보내던 설정을 지웠으므로
 	// 그 gateway decoder 의 32문항 한도(MAX_DECISION_QUESTIONS) 때문에 judge chain 이 typesafe 요청을 32개씩 나누던
 	// 2026-10-09 항목 두 개(18.9.1 typesafe.ts·18.9.2 이후 judgment/index.ts import·#createJudge)를 없앤다. judge 는 이제
-	// upstream createNativeJudge(catalog 상한) 그대로다. 이미 그 패치를 실은 설치(18.11.1 라이브)를 --apply·--revert 가
-	// upstream 줄로 되돌리도록 옛 적용본을 legacyPatched 로 둔 no-op 후보로 남긴다. 회귀 시험 core-typesafe-split-test.ts 도 지웠다.
+	// upstream createNativeJudge(catalog 상한) 그대로다.
+	// 회귀 시험 core-typesafe-split-test.ts 도 지웠다.
 	{
 		file: "src/judgment/index.ts",
 		marker: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
 		anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
 		patched: 'import * as AIError from "@oh-my-pi/pi-ai/error";\n',
-		legacyPatched: [
-			'import * as AIError from "@oh-my-pi/pi-ai/error";',
-			"// CUELO: the typesafe route's per-request question cap (see #createJudge).",
-			'import { NativeJudge as TypesafeGatewayJudge } from "@oh-my-pi/pi-ai";',
-			'import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";',
-			"",
-		].join("\n"),
 	},
 	{
 		file: "src/judgment/index.ts",
 		marker: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
 		anchor: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
 		patched: "\t\t\tconst judge = createNativeJudge(model, { apiKey, headers });\n",
-		legacyPatched: [
-			"\t\t\t// CUELO: past the typesafe question bound the judge splits the request. CUELO points the `typesafe` route at the",
-			"\t\t\t// Experiential Labs gateway, whose decoder admits at most 32 questions (`MAX_DECISION_QUESTIONS`) and answers a",
-			"\t\t\t// larger set with 400 \"Invalid decision request\"; the catalog leaves TypeSafe jev uncapped.",
-			"\t\t\tconst judge =",
-			"\t\t\t\tmodel.api === TYPESAFE_PROVIDER",
-			"\t\t\t\t\t? new TypesafeGatewayJudge({",
-			"\t\t\t\t\t\t\tapiKey,",
-			"\t\t\t\t\t\t\theaders,",
-			"\t\t\t\t\t\t\tapi: model.api,",
-			"\t\t\t\t\t\t\tprovider: model.provider,",
-			"\t\t\t\t\t\t\tmodel: model.requestModelId ?? model.id,",
-			"\t\t\t\t\t\t\tbaseUrl: model.baseUrl,",
-			"\t\t\t\t\t\t\tmaxQuestions: Math.min(resolveJudgmentQuestionsMax(model) ?? 32, 32),",
-			"\t\t\t\t\t\t})",
-			"\t\t\t\t\t: createNativeJudge(model, { apiKey, headers });",
-			"",
-		].join("\n"),
 	},
 	{
 		// 2026-10-19 사용자 결정(「1분만해」): 계정 거절(401·402·403) 뒤 judge 후보를 건너뛰는 시간을 5분에서 1분으로 줄인다.
@@ -7948,27 +6842,6 @@ class LocalTextBackend implements TextBackend {`,
 		marker: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
 		anchor: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
 		patched: 'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
-		legacyPatched: [
-			'export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });',
-			"",
-			"export const cfgJudgmentProvider = register({",
-			'\tid: "providers.judgmentProvider",',
-			'\ttype: "enum",',
-			'\tvalues: ["auto", "vercel"] as const,',
-			'\tdefault: "auto",',
-			"\tui: {",
-			'\t\ttab: "providers",',
-			'\t\tgroup: "Judgment",',
-			'\t\tlabel: "Judgment Provider",',
-			"\t\tdescription:",
-			'\t\t\t"Backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). `auto` uses the judge model role chain (native judgment APIs, then chat/local candidates). `vercel` runs one fixed Vercel AI Gateway evaluation request and never falls back to a chat or local model.",',
-			"\t\toptions: [",
-			'\t\t\t{ value: "auto", label: "Auto", description: "Judge model role chain (default)" },',
-			'\t\t\t{ value: "vercel", label: "Vercel Jev", description: "One fixed evaluation request; failures never fall back" },',
-			"\t\t],",
-			"\t},",
-			"});",
-		].join("\n"),
 	},
 	{
 		// 2026-10-17 RETIRE(Vercel 판정 모드 제거): legacy `judgmentProvider: vercel` 을 로컬 설정으로 살리던 migration 예외 셋(아래 세 항목).
@@ -7977,36 +6850,18 @@ class LocalTextBackend implements TextBackend {`,
 		marker: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
 		anchor: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
 		patched: '\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
-		legacyPatched: [
-			'\t\t\tconst legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");',
-			"\t\t\t// `vercel` selects this build's local one-shot Vercel judge adapter, not a retired",
-			"\t\t\t// provider selector: keep the key and skip the legacy judge role injection for it.",
-			'\t\t\tconst localVercelJudgment = legacyJudgmentProvider === "vercel";',
-		].join("\n"),
 	},
 	{
 		file: "src/config/settings.ts",
 		marker: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
 		anchor: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
 		patched: '\t\t\tconst nonDefaultJudge =\n\t\t\t\t(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||',
-		legacyPatched: [
-			"\t\t\tconst nonDefaultJudge =",
-			"\t\t\t\t(!localVercelJudgment &&",
-			'\t\t\t\t\ttypeof legacyJudgmentProvider === "string" &&',
-			'\t\t\t\t\tlegacyJudgmentProvider !== "auto") ||',
-		].join("\n"),
 	},
 	{
 		file: "src/config/settings.ts",
 		marker: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
 		anchor: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
 		patched: "\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
-		legacyPatched: [
-			"\t\t\t\t// The local explicit mode is a live selection setting, not a retired",
-			"\t\t\t\t// selector; it must survive for the judge adapter to read.",
-			'\t\t\t\tif (key === "judgmentProvider" && localVercelJudgment) continue;',
-			"\t\t\t\tremoveLegacy(providerSettings, key, `providers.${key}`);",
-		].join("\n"),
 	},
 	// --- usage 보고의 저장 행 귀속 (localCredentialId) ---
 	// API 키 계정(opencode-go 등)의 usage 보고에는 email·accountId가 없어 localCredentialId가
@@ -8509,18 +7364,11 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 		// canonical todo tool receipt.
 		file: "src/modes/interactive-mode.ts",
 		// 18.8.0 은 이 flag 를 lifecycle(전체 HUD 동기화)·progress(subagent key 가 바뀔 때만 다시 그림) 구분에 쓴다.
-		// 그 판에서는 필드를 남기고(아래 no-op alternate) reconcile 호출만 #185 의 18.8.0 후보가 걷어낸다.
+		// 그 판에서는 필드를 남기고 reconcile 호출만 #185 의 18.8.0 후보가 걷어낸다.
 		excludes: "#todoHudSubagentKey",
 		marker: "Subagent lifecycle is review evidence only; it never accepts TODO completion.",
 		anchor: `	#observerUiSyncNeedsTodoReconcile = false;`,
 		patched: `	// Subagent lifecycle is review evidence only; it never accepts TODO completion.`,
-		alternates: [{
-			file: "src/modes/interactive-mode.ts",
-			requires: "#todoHudSubagentKey",
-			marker: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
-			anchor: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
-			patched: "\t#observerUiSyncNeedsTodoReconcile = false;\n\t/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */\n",
-		}],
 	},
 	{
 		// 18.2.10 은 이 메서드의 `appendCustomEntry` 호출만 여러 줄로 재정렬했다(의미 변화 없음).
@@ -8593,8 +7441,7 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 	},
 	{
 		// 18.4.5(#3821 subagent live preview)는 #cancelObserverUiSyncTimer 끝에 #cancelSubagentPreviewTick() 을 더했다.
-		// lifecycle 이 TodoTracker 를 바꾸지 않게 reconcile 경로만 걷어내고, upstream 의 preview tick 취소는 그대로 둔다
-		// (alternate). 두 후보의 marker 는 각자의 cancel 함수 전체라 서로의 결과·순정본에 들어 있지 않다.
+		// lifecycle 이 TodoTracker 를 바꾸지 않게 reconcile 경로만 걷어내고, upstream 의 preview tick 취소는 그대로 둔다.
 		file: "src/modes/interactive-mode.ts",
 		marker: "\t#cancelObserverUiSyncTimer(): void {\n\t\tif (this.#observerUiSyncTimer) {\n\t\t\tclearTimeout(this.#observerUiSyncTimer);\n\t\t\tthis.#observerUiSyncTimer = undefined;\n\t\t}\n\t}",
 		anchor: `	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
@@ -8653,106 +7500,6 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 			this.#observerUiSyncTimer = undefined;
 		}
 	}`,
-		alternates: [{
-			file: "src/modes/interactive-mode.ts",
-			marker: "\t#cancelObserverUiSyncTimer(): void {\n\t\tif (this.#observerUiSyncTimer) {\n\t\t\tclearTimeout(this.#observerUiSyncTimer);\n\t\t\tthis.#observerUiSyncTimer = undefined;\n\t\t}\n\t\tthis.#cancelSubagentPreviewTick();\n\t}",
-			anchor: `	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
-		if (kind !== "progress") {
-			this.#observerUiSyncNeedsTodoReconcile = true;
-		}
-		if (this.#observerUiSyncTimer) return;
-		this.#observerUiSyncTimer = setTimeout(() => {
-			this.#observerUiSyncTimer = undefined;
-			this.#flushObserverUiSync();
-		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
-		this.#observerUiSyncTimer.unref?.();
-	}
-
-	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			this.#observerUiSyncNeedsTodoReconcile = false;
-			this.#reconcileTodosWithSubagents();
-		}
-		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-		this.#renderTodoList();
-		this.#renderSubagentList();
-		this.ui.requestRender();
-	}
-
-	#cancelObserverUiSyncTimer(): void {
-		if (this.#observerUiSyncTimer) {
-			clearTimeout(this.#observerUiSyncTimer);
-			this.#observerUiSyncTimer = undefined;
-		}
-		this.#observerUiSyncNeedsTodoReconcile = false;
-		this.#cancelSubagentPreviewTick();
-	}`,
-			patched: `	#scheduleObserverUiSync(_kind: SessionObserverChangeKind): void {
-		// Lifecycle changes only refresh observer and TODO presentation. They do
-		// not constitute Main acceptance and therefore never change TodoTracker.
-		if (this.#observerUiSyncTimer) return;
-		this.#observerUiSyncTimer = setTimeout(() => {
-			this.#observerUiSyncTimer = undefined;
-			this.#flushObserverUiSync();
-		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
-		this.#observerUiSyncTimer.unref?.();
-	}
-
-	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
-		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-		this.#renderTodoList();
-		this.#renderSubagentList();
-		this.ui.requestRender();
-	}
-
-	#cancelObserverUiSyncTimer(): void {
-		if (this.#observerUiSyncTimer) {
-			clearTimeout(this.#observerUiSyncTimer);
-			this.#observerUiSyncTimer = undefined;
-		}
-		this.#cancelSubagentPreviewTick();
-	}`,
-		}, {
-			// 18.8.0 은 flush 를 lifecycle 변화(reconcile·HUD 동기화·다시 그림)와 progress tick(subagent key 가 바뀔 때만
-			// 다시 그림)으로 갈랐다(upstream auto-clear 수정). 그 구분은 그대로 두고 lifecycle 분기의 reconcile 호출만 뺀다.
-			file: "src/modes/interactive-mode.ts",
-			marker: "\t\t\t// Lifecycle changes only refresh observer and TODO presentation. They do\n",
-			anchor: `	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			this.#observerUiSyncNeedsTodoReconcile = false;
-			this.#reconcileTodosWithSubagents();
-			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);`,
-			patched: `	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			// Lifecycle changes only refresh observer and TODO presentation. They do
-			// not constitute Main acceptance and therefore never change TodoTracker.
-			this.#observerUiSyncNeedsTodoReconcile = false;
-			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);`,
-		}, {
-			// 18.13.1(공개 이슈 #52): flush 가 badge·todo·HUD 변화 flag(`badgeChanged`/`todoChanged`/`hudChanged`)를 모아 바뀐 것이
-			// 있을 때만 다시 그린다. 그 redraw 최적화는 그대로 두고, lifecycle 분기에서 #reconcileTodosWithSubagents() 호출만 뺀다.
-			// `#observerUiSyncNeedsTodoReconcile` 는 계속 세우고 내려 lifecycle 이벤트에서는 HUD 동기화(#syncTodoHudState)와 다시 그림을 유지한다.
-			// 18.8.0 후보의 marker(`\t\t\t// Lifecycle changes only refresh ... They do\n`)가 이 적용본의 부분문자열이 되면 두 후보가 모두
-			// applied 로 성립해 ambiguous 가 되므로, 주석 문구를 그 marker 와 겹치지 않게 했다.
-			file: "src/modes/interactive-mode.ts",
-			requires: "const badgeChanged = this.syncRunningSubagentBadge({ requestRender: false });",
-			marker: "\t\t\t\t// A child lifecycle event refreshes observer and TODO presentation. A finished child is review evidence,\n",
-			anchor: `			if (this.#observerUiSyncNeedsTodoReconcile) {
-				this.#observerUiSyncNeedsTodoReconcile = false;
-				this.#reconcileTodosWithSubagents();
-				this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-			}`,
-			patched: `			if (this.#observerUiSyncNeedsTodoReconcile) {
-				// A child lifecycle event refreshes observer and TODO presentation. A finished child is review evidence,
-				// not Main acceptance, so this path never changes TodoTracker.
-				this.#observerUiSyncNeedsTodoReconcile = false;
-				this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-			}`,
-		}],
 	},
 	{
 		// 2026-09-21 실사용: 사용자는 `mnemopi.autoRetain: false` 로 자동 턴 저장을 껐는데도
@@ -8808,19 +7555,6 @@ function staticInstructions(autoRetain: boolean): string {
 		patched: `		const parts = [staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))];`,
 		alternates: [{
 			file: "src/mnemopi/backend.ts",
-			// 18.9.1 은 본문을 withLoopPhase("mnemopi.recall") 로 감싸 배열을 여러 줄로 폈다. 두 판 적용본의 marker 가
-			// 같으므로 그 호출 유무로 가른다(ADAPT).
-			excludes: 'withLoopPhase("mnemopi.recall"',
-			marker: "autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings)",
-			anchor: `		const parts = [prompt.render(mnemopiInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];`,
-			patched: `		const parts = [
-			prompt.render(mnemopiInstructions, {
-				toolRefs: memoryToolRefs(session?.getXdevToolEntries()),
-				autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings),
-			}),
-		];`,
-		}, {
-			file: "src/mnemopi/backend.ts",
 			requires: 'withLoopPhase("mnemopi.recall"',
 			marker: "autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings)",
 			anchor: `			const parts = [
@@ -8853,16 +7587,6 @@ function staticInstructions(autoRetain: boolean): string {
 					.slice(instructions.length)
 					.trim() || undefined;`,
 		alternates: [{
-			file: "src/mnemopi/backend.ts",
-			marker: "autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? cfgMnemopiAutoRetain.get(session.settings)",
-			anchor: `			const instructions = prompt.render(mnemopiInstructions, {
-				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
-			});`,
-			patched: `			const instructions = prompt.render(mnemopiInstructions, {
-				toolRefs: memoryToolRefs(session.getXdevToolEntries()),
-				autoRetain: (state?.aliasOf ?? state)?.config.autoRetain ?? cfgMnemopiAutoRetain.get(session.settings),
-			});`,
-		}, {
 			// 18.9.1 은 첫 턴 회상 예산 계산을 backend 에서 state.budgetRecallBlock 으로 옮겼다(회상 블록을 transcript 에
 			// 남기면서 전달본을 그 자리에서 자른다). 같은 안내 블록 길이로 잘라야 한다는 목적은 그대로라 그 자리의 렌더에
 			// 같은 autoRetain 값을 넘긴다(ADAPT). state 에는 config 가 늘 있으므로 settings fallback 은 필요 없다.
@@ -8991,17 +7715,6 @@ function staticInstructions(autoRetain: boolean): string {
 				: "";
 			throw new Error(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
 		alternates: [{
-			file: "src/internal-urls/skill-protocol.ts",
-			marker: "// 18.3.1 resolves the current rule context from the active session.",
-			anchor: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
-		throw new Error(\`Unknown skill: \${skillName}\\nAvailable: \${availableStr}\`);`,
-			patched: `		const availableStr = available.length > 0 ? available.join(", ") : "none";
-		// 18.3.1 resolves the current rule context from the active session.
-		const ruleHint = (context?.rules ?? getActiveRules()).some(r => r.name === skillName)
-			? \`\\n\${skillName} is a rule, not a skill: read rule://\${skillName}\`
-			: "";
-		throw new Error(\`Unknown skill: \${skillName}\${ruleHint}\\nAvailable: \${availableStr}\`);`,
-		}, {
 			// 18.9.1 은 이 throw 를 UnknownSkillError 로 바꿔, 아무 skill 도 갖지 않은 이름이면 resolve 가 MCP 서버가 광고한
 			// 같은 skill:// 자원을 찾게 했다. 그 오류 종류를 지켜야 MCP fallback 과 locate 의 null 반환이 그대로다(ADAPT).
 			// skillTargetPath 에는 ResolveContext 가 없다: 18.3.1 후보의 `context?.rules` 는 이 함수 안에서
@@ -9025,13 +7738,6 @@ function staticInstructions(autoRetain: boolean): string {
 		anchor: 'import { getActiveSkills } from "../extensibility/skills";',
 		patched: `import { getActiveSkills } from "../extensibility/skills";
 import { getActiveRules } from "../capability/rule";`,
-		alternates: [{
-			file: "src/internal-urls/skill-protocol.ts",
-			marker: 'import { getActiveSkills, type Skill } from "../extensibility/skills";\nimport { getActiveRules } from "../capability/rule";',
-			anchor: 'import { getActiveSkills, type Skill } from "../extensibility/skills";',
-			patched: `import { getActiveSkills, type Skill } from "../extensibility/skills";
-import { getActiveRules } from "../capability/rule";`,
-		}],
 	},
 	{
 		// --- IRC wake 턴의 missing-yield 가 완료된 SubAgent 를 failed 로 뒤집는 결함 ---
@@ -9506,11 +8212,6 @@ const LOG_FILE = "output.log";
 		brokerDroppedHostEnv.add(name);
 	}
 `,
-		// 2026-10-07 이전 적용본(이름을 기억하지 않는다). 그 위에 다시 적용하면 이 본문으로 바뀐다.
-		legacyPatched: `	delete process.env[DAEMON_IDLE_GRACE_ENV];
-	// HANSE: broker env drops inherited CUELO next server env
-	for (const name of hostNextServerEnvUnsets(process.env, {})) delete process.env[name];
-`,
 	},
 	{
 		// POSIX PTY service 는 사용자 셸(bash·zsh·fish)로 `exec <argv>` 를 띄운다. 셸과 무관하게 argv 앞에 `env -u NAME…` 를
@@ -9665,11 +8366,10 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		// 2026-10-17: native 는 배치에서 보지 않은 줄을 쓴 첫 파일 하나만 거부하고 그 파일의 보인 줄만 본 것으로 기록한다.
 		// "그대로 재시도하면 성공" 안내를 믿고 같은 배치를 5번 다시 보냈는데 매번 다른 파일이 거부됐다. 거부 문구는 아래
-		// #seenLineRejection 이 배치 전체로 모아 만든다. 위 localize 적용본(legacyPatched)은 이 줄로 바뀐다.
+		// #seenLineRejection 이 배치 전체로 모아 만든다.
 		file: "src/edit/index.ts",
 		marker: "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };",
 		anchor: "\t\t\treturn { content: [{ type: \"text\", text: outcome.text }], isError: true };\n",
-		legacyPatched: "\t\t\treturn { content: [{ type: \"text\", text: localizeSeenLineRejection(outcome.text) }], isError: true };\n",
 		patched: "\t\t\treturn { content: [{ type: \"text\", text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };\n",
 	},
 	{
@@ -9678,7 +8378,7 @@ function operationFromNative(op: string): Operation | undefined {
 		// 검사 전용 API 가 없고(preview 는 seen-line 검사를 하지 않는다) 줄 범위를 TS 에서 다시 풀면 block(*) 해석이 갈라진다.
 		// 0.10.27: 실행을 대상 snapshot 을 복사한 임시 store 에서 돌려 세션 store 의 no-op 횟수에 넣지 않고(0.10.26 은 STOP 이
 		// 한 번 일찍 왔다) 새로 기록된 본 줄만 세션 store 로 옮긴다. 복사를 보장할 수 없으면 0.10.26 처럼 세션 store 에서 돈다.
-		// 요약 줄은 cwd 밖 파일을 '../' 대신 절대 경로로 적는다. 0.10.26 적용본(legacyPatched)은 이 본문으로 바뀐다.
+		// 요약 줄은 cwd 밖 파일을 '../' 대신 절대 경로로 적는다.
 		file: "src/edit/index.ts",
 		marker: "// HANSE: batch-wide seen-line rejection on a scratch store",
 		anchor: "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
@@ -9826,86 +8526,6 @@ function operationFromNative(op: string): Operation | undefined {
 	}
 
 ` + "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
-		legacyPatched: `	// HANSE: batch-wide seen-line rejection
-	/**
-	 * Native apply stops at the first file whose edit anchors undisplayed lines and records only that
-	 * file's shown lines as seen, so a multi-file payload resent verbatim was rejected once per file
-	 * (2026-10-17: five identical resends, a different file each time). Re-run the same payload through
-	 * native with a writer that refuses every write: each run records the next unseen file exactly as a
-	 * verbatim resend would, until a run reaches the writer (every file now passes), rejects a file
-	 * again (past the preview cap native records nothing) or fails otherwise. Nothing is written, and only
-	 * a run that reached the writer counts as passing. Each probe is a native run, so it also counts
-	 * toward the byte-identical no-op guard (a no-op file in the batch reaches STOP one resend sooner);
-	 * a rejection that already reports that guard is not probed. A single-target payload keeps the
-	 * native message.
-	 */
-	async #seenLineRejection(params: EditParams, argsJson: string, text: string, signal?: AbortSignal): Promise<string> {
-		const cwd = this.session.cwd;
-		// Native no-op guard errors begin a line with these phrases. A file name or a displayed source line
-		// cannot, because the seen-line head starts with "This edit" and preview rows with their line number.
-		const noopGuard = /^(?:STOP\\. Edits to .+ have been a byte-identical no-op \\d+ times in a row|Edits to .+ parsed and applied cleanly, but produced no change: )/m;
-		const fileOf = (message: string) => {
-			const display = [...message.matchAll(SEEN_LINE_HEAD)][0]?.[2];
-			return display === undefined ? undefined : path.resolve(cwd, display);
-		};
-		const first = fileOf(text);
-		const targets = new Set(this.#inspect(params).paths.map(target => path.resolve(cwd, target)));
-		if (first === undefined || targets.size < 2 || noopGuard.test(text)) return localizeSeenLineRejection(text);
-		const rejections = [text];
-		const rejected = new Set([first]);
-		let passed = false;
-		let failure: string | undefined;
-		for (let run = 0; run < targets.size && !signal?.aborted; run++) {
-			let reachedWriter = false;
-			let outcome: { isError: boolean; text: string } | undefined;
-			let probe: OpenEditSession | undefined;
-			try {
-				probe = this.#openSession(false, signal);
-				probe.native.setArgsJson(argsJson);
-				probe.native.finish();
-				outcome = await probe.native.apply({ lspFlush: false }, async () => {
-					reachedWriter = true;
-					throw new Error("seen-line probe writes nothing");
-				});
-			} catch (error) {
-				if (!reachedWriter) failure = error instanceof Error ? error.message : String(error);
-			} finally {
-				probe?.native.close();
-			}
-			if (reachedWriter) {
-				passed = true;
-				break;
-			}
-			// A thrown probe (failure set above) or an error-free outcome that never reached the writer
-			// proves nothing about the remaining files.
-			if (outcome === undefined || !outcome.isError) break;
-			const file = fileOf(outcome.text);
-			if (file === undefined) failure = outcome.text;
-			if (file === undefined || rejected.has(file)) break;
-			rejected.add(file);
-			rejections.push(outcome.text);
-		}
-		if (passed && rejections.length === 1) return localizeSeenLineRejection(text);
-		const shown = (target: string) => path.relative(cwd, target) || target;
-		const parts = [
-			"이 배치는 아무 파일도 쓰지 않았다. 보지 않은 줄을 기준으로 한 파일 " + rejections.length + "개: " + [...rejected].map(shown).join(", ") + ".",
-			...rejections.map(message => localizeSeenLineRejection(message.replace(SEEN_LINE_TAIL, "").trimEnd())),
-		];
-		if (failure !== undefined) parts.push("같은 배치를 다시 보내면 다음 오류로도 실패한다:\\n" + localizeSeenLineRejection(failure));
-		// Past the preview cap native records nothing, and a probe that stopped early never reached the
-		// remaining files, so only a probe that reached the writer may promise the verbatim resend.
-		const unchecked = passed || failure !== undefined ? [] : [...targets].filter(target => !rejected.has(target)).map(shown);
-		parts.push(
-			passed
-				? "파일마다 건드리려던 내용과 맞는지 확인한 뒤 같은 배치를 같은 [path#tag] 헤더로 다시 보낸다. 위 줄은 모두 본 것으로 기록돼 다시 읽지 않고 그대로 재시도해도 이제 성공한다. 내용이 다르면 그 파일의 줄 번호를 고친다."
-				: "그대로 다시 보내도 성공한다는 보장은 없다." +
-						(failure !== undefined ? " 위 오류를 먼저 고친다." : "") +
-						(unchecked.length > 0 ? " 보지 않은 줄 검사를 마치지 못했을 수 있는 파일: " + unchecked.join(", ") + ". 그 파일의 대상 범위도 먼저 읽거나 배치를 파일별로 나눈다." : ""),
-		);
-		return parts.join("\\n\\n");
-	}
-
-` + "\t/**\n\t * TTSR asks `matcherPaths` and `matcherEntries` (and approval asks again)\n",
 	},
 	{
 		// 위 #seenLineRejection 의 probe 가 세션 store 대신 임시 store 로 native 세션을 열 수 있게 한다(기본값은 그대로 세션 store).
@@ -9953,7 +8573,6 @@ function operationFromNative(op: string): Operation | undefined {
 		marker: "// HANSE: recall line carries memory id",
 		anchor: "\t\treturn `- ${content}${source}${date}`;\n",
 		patched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${recallProvenanceNote(result)}${memoryId}`;\n",
-		legacyPatched: "\t\t// HANSE: recall line carries memory id\n\t\tconst memoryId = result.id ? ` (id: ${result.id})` : \"\";\n\t\treturn `- ${content}${source}${date}${memoryId}`;\n",
 		alternates: [{
 			file: "src/mnemopi/state.ts",
 			requires: "findPersistedRecall",
@@ -10217,23 +8836,11 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		// 출처 구분: 갱신해도 최초 session/cwd 는 남고 updated_* 가 최신 정정자다. 실효 embedding 입력이 같으면 벡터를 둔다(#30).
 		// 이슈 #32: topic 근거(kind·citations)는 이 함수가 본문·임베딩과 같은 쓰기 단위로 저장한다.
-		// 본 후보의 legacyPatched 는 #32 이전에 배포된 embedding 보존판(HEAD b8f1aad)이고, alternates 는 embedding 보존 이전(출처 구분) 적용본을 옮긴다.
 		file: "src/tools/learn.ts",
 		marker: "// HANSE: learn topic evidence is stored with the topic row",
 		anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
 		excludes: learnTopicUpsertLegacyBlock,
-		legacyPatched: learnTopicUpsertPreEvidenceBlock,
 		patched: learnTopicUpsertBlock,
-		alternates: [
-			{
-				file: "src/tools/learn.ts",
-				marker: "// HANSE: learn topic evidence is stored with the topic row",
-				anchor: "export class LearnTool implements AgentTool<LearnSchema> {",
-				requires: learnTopicUpsertLegacyBlock,
-				legacyPatched: learnTopicUpsertLegacyBlock,
-				patched: learnTopicUpsertBlock,
-			},
-		],
 	},
 	{
 		// learn 은 rememberScoped 가 돌려준 기억 id 를 버리고 "Lesson stored." 만 알렸다. 교훈을 뒤에서
@@ -10241,40 +8848,19 @@ function operationFromNative(op: string): Operation | undefined {
 		// 18.3.3은 호출을 `rememberScoped(memory, {...}, target)` 3인자로 펼쳤다(learn.ts:110-134,
 		// global scope 지원). 반환값(기억 id)은 그대로 string 이다.
 		file: "src/tools/learn.ts",
-		// 이슈 #32: topic 호출이 근거(evidence)를 함께 넘긴다. 본 후보의 legacyPatched 는 근거를 넘기지 않던 배포본(HEAD b8f1aad)이다.
+		// 이슈 #32: topic 호출이 근거(evidence)를 함께 넘긴다.
 		marker: "// HANSE: learn reports memory id",
 		anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
 		excludes: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
-		legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget()) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
 		patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget(), evidence) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
-		alternates: [
-			{
-				file: "src/tools/learn.ts",
-				marker: "// HANSE: learn reports memory id",
-				anchor: "\t\t\ttry {\n\t\t\t\tstate.rememberScoped(\n",
-				requires: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
-				legacyPatched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst memoryId = state.rememberScoped(\n",
-				patched: "\t\t\ttry {\n\t\t\t\t// HANSE: learn reports memory id\n\t\t\t\tconst topicResult = params.topic ? upsertLearnTopic(state, params, target ?? state.getScopedRetainTarget(), evidence) : undefined;\n\t\t\t\tconst memoryId = topicResult?.id ?? state.rememberScoped(\n",
-			},
-		],
 	},
 	{
 		// 2026-10-23 비슷한 기억 알림: 저장 직후 같은 bank 의 비슷한 기존 기억을 결과 문구에 덧붙인다(저장은 바꾸지 않는다: 조회 실패는 learnSimilarHint 가 삼킨다).
-		// legacyPatched 는 revision 까지 알리던 배포본이고, 더 옛 판(id 만 알림)은 아래 alternate 가 받는다.
 		file: "src/tools/learn.ts",
 		marker: "memoryMessage += await learnSimilarHint(",
 		anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
 		excludes: "\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n",
-		legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t} catch (error) {\n",
 		patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t\t// HANSE: learn lists similar existing memories\n\t\t\t\tif (memoryId) memoryMessage += await learnSimilarHint(state, target, params.memory, memoryId);\n\t\t\t} catch (error) {\n",
-		alternates: [{
-			file: "src/tools/learn.ts",
-			requires: "\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n",
-			marker: "memoryMessage += await learnSimilarHint(",
-			anchor: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t} catch (error) {\n",
-			legacyPatched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;\n\t\t\t} catch (error) {\n",
-			patched: "\t\t\t\t\ttarget,\n\t\t\t\t);\n\t\t\t\tif (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : \"\"})`;\n\t\t\t\t// HANSE: learn lists similar existing memories\n\t\t\t\tif (memoryId) memoryMessage += await learnSimilarHint(state, target, params.memory, memoryId);\n\t\t\t} catch (error) {\n",
-		}],
 	},
 	{
 		// 위 항목의 짝. learnSimilarHint 는 managed skill schema 바로 뒤에 둔다(근거 블록·topic 블록의 anchor 와 겹치지 않는 순정 줄이다).
@@ -10293,20 +8879,17 @@ function operationFromNative(op: string): Operation | undefined {
 	{
 		// 2026-10-17 근거형 learn: 검증·metadata 보조 함수와 kind·citations schema 는 learnSchemaBase 앞에 한 덩어리로 둔다.
 		file: "src/tools/learn.ts",
-		// legacyPatched 는 citation 의 비밀 형태 거절 이전 적용본이다(#32).
-		// 2026-10-17 18.11.3 이식: 경로 오류가 루트를 가린 새 판. #32 배포본(learnEvidenceIssue32Block)은 아래 alternate 의
-		// legacyPatched 로 받는다. 두 후보는 #32 이후에만 있는 비밀 거절 주석으로 서로 배타적이다(순정·옛 판 = 본 후보).
+		// 2026-10-17 18.11.3 이식: 경로 오류가 루트를 가린 새 판.
+		// 두 후보는 #32 이후에만 있는 비밀 거절 주석으로 서로 배타적이다(순정·옛 판 = 본 후보).
 		marker: LEARN_EVIDENCE_MASKED_MARKER,
 		excludes: LEARN_EVIDENCE_SINCE_32,
 		anchor: "const learnSchemaBase = type({\n",
-		legacyPatched: learnEvidenceLegacyBlock,
 		patched: learnEvidenceBlock,
 		alternates: [{
 			file: "src/tools/learn.ts",
 			requires: LEARN_EVIDENCE_SINCE_32,
 			marker: LEARN_EVIDENCE_MASKED_MARKER,
 			anchor: "const learnSchemaBase = type({\n",
-			legacyPatched: learnEvidenceIssue32Block,
 			patched: learnEvidenceBlock,
 		}],
 	},
@@ -10343,11 +8926,10 @@ function operationFromNative(op: string): Operation | undefined {
 	},
 	{
 		// 이슈 #32: 별도 stamp 호출(저장 뒤 두 번째 쓰기)을 없앴다. 근거는 upsertLearnTopic 이 저장한다.
-		// legacyPatched 는 그 stamp 호출을 넣었던 배포본(HEAD b8f1aad)이다. 원본·#32 이후 상태에서는 앵커를 그대로 둔다.
+		// 원본·#32 이후 상태에서는 앵커를 그대로 둔다.
 		file: "src/tools/learn.ts",
 		marker: "// HANSE: learn topic evidence has no separate stamp write",
 		anchor: '\t\t} else if (backend === "local") {\n',
-		legacyPatched: '\t\t\t// HANSE: learn evidence of a topic lesson follows its newest revision\n\t\t\tif (params.topic) stampLearnTopicEvidence(target ?? state.getScopedRetainTarget(), params.topic, evidence);\n\t\t} else if (backend === "local") {\n',
 		patched: '\t\t\t// HANSE: learn topic evidence has no separate stamp write\n\t\t} else if (backend === "local") {\n',
 	},
 	{
@@ -10398,48 +8980,15 @@ function operationFromNative(op: string): Operation | undefined {
 		marker: "// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(",
 		anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\tthrow new ToolError(\"ready and env require a service name.\");\n",
 		patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(\"ready requires a service name.\");\n",
-		// 18.4.2: upstream 이 거절 대신 "Ignored ready and env" 알림으로 바꿨다. ready 는 upstream 대로 알림만
-		// 남기고, env 는 무시하지 않고 아래 항목이 명령 앞 export 로 넣는다.
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(",
-			anchor: "\t\t} else if (ready !== undefined || env !== undefined) {\n\t\t\t// Nothing can honour ready/env without a service to attach them to;\n\t\t\t// running the command the caller did ask for beats failing the call.\n\t\t\tconst ignored = [ready && \"ready\", env && \"env\"].filter(Boolean).join(\" and \");\n\t\t\tpendingNotices.push(`Ignored ${ignored}: service-only, and no service name was given.`);\n",
-			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// HANSE: env without a service name exports into the command\n\t\t\tpendingNotices.push(\"Ignored ready: service-only, and no service name was given.\");\n",
-		}, {
-			// 18.4.4: upstream 이 env 파라미터를 지우면서 알림은 ready 만 남았다. 이미 우리가 바라는 형태라 적용할 것이 없다.
-			file: "src/tools/bash.ts",
-			marker: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
-			anchor: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
-			patched: "\t\t} else if (ready !== undefined) {\n\t\t\t// Nothing can honour ready without a service to attach it to;\n",
-		}, {
-			// 2026-10-16 18.11.1: upstream 이 ready 알림 조건을 log/port 가 실제로 준 경우로 좁혔다(#15629). 이 분기는 여전히 env 를
-			// 거절·무시하지 않는다(env 는 아래 export 항목이 맡는다). 이미 우리가 바라는 형태라 적용할 것이 없다.
-			file: "src/tools/bash.ts",
-			marker: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
-			anchor: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
-			patched: "\t\t} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {\n\t\t\t// Host/timeout only configure a readiness condition; neither requests one,\n",
-		}],
 	},
 	{
 		// 위 항목의 짝. 명령 검사(interceptor)·승인·worktree 재작성이 끝난 뒤, env 를 이 호출의 env 덧씌우기(sessionEnv)에 합친다.
 		// 2026-11-06: 예전 판은 env 를 명령 앞 export 로 붙여서 그 값이 지속 셸에 남아 다음 bash 호출까지 따라갔다(11-05 집 세션
 		// 01a1aace 에서 격리용 HOME·OMP_CORE_PATCH_TARGET 이 남아 다음 검사가 실패). sessionEnv 는 일반·백그라운드·PTY·client
-		// terminal·service 경로가 모두 받는 호출 단위 env 이고, 지속 셸은 이 값을 그 실행에만 쓴다. 배포된 옛 본문은
-		// legacyPatched 로 두어 재적용이 새 본문으로 바꾼다.
+		// terminal·service 경로가 모두 받는 호출 단위 env 이고, 지속 셸은 이 값을 그 실행에만 쓴다.
 		file: "src/tools/bash.ts",
 		marker: "// HANSE: env joins this call's env overlay",
 		anchor: "\t\tinvalidateGithubCacheForBashCommand(command);\n",
-		legacyPatched: `		invalidateGithubCacheForBashCommand(command);
-		// HANSE: non-service env becomes a leading export (18.4.4: service env too — upstream dropped launch env)
-		if (env) {
-			const exports: string[] = [];
-			for (const [key, value] of Object.entries(env)) {
-				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new ToolError("Invalid env name: " + key);
-				exports.push("export " + key + "='" + value.replaceAll("'", "'\\\\''") + "'");
-			}
-			if (exports.length > 0) command = exports.join("; ") + "; " + command;
-		}
-`,
 		patched: `		invalidateGithubCacheForBashCommand(command);
 		// HANSE: env joins this call's env overlay (a leading export stayed in the persistent shell for later calls)
 		if (env) {
@@ -10452,81 +9001,44 @@ function operationFromNative(op: string): Operation | undefined {
 `,
 	},
 	// 18.4.4 는 bash 도구의 `env` 파라미터를 통째로 지웠다(pi-coding-agent CHANGELOG "Removed"). env 는 사용자의 기존 도구
-	// 계약이라 upstream 삭제 hunk 를 되돌린다(아래 여섯 항목). 각 항목의 본 후보는 18.4.4 원문에 `// HANSE: env restored` 를
-	// 붙여 복원하고, alternate 는 env 가 원래 있는 18.4.3 원문의 no-op 이다. 18.4.3 에서 --revert 가 upstream 의
-	// env 코드를 지우지 않도록 두 후보의 marker 가 서로의 결과에 들어 있지 않게 나눴다.
+	// 계약이라 upstream 삭제 hunk 를 되돌린다(아래 여섯 항목). 각 항목은 18.4.4 원문에
+	// `// HANSE: env restored` 를 붙여 복원한다.
 	// service 도 위 항목이 합친 호출 단위 env(sessionEnv)를 launch 의 env 덧씌우기로 받는다.
 	{
 		file: "src/tools/bash.ts",
 		marker: "\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({",
 		anchor: "\t}),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
 		patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
-			anchor: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
-			patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\nconst bashSchemaWithAsyncAndService = type({",
-		}],
 	},
 	{
 		file: "src/tools/bash.ts",
 		marker: "\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\ntype BashToolSchema =",
 		anchor: "\t}),\n});\n\ntype BashToolSchema =",
 		patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"), // HANSE: env restored\n});\n\ntype BashToolSchema =",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
-			anchor: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
-			patched: "\t}),\n\t\"env?\": type.record(\"string\", \"string\"),\n});\n\ntype BashToolSchema =",
-		}],
 	},
 	{
 		file: "src/tools/bash.ts",
 		marker: "\tenv?: Record<string, string>; // HANSE: env restored\n",
 		anchor: "\tready?: ServiceReady;\n\tasync?: boolean;",
 		patched: "\tready?: ServiceReady;\n\tenv?: Record<string, string>; // HANSE: env restored\n\tasync?: boolean;",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
-			anchor: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
-			patched: "\tready?: ServiceReady;\n\tenv?: Record<string, string>;\n\tasync?: boolean;",
-		}],
 	},
 	{
 		file: "src/tools/bash.ts",
 		marker: "/** HANSE: env restored. Drops a record with no keys",
 		anchor: "\treturn { log, host, port, timeout };\n}\n\nexport interface BashToolOptions {}",
 		patched: "\treturn { log, host, port, timeout };\n}\n\n/** HANSE: env restored. Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined): Record<string, string> | undefined {\n\tif (!record) return undefined;\n\tfor (const _key in record) return record;\n\treturn undefined;\n}\n\nexport interface BashToolOptions {}",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
-			anchor: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
-			patched: "/** Drops a record with no keys: `env: {}` sets nothing, so it requests nothing. */\nfunction nonEmptyRecord(record: Record<string, string> | undefined)",
-		}],
 	},
 	{
 		file: "src/tools/bash.ts",
 		marker: "\t\t\tenv: rawEnv, // HANSE: env restored\n",
 		anchor: "\t\t\tready: rawReady,\n\t\t\tasync: rawAsync,",
 		patched: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv, // HANSE: env restored\n\t\t\tasync: rawAsync,",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
-			anchor: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
-			patched: "\t\t\tready: rawReady,\n\t\t\tenv: rawEnv,\n\t\t\tasync: rawAsync,",
-		}],
 	},
 	{
 		file: "src/tools/bash.ts",
 		marker: "\t\tconst env = nonEmptyRecord(rawEnv); // HANSE: env restored\n",
 		anchor: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst asyncRequested = rawAsync === true;\n",
 		patched: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv); // HANSE: env restored\n\t\tconst asyncRequested = rawAsync === true;\n",
-		alternates: [{
-			file: "src/tools/bash.ts",
-			marker: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
-			anchor: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
-			patched: "\t\tconst ready = normalizeReady(rawReady);\n\t\tconst env = nonEmptyRecord(rawEnv);\n",
-		}],
 	},
 	{
 		file: "src/prompts/tools/bash.md",
@@ -10760,7 +9272,6 @@ function koreanStem(token: string): string {
 		marker: "// HANSE: local embedding fingerprint and e5 prefixes",
 		anchor: "export function currentEmbeddingModel(): string {\n\treturn defaultModel();\n}\n",
 		patched: e5EmbeddingBlock(true),
-		legacyPatched: e5EmbeddingBlock(false),
 	},
 	{
 		file: "../pi-mnemopi/src/core/embeddings.ts",
@@ -11094,7 +9605,6 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 		// 일반 작업은 high 에서 끝나고 정말 추론이 필요한 경우만 xhigh 까지 가며, low·medium·Opus max 는 auto 가 고르지 않는다.
 		// 모델이 선언하지 않은 단계는 만들지 않는다: 분류기 ceiling(지원 effort 확인)과 clamp 가 떨어뜨리고, high~xhigh 사이에
 		// 선언된 단계가 없는 사다리는 resolve 단계에서 그대로 둔다(max 로 올리지 않는다).
-		// 옛 설치는 legacyPatched 로 이 본문으로 바뀐다: 2026-10-30 판(medium~xhigh)은 이 후보가, 2026-10-08 판(low~max)은 alternates 후보가 맡는다.
 		// concrete effort 로 띄운 child 는 auto 가 아니라 영향이 없다. per-spawn overrides 가 뒤에 펼쳐지므로 여전히 이긴다.
 		// 검증: core-agent-thinking-test.ts [child-range].
 		file: "src/task/executor.ts",
@@ -11102,40 +9612,12 @@ function raiseToAutoThinkingFloor(model: Model, level: Effort | undefined, setti
 		excludes: "\"providers.autoThinkingMaxEffort\": \"max\"",
 		anchor: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
 `,
-		legacyPatched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-		// CUELO: a child's \`auto\` stays within medium..xhigh like the parent default; low and max are
-		// never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
-		"providers.autoThinkingMinEffort": "medium",
-		"providers.autoThinkingMaxEffort": "xhigh",
-`,
 		patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
 		// CUELO: a child's \`auto\` stays within high..xhigh; the parent keeps medium..xhigh. low, medium and
 		// max are never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
 		"providers.autoThinkingMinEffort": "high",
 		"providers.autoThinkingMaxEffort": "xhigh",
 `,
-		alternates: [
-			{
-				file: "src/task/executor.ts",
-				marker: "\t\t\"providers.autoThinkingMinEffort\": \"high\",\n",
-				requires: "\"providers.autoThinkingMaxEffort\": \"max\"",
-				anchor: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-`,
-				legacyPatched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-		// CUELO: a child's \`auto\` has no policy floor or cap - from the lowest auto level up to the
-		// model's maximum. The classifier ceiling and clamp still drop levels the model lacks; the
-		// parent keeps its own configured range.
-		"providers.autoThinkingMinEffort": "low",
-		"providers.autoThinkingMaxEffort": "max",
-`,
-				patched: `		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-		// CUELO: a child's \`auto\` stays within high..xhigh; the parent keeps medium..xhigh. low, medium and
-		// max are never auto-picked. The classifier ceiling and clamp still drop levels the model lacks.
-		"providers.autoThinkingMinEffort": "high",
-		"providers.autoThinkingMaxEffort": "xhigh",
-`,
-			},
-		],
 	},
 	{
 		// 2026-09-28 도구 오류 집계: `computer.window(65822)`처럼 숫자 id를 넘기면 필터 객체로 해석돼
@@ -12388,18 +10870,6 @@ class El {
 				return el(await nativeCall(signal, () => session.axNode(ref)));
 			},`,
 		patched: `			ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),`,
-		// 18.9.1 은 ref() 가 ElRef(await 하면 El, 요소 메서드를 바로 chain)를 돌려준다. 늦게 푸는 lookup 만 재획득 경로로
-		// 바꾼다(ADAPT; ElRef 의 결과 반환은 아래 COMPUTER_ELREF_1891 파생 후보).
-		alternates: [{
-			file: "src/tools/computer/worker.ts",
-			marker: "ref: (ref: string): ElRef => new ElRef(ref, () => resolveElement(session, getContext, ref)),",
-			anchor: `			ref: (ref: string): ElRef =>
-				new ElRef(ref, async () => {
-					const { signal } = getContext();
-					return el(await nativeCall(signal, () => session.axNode(ref)));
-				}),`,
-			patched: `			ref: (ref: string): ElRef => new ElRef(ref, () => resolveElement(session, getContext, ref)),`,
-		}],
 	},
 	{
 		// 모델이 보는 타입: 행동 결과·거절 필드와 재획득 규칙을 적는다.
@@ -12947,16 +11417,6 @@ import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
 		// 18.6.3 은 같은 import 에 CaptureRegion 을 더했다(zoom). 프레임 직렬화 import 는 그대로 앞에 둔다. 두 판 결과가 같은
 		// marker 를 가지므로 그 import 이름으로 후보를 가른다(ADAPT).
 		alternates: [{
-			file: "src/tools/computer/protocol.ts",
-			requires: "CaptureRegion, DesktopCapabilities",
-			excludes: "DesktopScreenState",
-			marker: `import { deserialize, serialize } from "bun:jsc";`,
-			anchor: `import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
-			patched: `import { deserialize, serialize } from "bun:jsc";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import type { CaptureRegion, DesktopCapabilities } from "@oh-my-pi/pi-natives";`,
-		}, {
 			// 18.9.1 은 같은 import 에 DesktopScreenState 를 더했다(잠금 화면·디스플레이 절전 안내). 직렬화 import 는 그대로
 			// 앞에 둔다(ADAPT). 18.6.3 후보와 같은 marker 이므로 그 이름으로 가른다.
 			file: "src/tools/computer/protocol.ts",
@@ -13307,18 +11767,11 @@ export interface MCPDeferredServer {
 /** Handles an MCP \`WWW-Authenticate\` challenge and returns refreshed config. */`,
 	},
 	{
-		// MCP 선택 연결 r3: 선택이 연결한 서버 소유를 추적한다(수동 reconnect·disconnect가 지운다). legacyPatched는 r2 적용본을 r3로 올린다.
+		// MCP 선택 연결 r3: 선택이 연결한 서버 소유를 추적한다(수동 reconnect·disconnect가 지운다).
 		file: "src/mcp/manager.ts",
 		marker: `	/** Connected by per-request selection; a manual reconnect or disconnect clears it. */`,
 		anchor: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
 	#discoveryInFlight: Promise<unknown> = Promise.resolve();
-	/**
-	 * Timestamps of recent reconnectServer invocations per server, used by the`,
-		legacyPatched: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
-	#discoveryInFlight: Promise<unknown> = Promise.resolve();
-	/** When set, discovery records allowed configs as deferred instead of connecting them. */
-	#deferConnect = false;
-	#deferred = new Map<string, { config: MCPServerConfig; source?: SourceMeta }>();
 	/**
 	 * Timestamps of recent reconnectServer invocations per server, used by the`,
 		patched: `	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
@@ -13342,81 +11795,10 @@ export interface MCPDeferredServer {
 		result.exaApiKeys = exaApiKeys;`,
 	},
 	{
-		// MCP 선택 연결 r3: 이미 취소된 요청은 아무것도 시작하지 않고, handshake 중 취소는 미연결 서버를 해제해 deferred 후보로 되돌린다(늦은 연결 없음). legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: 이미 취소된 요청은 아무것도 시작하지 않고, handshake 중 취소는 미연결 서버를 해제해 deferred 후보로 되돌린다(늦은 연결 없음).
 		file: "src/mcp/manager.ts",
 		marker: `	 * are ignored. An already-aborted signal starts nothing; an abort mid-handshake drops the servers`,
 		anchor: `		return result;
-	}`,
-		legacyPatched: `		return result;
-	}
-
-	/**
-	 * Opt into per-request selection: discovery and config reconciles record
-	 * allowed servers as deferred candidates instead of connecting them.
-	 * Explicit connects (\`connectServers\`, \`/mcp enable\`, \`/mcp reconnect\`) still connect.
-	 */
-	setDeferConnect(enabled: boolean): void {
-		this.#deferConnect = enabled;
-	}
-
-	async #connectOrDefer(
-		configs: Record<string, MCPServerConfig>,
-		sources: Record<string, SourceMeta>,
-		onStatus?: (event: McpConnectionStatusEvent) => void,
-		startupTimeoutMs?: number,
-	): Promise<MCPLoadResult> {
-		if (!this.#deferConnect) return this.connectServers(configs, sources, onStatus, startupTimeoutMs);
-		for (const [name, config] of Object.entries(configs)) {
-			if (this.#connections.has(name) || this.#pendingConnections.has(name)) continue;
-			const source = sources[name];
-			this.#deferred.set(name, { config, source });
-			if (source) this.#sources.set(name, source);
-		}
-		return { tools: this.#tools, errors: new Map(), connectedServers: this.getConnectedServers(), exaApiKeys: [] };
-	}
-
-	/** Deferred candidates after the in-flight discovery settles. */
-	async getDeferredServers(): Promise<MCPDeferredServer[]> {
-		await this.#discoveryInFlight;
-		return Promise.all(
-			Array.from(this.#deferred, async ([name, { config, source }]) => {
-				const cached = (await this.toolCache?.get(name, config).catch(() => null)) ?? [];
-				return {
-					name,
-					level: source?.level ?? "unknown",
-					provider: source?.provider ?? "unknown",
-					transport: config.type ?? "stdio",
-					cachedTools: cached.map(tool => ({ name: tool.name, description: tool.description })),
-				};
-			}),
-		);
-	}
-
-	/**
-	 * Connect only the named deferred servers and wait until their handshakes
-	 * settle (or \`signal\` aborts). Unknown names are ignored.
-	 */
-	async connectDeferred(names: readonly string[], signal?: AbortSignal): Promise<MCPLoadResult> {
-		const configs: Record<string, MCPServerConfig> = {};
-		const sources: Record<string, SourceMeta> = {};
-		for (const name of names) {
-			const entry = this.#deferred.get(name);
-			if (!entry) continue;
-			configs[name] = entry.config;
-			if (entry.source) sources[name] = entry.source;
-		}
-		const connect = this.connectServers(configs, sources, this.#discoverOptions?.onStatus, 0);
-		if (!signal) return connect;
-		const { promise: aborted, resolve } = Promise.withResolvers<MCPLoadResult>();
-		const onAbort = () =>
-			resolve({ tools: this.#tools, errors: new Map(), connectedServers: this.getConnectedServers(), exaApiKeys: [] });
-		if (signal.aborted) onAbort();
-		signal.addEventListener("abort", onAbort, { once: true });
-		try {
-			return await Promise.race([connect, aborted]);
-		} finally {
-			signal.removeEventListener("abort", onAbort);
-		}
 	}`,
 		patched: `		return result;
 	}
@@ -13542,13 +11924,10 @@ export interface MCPDeferredServer {
 			this.#startupServers.add(name);`,
 	},
 	{
-		// MCP 선택 연결 r3: 해제한 서버의 선택 소유 표시를 지운다. legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: 해제한 서버의 선택 소유 표시를 지운다.
 		file: "src/mcp/manager.ts",
 		marker: `		this.#selectionConnected.delete(name);`,
 		anchor: `		this.#sources.delete(name);
-		this.#serverConfigs.delete(name);`,
-		legacyPatched: `		this.#sources.delete(name);
-		this.#deferred.delete(name);
 		this.#serverConfigs.delete(name);`,
 		patched: `		this.#sources.delete(name);
 		this.#deferred.delete(name);
@@ -13556,13 +11935,10 @@ export interface MCPDeferredServer {
 		this.#serverConfigs.delete(name);`,
 	},
 	{
-		// MCP 선택 연결 r3: 전체 해제 때 선택 소유 표시를 비운다. legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: 전체 해제 때 선택 소유 표시를 비운다.
 		file: "src/mcp/manager.ts",
 		marker: `		this.#selectionConnected.clear();`,
 		anchor: `		this.#sources.clear();
-		this.#serverConfigs.clear();`,
-		legacyPatched: `		this.#sources.clear();
-		this.#deferred.clear();
 		this.#serverConfigs.clear();`,
 		patched: `		this.#sources.clear();
 		this.#deferred.clear();
@@ -13570,18 +11946,10 @@ export interface MCPDeferredServer {
 		this.#serverConfigs.clear();`,
 	},
 	{
-		// MCP 선택 연결 r3: 수동 /mcp reconnect는 소유를 사용자로 넘겨 이후 선택이 숨기지 않게 한다. legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: 수동 /mcp reconnect는 소유를 사용자로 넘겨 이후 선택이 숨기지 않게 한다.
 		file: "src/mcp/manager.ts",
 		marker: `		if (options?.manual) this.#selectionConnected.delete(name);`,
 		anchor: `	): Promise<MCPServerConnection | null> {
-		if (options?.manual) {`,
-		legacyPatched: `	): Promise<MCPServerConnection | null> {
-		const deferred = this.#deferred.get(name);
-		if (deferred) {
-			// A manual reconnect of a never-connected deferred candidate is an explicit user connect.
-			await this.connectServers({ [name]: deferred.config }, deferred.source ? { [name]: deferred.source } : {}, undefined, 0);
-			return this.#connections.get(name) ?? null;
-		}
 		if (options?.manual) {`,
 		patched: `	): Promise<MCPServerConnection | null> {
 		if (options?.manual) this.#selectionConnected.delete(name);
@@ -13691,83 +12059,10 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;`,
 	},
 	{
-		// MCP 선택 연결 r3: 이벤트에 취소 signal과 실제 연결 결과 outcome(connected/failed)을 싣고, 연결 목록에 선택 소유 여부를 붙인다. outcome은 항상 settle된다. legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: 이벤트에 취소 signal과 실제 연결 결과 outcome(connected/failed)을 싣고, 연결 목록에 선택 소유 여부를 붙인다. outcome은 항상 settle된다.
 		file: "src/session/agent-session.ts",
 		marker: `						.map(name => ({ name, error: result.errors.get(name) ?? (signal?.aborted ? "cancelled" : "not connected") })),`,
 		anchor: `
-	/** Replaces host-owned RPC tools before the next model call. */`,
-		legacyPatched: `
-	/** Enables per-request MCP selection for the session that owns \`manager\`. */
-	setMCPSelectionManager(manager: MCPManager | undefined): void {
-		this.#mcpSelectionManager = manager;
-	}
-
-	/**
-	 * Per-request MCP selection before the system prompt is built: extensions pick deferred servers
-	 * to connect (core connects only those) and which connected servers stay active. No handler, a
-	 * failing handler, or an empty answer connects nothing.
-	 */
-	async #selectMCPServersForPrompt(
-		prompt: string,
-		isCurrent: () => boolean,
-		signal: AbortSignal | undefined,
-	): Promise<void> {
-		const manager = this.#mcpSelectionManager;
-		const runner = this.#extensionRunner;
-		if (!manager || !runner?.hasHandlers("mcp_select")) return;
-		const deferred = await manager.getDeferredServers();
-		if (!isCurrent()) return;
-		const connectedByServer = new Map<string, Array<{ name: string; description?: string }>>();
-		for (const tool of manager.getTools()) {
-			if (!tool.mcpServerName) continue;
-			let tools = connectedByServer.get(tool.mcpServerName);
-			if (!tools) connectedByServer.set(tool.mcpServerName, (tools = []));
-			tools.push({ name: tool.mcpToolName ?? tool.name, description: tool.description });
-		}
-		const connected = Array.from(connectedByServer, ([name, tools]) => {
-			const source = manager.getSource(name);
-			return {
-				name,
-				level: source?.level ?? ("unknown" as const),
-				provider: source?.provider ?? "unknown",
-				transport: manager.getServerConfig(name)?.type ?? ("stdio" as const),
-				tools,
-			};
-		});
-		const decision = await runner.emitMcpSelect(
-			{
-				type: "mcp_select",
-				prompt,
-				deferred: deferred.map(({ cachedTools, ...server }) => ({ ...server, tools: cachedTools })),
-				connected,
-			},
-			signal,
-		);
-		if (!decision || !isCurrent()) return;
-		const deferredNames = new Set(deferred.map(server => server.name));
-		const connect = (decision.connect ?? []).filter(name => deferredNames.has(name));
-		if (connect.length > 0) {
-			const result = await manager.connectDeferred(connect, signal);
-			for (const [name, error] of result.errors) {
-				logger.warn("Selected MCP server failed to connect", { path: \`mcp:\${name}\`, error });
-			}
-			if (!isCurrent()) return;
-			await this.refreshMCPTools(manager.getTools());
-		}
-		if (!decision.expose || !isCurrent()) return;
-		const keep = new Set([...decision.expose, ...connect]);
-		const hidden = new Set<string>();
-		const shown: string[] = [];
-		for (const tool of manager.getTools()) {
-			if (!tool.mcpServerName) continue;
-			if (keep.has(tool.mcpServerName)) shown.push(tool.name);
-			else hidden.add(tool.name);
-		}
-		await this.setActiveToolsByName([
-			...new Set([...this.getEnabledToolNames().filter(name => !hidden.has(name)), ...shown]),
-		]);
-	}
-
 	/** Replaces host-owned RPC tools before the next model call. */`,
 		patched: `
 	/** Enables per-request MCP selection for the session that owns \`manager\`. */
@@ -13900,37 +12195,10 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";`,
 	},
 	{
 		// MCP 선택 연결: mcp_select 이벤트: 공개 metadata(이름·scope·provider·transport·도구명/설명)만 싣고 결과는 이름 목록뿐이다.
-		// MCP 선택 연결 r3: selected 소유 표시·McpSelectOutcome·signal/outcome 필드. legacyPatched는 r2 적용본.
+		// MCP 선택 연결 r3: selected 소유 표시·McpSelectOutcome·signal/outcome 필드.
 		file: "src/extensibility/extensions/types.ts",
 		marker: `	/** Connected servers only: true when per-request selection connected it; manual connects are false. */`,
 		anchor: `}
-
-export type {
-	AgentEndEvent,`,
-		legacyPatched: `}
-
-/** One MCP server the owning session may connect or expose for the current request. Public metadata only. */
-export interface McpSelectServer {
-	name: string;
-	level: "user" | "project" | "native" | "unknown";
-	provider: string;
-	transport: "stdio" | "http" | "sse";
-	/** Tool names/descriptions (cached for deferred servers, live for connected ones). Untrusted server text. */
-	tools: Array<{ name: string; description?: string }>;
-}
-
-/**
- * Fired in the session owning its MCP manager when \`mcp.selection\` is \`per-request\`, before each
- * ordinary prompt or dequeued user batch builds its system prompt. Deferred servers are enabled,
- * allowed configs not yet connected; handlers return names only and core performs the connect.
- */
-export interface McpSelectEvent {
-	type: "mcp_select";
-	/** Same transformed text as \`before_agent_start\`. */
-	prompt: string;
-	deferred: McpSelectServer[];
-	connected: McpSelectServer[];
-}
 
 export type {
 	AgentEndEvent,`,
@@ -14070,7 +12338,7 @@ export interface McpSelectEventResult {
 		// 교훈 자동 저장 표시(2026-09-29 사용자 지적 "교훈 저장이 안 뜬다"): autolearn capture Agent는 본 대화와
 		// 분리돼 저장해도 화면·다음 턴 문맥에 아무것도 남지 않았다. 성공한 learn·manage_skill만 요약해 돌려준다.
 		// r3(2026-09-30 사용자 지적 "... 로 잘리는 것보다 몇 줄 요약이 낫다"): 160자 절단 대신 교훈의 첫 문장(=capture가
-		// 맨 앞에 쓰는 제목, 아래 nudge 항목)만 보여 주고, 그마저 120자를 넘으면 단어 경계에서 줄인다. legacyPatched는 r1 적용본.
+		// 맨 앞에 쓰는 제목, 아래 nudge 항목)만 보여 주고, 그마저 120자를 넘으면 단어 경계에서 줄인다.
 		file: "src/sdk.ts",
 		marker: `	if (first.length <= 120) return first;`,
 		anchor: `	createSessionId?: () => string;
@@ -14121,44 +12389,6 @@ function autoLearnHeadline(memory: string): string {
 	const cut = first.slice(0, 120);
 	const space = cut.lastIndexOf(" ");
 	return (space > 60 ? cut.slice(0, space) : cut).replace(/[\\s,;:(]+$/, "") + "…";
-}
-
-/** Build a private capture runner over a detached message snapshot and provider session. */`,
-		legacyPatched: `	createSessionId?: () => string;
-	/** Receives the capture run's successful \`learn\`/\`manage_skill\` saves so the session can show them. */
-	onCaptured?: (saved: string[]) => void;
-}
-
-/**
- * Summarize a capture run's successful \`learn\`/\`manage_skill\` calls. Each call is paired with its
- * result, so a rejected or failed save is never reported as stored.
- */
-export function summarizeAutoLearnSaved(messages: readonly AgentMessage[], from: number): string[] {
-	const text = (value: unknown): string => (typeof value === "string" ? value.replace(/\\s+/g, " ").trim() : "");
-	const calls = new Map<string, { name: string; args: Record<string, unknown> }>();
-	const saved: string[] = [];
-	for (const message of messages.slice(from)) {
-		if (message.role === "assistant") {
-			for (const block of message.content) {
-				if (block.type === "toolCall") {
-					calls.set(block.id, { name: block.name, args: (block.arguments ?? {}) as Record<string, unknown> });
-				}
-			}
-			continue;
-		}
-		if (message.role !== "toolResult" || message.isError) continue;
-		const call = calls.get(message.toolCallId);
-		if (!call) continue;
-		if (call.name === "learn") {
-			const memory = text(call.args.memory);
-			const skill = call.args.skill as { action?: unknown; name?: unknown } | undefined;
-			const skillNote = skill ? " (스킬 " + text(skill.action) + " " + text(skill.name) + ")" : "";
-			saved.push("교훈: " + (memory.length > 160 ? memory.slice(0, 160) + "…" : memory) + skillNote);
-		} else if (call.name === "manage_skill") {
-			saved.push("스킬 " + text(call.args.action) + ": " + text(call.args.name));
-		}
-	}
-	return saved;
 }
 
 /** Build a private capture runner over a detached message snapshot and provider session. */`,
@@ -14400,20 +12630,6 @@ function summarizeAutoLearnUsage(messages: readonly AgentMessage[], from: number
 				// Steering acknowledgements belong to the submitter, not to the
 				// response stream they interleave with.
 				if (typeof parsed.type === "string" && parsed.type.startsWith("response.steer.")) {`,
-		alternates: [{
-			file: "../pi-ai/src/providers/openai-codex-responses.ts",
-			requires: "CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
-			marker: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-			anchor: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-			patched: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-		}, {
-			// 18.6.3: upstream 이 상수를 AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE 로 옮겼다(#14242). 같은 upstream 줄의 no-op.
-			file: "../pi-ai/src/providers/openai-codex-responses.ts",
-			requires: "AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE",
-			marker: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-			anchor: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-			patched: "\t\t\t\tif (parsed.type === \"error\" && parsed.code === AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE) {\n\t\t\t\t\tthis.#refuseSteerWaiters(",
-		}],
 	},
 	{
 		file: "../pi-ai/src/providers/openai-codex-responses.ts",
@@ -14486,13 +12702,6 @@ function summarizeAutoLearnUsage(messages: readonly AgentMessage[], from: number
 		marker: "no user response, not user approval",
 		anchor: `		const suffix = \`\${result.timedOut ? " (auto-selected after timeout)" : ""}\${noteSuffix}\`;`,
 		patched: `		const suffix = \`\${result.timedOut ? " (auto-selected recommended option after timeout; no user response, not user approval)" : ""}\${noteSuffix}\`;`,
-		alternates: [{
-			file: "src/tools/ask.ts",
-			requires: "const timeoutSuffix = ",
-			marker: "no user response, not user approval",
-			anchor: `	const timeoutSuffix = result.timedOut ? " (auto-selected after timeout)" : "";`,
-			patched: `	const timeoutSuffix = result.timedOut ? " (auto-selected recommended option after timeout; no user response, not user approval)" : "";`,
-		}],
 	},
 	{
 		file: "src/tools/ask.ts",
@@ -14577,89 +12786,19 @@ function parentSubagentServiceTiers(
 		marker: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		anchor: OPUS55_ROW_18410.anchor.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
 		patched: OPUS55_ROW_18410.patched.replace(OPUS55_TPS_18410, OPUS55_TPS_18412),
-		// 18.5.1: 위 OPUS55_ROW_1851 no-op(RETIRE). 18.4.6 후보는 그 행이 있으면 성립하지 않는다.
-		// 18.7.0: OPUS55_ROW_1870 no-op(RETIRE 유지). 18.4.6 후보는 자기 행 머리(OPUS55_HEAD_1846)가 있을 때만 성립한다.
 		alternates: [
 			OPUS55_ROW_18410,
-			{ ...OPUS55_ROW_1846, excludes: OPUS55_ROW_1851, requires: OPUS55_HEAD_1846 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1851, anchor: OPUS55_ROW_1851, patched: OPUS55_ROW_1851 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1870, anchor: OPUS55_ROW_1870, patched: OPUS55_ROW_1870 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1884, anchor: OPUS55_ROW_1884, patched: OPUS55_ROW_1884 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_1891, anchor: OPUS55_ROW_1891, patched: OPUS55_ROW_1891 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_18103, anchor: OPUS55_ROW_18103, patched: OPUS55_ROW_18103 },
-			{ file: "../pi-catalog/src/models.json", marker: OPUS55_ROW_18122, anchor: OPUS55_ROW_18122, patched: OPUS55_ROW_18122 },
 		],
 	},
 	{
 		// 모든 provider의 Opus 5.5 규칙 계보에 prefixBinding(Sonnet 5.5 규칙과 같은 모양). 18.4.10은 upstream #14019가 kdl:61에
-		// 같은 thinking.prefixBinding을 넣었으므로 할 일이 없다(본 후보: 그 upstream 줄의 no-op). 18.4.6 적용 결과와 18.4.10
-		// 순정의 kdl:61 규칙은 바이트까지 같아서, 두 후보 모두 바로 뒤 Sonnet 5.5 규칙의 source(18.4.6 kdl:70, 18.4.10 kdl:77)까지
-		// 앵커에 넣어 가른다. 그러지 않으면 18.4.10 순정이 18.4.6 후보로 applied가 되고 --revert가 upstream prefixBinding을 지운다.
-		// alternate는 18.4.6(kdl:61)과 18.4.4·18.4.5 공통 kdl:60 앵커다. 18.4.4 적용본은 kdl:60 patched 바로 뒤에 binding
-		// controls 규칙이 붙어 있어 kdl:60 marker가 그대로 성립한다.
+		// 같은 thinking.prefixBinding을 넣었으므로 할 일이 없다(본 후보: 그 upstream 줄의 no-op). 18.4.10
+		// 순정의 kdl:61 규칙은 옛 18.4.6 적용 결과와 바이트까지 같아서, 본 후보 앵커는 바로 뒤 Sonnet 5.5 규칙의 source(kdl:77)까지 넣어 가른다.
 		file: "../pi-catalog/src/compat/rules.json",
 		marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
 		anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
 		patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:77",',
 		alternates: [{
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:70",',
-			anchor: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}},{"source":"classes/anthropic.kdl:70",',
-			patched: '{"source":"classes/anthropic.kdl:61","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:70",',
-		}, {
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false}}',
-			patched: '{"source":"classes/anthropic.kdl:60","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 18.5.1: 같은 upstream 규칙이 kdl:85(뒤 Sonnet 규칙 kdl:101)로 옮겨졌다. 그 줄의 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
-			anchor: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
-			patched: '{"source":"classes/anthropic.kdl:85","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:101",',
-		}, {
-			// 18.6.3: 같은 upstream 규칙이 kdl:150(뒤 Sonnet 규칙 kdl:166)로 옮겨졌다. 본문은 그대로다. 그 줄의 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
-			anchor: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
-			patched: '{"source":"classes/anthropic.kdl:150","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}},{"source":"classes/anthropic.kdl:166",',
-		}, {
-			// 18.8.4: upstream Opus prefixBinding 규칙이 kdl:170으로 이동했다. 동일 의미의 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:170","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 18.8.5: 출처 줄만 이동했으며 prefixBinding 의미는 동일하다.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:171","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 18.8.6: 출처 줄만 kdl:177로 이동했으며 prefixBinding 의미는 동일하다.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:177","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 2026-10-13 18.10.3: 출처 줄만 kdl:215로 이동했으며 prefixBinding 의미는 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:215","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 2026-10-14 18.10.4: 출처 줄만 kdl:218로 이동했으며 prefixBinding 의미는 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:218","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
-			// 2026-10-18 18.12.1: 출처 줄만 kdl:217로 이동했으며 prefixBinding 의미는 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-			patched: '{"source":"classes/anthropic.kdl:217","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
-		}, {
 			// 2026-10-21 18.12.5: 출처 줄만 kdl:219로 이동했으며 prefixBinding 의미는 동일하다(no-op).
 			file: "../pi-catalog/src/compat/rules.json",
 			marker: '{"source":"classes/anthropic.kdl:219","class":"anthropic","family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsForcedToolChoice":false},"thinking":{"prefixBinding":true}}',
@@ -14670,81 +12809,12 @@ function parentSubagentServiceTiers(
 	{
 		// binding controls 규칙은 그 버전의 upstream Sonnet 5.5 binding 규칙 바로 뒤에 같은 provider 범위로 둔다.
 		// 18.4.10: kdl:139(#13996이 Vertex를 뺀 supportsPerMessageEffort가 같은 Sonnet 규칙에 붙었다. provider 범위는 그대로
-		// anthropic·cloudflare이고 추가하는 Opus 규칙 본문도 같다). alternate 18.4.6: kdl:129, 18.4.5: kdl:128(둘 다 anthropic·cloudflare,
-		// 규칙 본문 동일). alternate 18.4.4:
-		// kdl:106(anthropic·cloudflare·vertex). 18.4.10·18.4.6·18.4.5 후보는 추가 규칙이 같아 marker를 앞 Sonnet 규칙까지 포함한
-		// patched 전체로 둔다(같은 marker면 둘 다 applied라 ambiguous가 된다). 18.4.4 라이브 적용본은 옛 위치(kdl:60 뒤)에
-		// 같은 규칙이 있어 그 alternate marker로 applied이다. 그 적용본의 --revert는 patched가 연속으로 없으므로 엔진의
-		// 백업 경로(~/.omp/core-patch-backup)를 쓴다.
+		// anthropic·cloudflare이고 추가하는 Opus 규칙 본문도 같다).
 		file: "../pi-catalog/src/compat/rules.json",
 		marker: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		anchor: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}}',
 		patched: '{"source":"classes/anthropic.kdl:139","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true,"supportsPerMessageEffort":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
 		alternates: [{
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:129","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:128","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:106","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"sonnet","revision":[{"op":">=","revision":"5.5.0"}],"wire":{"supportsMidConversationSystem":true,"supportsMidConversationToolChanges":true,"supportsTurnScopedSystem":true,"supportsPerMessageEffort":true,"supportsThinkingBindingControls":true}},{"source":"cuelo:opus-5.5-thinking-binding","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway","google-vertex"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 18.5.1 RETIRE(#14168): upstream 이 같은 provider 범위(anthropic·cloudflare)의 Opus 5.5 binding controls 규칙을
-			// kdl:175 로 넣었다. 그 upstream 규칙의 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:175","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 18.6.3: 같은 upstream 규칙이 kdl:240 으로 옮겨졌다. 본문·provider 범위는 그대로다. 그 줄의 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:240","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 18.8.4: upstream binding controls 규칙이 kdl:283으로 이동했다. provider 범위도 동일한 no-op.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:283","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 18.8.5: 출처 줄만 이동했으며 provider·revision 경계도 동일하다.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:284","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 18.8.6: 출처 줄만 kdl:290으로 이동했으며 provider·revision 경계도 동일하다.
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:290","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 2026-10-13 18.10.3: 출처 줄만 kdl:328로 이동했으며 provider·revision 경계도 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:328","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 2026-10-14 18.10.4: 출처 줄만 kdl:331로 이동했으며 provider·revision 경계도 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:331","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
-			// 2026-10-18 18.12.1: 출처 줄만 kdl:330으로 이동했으며 provider·revision 경계도 동일하다(no-op).
-			file: "../pi-catalog/src/compat/rules.json",
-			marker: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			anchor: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-			patched: '{"source":"classes/anthropic.kdl:330","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
-		}, {
 			// 2026-10-21 18.12.5: 출처 줄만 kdl:332로 이동했으며 provider·revision 경계도 동일하다(no-op).
 			file: "../pi-catalog/src/compat/rules.json",
 			marker: '{"source":"classes/anthropic.kdl:332","class":"anthropic","providers":["anthropic","cloudflare-ai-gateway"],"family":"opus","revision":[{"op":">=","revision":"5.5.0"},{"op":"<","revision":"6.0.0"}],"wire":{"supportsThinkingBindingControls":true}}',
@@ -14947,158 +13017,12 @@ function parentSubagentServiceTiers(
 		marker: '		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n',
 		anchor: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n',
 		patched: '		if (!name.endsWith(".jsonl") || name.includes(".bak")) continue;\n		// Advisor transcripts share this directory but are the advisor\'s own prompts and reviews, not subagents.\n		if (isAdvisorTranscriptName(name)) continue;\n',
-		alternates: [{
-			file: "src/session/sub-sessions.ts",
-			marker: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
-			anchor: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
-			patched: '		if (!name.endsWith(".jsonl") || name.includes(".bak") || isAdvisorTranscriptName(name)) continue;\n',
-		}],
 	},
 	{
 		file: "dist/cli.js",
 		marker: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
 		anchor: 'if(!o.endsWith(".jsonl")||o.includes(".bak"))continue;let r=o.slice(0,-6),',
 		patched: 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"||o.startsWith("__advisor.")&&o.endsWith(".jsonl"))continue;let r=o.slice(0,-6),',
-		// 18.5.0 번들의 upstream 조건(XTe = isAdvisorTranscriptName) 자체의 no-op.
-		alternates: [{
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||XTe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.5.1 번들의 같은 upstream 조건(ERe = isAdvisorTranscriptName) no-op.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ERe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.6.0 번들의 같은 upstream 조건(_Re = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||_Re(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.6.1 번들의 같은 upstream 조건(NRe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||NRe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.6.3 번들의 같은 upstream 조건(ZRe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||ZRe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.7.0 번들의 같은 upstream 조건(MCe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||MCe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.8.0 번들의 같은 upstream 조건(oCe = isAdvisorTranscriptName) no-op. 이름만 바뀌었다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||oCe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.8.4 번들의 같은 upstream 조건(cCe = isAdvisorTranscriptName) no-op.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||cCe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.8.5: RCe는 같은 isAdvisorTranscriptName 함수다. 새 번들도 upstream 제외를 유지한다.
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||RCe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.8.6: LCe는 같은 isAdvisorTranscriptName 함수다(`e===NCe||e.startsWith(\`${DCe}.\`)&&e.endsWith(...)`).
-			file: "dist/cli.js",
-			marker: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
-			anchor: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
-			patched: 'if(!i.endsWith(".jsonl")||i.includes(".bak")||LCe(i))continue;let a=i.slice(0,-6),',
-		}, {
-			// 18.8.9: gwe는 같은 isAdvisorTranscriptName 함수다(`e===mwe||e.startsWith(\`${fwe}.\`)&&e.endsWith(ure)`,
-			// fwe="__advisor", ure=".jsonl"). 루프 변수 이름만 a·l로 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||gwe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 18.9.1: oxe는 같은 isAdvisorTranscriptName 함수다(`e===sxe||e.startsWith(\`${nxe}.\`)&&e.endsWith(Iie)`,
-			// nxe="__advisor", Iie=".jsonl"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||oxe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-13 18.10.3: Gxe는 같은 isAdvisorTranscriptName 함수다(`e===Wxe||e.startsWith(\`${Hxe}.\`)&&e.endsWith(pae)`,
-			// Hxe="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||Gxe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-14 18.10.4: pve는 같은 isAdvisorTranscriptName 함수다(`e===uve||e.startsWith(\`${lve}.\`)&&e.endsWith(Cae)`,
-			// lve="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||pve(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-15 18.11.0: $Me는 같은 isAdvisorTranscriptName 함수다(`e===jMe||e.startsWith(\`${GMe}.\`)&&e.endsWith(cpe)`,
-			// GMe="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||$Me(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-16 18.11.1: b_e는 같은 isAdvisorTranscriptName 함수다(`e===y_e||e.startsWith(\`${g_e}.\`)&&e.endsWith(kde)`,
-			// g_e="__advisor"). minified 이름만 바뀌었고 upstream 제외는 그대로다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||b_e(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-18 18.12.1: S_e는 같은 isAdvisorTranscriptName 함수다. minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||S_e(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-19 18.12.2: D_e는 같은 isAdvisorTranscriptName 함수다(`e===L_e||e.startsWith(\`${N_e}.\`)&&e.endsWith(Oue)`).
-			// minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||D_e(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-20 18.12.3: TPe는 같은 isAdvisorTranscriptName 함수다(`e===SPe||e.startsWith(...)`). minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||TPe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-21 18.12.5: qPe는 같은 isAdvisorTranscriptName 함수다. minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||qPe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-22 18.12.6: nMe는 같은 isAdvisorTranscriptName 함수다(`e===tMe||e.startsWith(\`${eMe}.\`)&&e.endsWith(kpe)`). minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||nMe(a))continue;let l=a.slice(0,-6),',
-		}, {
-			// 2026-10-27 18.13.1: WMe는 같은 isAdvisorTranscriptName 함수다(`e===HMe||e.startsWith(\`${$Me}.\`)&&e.endsWith(dfe)`). minified 이름만 바뀌었다(RETIRE 유지).
-			file: "dist/cli.js",
-			marker: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
-			anchor: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
-			patched: 'if(!a.endsWith(".jsonl")||a.includes(".bak")||WMe(a))continue;let l=a.slice(0,-6),',
-		}],
 	},
 	// 18.4.5 는 /ratchet 을 새로 넣으면서 `src/ratchet/prelude.ts`(코드)와 `prelude.js`(eval 텍스트 자산)를 같은 stem 으로
 	// 두고 sdk.ts 가 `./ratchet/prelude` 로 import 한다. Bun 1.4.2 는 node_modules 안의 확장자 없는 import 를 .js 부터
@@ -15532,7 +13456,6 @@ class HarmonyLeakInterruption extends Error {`),
 		file: "../pi-agent-core/src/agent.ts",
 		marker: "\tisRequestRestartSteer,\n\tSTEER_DISCARDED_PARTIAL,\n",
 		anchor: "\tresolveOwnedDialectFromEnv,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
-		legacyPatched: "\tresolveOwnedDialectFromEnv,\n\tSTEER_DISCARDED_PARTIAL,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
 		patched: "\tresolveOwnedDialectFromEnv,\n\tisRequestRestartSteer,\n\tSTEER_DISCARDED_PARTIAL,\n\tsteeringQueueState,\n\tunpairedToolCallTail,\n} from \"./agent-loop\";",
 	},
 	{
@@ -15610,15 +13533,6 @@ class HarmonyLeakInterruption extends Error {`),
 		marker: "\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
 		anchor: "\tAsyncJobSnapshot,\n\tCommandMetadataChangedListener,",
 		patched: "\tAsyncJobSnapshot,\n\tAsyncJobSnapshotOptions,\n\tCommandMetadataChangedListener,",
-		// 2026-10-16 18.11.1 ADAPT(공개 이슈 #29): upstream 이 job tree(#15854)를 넣으며 두 import 사이에 AsyncJobSnapshotItem·AsyncJobTree 를
-		// 끼워 연속 두 줄 앵커가 사라졌다. 새 import 는 그대로 두고 AsyncJobSnapshotOptions 만 알파벳 순서로 더한다. 두 후보의 marker 는
-		// 서로의 적용본에 없어(Options 바로 뒤가 각각 CommandMetadataChangedListener / AsyncJobTree) 정확히 하나만 성립한다.
-		alternates: [{
-			file: "src/session/agent-session.ts",
-			marker: "\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,",
-			anchor: "\tAsyncJobSnapshotItem,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
-			patched: "\tAsyncJobSnapshotItem,\n\tAsyncJobSnapshotOptions,\n\tAsyncJobTree,\n\tCommandMetadataChangedListener,",
-		}],
 	},
 	{
 		file: "src/session/agent-session.ts",
@@ -16092,12 +14006,11 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 		patched: "/**\n * CUELO: `read` tags an `?ocr=` question with this prefix so the question kind travels as one string down to the image\n * call. `#loadImageContent` strips it before the question reaches the model.\n */\nexport const OCR_QUESTION_MARK = \"\\u0000ocr:\";\n\n/**\n * Resolve the vision model used by `read <image>?q=<question>`. `ocr` (an `?ocr=` question) tries `modelRoles.ocr`\n * first and falls back to the `?q=` order when that role is unset, unavailable or cannot take images.\n */\nexport function resolveImageQuestionModel(session: ToolSession, ocr = false): ResolvedImageQuestionModel {\n",
 	},
 	// 2026-10-21 OCR 후보군: `@ocr` 다음에 `retry.fallbackChains.ocr` 를 순서대로 보고, 그다음이 `?q=` 순서다. 고른 모델이 실패하면
-	// 남은 OCR 후보와 `?q=` 모델을 차례로 묻는다(아래 askImageQuestion 항목). 옛 적용본은 legacyPatched 로 바꾼다.
+	// 남은 OCR 후보와 `?q=` 모델을 차례로 묻는다(아래 askImageQuestion 항목).
 	{
 		file: "src/utils/image-question.ts",
 		marker: "const ocrPatterns = ocr ?",
 		anchor: "\tfor (const pattern of [\"@vision\", \"@default\", activeModelPattern]) {\n",
-		legacyPatched: "\t// CUELO: `?ocr=` asks the OCR role first; an unset `@ocr` resolves to nothing and falls through to the `?q=` order.\n\tfor (const pattern of [...(ocr ? [\"@ocr\"] : []), \"@vision\", \"@default\", activeModelPattern]) {\n",
 		patched: "\t// CUELO: `?ocr=` asks the OCR role, then `retry.fallbackChains.ocr` in order; unset or unusable entries fall through to\n\t// the `?q=` order.\n\tconst ocrChain = ocr ? cfgRetryFallbackChains.get(session.settings).ocr : undefined;\n\tconst ocrPatterns = ocr ? [\"@ocr\", ...(Array.isArray(ocrChain) ? ocrChain : [])] : [];\n\tfor (const pattern of [...ocrPatterns, \"@vision\", \"@default\", activeModelPattern]) {\n",
 	},
 	{
@@ -19106,25 +17019,6 @@ interface ComputerElementRef
 			"\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, () => resolveElement(this.#session, this.#getContext, ref, this.id));\n\t}",
 		),
 	});
-	const types = EDITS.find(entry => entry.marker === "interface ComputerActionResult {");
-	const types1880 = types.alternates.find(candidate => candidate.requires === "holdKeys(keys: string[]");
-	const typeRef = COMPUTER_ELEMENT_REF_TYPE_1891.replaceAll("\r\n", "\n");
-	const inputTarget = "\n\n/** Native input helpers shared by the desktop root and window handles;";
-	types.alternates.push({
-		file: types1880.file,
-		requires: "interface ComputerElementRef",
-		marker: types1880.marker,
-		anchor: swap(
-			swap(types1880.anchor, "\t/** Click the element's center with native input. */\n\tclick(options?: ComputerInputOptions): Promise<void>;", "\t/** Click the element's center with native input; `count: 2` double-clicks. */\n\tclick(options?: ComputerClickOptions): Promise<void>;"),
-			inputTarget,
-			"\n\n" + typeRef + inputTarget,
-		),
-		patched: swap(
-			swap(types1880.patched, "\t/** Click the element's center with native input. */\n\tclick(options?: ComputerInputOptions): Promise<ComputerActionResult>;", "\t/** Click the element's center with native input; `count: 2` double-clicks. */\n\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;"),
-			inputTarget,
-			"\n\n" + typeRef + inputTarget,
-		),
-	});
 }
 // 2026-10-13 18.9.2 computer.run(ADAPT): upstream 이 helper 인자 검사(validateString·press chord 검사)를 native 호출 앞에 넣고,
 // El·ElRef 에 doubleClick 을, find() 결과 배열에 foundElements(요소 필드·메서드를 읽으면 "배열이다"로 실패)를 더했으며,
@@ -19205,82 +17099,15 @@ interface ComputerElementRef
 			["\tasync focus(): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).focus();", '\tasync doubleClick(options?: Omit<ClickOptions, "count">): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).doubleClick(options);\n\t}\n\n\tasync focus(): Promise<ComputerActionResult> {\n\t\treturn (await this.#resolve()).focus();'],
 		]),
 	});
-	const MENU_1891 = [
-		"\t\t\titems: async (path?: string | string[]): Promise<MenuItem[]> => {",
-		"\t\t\t\tconst context = this.#getContext();",
-		"\t\t\t\tconst segments = path === undefined ? undefined : typeof path === \"string\" ? [path] : path;",
-		"\t\t\t\tif (segments !== undefined) validateKeys(segments, \"menu path\", { allowEmpty: true });",
-		"\t\t\t\treturn await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));",
-		"\t\t\t},",
-		"\t\t\tselect: async (path: string[]): Promise<void> => {",
-		"\t\t\t\tconst context = this.#getContext();",
-		"\t\t\t\tguardRun(context, \"menu.select\");",
-		"\t\t\t\tvalidateKeys(path, \"menu path\");",
-		"\t\t\t\tawait nativeCall(context.signal, () => this.#session.menuSelect(this.id, path));",
-	].join("\n");
-	const MENU_18103 = [
-		"\t\t\titems: async (...path: string[] | [path?: string | string[]]): Promise<MenuItem[]> => {",
-		"\t\t\t\tconst context = this.#getContext();",
-		"\t\t\t\t// An omitted path, or one passed on as `undefined`, lists the top-level menus.",
-		"\t\t\t\tconst segments =",
-		"\t\t\t\t\tpath.length <= 1 && path[0] === undefined",
-		"\t\t\t\t\t\t? undefined",
-		"\t\t\t\t\t\t: menuPath(\"menu.items\", path, { allowEmpty: true });",
-		"\t\t\t\treturn await nativeCall(context.signal, () => this.#session.menuItems(this.id, segments));",
-		"\t\t\t},",
-		"\t\t\tselect: async (...path: [string, ...string[]] | [string[]]): Promise<void> => {",
-		"\t\t\t\tconst context = this.#getContext();",
-		"\t\t\t\tguardRun(context, \"menu.select\");",
-		"\t\t\t\tconst segments = menuPath(\"menu.select\", path);",
-		"\t\t\t\tawait nativeCall(context.signal, () => this.#session.menuSelect(this.id, segments));",
-	].join("\n");
-	const PRESS_CHECK =
-		"\t\tconst keys = chordKeys(chord);\n\t\tif (!isStringList(keys) || keys.length === 0) {\n\t\t\tthrow new ToolError(\n\t\t\t\t`press(chord) requires a key chord such as \"cmd+shift+p\" or [\"cmd\", \"shift\", \"p\"], got ${describeArgument(chord)}`,\n\t\t\t);\n\t\t}\n";
 	const win = EDITS.find(entry => entry.marker === "return windowInputResult(action, this.id, options);");
 	const win1891 = win.alternates.find(candidate => candidate.requires === "class ElRef");
 	win1891.excludes = WORKER_18103;
-	win.alternates.push({
-		file: win1891.file,
-		requires: WORKER_18103,
-		marker: win1891.marker,
-		anchor: swaps(win1891.anchor, [
-			['\t\tguardRun(context, "type");\n', '\t\tguardRun(context, "type");\n\t\tvalidateString(text, "type(text)");\n'],
-			["\t\tawait nativeCall(context.signal, () =>\n\t\t\tthis.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),\n\t\t);", PRESS_CHECK + "\t\tawait nativeCall(context.signal, () => this.#session.keyChord(this.id, keys, pointerOptions(options)));"],
-			[MENU_1891, MENU_18103],
-			["\t\treturn (await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(\n\t\t\tnode => new El(this.#session, this.#getContext, node),\n\t\t);", "\t\treturn foundElements(\n\t\t\t(await nativeCall(signal, () => this.#session.axQuery(this.id, query))).map(\n\t\t\t\tnode => new El(this.#session, this.#getContext, node),\n\t\t\t),\n\t\t);"],
-			["\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, async () => {", '\tref(ref: string): ElRef {\n\t\tvalidateString(ref, "ref(ref)", { nonEmpty: true });\n\t\treturn new ElRef(ref, this.#getContext, async () => {'],
-		]),
-		patched: swaps(win1891.patched, [
-			['\ttype(text: string, options?: InputOptions): Promise<ComputerActionResult> {\n\t\treturn this.#input(', '\tasync type(text: string, options?: InputOptions): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "type");\n\t\tvalidateString(text, "type(text)");\n\t\treturn this.#input('],
-			['\tpress(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {\n\t\treturn this.#input("press", options, () =>\n\t\t\tthis.#session.keyChord(this.id, chordKeys(chord), pointerOptions(options)),\n\t\t);', '\tasync press(chord: string | string[], options?: InputOptions): Promise<ComputerActionResult> {\n\t\tguardRun(this.#getContext(), "press");\n' + PRESS_CHECK + '\t\treturn this.#input("press", options, () => this.#session.keyChord(this.id, keys, pointerOptions(options)));'],
-			[MENU_1891, MENU_18103],
-			["\t\treturn issueElements(this.#session, this.#getContext, nodes, this.id);\n\t}\n\n\tref(ref: string): ElRef {\n\t\treturn new ElRef(ref, () =>", '\t\treturn foundElements(await issueElements(this.#session, this.#getContext, nodes, this.id));\n\t}\n\n\tref(ref: string): ElRef {\n\t\tvalidateString(ref, "ref(ref)", { nonEmpty: true });\n\t\treturn new ElRef(ref, this.#getContext, () =>'],
-		]),
-	});
 	const desktopRef = EDITS.find(entry => entry.marker === "ref: (ref: string): Promise<El> => resolveElement(session, getContext, ref),");
-	desktopRef.alternates.push({
+	(desktopRef.alternates ??= []).push({
 		file: desktopRef.file,
 		marker: "\t\t\t\treturn new ElRef(ref, getContext, () => resolveElement(session, getContext, ref));",
 		anchor: "\t\t\tref: (ref: string): ElRef => {\n\t\t\t\tvalidateString(ref, \"ref(ref)\", { nonEmpty: true });\n\t\t\t\treturn new ElRef(ref, getContext, async () => {\n\t\t\t\t\tconst { signal } = getContext();\n\t\t\t\t\treturn el(await nativeCall(signal, () => session.axNode(ref)));\n\t\t\t\t});\n\t\t\t},",
 		patched: "\t\t\tref: (ref: string): ElRef => {\n\t\t\t\tvalidateString(ref, \"ref(ref)\", { nonEmpty: true });\n\t\t\t\treturn new ElRef(ref, getContext, () => resolveElement(session, getContext, ref));\n\t\t\t},",
-	});
-	const DECLARATIONS_18103 = 'doubleClick(options?: Omit<ComputerClickOptions, "count">)';
-	const types = EDITS.find(entry => entry.marker === "interface ComputerActionResult {");
-	const types1891 = types.alternates.find(candidate => candidate.requires === "interface ComputerElementRef");
-	types1891.excludes = DECLARATIONS_18103;
-	const pick = ['\t\t\t| "click"\n', '\t\t\t| "click"\n\t\t\t| "doubleClick"\n'];
-	types.alternates.push({
-		file: types1891.file,
-		requires: DECLARATIONS_18103,
-		marker: types1891.marker,
-		anchor: swaps(types1891.anchor, [
-			["\tclick(options?: ComputerClickOptions): Promise<void>;\n", '\tclick(options?: ComputerClickOptions): Promise<void>;\n\tdoubleClick(options?: Omit<ComputerClickOptions, "count">): Promise<void>;\n'],
-			pick,
-		]),
-		patched: swaps(types1891.patched, [
-			["\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;\n\tfocus(", '\tclick(options?: ComputerClickOptions): Promise<ComputerActionResult>;\n\tdoubleClick(options?: Omit<ComputerClickOptions, "count">): Promise<ComputerActionResult>;\n\tfocus('],
-			pick,
-		]),
 	});
 }
 // 2026-10-13 18.10.2 task.structured(ADAPT): 동적 task schema 가 outputSchema·schemaMode 두 줄 대신 `...schemaFields,` 를 펼치고
@@ -19298,7 +17125,7 @@ interface ComputerElementRef
 		const spread = `${indent}...schemaFields,\n`;
 		const entry = EDITS.find(candidate => candidate.file === "src/task/types.ts" && candidate.marker.startsWith(`"model?": "string",\n${indent}...effortField,\n${indent}"outputSchema?"`));
 		entry.excludes = STRUCTURED_18102;
-		entry.alternates.push({
+		(entry.alternates ??= []).push({
 			file: entry.file,
 			requires: STRUCTURED_18102,
 			marker: swap(entry.marker, fields, spread),
@@ -19386,23 +17213,6 @@ interface ComputerElementRef
 				delayMs: options.delayMs,`,
 	});
 
-	// Wake turn: upstream 이 owner 판정을 ownerWoken 변수로 빼고(publishMessageResult 에도 쓴다), 완료 인자에 publishMessageResult·
-	// signal 을, 결과 분기에 messageResult 를 더했다. CUELO 의 runningTurn 예외는 wake job 선등록에만 걸고, ircWakeTurn 표시와
-	// 완료 기록은 같은 자리에 그대로 둔다.
-	const wakeRegister = one(entry => entry.marker.startsWith("if (bracket?.runningTurn !== true && wakeSources(records, id)"), "wake register");
-	const ownerWoken = "\t\tconst ownerWoken = wakeSources(records, id).some(source => source.from === ownerId);\n";
-	wakeRegister.alternates.push({
-		file: wakeRegister.file,
-		marker: "if (bracket?.runningTurn !== true && ownerWoken) {",
-		anchor: `${ownerWoken}\t\tif (ownerWoken) registerWakeJob();`,
-		patched: `${ownerWoken}\t\t// A bracket opened over a turn that was already running (a parent steer
-		// adopted mid-turn) is not parent-woken work: that turn may leave the steer
-		// queued, and the continuation that consumes it owns the answer. Keep the
-		// yield-time registration for it so a stranded turn stays silent.
-		if (bracket?.runningTurn !== true && ownerWoken) {
-			registerWakeJob();
-		}`,
-	});
 	const PUBLISH_FIELD_18113 = "publishMessageResult?: boolean;";
 	const wakeField = one(entry => entry.marker === "ircWakeTurn?: boolean;", "ircWakeTurn field");
 	const publishField = ["\tfollowUpTurn?: boolean;\n", `\tfollowUpTurn?: boolean;\n\t${PUBLISH_FIELD_18113}\n`];
@@ -19488,7 +17298,7 @@ interface ComputerElementRef
 	]) {
 		const entry = one(candidate => candidate.marker === marker, marker);
 		entry.excludes = SEANCE_TYPES_18113;
-		entry.alternates.push(noop(entry.file, agentLine + SEANCE_TYPES_18113, { requires: SEANCE_TYPES_18113 }));
+		(entry.alternates ??= []).push(noop(entry.file, agentLine + SEANCE_TYPES_18113, { requires: SEANCE_TYPES_18113 }));
 	}
 	const itemSource = 'if ("sourceSession" in params) item.sourceSession = params.sourceSession;';
 	const flatItem = one(candidate => candidate.file === "src/task/index.ts" && candidate.marker.startsWith("\tconst item: TaskItem = {"), "flat item model");
@@ -19505,10 +17315,6 @@ interface ComputerElementRef
 		entry.alternates.push(noop(entry.file, forwarded, { requires: forwarded }));
 	}
 
-	// RETIRE(17번째): 번들의 advisor transcript filter 이름이 b_e → X_e 로 바뀌었다(본문 같음:
-	// e===J_e||e.startsWith(`${Y_e}.`)&&e.endsWith(cue), Y_e="__advisor", cue=".jsonl").
-	const advisorFilter = one(candidate => candidate.file === "dist/cli.js" && candidate.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
-	advisorFilter.alternates.push(noop(advisorFilter.file, 'if(!a.endsWith(".jsonl")||a.includes(".bak")||X_e(a))continue;let l=a.slice(0,-6),'));
 }
 // 2026-10-19 18.12.2 이식. 18.12.1 후보는 한 바이트도 바꾸지 않고, 18.12.2 순정에서 앵커를 잃은 13개 항목마다 그 판에만 성립하는
 // 후보를 더한다(이 블록 9개 + 위 항목 안의 4개: Opus 5.5 행·번들 advisor filter·goalProbe callTool·supervisor import). marker 를
@@ -19534,13 +17340,13 @@ interface ComputerElementRef
 
 	// RETIRE: 릴레이 새 탭. upstream 이 target 없는 relay open 에 자기 배경 탭을 열고 close 가 그 탭을 닫는다.
 	const relayTab = one(entry => entry.file === "src/tools/browser/tab-supervisor.ts" && entry.marker === "createRelayTab", "relay tab");
-	relayTab.alternates.push(noop(relayTab.file, "\t\t// A relay open without a target gets its own background tab, leaving the user's\n\t\t// selected tab alone, in the browser of the tab omp used last on this relay.\n"));
+	(relayTab.alternates ??= []).push(noop(relayTab.file, "\t\t// A relay open without a target gets its own background tab, leaving the user's\n\t\t// selected tab alone, in the browser of the tab omp used last on this relay.\n"));
 	const relayDoc = one(entry => entry.file === "src/prompts/tools/browser.md" && entry.marker === "opens a new tab", "browser.md relay");
 	(relayDoc.alternates ??= []).push(noop(relayDoc.file, "- `app.relay: true`: drive the user's Chrome through the omp relay. Without `app.target`, a new name opens omp's own background tab, leaving the user's tab alone (an outdated relay extension selects it instead); `url` navigates that tab. `app.target` borrows an existing tab by URL/title substring. Reopening an open name keeps its tab."));
 	// RETIRE: 사용자 설정이 takeover 를 정하고, control.acquire 는 전달 방식을 바꾸지 않는다고 upstream 이 직접 적는다.
 	const acquireDoc = one(entry => entry.file === "src/prompts/tools/computer.md" && entry.marker === "NEVER acquire control to work around", "computer.md acquire");
 	(acquireDoc.alternates ??= []).push(noop(acquireDoc.file, "- `computer.control.acquire({reason})` requires live human confirmation for task-scoped control;"));
-	// RETIRE: judgment Vercel 항목 둘(legacyPatched 는 옛 설치본의 --revert 용). 순정 쪽 이웃 줄만 바뀌었다.
+	// RETIRE: judgment Vercel 항목 둘. 순정 쪽 이웃 줄만 바뀌었다.
 	const judgeImport = one(entry => entry.file === "src/judgment/index.ts" && entry.marker === "\ttype AssistantMessage,\n\tchatTextBackend,\n", "judgment import");
 	(judgeImport.alternates ??= []).push(noop(judgeImport.file, "\ttype AssistantMessage,\n\ttype BoxEdges,\n\tchatTextBackend,\n"));
 	const judgeImages = one(entry => entry.file === "src/judgment/index.ts" && entry.marker === "\t\tconst requiresImages = images.length > 0;\n\t\tconst signal = options.signal;\n", "judgment images");
@@ -21342,23 +19148,6 @@ class ElRef implements PromiseLike<El> {
 		});
 	}
 }
-// 2026-10-15 18.10.3: 공개 이슈 #25 dist 항목은 18.10.4 번들의 축약 이름(B$l·ga·D$l·ies)으로 쓰였다. 18.10.3 번들은 같은
-// 함수를 Wjl·ma·Njl·bZn 으로 축약했을 뿐 본문이 같아서, 식별자 토큰만 바꾼 후보를 만든다(문자열 치환이 아니라 토큰 단위이므로
-// 짧은 이름이 다른 식별자의 일부와 섞이지 않는다). 세 번들은 `Timed out restoring…` 앞 축약 이름으로 서로 배타적이다.
-{
-	const RENAMED_1810_3 = { "B$l": "Wjl", ga: "ma", "D$l": "Njl", ies: "bZn" };
-	const rename = text => text.split(/([A-Za-z0-9_$]+)/).map(token => RENAMED_1810_3[token] ?? token).join("");
-	const bundle = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker === 'const emitDescriptor=Object.getOwnPropertyDescriptor(page,"emit")');
-	// alternates 는 18.11.0·18.11.1 RETIRE no-op 둘이어야 한다(후보가 늘면 이 수와 아래 배타성을 다시 본다).
-	if (!bundle?.requires || bundle.alternates?.length !== 2) throw new Error("18.10.3 browser.run dist 후보를 만들 수 없다");
-	bundle.alternates.push({
-		file: bundle.file,
-		requires: ',Njl,"Timed out restoring browser request interception',
-		marker: bundle.marker,
-		anchor: rename(bundle.anchor),
-		patched: rename(bundle.patched),
-	});
-}
 // These deltas amend code introduced by the original watch patch, not upstream code.
 // Fold before preflight so clean installs see upstream anchors; retain the old whole
 // injected block for upgrades instead of requiring an intermediate patch application.
@@ -21440,14 +19229,9 @@ for (const [owner, older] of preStatsWatchBodies) {
 		if (found !== 1) throw new Error(`18.12.3 후보를 만들 수 없다: ${JSON.stringify(from.slice(0, 80))} ${found}/1`);
 		return text.replace(from, () => to);
 	};
-	const noop = (file, text, extra = {}) => ({ file, marker: text, anchor: text, patched: text, ...extra });
 	const exclude = (candidate, text) => {
 		candidate.excludes = candidate.excludes === undefined ? text : [candidate.excludes, text].flat().concat();
 	};
-
-	// RETIRE: computer.md control.acquire 줄(반환 모양 설명만 늘었다).
-	const acquireDoc = one(entry => entry.file === "src/prompts/tools/computer.md" && entry.marker === "NEVER acquire control to work around", "computer.md acquire");
-	acquireDoc.alternates.push(noop(acquireDoc.file, "- `computer.control.acquire({reason})` requires live human confirmation for task-scoped control and returns `{active: true}` or `{active: false, reason}`:"));
 
 	// ADAPT: IrcBridge.deliver 의 부모 steer. upstream 은 steer 를 `#parentSteers` WeakSet 에 올린다(broadcast leg 제외).
 	const PARENT_STEERS_18123 = "readonly #parentSteers = new WeakSet<AgentMessage>();";
@@ -21481,7 +19265,7 @@ for (const [owner, older] of preStatsWatchBodies) {
 	// 그 전에는 yield 시점 등록(onYieldAccepted)만 남긴다.
 	const OWNER_PROMPTED = "let ownerPrompted = false;";
 	const wakeJob = one(entry => entry.file === "src/task/executor.ts" && entry.marker === "if (bracket?.runningTurn !== true && wakeSources(records, id).some(source => source.from === ownerId)) {", "executor ownerWoken register");
-	wakeJob.alternates.push({
+	(wakeJob.alternates ??= []).push({
 		file: wakeJob.file,
 		requires: OWNER_PROMPTED,
 		marker: "if (bracket?.runningTurn !== true && ownerWoken) registerWakeJob();",
@@ -21912,13 +19696,6 @@ for (const [owner, older] of preStatsWatchBodies) {
 		],
 	});
 
-	// dist/cli.js: advisor transcript filter(RETIRE 유지). minified 이름만 바뀌었다.
-	const advisorFilter = one(entry => entry.file === "dist/cli.js" && entry.marker.startsWith('if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "advisor filter");
-	const ADVISOR_18132 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||vOe(a))continue;let l=a.slice(0,-6),';
-	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18132, anchor: ADVISOR_18132, patched: ADVISOR_18132 });
-	// 2026-10-29 18.13.3: EOe는 같은 isAdvisorTranscriptName 함수다(`e===AOe||e.startsWith(\`${vOe}.\`)…`). minified 이름만 바뀌었다(RETIRE 유지).
-	const ADVISOR_18133 = 'if(!a.endsWith(".jsonl")||a.includes(".bak")||EOe(a))continue;let l=a.slice(0,-6),';
-	advisorFilter.alternates.push({ file: "dist/cli.js", marker: ADVISOR_18133, anchor: ADVISOR_18133, patched: ADVISOR_18133 });
 }
 // 2026-10-29: preserve cross-language ranking without bypassing relevance.
 {
@@ -22078,12 +19855,11 @@ EDITS.push({
 	});
 }
 // ToolCostTrim2: keep orchestrator-only tools out of Maker defaults.
-// 2026-10-31: git_integrate(세션 worktree 브랜치를 대상에 rebase해 게시)를 더했다. 옛 목록을 실은 설치본은 legacyPatched 로 이 목록으로 바뀐다.
+// 2026-10-31: git_integrate(세션 worktree 브랜치를 대상에 rebase해 게시)를 더했다.
 EDITS.push({
 	file: "src/sdk.ts",
 	marker: "// HANSE: main-only tools excluded from Maker alwaysInclude",
 	anchor: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name));\n\t\tfor (const name of alwaysInclude) {",
-	legacyPatched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
 	patched: "\t\t\t\t].filter(name => !defaultInactiveToolNames.has(name) &&\n\t\t\t\t\t// HANSE: main-only tools excluded from Maker alwaysInclude\n\t\t\t\t\t!(taskDepth > 0 && [\"git_finalize\", \"git_integrate\", \"maker_route\", \"ci_chain\", \"routing_verdict\", \"deploy_verify\"].includes(name)));\n\t\tfor (const name of alwaysInclude) {",
 });
 // ToolCostTrim2: batch complete verification passages across selected files.
@@ -23517,15 +21293,14 @@ export function cueloIsFallbackKeyBillingRejection(
 	}, STATS);
 }
 
-// 18.18.0: only the minified advisor-name helper in the bundle's session scan moved (iFe → pFe). The
-// new candidate is a no-op on the 18.18.0 text and requires it; every older candidate excludes it.
+// 18.18.0: only the minified advisor-name helper in the bundle's session scan moved (iFe → pFe). Every
+// candidate excludes the 18.18.0 text.
 {
 	const entries = EDITS.filter(e => e.file === "dist/cli.js" && e.marker.includes('o==="__advisor.jsonl"'));
 	if (entries.length !== 1) throw new Error(`18.18.0 candidate: ${entries.length}/1 entries`);
 	const [advisor] = entries;
 	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&pFe(c))continue';
 	for (const old of [advisor, ...(advisor.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), bundleSkip];
-	advisor.alternates.push({ file: advisor.file, marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip, requires: bundleSkip });
 
 	// Mnemopi: 18.18.0 rebuilds a changed embedding model by calling embed() on the corpus directly instead of
 	// through scheduleEmbedding (which the e5 entry (6) prefixes), so the rebuilt vectors lost `passage:` and sat
@@ -24384,7 +22159,7 @@ function planSpawns(
 }
 
 // 18.18.7: upstream still excludes advisor transcripts; only the bundle helper name changed.
-// Keep the absorbed purpose as a version-exclusive RETIRE no-op.
+// Every candidate excludes the 18.18.7 text.
 {
 	const bundleSkip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&ZUe(c))continue';
 	const entries = EDITS.filter(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
@@ -24393,9 +22168,6 @@ function planSpawns(
 	for (const old of [advisor, ...(advisor.alternates ?? [])]) {
 		old.excludes = [...[old.excludes ?? []].flat(), bundleSkip];
 	}
-	(advisor.alternates ??= []).push({
-		file: advisor.file, marker: bundleSkip, anchor: bundleSkip, patched: bundleSkip, requires: bundleSkip,
-	});
 }
 
 // 18.18.8: keep CUELO validation, ask lifecycle/timeout policy and eval-only MCP holds
@@ -25298,7 +23070,6 @@ function planSpawns(
 	const advisor = entries[0];
 	const skip = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&oWe(c))continue';
 	for (const old of [advisor, ...(advisor.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), skip];
-	(advisor.alternates ??= []).push({ file: advisor.file, marker: skip, anchor: skip, patched: skip, requires: skip });
 }
 
 // 18.20.3 (ADAPT): upstream removed historical-child APIs and reshaped recall.

@@ -139,29 +139,6 @@ check("적용 뒤 --check 는 APPLIED 와 0 이다", checkAfter.code === 0 && ch
 const again = run([]);
 check("이미 적용된 대상의 재실행은 SKIP 과 0 이다", again.code === 0 && again.out.includes("SKIP"), `code=${again.code} out=${again.out.slice(-200)}`);
 
-// An installed 0.5.4 already carries the older learn-id patch. Upgrading it
-// must replace that exact fragment instead of treating its old marker as final.
-const learnPath = join(fixture, "src/tools/learn.ts");
-const latestLearn = readFileSync(learnPath, "utf8");
-const oldLearn = latestLearn
-	.replace(
-		/const topicResult = params\.topic \? upsertLearnTopic\([^\n]*\) : undefined;\n\t\t\t\tconst memoryId = topicResult\?\.id \?\? state\.rememberScoped\(/,
-		"const memoryId = state.rememberScoped(",
-	)
-	.replace(
-		'if (memoryId) memoryMessage = `Lesson stored (id: ${memoryId}${topicResult ? `, revision: ${topicResult.revision}` : ""})`;',
-		'if (memoryId) memoryMessage = `Lesson stored (id: ${memoryId})`;',
-	)
-	// The 0.5.4 text predates the similar-memory hint call as well.
-	.replace(/\t\t\t\t\/\/ HANSE: learn lists similar existing memories\n\t\t\t\tif \(memoryId\) memoryMessage \+= await learnSimilarHint\([^\n]*\n/, "");
-check("0.5.4 learn-id 본문을 재현한다", oldLearn !== latestLearn && !oldLearn.includes("const topicResult ="));
-writeFileSync(learnPath, oldLearn);
-const oldCheck = run(["--check"]);
-check("옛 learn-id 패치는 MISSING으로 판정한다", oldCheck.code === 1 && oldCheck.out.includes("legacy"), oldCheck.out.slice(-400));
-const upgraded = run([]);
-check("옛 learn-id 패치를 최신으로 바꾼다", upgraded.code === 0 && readFileSync(learnPath, "utf8") === latestLearn,
-	`code=${upgraded.code} out=${upgraded.out.slice(-400)}`);
-
 const reverted = run(["--revert"]);
 check("--revert 는 복원 완료와 0 으로 끝난다", reverted.code === 0 && reverted.out.includes("복원 완료"), `code=${reverted.code} out=${reverted.out.slice(-2_000)}`);
 check("--revert 는 원본 바이트로 되돌린다", fixtureUnchanged());

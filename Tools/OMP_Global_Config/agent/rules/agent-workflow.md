@@ -56,7 +56,7 @@ Skill은 필요하거나 요청했을 때만, 절차 Skill(`systematic-debugging
 
 | 별칭 | exact selector | `호출해` | `교체해` |
 |---|---|---|---|
-| **YUKI(유키)** | `openai-codex/gpt-6-astra` | 이 모델의 task child | 현재 세션만 전환 |
+| **YUKI(유키)** | `openai-codex/gpt-6.2-astra` | 이 모델의 task child | 현재 세션만 전환 |
 | **ISANA(이사나)** | `hive/deepseek-ai/deepseek-v4.1-flash-1017` | 이 모델의 task child | 현재 세션만 전환 |
 | **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |

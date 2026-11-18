@@ -94,7 +94,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     { provider: "anthropic", id: "claude-opus-5-5" },
     { provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" },
     { provider: "hive", id: "zai-org/glm-5.3-flash" },
-    { provider: "openai-codex", id: "gpt-6-astra" },
+    { provider: "openai-codex", id: "gpt-6.2-astra" },
   ];
   const accounts = [
     { position: 0, credentialId: 11, active: false },
@@ -422,7 +422,7 @@ describe("character voice identity", () => {
     expect(routing).toContain('[character-summon-intent alias="YUKI(유키)"]');
     expect(routing).toContain('[character-summon-intent alias="MIO(미오)"]');
     expect(routing).toContain('[character-summon-intent alias="SHION(시온)"]');
-    expect(routing).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]');
+    expect(routing).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]');
     expect(routing).toContain('[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]');
     expect(routing).toContain("web6/gpt-6-pro");
     expect(routing).toContain("WEB6");
@@ -430,7 +430,7 @@ describe("character voice identity", () => {
   });
 
   test("multi-summon rewrite claims marked tasks and rejects unmarked or partial dispatch", () => {
-    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]';
+    const yukiMarker = '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]';
     const mioMarker = '[character-summon alias="MIO(미오)" model="anthropic/claude-opus-5-5" oauth-position="1"]';
     const pending = ["YUKI(유키)", "MIO(미오)"] as const;
 
@@ -775,8 +775,8 @@ describe("character voice identity", () => {
     const harness = createRuntimeHarness();
     expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.1-sol" });
     await harness.emit("input", { type: "input", text: "유키로 교체해", source: "rpc" });
-    expect(harness.calls).toContain("set:openai-codex/gpt-6-astra");
-    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6-astra" });
+    expect(harness.calls).toContain("set:openai-codex/gpt-6.2-astra");
+    expect(harness.ctx.model).toEqual({ provider: "openai-codex", id: "gpt-6.2-astra" });
   });
 
   // cross-review R1-OAI-1: 판정을 기다리는 동안 새 steering이 오면 옛 문장의 호출 지시를 보내지 않는다.
@@ -1380,7 +1380,7 @@ describe("office mode character seat", () => {
       const intent = parseCharacterIntent("테스타 불러와");
       expect(intent).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
       expect(parseCharacterIntent("testa 호출해")).toEqual({ kind: "summon", aliases: [OFFICE_ALIAS] });
-      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6-astra"]`;
+      const marker = `[character-summon alias="${OFFICE_ALIAS}" model="openai-codex/gpt-6.2-astra"]`;
       const routing = renderCharacterSummonRouting([OFFICE_ALIAS]);
       expect(routing).toContain(`[character-summon-intent alias="${OFFICE_ALIAS}"]`);
       expect(routing).toContain("FIXTURE-TEMPERAMENT");
@@ -1399,7 +1399,7 @@ describe("office mode character seat", () => {
       const harness = createRuntimeHarness();
       harness.selectModel("anthropic/claude-opus-5-5");
       const result = await harness.emit("input", { type: "input", text: "테스타로 교체해", source: "rpc" });
-      expect(harness.calls).toContain("set:openai-codex/gpt-6-astra");
+      expect(harness.calls).toContain("set:openai-codex/gpt-6.2-astra");
       expect(JSON.stringify(result)).toContain(OFFICE_ALIAS);
       const wire = await harness.emit("before_provider_request", {
         type: "before_provider_request",
@@ -1604,7 +1604,7 @@ describe("office mode character seat", () => {
       expect(parseCharacterIntent("테스타 불러와")).toBeUndefined();
       expect(renderCharacterVoice("YUKI(유키)")).toContain(CHARACTER_VOICES["YUKI(유키)"].temperament);
       expect(buildCharacterSummonBrief("인사한다.", "YUKI(유키)").startsWith(
-        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6-astra"]',
+        '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]',
       )).toBe(true);
     });
   });
