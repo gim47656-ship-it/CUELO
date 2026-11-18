@@ -193,11 +193,21 @@ describe("한 호출 상한을 넘는 변경은 거절하지 않고 나눠 같�
     expect(result.reviewers[0]).toMatchObject({ family: "openai", status: "unparsable" });
   });
 
-  test("8번으로도 모자라면 아무것도 보내지 않고 나누라고 거절한다", async () => {
+  test("기존 여덟 묶음을 넘는 변경도 한 라운드에서 끝까지 검토한다", async () => {
     const env = repo();
-    put(env.work, "a.ts", bigFile(MAX_INPUT_BYTES * 9));
+    put(env.work, "a.ts", bigFile(MAX_INPUT_BYTES * 8) + "\n// final-change-marker\n");
     const prompts: string[] = [];
-    await expect(runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, undefined, prompts), signal)).rejects.toThrow(/calls per reviewer, above the limit of 8[^]*Nothing was sent/);
+    const result = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, undefined, prompts), signal);
+    expect(result.passable).toBe(true);
+    expect(prompts.length).toBeGreaterThan(8);
+    expect(prompts.at(-1)).toContain("final-change-marker");
+  });
+
+  test("16번으로도 모자라면 아무것도 보내지 않고 나누라고 거절한다", async () => {
+    const env = repo();
+    put(env.work, "a.ts", bigFile(MAX_INPUT_BYTES * 17));
+    const prompts: string[] = [];
+    await expect(runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, undefined, prompts), signal)).rejects.toThrow(/calls per reviewer, above the limit of 16[^]*Nothing was sent/);
     expect(prompts).toEqual([]);
   });
 

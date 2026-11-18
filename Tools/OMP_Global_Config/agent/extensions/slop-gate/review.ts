@@ -23,9 +23,9 @@ import { extractVisible, type Extracted, type ScanLead } from "./extract";
 
 /**
  * 한 파일에서 심사할 수 있는 글(보이는 글 + html 원문)의 상한(2026-11-03). SPLIT_CHARS를 넘는 파일은 빠짐없이 겹치는 조각으로 나눠 조각마다 한 호출로
- * 심사하므로 이 값은 한 호출의 크기가 아니라 한 파일의 호출 수(약 23)와 비용의 상한이다. 세션 기록에서 거절된 가장 큰 파일은 1,424,265자였다.
+ * 심사하므로 이 값은 한 호출의 크기가 아니라 한 파일에 드는 총 호출 수와 비용을 제한한다.
  */
-export const MAX_FILE_CHARS = 2_000_000;
+export const MAX_FILE_CHARS = 4_000_000;
 /** 이 이하의 파일은 예전처럼 나누지 않고 한 artifact로 싣는다(예전 한 파일 상한이라 이미 통과하던 입력의 호출·바이트가 그대로다). */
 export const SPLIT_CHARS = 100_000;
 export const MAX_BATCH_CHARS = 90_000;

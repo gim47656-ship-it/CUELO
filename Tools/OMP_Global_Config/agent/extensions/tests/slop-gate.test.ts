@@ -766,10 +766,10 @@ describe("큰 산출물: 겹치는 조각으로 나눠 빠짐없이 심사한다
   const bigHtml = (count: number, head = "", tail = "") => `<html><head><style>.hero{background:linear-gradient(90deg,#111,#222)}</style></head><body>${head}${Array.from({ length: count }, (_, i) => line(i)).join("")}${tail}<p>마지막 안내 TAILMARK 문장입니다.</p></body><style>.tail{background:linear-gradient(135deg,#6366f1,#8b5cf6)}</style></html>`;
   const ledgerPasses = (cwd: string) => readSlopRecords(join(cwd, "ledger.jsonl")).filter((record) => record.type === "slop-pass");
 
-  test("400k자를 넘는 html도 거절하지 않고, 보이는 글과 원문 끝(CSS)까지 모든 줄을 한도 안의 호출로 나눠 심사해 그 파일 sha256에 통과를 남긴다", async () => {
+  test("200만 자를 넘는 HTML도 보이는 글과 원문 끝까지 심사한 뒤 파일에 통과를 남긴다", async () => {
     const cwd = scratch();
-    const html = bigHtml(4500);
-    expect(htmlText(html).length + html.length).toBeGreaterThan(400_000);
+    const html = bigHtml(24_000);
+    expect(htmlText(html).length + html.length).toBeGreaterThan(2_000_000);
     writeFileSync(join(cwd, "list.html"), html);
     const reviewer = partReviewer();
     const out = await reviewFiles(["list.html"], undefined, deps(cwd, reviewer.complete, { extract: undefined }), signal);
@@ -783,9 +783,11 @@ describe("큰 산출물: 겹치는 조각으로 나눠 빠짐없이 심사한다
     expect(reviewer.peak()).toBeGreaterThan(1);
     expect(reviewer.peak()).toBeLessThanOrEqual(MAX_PARALLEL_BATCHES);
     const shown = reviewer.calls.map((call) => call.prompt).join("\n");
-    for (let i = 0; i < 4500; i += 1) {
-      expect(shown).toContain(`입고 화면 ${i}번 줄에서`);
-      expect(shown).toContain(`<p>입고 화면 ${i}번 줄에서`);
+    const visibleLines = new Set(shown.match(/(?<!<p>)입고 화면 \d+번 줄에서/g));
+    const sourceLines = new Set(shown.match(/<p>입고 화면 \d+번 줄에서/g));
+    for (let i = 0; i < 24_000; i++) {
+      expect(visibleLines.has(`입고 화면 ${i}번 줄에서`)).toBe(true);
+      expect(sourceLines.has(`<p>입고 화면 ${i}번 줄에서`)).toBe(true);
     }
     for (const needle of ["TAILMARK", "linear-gradient(135deg,#6366f1,#8b5cf6)", "linear-gradient(90deg,#111,#222)"]) expect(shown).toContain(needle);
     expect(ledgerPasses(cwd).map((record) => record.sha256)).toEqual([sha256(html)]);

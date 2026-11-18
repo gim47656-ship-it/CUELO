@@ -69,7 +69,7 @@ export const MAX_PROBE_TEXT_CHARS = 2_000;
 /** 모델 한 번 호출에 넣는 변경 본문 상한(UTF-8 바이트). 약 7만~10만 토큰이다. */
 export const MAX_INPUT_BYTES = 300 * 1024;
 export const SAMPLE_MODULUS = 10;
-export const REVIEW_TIMEOUT_MS = 1_200_000;
+export const REVIEW_TIMEOUT_MS = 600_000;
 export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic" };
 export const LANE_TAG: Record<Lane, string> = { openai: "OAI", anthropic: "ANT" };
 /** 보조 검토자 slot. 비어 있으면 보조 호출이 없다. */
@@ -1643,7 +1643,7 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pa
 }
 
 /** 한 라운드를 나눠 심사할 때 reviewer 자리마다 부르는 최대 호출 수(2026-10-28 사용자 결정). 넘으면 나누지 않고 거절한다. */
-export const MAX_REVIEW_BATCHES = 8;
+export const MAX_REVIEW_BATCHES = 16;
 /** 나눈 호출마다 변경에 남아야 하는 최소 바이트. 공통 부분(기준·앞 지적·입력·참고·probe 결과)이 이보다 적게 남기면 나눠도 심사가 되지 않아 거절한다. */
 const MIN_BATCH_CHANGE_BYTES = 16 * 1024;
 /** 조각 머리표·구분 줄을 어림한 값과 실제 프롬프트의 차이를 덮는 여유. */
