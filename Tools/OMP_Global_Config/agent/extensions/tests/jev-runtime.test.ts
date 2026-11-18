@@ -150,13 +150,15 @@ function createHarness(options: HarnessOptions = {}) {
             answers[id] =
               options.judgeAnswers?.[id] ??
               (question.type === "noul"
-                // 설계 방향이 정해진 일반 구현(designOpen 낮음)으로 답한다. mainWaits 질문은 더 이상 없다.
+                // Fixture routing uses a settled design (designOpen low).
                 ? { type: "noul", noul: 0.1 }
                 // 강도 질문은 픽스처가 실제로 발주하는 high로 답한다.
                 : id.startsWith("effort")
                   ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }
-                  // UI 난이도와 재작업 성격은 해결된 일반 구현으로 답한다(모름이면 추천이 없다).
-                  : id === "uiDifficulty" || id === "reworkNature" || id === "boundedDesign"
+                  // General integration fixtures keep their original Sonnet dispatch in the routine UI lane.
+                  : id === "uiDifficulty"
+                    ? { type: "choice", choice: "ROUTINE", probabilities: { ROUTINE: 1 }, confidence: 1 }
+                    : id === "reworkNature" || id === "boundedDesign"
                     ? { type: "choice", choice: "NONE", probabilities: { ok: 1 }, confidence: 1 }
                     : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
           }
@@ -543,10 +545,12 @@ describe("jev-runtime pre-dispatch", () => {
     const harness = createHarness({
       judgeAnswers: {
         workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+        uiDifficulty: { type: "choice", choice: "NONE", probabilities: { NONE: 1 }, confidence: 1 },
       },
     });
-    await harness.prepare(GUARDED_TASK, "Ledger");
-    const input = taskCall("call-ledger", GUARDED_TASK, { name: "Ledger", model: "test/local:auto" });
+    const prepared = await harness.prepare(GUARDED_TASK, "Ledger");
+    expect(prepared.details.routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
+    const input = taskCall("call-ledger", GUARDED_TASK, { name: "Ledger", model: "test/deepseek:auto" });
     expect(await harness.emit("tool_call", input)).toBeUndefined();
     await harness.emit("tool_result", {
       ...input,
@@ -595,8 +599,8 @@ describe("jev-runtime pre-dispatch", () => {
     expect(records).toMatchObject([
       {
         type: "dispatch", name: "Ledger", workClass: "NORMAL", focus: null,
-        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "auto",
-        chosenModel: "test/local", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
+        recommendedProfile: "NORMAL_DEEPSEEK", recommendedModel: "test/deepseek", recommendedEffort: "auto",
+        chosenModel: "test/deepseek", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
       { type: "outcome", status: "completed", durationSec: 61, ...identity },

@@ -1257,6 +1257,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       ownership: DispatchOwnership | null;
       restored: boolean;
       sourceRevision: string | null;
+      verdictRecorded?: true;
     };
     const observedAttempts = new Map<string, ObservedAttempt>();
     /** outcome을 이미 기록한 attempt. 같은 attempt를 두 번 소비하지 않는다. */
@@ -1366,6 +1367,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (!baseLedger.append(record)) {
         return { ok: false, error: "원장 기록에 실패했습니다(저장 오류). 판정은 남지 않았습니다.", knownAttemptIds: [] };
       }
+      observed.verdictRecorded = true;
       return { ok: true, record, ...(diagnostic ? { diagnostic } : {}) };
     }
     const routing = registerMakerRouting(pi, {
@@ -2081,9 +2083,13 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         observedAttempts.set(entry.identity.attemptId, { ...entry.identity, name: entry.name, status: entry.status, ownership: entry.ownership, restored: true, sourceRevision: entry.sourceRevision });
         if (entry.status !== "running") settledAttempts.add(entry.identity.attemptId);
       }
-      // durable outcome이 남긴 jobId는 reload 뒤에도 중복 소비를 막는다.
+      // durable outcome이 남긴 jobId와 같은 attempt의 명시 판정을 복원한다.
       for (const record of sessionRecords) {
-        if (record.type === "outcome" && record.sessionId === sessionId && record.jobId) consumedJobs.add(record.jobId);
+        if (record.type === "outcome" && record.jobId) consumedJobs.add(record.jobId);
+        if (record.type === "verdict" && VERDICTS.includes(record.verdict)) {
+          const observed = observedAttempts.get(record.attemptId);
+          if (observed && observed.assignmentId === record.assignmentId) observed.verdictRecorded = true;
+        }
       }
       liveMakers.clear();
       jobIndex.clear();
@@ -2146,8 +2152,23 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
     pi.on("agent_start", () => {
       memoryInRun = true;
     });
-    pi.on("agent_end", () => {
+    pi.on("agent_end", (event, ctx) => {
       memoryInRun = false;
+      if (event.willContinue || ctx.agent?.kind === "sub") return;
+      const lastAssistant = event.messages.findLast(message => message.role === "assistant");
+      if (lastAssistant?.stopReason === "aborted") return;
+      const sessionId = ctx.sessionManager.getSessionId();
+      if (!sessionId) return;
+      const pending: string[] = [];
+      for (const attempt of observedAttempts.values()) {
+        if (attempt.sessionId !== sessionId || attempt.status !== "completed" || attempt.verdictRecorded) continue;
+        pending.push(`${attempt.name || attempt.agentId} ${sessionId}|${attempt.assignmentId}|${attempt.attemptId}`);
+      }
+      if (pending.length === 0) return;
+      quiet({
+        customType: ADVISORY_CUSTOM_TYPE, display: false, attribution: "agent",
+        content: `[JevRuntime:verdict-reminder] 완료된 Maker 시도 중 판정 미기록 ${pending.length}건:\n${pending.join("\n")}\nMain이 완료 보고와 수용 근거를 대조한 뒤 xd://routing_verdict에 accepted, rework 또는 held를 직접 기록하세요.`,
+      }, ctx);
     });
     pi.on("session_shutdown", () => {
       cancelMemoryApplication();
