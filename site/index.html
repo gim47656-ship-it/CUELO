@@ -76,9 +76,9 @@
         <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">View source on GitHub</a>
         <a class="btn" href="#run">Run from source</a>
       </div>
-      <p class="status">Install from GitHub source or the <a href="https://www.npmjs.com/package/cuelo">cuelo package on npm</a>. Node.js and Bun are required.</p>
+      <p class="status">Run locally on Linux. Install from GitHub source or the <a href="https://www.npmjs.com/package/cuelo">cuelo package on npm</a>. Node.js and Bun are required.</p>
       <figure class="hero-figure">
-        <img src="assets/hero-1600.webp" srcset="assets/hero-900.webp 900w, assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="The CUELO wordmark between seven anime-style characters working at laptops: RIN, MIO, YUKI, ISANA, NOVA, SHION and HIKARI.">
+        <img src="assets/hero-1600.webp" srcset="assets/hero-900.webp 900w, assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="The CUELO wordmark between seven anime-style characters working at laptops.">
         <figcaption>In the app, accounts appear as these character faces and aliases instead of email addresses.</figcaption>
       </figure>
     </div>
@@ -104,9 +104,9 @@
       <p>CUELO is a local web UI for omp (oh-my-pi) and an inspectable multi-agent harness for coding work. It keeps your terminal workflow instead of replacing it with a separate chat app.</p>
       <ul>
         <li><strong>Same sessions as the CLI</strong> — CUELO runs omp's own SDK inside a local web server and shares the <code>~/.omp/agent</code> sessions, credentials and model settings with the CLI. It does not scrape CLI output, so a session started in the terminal continues in the browser and back.</li>
-        <li><strong>Delegation you can inspect</strong> — A Main agent owns requirements and the final judgement and delegates slices to Maker agents; guards keep two Makers from writing the same file. Each task gets a card with live status, changed files and Main's review verdict, and code written by one model family can be reviewed by another family before commit.</li>
-        <li><strong>Learning from its own records</strong> — A local maintenance board compares the last 7 days with the 7 days before: bottlenecks, cost, repeated corrections, and whether tool errors rose after a skill was opened. An optional nightly session on a machine you set up works in a separate git worktree, turns procedures seen in at least two different sessions into skills, and leaves a plain-language morning summary. It publishes its change as a release without installing anything on any PC, and each PC installs new releases in its own morning session.</li>
-        <li><strong>Plugins you can switch on and off</strong> — A plugin is a single folder that combines tools, extensions, and sandboxed side panels; place it in the repository's plugins folder to install it alongside the profile. Agents write new plugins directly to the repository without a trial stage and release them in the next version after checks and review. You can toggle plugins in the right deck's plugin view, and state changes apply starting from a new session or <code>/reload</code> without restarting the server.</li>
+        <li><strong>Delegation you can inspect</strong> — A Main agent owns requirements and the final judgement and delegates slices to Maker agents; guards check assigned file boundaries. Each task gets a card with live status, changed files and Main's review verdict, and code written by one model family can be reviewed by another family before commit.</li>
+        <li><strong>Learning from its own records</strong> — A local maintenance board compares the last 7 days with the 7 days before: bottlenecks, cost and repeated corrections. It also shows tool errors associated with opening a skill, not proof that the skill caused them. Ordinary sessions do not repair the project in the background on their own. An optional scheduled nightly session works in a separate git worktree, reviews open issues and evidence-backed improvements, and uses recovery procedures seen in at least two sessions as material for skills. It leaves a morning summary and publishes changes as a release, but does not install them or restart any PC's server. On PCs configured for scheduled sync, a morning session installs new releases that have passed public CI.</li>
+        <li><strong>Plugins you can switch on and off</strong> — A plugin is a folder with a manifest and optional tools, extensions and sandboxed side panels, installed alongside the profile. Agents write new plugins directly to the repository and release them after checks and review. Right-deck plugin toggles apply to new sessions or through <code>/reload</code> while idle, which restarts the session rather than the server. The separate omp plugins in Settings behave differently: disabling an already-loaded plugin requires a CUELO runtime restart; <code>/reload</code> does not unload it.</li>
       </ul>
     </div>
   </section>
@@ -120,9 +120,12 @@
           <p class="where">Web app · repository root</p>
           <ul>
             <li>Find and continue past omp sessions per project, with live streaming of tool calls, cost and context use.</li>
-            <li>Branch from an earlier message or fork into a separate session.</li>
+            <li>Branch from an earlier message or fork into a separate session. New sessions use a separate Git worktree when the repository is already in use.</li>
             <li>Assign models to roles (<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> …) using the same <code>config.yml</code> as the TUI.</li>
             <li>Manage providers, <code>models.yml</code>, plugins and skills; preview files; switch Git worktrees.</li>
+            <li>Install and update external skills from public GitHub repositories with a static SkillSpector check. Warnings or an unavailable scanner require confirmation before installation.</li>
+            <li>Schedule sessions on a selected PC with routines and collect their results on a board backed by a separately configured private Git repository.</li>
+            <li>Call the agent by voice, or use a ChatGPT account for face-to-face interpreting between Korean and English, Chinese, Vietnamese, Japanese or Thai.</li>
             <li>Password lock, browser notifications and PWA install. The interface is Korean-first, with English available.</li>
           </ul>
         </div>
@@ -149,8 +152,8 @@
           <thead><tr><th scope="col">Part</th><th scope="col">Details</th></tr></thead>
           <tbody>
             <tr><th scope="row">Works from this repository</th><td>The whole web app: session browsing, live chat, branch and fork, model roles, provider, plugin and skill management, file preview, worktrees, password lock, character notifications, and an efficiency panel that reads <code>~/.omp/stats.db</code>.</td></tr>
-            <tr><th scope="row">Needs provider sign-in</th><td>Sessions, credentials and model settings live in <code>~/.omp/agent</code>, the same profile the <code>omp</code> CLI uses. You sign in to your providers yourself, in CUELO under Settings › Models.</td></tr>
-            <tr><th scope="row">Separate local services</th><td>The account usage card, side chat (<code>/btw</code>) and SubAgent archive get their data from three local services (<code>usage</code>, <code>btw</code>, <code>subagent</code>). <code>node install.mjs start</code> runs them next to the app on <code>127.0.0.1</code>. Credentials and records stay on your machine. If a service is not running, only its panel shows “not connected”.</td></tr>
+            <tr><th scope="row">Needs provider sign-in</th><td>Sessions, credentials and model settings live in <code>~/.omp/agent</code>, the same profile the <code>omp</code> CLI uses. You sign in to your providers yourself, in CUELO under Settings › Models &amp; accounts.</td></tr>
+            <tr><th scope="row">Separate local services</th><td>The account usage card, side chat (<code>/btw</code>) and SubAgent archive get their data from three local services (<code>usage</code>, <code>btw</code>, <code>subagent</code>). <code>node install.mjs start</code> runs them next to the app on <code>127.0.0.1</code>. Sidecar records stay on your machine. If a service is not running, only its panel shows “not connected”.</td></tr>
             <tr><th scope="row">Public harness</th><td>Rules, SOPs, extensions and omp core patches under <code>Tools/OMP_Global_Config</code>, described above.</td></tr>
             <tr><th scope="row">Not included</th><td>Logins and API keys, personal provider, account and model choices (<code>config.yml</code>, <code>models.yml</code>), personal skills, work records, and the maintainer's private PC deployment tooling.</td></tr>
           </tbody>
@@ -170,8 +173,8 @@ node install.mjs start     <span class="c"># app + usage, btw, subagent in the f
 
 <span class="c"># in another terminal</span>
 node install.mjs health    <span class="c"># checks that all four services answer</span></code></pre>
-      <p>Then open <code>http://127.0.0.1:30141</code> yourself; the browser does not open automatically. Sign in to the providers you want to use under <strong>Settings › Models</strong>: browser OAuth or an API key, done by you. If the official omp CLI (<code>@oh-my-pi/pi-coding-agent</code>) is already installed, <code>omp login</code> works too; this guide does not install it. Every service listens on <code>127.0.0.1</code> only, and Ctrl+C stops all four. <code>health</code> only checks that each service answers; it does not sign in or call a model provider.</p>
-      <p><code>setup</code> copies the public harness into <code>~/.omp/agent</code> but only adds missing files; it never changes or deletes existing ones. When no <code>config.yml</code> exists, it creates one with safe default operating settings (for example, provider-calling automatic features stay off). These defaults ship with the installer; no one's personal configuration is copied, and an existing <code>config.yml</code> is left untouched. Choosing your models also stays with you: pass <code>--model</code>/<code>--role</code> to <code>setup</code>, or pick them later in Settings › Model roles. The installer does not guess models for you.</p>
+      <p>Then open <code>http://127.0.0.1:30141</code> yourself; the browser does not open automatically. Sign in to the providers you want to use under <strong>Settings › Models &amp; accounts</strong> with browser OAuth or an API key. If the official omp CLI (<code>@oh-my-pi/pi-coding-agent</code>) is already installed, <code>omp login</code> works too; these steps do not install it. Services listen on <code>127.0.0.1</code> by default; an explicit <code>--hostname</code> option can widen the web listener. Ctrl+C stops all four. <code>health</code> only checks that each service answers; it does not sign in or call a model provider.</p>
+      <p><code>setup</code> copies the public harness into <code>~/.omp/agent</code> but only adds missing files; it never changes or deletes existing ones, including <code>config.yml</code>. When no <code>config.yml</code> exists, it creates one with default operating settings (for example, automatic continuation and automatic memory retention stay off). These defaults ship with the installer and contain no one's personal configuration. For a new profile, choose your models with <code>--model</code>/<code>--role</code> during <code>setup</code>. For an existing profile, those flags leave its configuration unchanged; choose roles under Settings › Models &amp; accounts.</p>
       <p>CUELO runs agents with broad permissions: do not expose plain HTTP to the internet — put it behind a trusted HTTPS reverse proxy or a VPN. The full guide, including other port sets and troubleshooting, is in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a> (Korean).</p>
       <p>To use the prepared npm build, run <code>npm install -g cuelo</code>, then <code>cuelo setup</code> and <code>cuelo start</code>. Check the services with <code>cuelo health</code>. The <code>omp-web</code> package is the upstream project, not CUELO. Releases are listed on <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>; container use is covered in <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>.</p>
       <p>For agent-assisted installation and operation, see <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/agent-guide.md">docs/agent-guide.md</a>.</p>
@@ -181,7 +184,7 @@ node install.mjs health    <span class="c"># checks that all four services answe
   <section aria-labelledby="bench">
     <div class="wrap">
       <h2 id="bench">Harness comparison</h2>
-      <p>A separate page by the CUELO maintainer compares tools on the same coding tasks with the same model, changing only the tool (CUELO, Claude Code and Codex). Its conditions, caveats and weak spots are stated on that page.</p>
+      <p>A separate page by the CUELO maintainer records a September 2026 comparison of tools and delegation configurations (CUELO, Claude Code and Codex) on the same coding tasks with the same model. Its conditions, caveats and weak spots are stated on that page. These are historical measurements, not a guarantee of current performance.</p>
       <p><a href="https://gim47656-ship-it.github.io/cuelo-benchmark/" hreflang="ko">Open the CUELO harness benchmark</a> (Korean).</p>
     </div>
   </section>

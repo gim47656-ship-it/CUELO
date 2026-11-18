@@ -76,9 +76,9 @@
         <a class="btn primary" href="https://github.com/gim47656-ship-it/CUELO">GitHub에서 소스 보기</a>
         <a class="btn" href="#run">소스에서 실행하기</a>
       </div>
-      <p class="status">GitHub 소스 또는 npm의 <a href="https://www.npmjs.com/package/cuelo">cuelo 패키지</a>로 설치합니다. Node.js와 Bun이 필요합니다.</p>
+      <p class="status">Linux에서 로컬로 실행합니다. GitHub 소스 또는 npm의 <a href="https://www.npmjs.com/package/cuelo">cuelo 패키지</a>로 설치하며 Node.js와 Bun이 필요합니다.</p>
       <figure class="hero-figure">
-        <img src="../assets/hero-1600.webp" srcset="../assets/hero-900.webp 900w, ../assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="노트북 앞에 앉은 애니메이션풍 캐릭터 일곱 명(RIN, MIO, YUKI, ISANA, NOVA, SHION, HIKARI) 사이의 CUELO 로고">
+        <img src="../assets/hero-1600.webp" srcset="../assets/hero-900.webp 900w, ../assets/hero-1600.webp 1600w" sizes="(max-width: 72rem) 100vw, 72rem" width="1600" height="686" alt="노트북 앞에 앉은 애니메이션풍 캐릭터 일곱 명 사이의 CUELO 로고">
         <figcaption>앱에서는 계정을 이메일 대신 이 캐릭터 얼굴과 별칭으로 구별합니다.</figcaption>
       </figure>
     </div>
@@ -104,9 +104,9 @@
       <p>CUELO는 omp(oh-my-pi)용 웹 UI이자, 일을 나누어 맡기고 그 과정을 들여다볼 수 있는 멀티 에이전트 하네스입니다. 따로 떨어진 대화 앱으로 바꾸지 않고 쓰던 터미널 작업 흐름을 그대로 이어 갑니다.</p>
       <ul>
         <li><strong>CLI와 같은 세션</strong> — CUELO는 로컬 웹 서버 안에서 omp SDK를 직접 실행하고, 터미널 CLI와 같은 <code>~/.omp/agent</code> 세션·계정·모델 설정을 씁니다. CLI 화면 출력을 긁어 오는 방식이 아니어서 터미널에서 시작한 세션을 브라우저에서 이어 가고 다시 터미널로 돌아갈 수 있습니다.</li>
-        <li><strong>들여다볼 수 있는 위임</strong> — Main 에이전트가 요구사항과 최종 판단을 맡고 세부 작업을 Maker 에이전트에게 나누어 맡기며, 두 Maker가 같은 파일을 고치지 못하게 막습니다. 맡긴 작업마다 실시간 상태, 바뀐 파일, Main의 검수 판정이 카드로 보이고, 한 모델 계열이 쓴 코드를 커밋 전에 다른 계열 모델이 검토하게 할 수 있습니다.</li>
-        <li><strong>자기 기록에서 배우기</strong> — 로컬 보수 점검판이 최근 7일과 직전 7일을 견주어 병목, 비용, 반복된 사용자 지적, 스킬을 연 뒤 도구 오류가 늘었는지를 보여 줍니다. 직접 마련한 머신에서 선택적으로 돌리는 야간 세션은 별도 git worktree에서 일하며, 서로 다른 두 세션 이상에서 나온 절차를 스킬로 정리하고 쉬운 말로 된 아침 요약을 남깁니다. 야간 세션은 바뀐 점을 릴리스로 게시하지만 어떤 PC에도 설치하지 않으며, 각 PC는 아침 세션에서 새 릴리스를 설치합니다.</li>
-        <li><strong>켜고 끄는 플러그인</strong> — 플러그인은 도구와 확장 그리고 샌드박스 사이드 패널을 묶은 폴더 하나로, 저장소의 플러그인 폴더에 두면 프로필과 함께 설치됩니다. 에이전트가 새 플러그인을 만들 때는 시험 단계 없이 저장소에 바로 쓰고 검사와 검토를 거쳐 다음 버전으로 배포합니다. 오른쪽 덱의 플러그인 화면에서 켜고 끌 수 있으며, 바뀐 상태는 서버를 재시작하지 않고 새 세션이나 <code>/reload</code>부터 적용됩니다.</li>
+        <li><strong>들여다볼 수 있는 위임</strong> — Main 에이전트가 요구사항과 최종 판단을 맡고 세부 작업을 Maker 에이전트에게 나누어 맡기며, 가드가 배정된 파일 경계를 확인합니다. 맡긴 작업마다 실시간 상태, 바뀐 파일, Main의 검수 판정이 카드로 보이고, 한 모델 계열이 쓴 코드를 커밋 전에 다른 계열 모델이 검토하게 할 수 있습니다.</li>
+        <li><strong>자기 기록에서 배우기</strong> — 로컬 보수 점검판이 최근 7일과 직전 7일을 견주어 병목, 비용, 반복된 사용자 지적을 보여 줍니다. 스킬을 연 뒤의 도구 오류도 보여 주지만 스킬이 원인이라는 뜻은 아닙니다. 일반 세션은 백그라운드에서 프로젝트를 스스로 고치지 않습니다. 선택적으로 예약하는 야간 세션은 별도 git worktree에서 열린 이슈와 근거 있는 개선을 검토하고, 두 세션 이상에서 확인한 복구 절차를 스킬 작성 재료로 씁니다. 아침 요약을 남기고 변경을 릴리스로 게시하되 어떤 PC에도 설치하거나 서버를 재시작하지 않습니다. 예약 동기화가 설정된 PC에서는 아침 세션이 공개 CI를 통과한 새 릴리스를 설치합니다.</li>
+        <li><strong>켜고 끄는 플러그인</strong> — 플러그인은 매니페스트와 선택 항목인 도구, 확장, 샌드박스 사이드 패널을 묶은 폴더로 프로필과 함께 설치됩니다. 에이전트는 새 플러그인을 저장소에 바로 쓰고 검사와 검토를 거쳐 릴리스합니다. 오른쪽 덱에서 바꾼 상태는 새 세션이나 유휴 상태의 <code>/reload</code>부터 적용됩니다. 이때 서버가 아니라 세션을 다시 시작합니다. 설정에서 관리하는 별도의 omp 플러그인은 다릅니다. 이미 불러온 플러그인을 끄려면 CUELO 런타임을 재시작해야 하며 <code>/reload</code>로는 해제되지 않습니다.</li>
       </ul>
     </div>
   </section>
@@ -120,9 +120,12 @@
           <p class="where">웹 앱 · 저장소 루트</p>
           <ul>
             <li>프로젝트별로 지난 omp 세션을 찾아 이어 가고, 실시간 대화에서 도구 호출·비용·컨텍스트 사용량을 봅니다.</li>
-            <li>이전 메시지에서 갈래를 나누거나 별도 세션으로 fork합니다.</li>
+            <li>이전 메시지에서 갈래를 나누거나 별도 세션으로 fork합니다. 저장소가 이미 사용 중이면 새 세션은 별도 Git worktree에서 시작합니다.</li>
             <li>역할(<code>default</code>, <code>smol</code>, <code>slow</code>, <code>plan</code>, <code>task</code> 등)별 모델을 TUI와 같은 <code>config.yml</code>로 지정·전환합니다.</li>
             <li>provider·<code>models.yml</code>·플러그인·스킬 관리, 파일 미리보기, Git worktree 전환.</li>
+            <li>공개 GitHub 저장소의 외부 스킬을 설치하거나 업데이트할 때 SkillSpector로 정적 검사를 합니다. 경고가 있거나 검사기가 없으면 설치 전에 확인을 받습니다.</li>
+            <li>선택한 PC에서 루틴으로 세션을 예약 실행하고 별도로 설정한 비공개 Git 저장소 기반 게시판에 결과를 모읍니다.</li>
+            <li>에이전트와 음성으로 통화하거나 ChatGPT 계정으로 한국어와 영어, 중국어, 베트남어, 일본어, 태국어 사이를 대면 통역합니다.</li>
             <li>비밀번호 잠금, 브라우저 알림, PWA 설치. 한국어가 기본이고 영어도 고를 수 있습니다.</li>
           </ul>
         </div>
@@ -149,8 +152,8 @@
           <thead><tr><th scope="col">구분</th><th scope="col">내용</th></tr></thead>
           <tbody>
             <tr><th scope="row">이 저장소만으로 동작</th><td>웹 앱 전체: 세션 탐색·실시간 대화·분기/fork, 모델 역할, provider·플러그인·스킬 관리, 파일 미리보기, worktree, 비밀번호 잠금, 캐릭터 알림, 효율 패널(<code>~/.omp/stats.db</code> 읽기).</td></tr>
-            <tr><th scope="row">provider 로그인이 필요함</th><td>세션·인증·모델 설정은 <code>omp</code> CLI와 같이 쓰는 프로필 <code>~/.omp/agent</code>에 있습니다. provider 로그인은 사용자가 CUELO의 설정 › Models에서 직접 합니다.</td></tr>
-            <tr><th scope="row">별도 로컬 서비스</th><td>계정 사용량 카드, 사이드 챗(<code>/btw</code>), SubAgent 아카이브는 로컬 서비스 세 개(<code>usage</code>, <code>btw</code>, <code>subagent</code>)에서 데이터를 받습니다. <code>node install.mjs start</code>가 앱과 함께 <code>127.0.0.1</code>에 띄웁니다. 자격 증명과 기록은 자기 PC에 남습니다. 서비스가 떠 있지 않으면 해당 패널만 「연결 안 됨」으로 표시됩니다.</td></tr>
+            <tr><th scope="row">provider 로그인이 필요함</th><td>세션과 인증, 모델 설정은 <code>omp</code> CLI와 같이 쓰는 프로필 <code>~/.omp/agent</code>에 있습니다. provider 로그인은 사용자가 CUELO 설정의 「모델·계정」 화면에서 직접 합니다.</td></tr>
+            <tr><th scope="row">별도 로컬 서비스</th><td>계정 사용량 카드, 사이드 챗(<code>/btw</code>), SubAgent 아카이브는 로컬 서비스 세 개(<code>usage</code>, <code>btw</code>, <code>subagent</code>)에서 데이터를 받습니다. <code>node install.mjs start</code>가 앱과 함께 <code>127.0.0.1</code>에 띄웁니다. 사이드카 기록은 자기 PC에 남습니다. 서비스가 떠 있지 않으면 해당 패널만 「연결 안 됨」으로 표시됩니다.</td></tr>
             <tr><th scope="row">OMP 하네스 (공개)</th><td><code>Tools/OMP_Global_Config</code>의 규칙·SOP·확장과 omp core 패치. 위 설명 참고.</td></tr>
             <tr><th scope="row">포함하지 않는 것</th><td>로그인 정보·API 키, 어떤 provider·계정·모델을 쓰는지 정한 개인 설정(<code>config.yml</code>·<code>models.yml</code>), 개인 skill, 작업 기록, 관리자 개인 PC의 배포 도구.</td></tr>
           </tbody>
@@ -170,8 +173,8 @@ node install.mjs start     <span class="c"># 앱 + usage·btw·subagent를 포�
 
 <span class="c"># 다른 터미널에서</span>
 node install.mjs health    <span class="c"># 네 서비스가 응답하는지 확인</span></code></pre>
-      <p>그다음 <code>http://127.0.0.1:30141</code>을 직접 엽니다. 브라우저는 자동으로 열리지 않습니다. <strong>설정 › Models</strong>에서 쓸 provider의 로그인 버튼을 눌러 브라우저 OAuth나 API 키로 직접 로그인합니다. 공식 omp CLI(<code>@oh-my-pi/pi-coding-agent</code>)를 이미 설치해 두었다면 <code>omp login</code>을 써도 됩니다. 이 안내는 CLI를 따로 설치하지 않습니다. 모든 서비스는 <code>127.0.0.1</code>에서만 열리고, Ctrl+C를 누르면 네 개가 함께 종료됩니다. <code>health</code>는 각 서비스가 응답하는지만 확인하며, 로그인하거나 모델 provider를 호출하지 않습니다.</p>
-      <p><code>setup</code>은 공개 하네스를 <code>~/.omp/agent</code>에 복사하되 없는 파일만 추가합니다. 이미 있는 파일은 바꾸거나 지우지 않습니다. <code>config.yml</code>이 없을 때만 안전한 기본 운영 설정으로 새로 만듭니다(예: provider를 스스로 호출하는 자동 기능은 꺼 둠). 이 기본값은 설치 스크립트에 들어 있는 것이며 누군가의 개인 설정을 복사하지 않습니다. 이미 있는 <code>config.yml</code>은 그대로 둡니다. 사용할 모델 선택도 사용자가 합니다. <code>setup</code>의 <code>--model</code>/<code>--role</code>로 지정하거나 나중에 설정 › Model roles에서 고릅니다. 설치 스크립트가 모델을 추측해 채우지 않습니다.</p>
+      <p>그다음 <code>http://127.0.0.1:30141</code>을 직접 엽니다. 브라우저는 자동으로 열리지 않습니다. <strong>설정의 「모델·계정」 화면</strong>에서 쓸 provider의 로그인 버튼을 눌러 브라우저 OAuth나 API 키로 직접 로그인합니다. 공식 omp CLI(<code>@oh-my-pi/pi-coding-agent</code>)를 이미 설치해 두었다면 <code>omp login</code>을 써도 됩니다. 이 절차에서는 CLI를 따로 설치하지 않습니다. 기본 설정에서는 <code>127.0.0.1</code>에서 열리며, 웹 접속 범위는 <code>--hostname</code> 옵션을 직접 지정해 넓힐 수 있습니다. Ctrl+C를 누르면 네 개가 함께 종료됩니다. <code>health</code>는 각 서비스가 응답하는지만 확인하며, 로그인하거나 모델 provider를 호출하지 않습니다.</p>
+      <p><code>setup</code>은 공개 하네스를 <code>~/.omp/agent</code>에 복사하되 없는 파일만 추가하고, <code>config.yml</code>을 포함해 이미 있는 파일은 바꾸거나 지우지 않습니다. <code>config.yml</code>이 없을 때만 기본 운영 설정으로 새로 만듭니다(예: 자동 이어 가기와 기억 자동 저장은 꺼 둠). 이 기본값은 설치 스크립트에 들어 있으며 누군가의 개인 설정을 복사한 것이 아닙니다. 새 프로필에서는 <code>setup</code>의 <code>--model</code>/<code>--role</code>로 사용할 모델을 직접 지정합니다. 기존 프로필에는 이 옵션을 줘도 설정이 바뀌지 않으며, 설정의 「모델·계정」 화면에서 역할별로 고릅니다.</p>
       <p>CUELO는 권한이 큰 에이전트를 실행하므로, 평문 HTTP를 인터넷에 열지 말고 신뢰할 수 있는 HTTPS 리버스 프록시나 VPN 뒤에 두세요. 다른 포트 세트와 문제 해결을 포함한 전체 안내는 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/installation.md">docs/installation.md</a>에 있습니다.</p>
       <p>빌드된 npm 패키지는 <code>npm install -g cuelo</code> 뒤 <code>cuelo setup</code>, <code>cuelo start</code>로 실행하고 <code>cuelo health</code>로 확인합니다. npm의 <code>omp-web</code>은 upstream 프로젝트이며 CUELO와 별개입니다. 릴리스는 <a href="https://github.com/gim47656-ship-it/CUELO/releases">GitHub Releases</a>에, 컨테이너 실행은 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/docker.md">docs/docker.md</a>에 있습니다.</p>
       <p>에이전트용 설치·운영 안내는 <a href="https://github.com/gim47656-ship-it/CUELO/blob/main/docs/agent-guide.md">docs/agent-guide.md</a>에 있습니다.</p>
@@ -181,7 +184,7 @@ node install.mjs health    <span class="c"># 네 서비스가 응답하는지 �
   <section aria-labelledby="bench">
     <div class="wrap">
       <h2 id="bench">하네스 비교</h2>
-      <p>CUELO 관리자가 따로 게시한 페이지에서 같은 AI 모델·같은 코딩 과제로 도구(CUELO, Claude Code, Codex)만 바꿔 비교한 결과를 볼 수 있습니다. 측정 조건과 주의 사항, 약한 부분도 그 페이지에 적혀 있습니다.</p>
+      <p>CUELO 관리자가 따로 게시한 페이지에서 2026년 9월 시점의 도구와 위임 구성(CUELO, Claude Code, Codex)을 같은 모델과 같은 코딩 과제로 비교한 기록을 볼 수 있습니다. 측정 조건과 주의 사항, 약한 부분도 그 페이지에 적혀 있습니다. 당시 측정 기록이며 현재 성능을 보장하지 않습니다.</p>
       <p><a href="https://gim47656-ship-it.github.io/cuelo-benchmark/">CUELO 하네스 벤치마크 열기</a></p>
     </div>
   </section>

@@ -12,8 +12,9 @@ import {
 } from "./lib/job-observation";
 import { MEMORY_SECRET_PATTERN } from "./lib/memory-excerpt";
 import { defaultLoadCore, sessionJudgeDeps } from "./lib/native-judge";
-import { clearPreparedTaskSession } from "./lib/prepared-task";
+import { clearPreparedTaskSession, resolvePreparedTaskInput } from "./lib/prepared-task";
 import { createQuietDelivery } from "./lib/quiet-delivery";
+import { registerStartRejectFallback } from "./lib/start-reject-fallback";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { LiveServices } from "./lib/turn-jobs";
 import { readChildSkillReads, renderSkillEvidence, type SkillReadWindow } from "./lib/skill-evidence";
@@ -1243,6 +1244,9 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    // 첫 요청이 공급자에서 거절된 Maker child를 같은 child 안에서 다음 모델로 한 번 바꾸고 알린다(2026-11-18 사용자 결정).
+    // 끝내 실패한 child는 아래 owners()에서 빼 같은 준비로 다시 발주할 수 있게 한다.
+    const startReject = registerStartRejectFallback(pi, { record: (record) => { baseLedger.append(record); } });
     // spawn으로 실제 관측된 attempt. routing_verdict는 여기 있는 identity만 받는다.
     // 상태를 함께 두어 실행 중 attempt를 완료로 오인하지 않게 하고, session_start에서 원장 scoped 기록으로 복원한다.
     // ownership은 그 attempt dispatch의 소유 계약(과거 row는 null=미상), restored는 session_start 원장 복원 계열이다.
@@ -1390,7 +1394,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           const agentId = observedAttempts.get(pending.attemptId)?.agentId;
           if (agentId) runningAgents.add(agentId);
         }
-        const owners: Owner[] = [...knownMakers.values()].map((task) => ({
+        // 시작 거절로 끝내 실패한 child는 한 일이 없으므로 owner·placement 후보가 아니다.
+        const owners: Owner[] = [...knownMakers.values()].filter((task) => !startReject.failedChild(task.agentId)).map((task) => ({
           name: task.name ?? null,
           primaryDeliverable: task.guard.primaryDeliverable ?? null,
           ownedPaths: task.guard.ownedPaths,
@@ -2246,8 +2251,36 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       );
     });
 
+    /**
+     * 시작 거절로 같은 child가 다음 모델로 자동 재발주되어 실행 중인데 Main이 같은 이름으로 다시 발주하면 중복이다.
+     * 준비 참조는 이름을 생략할 수 있어 복원한 입력으로 본다(복원 실패는 beforeTask가 그 이유로 막는다).
+     */
+    function replayingDuplicate(input: Record<string, unknown>, ctx: ExtensionContext): string | undefined {
+      const replaying = startReject.replaying();
+      if (replaying.size === 0) return undefined;
+      let resolved = input;
+      try {
+        resolved = resolvePreparedTaskInput(input, String(ctx.sessionManager?.getSessionId?.() ?? ""));
+      } catch {
+        // 원 입력의 이름으로만 본다.
+      }
+      const items = (Array.isArray(resolved.tasks) ? resolved.tasks : [resolved]) as Record<string, unknown>[];
+      for (const item of items) {
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        if (!name) continue;
+        const childId = replaying.has(name) ? name : knownMakerForTarget(name)?.agentId;
+        const model = childId ? replaying.get(childId) : undefined;
+        if (childId && model) {
+          return `'${name}'은 첫 요청이 공급자에서 거절돼 같은 child(${childId})가 ${model}로 자동 재발주되어 실행 중입니다. automatic redispatch done; Main must not redispatch manually. 그 child의 결과를 기다리세요.`;
+        }
+      }
+      return undefined;
+    }
+
     pi.on("tool_call", async (event, ctx) => {
       if (event.toolName === "task") {
+        const duplicate = replayingDuplicate(event.input, ctx);
+        if (duplicate) return { block: true, reason: duplicate };
         pendingReviewOrigins.set(event.toolCallId, {
           request: currentReviewRequest,
           conversationSource: ctx.sessionManager.getSessionFile?.(),

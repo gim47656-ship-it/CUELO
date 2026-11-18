@@ -193,7 +193,17 @@ function createHarness(options: HarnessOptions = {}) {
   /** 뒤에서 도는 advisory를 실제 전송 사건으로 기다린다. */
   const sentWaiters: Array<() => void> = [];
 
+  // core가 child 세션 이벤트를 싣는 부모 event bus(`task:subagent:event`)의 최소 구현.
+  const busListeners = new Map<string, Set<(data: unknown) => void>>();
   const pi = {
+    events: {
+      on(channel: string, handler: (data: unknown) => void) {
+        const set = busListeners.get(channel) ?? new Set();
+        busListeners.set(channel, set);
+        set.add(handler);
+        return () => { set.delete(handler); };
+      },
+    },
     // SDK가 소유하는 schema parsing은 실제 zod 등록 smoke에서 확인한다. 여기 stub은 등록 경로만 통과시킨다.
     zod: { object: (shape: unknown) => shape, string: zodChain, array: zodChain },
     registerTool(definition: RegisteredRouteTool) { tools[definition.name] = definition; },
@@ -235,6 +245,14 @@ function createHarness(options: HarnessOptions = {}) {
     // routing_verdict 실제 등록 handler를 그대로 지난다.
     verdict: (params: Record<string, unknown>) =>
       tools.routing_verdict!.execute("verdict", params, undefined, undefined, ctx) as unknown as Promise<{ details: Record<string, unknown> }>,
+    /** child 세션 이벤트를 core처럼 부모 bus에 싣는다. */
+    emitChild(id: string, event: Record<string, unknown>) {
+      for (const handler of busListeners.get("task:subagent:event") ?? []) handler({ id, event });
+    },
+    /** core executor의 lifecycle `started` 프레임(child id와 agent 이름). */
+    startChild(id: string, agent = "maker") {
+      for (const handler of busListeners.get("task:subagent:lifecycle") ?? []) handler({ id, agent, status: "started" });
+    },
     async emit(name: string, event: unknown) {
       const delivered = name === "tool_call" ? withSolutionSpace(event) : event;
       let result: unknown;
@@ -4032,5 +4050,82 @@ describe("jev-runtime JEV 배선·취소 관측·세션 전환", () => {
       await harness.emit("message_start", finished("rev-reload"));
       expect(harness.sent).toHaveLength(before);
     });
+  });
+});
+
+describe("시작 거절 Maker 자동 재발주(2026-11-18)", () => {
+  const REJECTED = {
+    role: "assistant", api: "openai-codex-responses", provider: "openai-codex", model: "gpt-6.1-sol", stopReason: "error",
+    errorMessage: "Codex error event: Unsupported parameter: system (code=invalid_request_error)", content: [],
+  };
+  // 추천을 픽스처 발주 모델(NORMAL_SONNET test/local)로 맞춘다.
+  const normal = {
+    workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
+    hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
+  };
+  // 기존 owner에게 추가 지시하라고 Jev가 답하는 판정. owner가 없으면 새 발주다.
+  const instructExisting = {
+    ...normal,
+    additionalInstruction: { type: "noul", noul: 0.9 },
+    ownerTarget: { type: "choice", choice: "owner0", probabilities: { owner0: 1 }, confidence: 1 },
+  };
+
+  /** maker_route 준비 → 발주 → spawn 영수증까지 실제 handler로 지난다. child id는 agent-Next다. */
+  async function dispatchPrepared(harness: ReturnType<typeof createHarness>, preparedId: string, callId: string) {
+    const result = await harness.emit("tool_call", taskCall(callId, `PREPARED_TASK: ${preparedId}`, { context: "PREPARED_CONTEXT", model: "test/local:auto" })) as { block?: boolean; reason?: string; input?: Record<string, unknown> };
+    return result;
+  }
+  async function spawn(harness: ReturnType<typeof createHarness>, callId: string, input: Record<string, unknown>) {
+    harness.startChild("agent-Next");
+    await harness.emit("tool_result", {
+      type: "tool_result", toolCallId: callId, toolName: "task", input, content: [{ type: "text", text: "spawned" }], isError: false,
+      details: { async: { jobId: "job-Next" }, progress: [{ index: 0, id: "agent-Next", status: "running" }] },
+    });
+  }
+
+  test("끝내 시작 거절로 실패한 child는 owner에서 빠져 같은 준비·이름으로 다시 발주되고 placement도 그 child를 가리키지 않는다", async () => {
+    const harness = createHarness({ judgeAnswers: instructExisting });
+    const preparedId = (await harness.prepare()).details.routes[0].preparedId as string;
+    const first = await dispatchPrepared(harness, preparedId, "call-first");
+    expect(first.reason).toBeUndefined();
+    await spawn(harness, "call-first", first.input!);
+
+    const notified = harness.sentChanged();
+    harness.emitChild("agent-Next", { type: "message_end", message: REJECTED });
+    harness.emitChild("agent-Next", { type: "agent_end" });
+    await notified;
+    const notice = harness.sent.at(-1)!;
+    expect(notice.message.customType).toBe("start-reject-fallback");
+    expect(String(notice.message.content)).toContain("Unsupported parameter: system");
+
+    // 소유 충돌 조건(owner revision)과 준비 이름: 실패 child가 남아 있으면 '현재 소유권 충돌 조건이 바뀌었습니다'로 막혔다.
+    const again = await dispatchPrepared(harness, preparedId, "call-again");
+    expect(again.block).toBeUndefined();
+    expect(again.input?.name).toBe("Next");
+    // placement: 다시 준비해도 실패 child를 기존 owner로 고르지 않는다(instruct-existing이면 ROUTING_REASON 없이 막혔다).
+    const reprepared = await harness.prepare();
+    expect(reprepared.details.routes[0].placement.action).toBe("dispatch-new");
+  });
+
+  test("자동 재발주가 실행 중이면 Main의 같은 이름 수동 발주를 막고, 그 child가 끝나면 이 차단은 풀린다", async () => {
+    const harness = createHarness({ judgeAnswers: normal });
+    const preparedId = (await harness.prepare()).details.routes[0].preparedId as string;
+    const first = await dispatchPrepared(harness, preparedId, "call-first");
+    await spawn(harness, "call-first", first.input!);
+
+    const notified = harness.sentChanged();
+    harness.emitChild("agent-Next", { type: "message_end", message: REJECTED });
+    harness.emitChild("agent-Next", { type: "retry_fallback_applied", from: "openai-codex/gpt-6.1-sol", to: "anthropic/claude-sonnet-5-5", role: "openai-codex/gpt-6.1-sol" });
+    await notified;
+    expect(String(harness.sent.at(-1)!.message.content)).toContain("automatic redispatch done; Main must not redispatch manually");
+
+    const duplicate = await dispatchPrepared(harness, preparedId, "call-dup");
+    expect(duplicate).toMatchObject({ block: true });
+    expect(duplicate.reason).toContain("anthropic/claude-sonnet-5-5");
+
+    harness.emitChild("agent-Next", { type: "agent_end" });
+    await harness.emit("tool_execution_end", { type: "tool_execution_end", toolCallId: "call-dup", toolName: "task" });
+    const later = await dispatchPrepared(harness, preparedId, "call-later");
+    expect(later.reason ?? "").not.toContain("automatic redispatch");
   });
 });

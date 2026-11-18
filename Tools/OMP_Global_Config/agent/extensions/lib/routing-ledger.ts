@@ -484,7 +484,32 @@ export interface CrossReviewAdvisoryRecord {
 }
 
 export type CrossReviewLedgerRecord = CrossReviewRecord | CrossReviewResolveRecord | CrossReviewWaiverRecord | CrossReviewAdvisoryRecord;
-export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord;
+
+/**
+ * 시작 거절 Maker 자동 재발주 기록(2026-11-18 사용자 결정, lib/start-reject-fallback.ts). 같은 child 안에서 첫 요청이 공급자에서
+ * 거절돼 다음 모델로 한 번 바뀐 일과 그 끝을 남긴다. read()의 이력 요약에는 섞이지 않는다.
+ * - redispatched: 다음 모델로 자동 재발주했다.
+ * - no-replacement: 쓸 수 있는 다음 모델이 없어 재발주하지 않았다.
+ * - replacement-rejected: 대체 모델도 첫 요청에서 거절돼 멈췄다.
+ */
+export interface StartRejectRecord {
+  type: "start-reject";
+  ts: string;
+  /** 부모(발주한) 세션 id. */
+  sessionId: string;
+  /** child canonical agent id. */
+  agentId: string;
+  stage: "redispatched" | "no-replacement" | "replacement-rejected";
+  fromModel: string;
+  /** 원 공급자 오류 원문. */
+  error: string;
+  toModel?: string;
+  replacementError?: string;
+  /** 이 세션에서 같은 모델이 앞서 같은 식으로 거절됐는가. */
+  repeat: boolean;
+}
+
+export type AnyLedgerRecord = LedgerRecord | CrossReviewLedgerRecord | StartRejectRecord;
 
 export interface RoutingLedger {
   /** 실패해도 던지지 않는다. 기록 실패가 발주를 막으면 안 된다. 저장 성공 여부를 돌려준다. */

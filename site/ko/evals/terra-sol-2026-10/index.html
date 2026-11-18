@@ -38,7 +38,7 @@
       <p class="crumb"><a href="../">평가 자료 목록으로</a></p>
       <h1>GPT-6.1 Terra·Sol·Opus 5.5 비교</h1>
       <p class="dateline">측정일 <time datetime="2026-10-27">2026-10-27</time> · CUELO 관리자</p>
-      <p class="lede">2026년 10월 26일에 출시된 GPT-6.1 Terra가 CUELO에서 맡을 역할을 정하기 위해 GPT-6.1 Sol, Opus 5.5와 같은 조건에서 비교했습니다. 코딩의 mega-six 과제에서 Terra는 패키지 6개 중 4개만 구현하고 일찍 멈췄습니다(숨김 테스트 585/960개 통과). Sol은 957/960개를 통과했습니다. 작은 글자 OCR에서는 Terra(138/153)가 문자를 일관되게 정규화해 틀렸고 Opus 5.5(149/153)가 더 많이 맞혔습니다.</p>
+      <p class="lede">2026년 10월 26일에 출시된 GPT-6.1 Terra가 CUELO에서 맡을 역할을 정하려고 GPT-6.1 Sol, Opus 5.5와 같은 조건에서 비교했습니다. large-sheet에서 Terra는 128초 만에 숨김 테스트 199/200개를 통과했습니다. mega-six에서는 패키지 6개 중 4개만 구현하고 멈췄으며 작업이 미완성이라고 보고했습니다(585/960개 통과, Sol 957/960개). 좌표 찾기와 박스 검수는 Opus와 같았지만 작은 글자 OCR은 Terra 138/153개, Opus 5.5 149/153개였습니다. 이 페이지는 2026년 10월 당시 버전과 조건의 측정 기록이며 현재의 역할 추천을 뜻하지 않습니다.</p>
     </div>
   </div>
 
@@ -54,6 +54,7 @@
         <li><code>large-sheet</code> 과제는 명세서를 보고 TypeScript와 Bun으로 스프레드시트 수식 엔진(파서, 평가기, 의존성 그래프, 구조 편집, CSV)을 구현하며 사후 숨김 테스트 200개로 채점합니다.</li>
         <li><code>mega-six</code> 과제는 독립 패키지 6개(스프레드시트, 마크다운, JSON 스키마, cron, semver, diff)를 명세서대로 구현하며 사후 숨김 테스트 960개로 채점합니다.</li>
         <li>과제당 모델별 1회씩 순서를 번갈아 연속 실행했습니다(한 과제는 Sol 다음 Terra, 다른 과제는 Terra 다음 Sol).</li>
+        <li>비용은 토큰 수에 당시 100만 토큰당 카탈로그 단가를 곱했습니다(Terra 입력 $1, 출력 $5, 캐시 읽기 $0.05; Sol 입력 $2, 출력 $10, 캐시 읽기 $0.10). Codex 구독으로 실행했으므로 실제 청구액은 아닙니다.</li>
       </ul>
       <figure class="chart">
         <figcaption>막대는 숨김 테스트 통과 수와 걸린 시간, API 단가 환산 비용을 나타냅니다. Sol 시간 막대의 빗금 부분은 <code>cross_review</code> 결과를 기다린 시간입니다.</figcaption>
@@ -101,7 +102,7 @@
   <section class="study-section" aria-labelledby="vision">
     <div class="wrap">
       <h2 id="vision">이미지 읽기</h2>
-      <p class="question">omp 코어의 이미지 질문 경로에서 Terra(low, high)가 현재 비전 모델인 Opus 5.5(low)를 대체할 수 있는지 확인했습니다.</p>
+      <p class="question">omp 코어의 이미지 질문 경로에서 Terra(low, high)가 조사 당시 비전 모델인 Opus 5.5(low)를 대체할 수 있는지 확인했습니다.</p>
       <h3>조건</h3>
       <ul>
         <li>2026년 10월 18일 조사와 같은 omp 코어 이미지 질문 경로를 썼고 정답지도 바이트 단위로 동일하게 재생성했습니다.</li>
