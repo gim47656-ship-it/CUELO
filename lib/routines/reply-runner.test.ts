@@ -32,7 +32,7 @@ if (process.env.CUELO_REPLY_CHILD === "1") {
     },
   }));
   // Register process-wide mocks before loading the runner's module dependencies.
-  const { writeRoutineFile, writePostFile, writeReplyFile, readReplies, thisRoutineHost } = await import("./store");
+  const { writeRoutineFile, writePostFile, writeReplyFile, readReplies, readRoutinesPause, thisRoutineHost } = await import("./store");
   const { startRoutineReply, isRoutineRunning, recordInterruptedRuns } = await import("./runner");
   const { readRoutineRunStates, updateRoutineRunState } = await import("./state");
   const { commitRoutineChange } = await import("./git-sync");
@@ -47,6 +47,22 @@ if (process.env.CUELO_REPLY_CHILD === "1") {
   }
   test("reply resumes by post host even for disabled/moved routines, commits once, and strips waiting marker", async () => {
     await commitFixtures();
+    // Pausing all routines commits pause.json and blocks reply handling; resuming lets the same reply start.
+    const { PUT } = await import("../../app/api/routines/pause/route");
+    const pause = (paused: boolean) => PUT(new Request("http://localhost/api/routines/pause", {
+      method: "PUT", headers: { host: "localhost", "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ paused }),
+    }));
+    expect((await pause(true)).status).toBe(200);
+    expect(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: dir, encoding: "utf8" }).trim()).toBe("routines: pause all");
+    expect(startRoutineReply(dir, routine, file)).toBe(false);
+    // A failed resume commit restores the working pause.json, so this PC stays paused like the other PCs and a retry commits.
+    const pauseHook = join(dir, ".git", "hooks", "pre-commit");
+    writeFileSync(pauseHook, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    expect((await pause(false)).status).toBe(500);
+    rmSync(pauseHook);
+    expect(readRoutinesPause(dir).paused).toBe(true);
+    expect((await pause(false)).status).toBe(200);
+    expect(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: dir, encoding: "utf8" }).trim()).toBe("routines: resume all");
     expect(startRoutineReply(dir, routine, file)).toBe(true);
     expect(startRoutineReply(dir, routine, file)).toBe(false);
     await settled();

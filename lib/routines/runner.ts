@@ -7,7 +7,7 @@ import { commitRoutineChange } from "./git-sync";
 import { type RoutinePost, type RoutinePostStatus, extractPostTitle, splitPostDetails, waitingAnswer } from "./post";
 import { runStamp, scheduledRun } from "./schedule";
 import { type RoutineLastRun, type RoutineRunning, readRoutineRunStates, updateRoutineRunState } from "./state";
-import { type Routine, expandHome, isExistingDirectory, readRoutine, readRoutines, readPost, readReplies, listPosts, routinePaths, thisRoutineHost, writePostFile, writeReplyFile } from "./store";
+import { type Routine, expandHome, isExistingDirectory, readRoutine, readRoutines, readRoutinesPause, readPost, readReplies, listPosts, routinePaths, thisRoutineHost, writePostFile, writeReplyFile } from "./store";
 import { type RoutineReply, pendingReplies, pendingReplyWrites } from "./reply";
 import { routineModelSettings, runRoutineChecker } from "./model";
 import { type RoutineCheckFailure, checkRoutineAnswer, parseRoutineModel, routineCheckWarning } from "../../Tools/OMP_Global_Config/agent/cuelo-plugins/routine-model/policy";
@@ -469,11 +469,11 @@ async function executeRun(dir: string, routine: Routine, trigger: RoutineRunning
 }
 
 /**
- * 끝을 보지 못한 실행을 처리한다. 서버 재시작으로 끊긴 회차는 루틴이 아직 이 PC에서 켜져 있고, 시도 횟수가
- * 남았고, 시작한 지 오래되지 않았으면 새 세션으로 한 번 다시 돌린다(새 실행이 표시를 덮어쓴다). 그 밖(글을 올리지
- * 못한 실행, 다시 돌릴 수 없는 회차)은 실패 글로 남긴다. 글을 올린 뒤에야 표시를 지워, 실패하면 다음 틱에 다시 해
- * 본다. 루틴이 지워졌으면 표시만 지운다. 이 프로세스가 남긴 표시도 처리한다: 종료 신호를 받고도 서버가 살아남으면
- * 그 표시가 루틴을 계속 막기 때문이다. 종료 중에는 아무것도 하지 않고, 동시에 부르면 진행 중인 처리를 함께 기다린다.
+ * 끝을 보지 못한 실행을 처리한다. 서버 재시작으로 끊긴 회차는 루틴이 아직 이 PC에서 켜져 있고, 루틴 전체가 일시정지가
+ * 아니고, 시도 횟수가 남았고, 시작한 지 오래되지 않았으면 새 세션으로 한 번 다시 돌린다(새 실행이 표시를 덮어쓴다).
+ * 그 밖(글을 올리지 못한 실행, 다시 돌릴 수 없는 회차)은 실패 글로 남긴다. 글을 올린 뒤에야 표시를 지워, 실패하면 다음
+ * 틱에 다시 해 본다. 루틴이 지워졌으면 표시만 지운다. 이 프로세스가 남긴 표시도 처리한다: 종료 신호를 받고도 서버가
+ * 살아남으면 그 표시가 루틴을 계속 막기 때문이다. 종료 중에는 아무것도 하지 않고, 동시에 부르면 진행 중인 처리를 함께 기다린다.
  */
 export function recordInterruptedRuns(dir: string, now = Date.now()): Promise<void> {
   globalThis.__cueloRoutineRecovery ??= recoverRuns(dir, now).finally(() => { globalThis.__cueloRoutineRecovery = undefined; });
@@ -483,10 +483,11 @@ export function recordInterruptedRuns(dir: string, now = Date.now()): Promise<vo
 async function recoverRuns(dir: string, now: number): Promise<void> {
   const host = thisRoutineHost();
   for (const id of Object.keys(readRoutineRunStates())) {
-    // 앞 항목의 글을 올리는 동안 종료가 시작됐거나 표시가 바뀌었을 수 있어 항목마다 다시 읽는다.
+    // 앞 항목의 글을 올리는 동안 종료가 시작됐거나 표시나 일시정지가 바뀌었을 수 있어 항목마다 다시 읽는다.
     if (serverStopping(now)) return;
     const running = readRoutineRunStates()[id]?.running;
     if (!running || isRoutineRunning(id)) continue;
+    const paused = readRoutinesPause(dir).paused;
     const routine = readRoutine(dir, id);
     if (routine && readRoutineRunStates()[id]?.pendingReply) {
       try { await publishPendingReply(dir, routine); }
@@ -500,7 +501,7 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
         const claimed = replies.filter((r) => running.replyFiles?.includes(r.file));
         // A committed agent response wins over a stale local claim after a crash.
         const answered = claimed.length > 0 && !pendingReplies(replies).some((r) => running.replyFiles?.includes(r.file));
-        if (!answered && claimed.length && (running.attempt ?? 1) < MAX_ATTEMPTS
+        if (!answered && claimed.length && !paused && (running.attempt ?? 1) < MAX_ATTEMPTS
           && now - Date.parse(running.startedAt) < RETRY_WINDOW_MS) {
           startRoutineReply(dir, routine, running.replyPost, running);
           continue;
@@ -530,7 +531,7 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
       const startedAt = new Date(running.startedAt);
       const attempt = running.attempt ?? 1;
       const cut = running.bootId !== POST_FAILED_BOOT;
-      if (cut && routine.enabled && routine.host === host && attempt < MAX_ATTEMPTS
+      if (cut && routine.enabled && routine.host === host && !paused && attempt < MAX_ATTEMPTS
         && Number.isFinite(startedAt.getTime()) && now - startedAt.getTime() < RETRY_WINDOW_MS) {
         if (startRoutineRun(dir, routine, running.trigger, running)) log(`${id} restarted after a server restart cut it (attempt ${attempt + 1})`);
         // 시작하지 못했으면(이미 돌거나 종료 중) 표시를 그대로 두고 다음 틱에 다시 본다.
@@ -563,10 +564,12 @@ async function recoverRuns(dir: string, now: number): Promise<void> {
   }
 }
 
+/** 글에 남은 답장을 이어서 처리한다. 루틴 전체가 일시정지면 시작하지 않는다: 답장은 남아 다시 켠 뒤 처리된다. */
 export function startRoutineReply(dir: string, routine: Routine, file: string, retryOf?: RoutineRunning): boolean {
   if (pendingReplyWrites.has(`${routine.id}/${file}`)) return false;
   const state = readRoutineRunStates()[routine.id];
   if (runs().has(routine.id) || serverStopping() || (state?.running && !sameRunning(state.running, retryOf))) return false;
+  if (readRoutinesPause(dir).paused) return false;
   const post = readPost(dir, routine.id, file);
   if (!post || post.host !== thisRoutineHost()) return false;
   const replies = readReplies(dir, routine.id, file);

@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { RoutineSyncState } from "@/lib/routines/git-sync";
 import type { RoutineLastRun } from "@/lib/routines/state";
-import type { Routine, RoutinePostSummary } from "@/lib/routines/store";
+import type { Routine, RoutinePostSummary, RoutinesPause } from "@/lib/routines/store";
 import { NEW_POST_MS, parsePostKey, postFileStartedAt } from "@/lib/routines/post-key";
 
 /**
@@ -23,6 +23,8 @@ export interface BoardRoutine extends Routine {
 export interface BoardData {
   setup: { reason: "missing" | "not-git"; dir: string } | null;
   thisHost: string;
+  /** 루틴 전체 일시정지(공용 저장소 `pause.json`). */
+  pause: RoutinesPause;
   hosts: string[];
   sync: RoutineSyncState;
   routines: BoardRoutine[];

@@ -37,7 +37,7 @@ if (process.env.CUELO_ROUTINE_CONCURRENCY_CHILD === "1") {
     expandHome: (path: string) => path,
     isExistingDirectory: () => true,
     readRoutine: (_dir: string, id: string) => routines.get(id),
-    readRoutines: () => [...routines.values()], listPosts: () => [],
+    readRoutines: () => [...routines.values()], listPosts: () => [], readRoutinesPause: () => ({ paused: false, changedAt: null }),
     readPost: (_dir: string, id: string) => (id === "rep" ? replyPost : null),
     readReplies: (_dir: string, id: string) => (id === "rep" ? [userReply] : []),
     writeReplyFile: () => ({ path: "reply.md" }),

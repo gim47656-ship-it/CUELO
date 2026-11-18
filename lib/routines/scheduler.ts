@@ -2,7 +2,7 @@ import { commitRoutineChange, requestRoutineSync, syncRoutineRepo } from "./git-
 import { isRoutineRunning, recordInterruptedRuns, startRoutineRun, processRoutineReplies } from "./runner";
 import { scheduledRun } from "./schedule";
 import { readRoutineRunStates, updateRoutineRunState } from "./state";
-import { inspectRepo, readRoutine, readRoutines, routinesDir, thisRoutineHost, writeRoutineFile } from "./store";
+import { inspectRepo, readRoutine, readRoutines, readRoutinesPause, routinesDir, thisRoutineHost, writeRoutineFile } from "./store";
 import { notifyRoutineItems } from "./notifications";
 
 const TICK_MS = 30_000;
@@ -35,7 +35,8 @@ async function disableOnce(dir: string, id: string, ranSchedule: string): Promis
 /**
  * 30초마다 공용 저장소의 루틴을 읽어, 실행 PC가 이 PC이고 켜져 있으며 지금 실행 창 안에 든 회차를 시작한다. 시작
  * 직전에 저장소를 받아(되는 데까지) routine.json을 다시 읽고, 꺼졌거나 지워졌거나 일정이 바뀌었으면 시작하지 않는다:
- * 다른 PC에서 끈 것이 대기 중인 틱보다 이긴다. 회차 키는 세션을 열기 전에 상태 파일에 남겨 서버가 죽었다 떠도
+ * 다른 PC에서 끈 것이 대기 중인 틱보다 이긴다. 루틴 전체 일시정지(`pause.json`)도 받은 뒤 다시 보고, 켜진 동안에는
+ * 다시 켠 시각 전의 놓친 회차를 따라잡지 않는다. 회차 키는 세션을 열기 전에 상태 파일에 남겨 서버가 죽었다 떠도
  * 같은 회차를 다시 돌리지 않는다. 저장소는 5분마다 백그라운드로 동기화한다. `instrumentation.ts`에서 서버
  * 프로세스당 한 번 부른다.
  */
@@ -57,21 +58,29 @@ export function ensureRoutineScheduler(): void {
       try { processRoutineReplies(dir); } catch (error) { console.error("[routines] reply scan failed:", error); }
       void notifyRoutineItems(dir).catch((error) => console.error("[routines] push scan failed:", error));
       const host = thisRoutineHost();
+      const paused = readRoutinesPause(dir);
+      if (paused.paused) return;
       const runStates = readRoutineRunStates();
       // 끊긴 실행의 글이 아직 안 올라간 루틴(running 표시가 남은 루틴)은 새 회차로 덮지 않는다.
       const due = readRoutines(dir).flatMap((routine) => {
         if (!routine.enabled || routine.host !== host || isRoutineRunning(routine.id) || runStates[routine.id]?.running) return [];
-        const slot = scheduledRun(routine.schedule, routine.timezone, routine.createdAt, runStates[routine.id]?.lastRunKey, new Date());
+        const slot = scheduledRun(routine.schedule, routine.timezone, routine.createdAt, runStates[routine.id]?.lastRunKey, new Date(), paused.changedAt);
         return slot ? [{ id: routine.id, ...slot, schedule: JSON.stringify(routine.schedule) }] : [];
       });
       if (due.length === 0) return;
       await syncRoutineRepo(dir);
       for (const { id, key, schedule } of due) {
+        // 앞 회차의 1회 일정 끄기 커밋이 저장소를 받아 일시정지를 들여왔을 수 있어 회차마다 다시 읽는다.
+        const pause = readRoutinesPause(dir);
+        if (pause.paused) {
+          log(`paused after sync; skipped ${id} ${key}`);
+          continue;
+        }
         // Re-read after sync, preserving all host, enable, running and schedule guards.
         const fresh = readRoutine(dir, id);
         if (!fresh || !fresh.enabled || fresh.host !== host || JSON.stringify(fresh.schedule) !== schedule
           || isRoutineRunning(id) || readRoutineRunStates()[id]?.running
-          || scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, readRoutineRunStates()[id]?.lastRunKey, new Date())?.key !== key) {
+          || scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, readRoutineRunStates()[id]?.lastRunKey, new Date(), pause.changedAt)?.key !== key) {
           log(`${id} skipped ${key}: disabled, deleted, moved, rescheduled or past its window before the run`);
           continue;
         }
@@ -80,7 +89,7 @@ export function ensureRoutineScheduler(): void {
         // 사이에는 기다림이 없고, 1회 일정을 끄는 커밋은 시작한 뒤에 한다.
         const previous = readRoutineRunStates()[id];
         updateRoutineRunState(id, (current) => ({ ...current, lastRunKey: key, ...(onceSchedule ? { pendingOnceDisable: onceSchedule } : {}) }));
-        const trigger = scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, previous?.lastRunKey, new Date())?.trigger ?? "catch-up";
+        const trigger = scheduledRun(fresh.schedule, fresh.timezone, fresh.createdAt, previous?.lastRunKey, new Date(), pause.changedAt)?.trigger ?? "catch-up";
         if (!startRoutineRun(dir, fresh, trigger)) {
           updateRoutineRunState(id, (current) => ({ ...current, lastRunKey: previous?.lastRunKey, pendingOnceDisable: previous?.pendingOnceDisable }));
           continue;

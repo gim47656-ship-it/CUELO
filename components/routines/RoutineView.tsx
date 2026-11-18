@@ -185,6 +185,26 @@ function ToggleButton({ routine, t, onMessage }: { routine: BoardRoutine; t: T; 
   );
 }
 
+/** 모든 루틴의 예약 실행과 답장 처리를 한 번에 멈추고 다시 켜는 버튼. 루틴별 켜짐은 건드리지 않는다. */
+function PauseAllButton({ data, t, onMessage }: { data: BoardData; t: T; onMessage: (text: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const paused = data.pause.paused;
+  const toggle = async () => {
+    setBusy(true);
+    const result = await request("/api/routines/pause", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: !paused }),
+    }, t);
+    onMessage(result.ok ? t(paused ? "routines.resumedAll" : "routines.pausedAll") : result.error);
+    await refreshRoutineBoard(true);
+    setBusy(false);
+  };
+  return (
+    <button type="button" className={styles.button} data-variant={paused ? undefined : "off"} disabled={busy} onClick={() => void toggle()}>
+      {paused ? t("routines.resumeAll") : t("routines.pauseAll")}
+    </button>
+  );
+}
+
 function RunButton({ routine, data, t, onMessage }: { routine: BoardRoutine; data: BoardData; t: T; onMessage: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const here = routine.host === data.thisHost;
@@ -326,7 +346,8 @@ function Gallery({ data, t }: { data: BoardData; t: T }) {
   if (data.routines.length === 0) {
     return (
       <>
-        <header className={styles.head}><h1>{t("routines.title")}</h1><div className={styles.headActions}><SyncLine data={data} t={t} /></div></header>
+        <header className={styles.head}><h1>{t("routines.title")}</h1><div className={styles.headActions}><SyncLine data={data} t={t} /><PauseAllButton data={data} t={t} onMessage={setMessage} /></div></header>
+        {message ? <div className={styles.notice} data-tone="info" role="status">{message}</div> : null}
         <div className={styles.empty}><p>{t("routines.empty")}</p><p>{t("routines.emptyHint")}</p>{newButton}</div>
       </>
     );
@@ -337,7 +358,7 @@ function Gallery({ data, t }: { data: BoardData; t: T }) {
     <>
       <header className={styles.head}>
         <h1>{t("routines.title")}</h1>
-        <div className={styles.headActions}><SyncLine data={data} t={t} /><MarkAllRead routines={data.routines} t={t} />{newButton}</div>
+        <div className={styles.headActions}><SyncLine data={data} t={t} /><MarkAllRead routines={data.routines} t={t} /><PauseAllButton data={data} t={t} onMessage={setMessage} />{newButton}</div>
         <div className={styles.sub}>
           <span className={styles.strong}>{t("routines.enabledCount", { on: on.length, total: data.routines.length })}</span>
           <span className={styles.subNote}>{t("routines.galleryIntro")}</span>
@@ -822,6 +843,7 @@ export function RoutineView({ visible = true, onBack, requestNotificationPermiss
       <div className={styles.body}>
         {loadError && !data ? <div className={styles.notice} data-tone="danger">{t("routines.loadFailed", { error: loadError })}</div> : null}
         {data && !data.setup && (screen.kind === "gallery" || screen.kind === "board") ? <><RoutineNotifications requestPermission={requestNotificationPermission} /><RoutineAssistant data={data} visible={visible} routineId={screen.kind === "board" ? screen.id : undefined} formatSchedule={(draft) => scheduleLabel(draft.schedule, t)} /></> : null}
+        {data && !data.setup && data.pause.paused && (screen.kind === "gallery" || screen.kind === "board") ? <div className={styles.notice} role="status">{t("routines.pausedNotice")}</div> : null}
         {data ? <Screen data={data} screen={screen} t={t} /> : null}
       </div>
     </section>
@@ -845,6 +867,7 @@ export function RoutinePanel({ onOpen }: { onOpen?: () => void }) {
     <div id="navigator-routine-panel" className={styles.panel}>
       <p>{t("routines.panelIntro")}</p>
       {waiting.length > 0 ? <button type="button" className={`${styles.button} ${styles.newControl}`} onClick={() => open({ kind: "post", ...waiting[0] })}>답 필요 {waiting.length}</button> : null}
+      {data?.pause.paused ? <p><span className={styles.badge} data-status="off">{t("routines.pausedBadge")}</span></p> : null}
       {routines.length > 0 ? (
         <>
           <p className={styles.strong}>{t("routines.enabledCount", { on, total: routines.length })}</p>

@@ -43,7 +43,7 @@ mock.module("./store", () => ({
   expandHome: (path: string) => path,
   isExistingDirectory: () => true,
   readRoutine: () => currentRoutine,
-  readRoutines: () => [], readPost: () => null, readReplies: () => [], listPosts: () => [], writeReplyFile: () => { throw new Error("Unexpected reply"); },
+  readRoutines: () => [], readRoutinesPause: () => ({ paused: false, changedAt: null }), readPost: () => null, readReplies: () => [], listPosts: () => [], writeReplyFile: () => { throw new Error("Unexpected reply"); },
   routinePaths: (dir: string) => ({ folder: dir, posts: dir }),
   thisRoutineHost: () => "test-pc",
   writePostFile: (_dir: string, _id: string, _stamp: string, _host: string, post: RoutinePost) => { posts.push(post); return "post.md"; },

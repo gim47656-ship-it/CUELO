@@ -121,7 +121,11 @@ export function dueRunKey(schedule: RoutineSchedule, timeZone: string, now: Date
   return null;
 }
 
-export function scheduledRun(schedule: RoutineSchedule, timeZone: string, createdAt: string, lastRunKey: string | undefined, now: Date): { key: string; trigger: "schedule" | "catch-up" } | null {
+/**
+ * 지금 시작할 회차. 실행 창 안의 회차가 먼저고, 없으면 최근 2시간 안의 놓친 회차 하나를 따라잡는다. `notBefore`(루틴 전체를
+ * 다시 켠 시각)보다 앞선 회차는 따라잡지 않는다: 꺼진 동안 놓친 회차를 다시 켤 때 몰아 돌리지 않는다.
+ */
+export function scheduledRun(schedule: RoutineSchedule, timeZone: string, createdAt: string, lastRunKey: string | undefined, now: Date, notBefore?: string | null): { key: string; trigger: "schedule" | "catch-up" } | null {
   const normal = dueRunKey(schedule, timeZone, now);
   if (normal) return normal === lastRunKey ? null : { key: normal, trigger: "schedule" };
   if (!isValidTimeZone(timeZone)) return null;
@@ -132,7 +136,7 @@ export function scheduledRun(schedule: RoutineSchedule, timeZone: string, create
     const at = localParts(new Date(instant), timeZone);
     if (!slotMatches(schedule, at)) continue;
     const key = `${at.date}T${at.time}`;
-    if (key === lastRunKey || (schedule.kind !== "once" && instant < Date.parse(createdAt))) return null;
+    if (key === lastRunKey || (schedule.kind !== "once" && instant < Date.parse(createdAt)) || (notBefore && instant < Date.parse(notBefore))) return null;
     return { key, trigger: "catch-up" };
   }
   return null;

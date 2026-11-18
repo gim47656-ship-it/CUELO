@@ -71,6 +71,10 @@ test("catch-up picks only latest missed slot inside two hours and after creation
   assert.equal(dueRunKey(schedule, ROUTINE_TIMEZONE, at("10:04:59")), "2026-11-15T10:00");
   assert.equal(dueRunKey(schedule, ROUTINE_TIMEZONE, at("10:05:00")), null);
   assert.equal(scheduledRun(schedule, ROUTINE_TIMEZONE, created, undefined, at("10:04:59"))?.trigger, "schedule");
+  // Resuming all routines at 10:30 must not catch up the 10:00 slot missed while paused; once schedules follow the same rule.
+  assert.equal(scheduledRun(schedule, ROUTINE_TIMEZONE, created, undefined, at("10:35:00"), at("10:30:00").toISOString()), null);
+  assert.equal(scheduledRun(schedule, ROUTINE_TIMEZONE, created, undefined, at("10:35:00"), at("09:59:00").toISOString())?.key, "2026-11-15T10:00");
+  assert.equal(scheduledRun(once, ROUTINE_TIMEZONE, created, undefined, at("10:00:00"), at("09:00:00").toISOString()), null);
 });
 
 

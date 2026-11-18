@@ -1,7 +1,8 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
+import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 import { nightlySourceName, sanitizeSource } from "@/lib/upkeep/nightly-inbox";
 import { type RoutinePost, type RoutinePostMeta, parseRoutinePost, serializeRoutinePost } from "./post";
 import { ROUTINE_TIMEZONE, type RoutineSchedule, isValidTimeZone, parseSchedule } from "./schedule";
@@ -59,6 +60,66 @@ export function inspectRepo(dir: string): RepoState {
   if (!existsSync(dir)) return { ok: false, dir, reason: "missing" };
   if (!existsSync(join(dir, ".git"))) return { ok: false, dir, reason: "not-git" };
   return { ok: true, dir };
+}
+
+/** 저장소 맨 위 `pause.json`: 모든 PC의 예약 실행과 답장 처리를 함께 멈춘다. `changedAt`은 마지막으로 끄거나 켠 시각이다. */
+export interface RoutinesPause {
+  paused: boolean;
+  changedAt: string | null;
+}
+
+const PAUSE_FILE = "pause.json";
+
+const NOT_PAUSED: RoutinesPause = { paused: false, changedAt: null };
+
+/** 링크를 따르지 않고 열어 연 파일이 일반 파일일 때만 바이트를 돌려준다. 없으면 null, 링크나 FIFO 같은 것이면 예외다. */
+function readPauseBytes(path: string): Buffer | null {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`${PAUSE_FILE} is not a regular file`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * 파일이 없거나 일반 파일이 아니거나(심볼릭 링크, FIFO) 기록 형식(`paused` 참/거짓, `changedAt` null 또는 날짜 문자열)이
+ * 틀리면 멈추지 않은 것으로 본다(이 기능 전과 같은 동작).
+ */
+export function readRoutinesPause(dir: string): RoutinesPause {
+  try {
+    const bytes = readPauseBytes(join(dir, PAUSE_FILE));
+    if (!bytes) return NOT_PAUSED;
+    const raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown> | null;
+    const changedAt = raw?.changedAt;
+    if (typeof raw?.paused !== "boolean") return NOT_PAUSED;
+    if (changedAt !== null && (typeof changedAt !== "string" || Number.isNaN(Date.parse(changedAt)))) return NOT_PAUSED;
+    return { paused: raw.paused, changedAt };
+  } catch {
+    return NOT_PAUSED;
+  }
+}
+
+/**
+ * `pause.json`을 새 파일로 바꿔 쓰고(제자리에 덮어쓰지 않는다) 저장소 기준 상대 경로와, 커밋이 실패했을 때 쓰기 전 바이트로
+ * 되돌리는 함수를 돌려준다. 되돌릴 때도 그 자리를 지우고 새로 만들어 링크를 따라가지 않는다. 그 자리가 일반 파일이 아니면
+ * 쓰지 않고 예외를 던진다.
+ */
+export function writeRoutinesPause(dir: string, pause: RoutinesPause): { path: string; rollback: () => void } {
+  const path = join(dir, PAUSE_FILE);
+  const before = readPauseBytes(path);
+  writePrivateFileAtomicSync(path, `${JSON.stringify(pause, null, 2)}\n`);
+  return { path: PAUSE_FILE, rollback: () => {
+    rmSync(path, { force: true });
+    if (before !== null) writeFileSync(path, before, { flag: "wx" });
+  } };
 }
 
 /** 이 서버가 루틴을 실행하는 PC 이름. 야간 보고의 출처 이름과 같은 규칙이다. */
