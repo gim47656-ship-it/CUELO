@@ -226,7 +226,8 @@ describe("한 호출 상한을 넘는 변경은 거절하지 않고 나눠 같�
 
 const KO = "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회에 실패하면 오류로 처리합니다.\n배포가 끝나면 상태를 다시 읽어 맞는지 확인합니다. 맞지 않으면 원인을 적어 알려 줍니다.\n";
 const COMMA = { quote: "짧은 SHA가 들어오면 전체 SHA로 바꿔 조회하고, 조회에 실패하면 오류로 처리합니다.", rule: "humanizer 패턴 3: 연결어미 뒤 쉼표", fix: "쉼표를 뺀다" };
-const AUTHOR = "anthropic/fixture-author";
+// A non-Anthropic author keeps the Opus (anthropic) lane as the required judge (2026-11-19 judge-by-author-family).
+const AUTHOR = "openai-codex/fixture-author";
 const ids = (prompt: string) => [...prompt.matchAll(/<artifact id="(a\d+)"/g)].map((match) => match[1]!);
 /** 언어 판별 요청(답 모양에 "languages")은 여기서 ko로 답하고(이 묶음의 글은 한국어뿐), 심사 요청만 각 테스트의 가짜로 넘긴다. */
 function slopDeps(cwd: string, complete: Complete): SlopDeps {

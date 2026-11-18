@@ -49,7 +49,8 @@ function fakeReviewer(answer: (ids: string[], prompt: string, family: string) =>
   };
   return { calls, all, complete };
 }
-const AUTHOR = "anthropic/fixture-author";
+// A non-Anthropic author keeps the Opus (anthropic) lane as the required judge in the flow tests below.
+const AUTHOR = "openai-codex/fixture-author";
 const clean = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [] })) });
 const dirty = (ids: string[]) => ({ files: ids.map((id) => ({ id, findings: [{ quote: "혁신적인 솔루션", rule: "humanizer:14 AI 어휘", fix: "무엇을 하는지 구체적으로 쓴다" }] })) });
 
@@ -68,10 +69,11 @@ function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): S
   return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: withLanguages(complete), mainModel: AUTHOR, head: async () => undefined, ...extra };
 }
 
-describe("Hydrogen advisory and Opus verdict through registered slop_check", () => {
+describe("Hydrogen advisory and a cross-family verdict through registered slop_check", () => {
   const HYDROGEN = "aistudio/gemini-4-hydrogen";
   const OPUS = "anthropic/claude-opus-5-5";
-  const LUNA = "openai-codex/gpt-6-luna";
+  const ASTRA = "openai-codex/gpt-6.2-astra";
+  const SOL = "openai-codex/gpt-6.2-sol";
   type Scenario = "both" | "unavailable" | "relay-down" | "error" | "malformed" | "opus-error" | "opus-finding";
 
   async function run(author: string, scenario: Scenario) {
@@ -103,7 +105,7 @@ describe("Hydrogen advisory and Opus verdict through registered slop_check", () 
     if (relay !== server) await relay.stop(true);
     try {
       const registry = new ModelRegistry(await AuthStorage.create(join(cwd, "agent.db")), join(cwd, "models.yml"));
-      for (const selector of [OPUS, LUNA, ...(scenario === "unavailable" ? [] : [HYDROGEN])]) {
+      for (const selector of [OPUS, ASTRA, ...(scenario === "unavailable" ? [] : [HYDROGEN])]) {
         const [provider, id] = selector.split("/") as [string, string];
         const port = selector === HYDROGEN ? relayPort : server.port;
         const host = selector === HYDROGEN && scenario === "both" ? "localhost" : "127.0.0.1";
@@ -111,7 +113,7 @@ describe("Hydrogen advisory and Opus verdict through registered slop_check", () 
           { id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
         ] });
       }
-      const settings = Settings.isolated({ modelRoles: { crossReviewOpenAI: LUNA, crossReviewAnthropic: OPUS, crossReviewAdvisory: HYDROGEN, slopReviewOpenAI: LUNA } });
+      const settings = Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: HYDROGEN } });
       return await withActiveSettings(settings, async () => {
         const model = registry.find("anthropic", "claude-opus-5-5");
         const ctx = { cwd, agent: { kind: "main" }, model, modelRegistry: registry,
@@ -130,22 +132,23 @@ describe("Hydrogen advisory and Opus verdict through registered slop_check", () 
     }
   }
 
-  test.each([OPUS, "openai-codex/gpt-6.2-sol", HYDROGEN])("both models answer for author %s, but only Opus judges", async (author) => {
+  // 2026-11-19 user decision: Opus never judges text an Anthropic model wrote; the OpenAI slot does. Other authors keep Opus.
+  test.each([[OPUS, ASTRA], [SOL, OPUS], [HYDROGEN, OPUS]])("both models answer for author %s, and %s alone judges", async (author, judge) => {
     const { hits, result, records, toolError } = await run(author, "both");
-    expect(hits[0]).toBe(`language:${OPUS}`);
-    expect(hits.slice(1).sort()).toEqual([`review:${HYDROGEN}`, `review:${OPUS}`]);
+    expect(hits[0]).toBe(`language:${judge}`);
+    expect(hits.slice(1).sort()).toEqual([`review:${HYDROGEN}`, `review:${judge}`].sort());
     expect(toolError).toBe(false);
     expect(result.authors).toEqual([author]);
     expect(result.files[0]).toMatchObject({ status: "pass", findings: [], advisoryFindings: [{ id: "A-ADV-1", reviewer: "advisory", quoteFound: true }] });
     expect(result.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: HYDROGEN, status: "ok" }));
-    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(OPUS);
-    expect(records.find((record) => record.type === "slop-review")).toMatchObject({ model: OPUS, reviewers: expect.arrayContaining([
-      expect.objectContaining({ model: HYDROGEN, status: "ok" }), expect.objectContaining({ model: OPUS, status: "ok" }),
+    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(judge);
+    expect(records.find((record) => record.type === "slop-review")).toMatchObject({ model: judge, reviewers: expect.arrayContaining([
+      expect.objectContaining({ model: HYDROGEN, status: "ok" }), expect.objectContaining({ model: judge, status: "ok" }),
     ]) });
   });
 
   test.each(["unavailable", "relay-down", "error", "malformed"] as const)("Hydrogen %s cannot block the Opus verdict", async (scenario) => {
-    const { hits, result, records, toolError } = await run(OPUS, scenario);
+    const { hits, result, records, toolError } = await run(SOL, scenario);
     const skipped = scenario === "unavailable" || scenario === "relay-down";
     expect(hits[0]).toBe(`language:${OPUS}`);
     expect(hits.slice(1).sort()).toEqual([...(skipped ? [] : [`review:${HYDROGEN}`]), `review:${OPUS}`]);
@@ -159,7 +162,7 @@ describe("Hydrogen advisory and Opus verdict through registered slop_check", () 
 
   test("advisory findings cannot be resolved or replace a failed Opus verdict", async () => {
     for (const scenario of ["opus-error", "opus-finding"] as const) {
-      const { result, records, cwd, toolError } = await run(OPUS, scenario);
+      const { result, records, cwd, toolError } = await run(SOL, scenario);
       expect(toolError).toBe(scenario === "opus-error");
       expect(result.files[0]).toMatchObject({ status: scenario === "opus-error" ? "error" : "findings", advisoryFindings: [{ id: "A-ADV-1" }] });
       expect(records.some((record) => record.type === "slop-pass")).toBe(false);

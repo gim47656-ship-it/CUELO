@@ -3,7 +3,7 @@ import { addAbortListener } from "node:events";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { ADVISORY_GRACE_MS, LANE_TAG, ReviewerCallError } from "../lib/cross-review";
+import { ADVISORY_GRACE_MS, LANE_TAG, ReviewerCallError, authorFamily, type Lane } from "../lib/cross-review";
 import { secretFileName } from "../skim";
 import {
   appendSlopRecord, passFor, rawDataReason, readSlopRecords, sha256, trackable, visibilityOf, wslPath,
@@ -15,7 +15,8 @@ import { extractVisible, type Extracted, type ScanLead } from "./extract";
 /**
  * 모델 심사. 기준은 기존 스킬 파일의 규칙 본문을 그대로 싣는다(요약·의역 없음): 한국어 글은 humanizer, 영어 글은 stop-slop,
  * html·UI 문구·슬라이드는 kill-ai-slop. 감지한 언어·형식의 기준만 system 메시지에 고정해 싣고(파일 글은 user 메시지에만) 제공자 프리픽스 캐시가 맞게 한다.
- * crossReviewAnthropic judges every file. crossReviewAdvisory gives a separate, non-binding second opinion.
+ * The required judge is chosen by author family (2026-11-19 user decision: Opus never judges its own text): any Anthropic
+ * author → crossReviewOpenAI (Astra); otherwise crossReviewAnthropic (Opus). crossReviewAdvisory gives a separate, non-binding second opinion.
  * Existing R-OAI-n, R-GGL-n and R-ADV-n findings remain resolvable. Scanner leads still aren't verdicts.
  * git이 추적하는 파일은 HEAD 대비 바뀐 글만 보낸다(delta.ts). finding이 없으면 같은 호출에서 sha256 통과를 기록하고, 있으면
  * 고친 뒤 다시 심사하거나 resolve로 반박한다.
@@ -40,7 +41,7 @@ const ADVISORY_PREFLIGHT_MS = 500;
 
 export interface Usage { input: number; output: number; cacheRead: number; cost: number }
 export interface ReviewerAnswer { model: string; text: string; usage?: Usage }
-type SlopLane = "anthropic" | "advisory";
+type SlopLane = Lane | "advisory";
 export type Complete = (lane: SlopLane, system: string, prompt: string, signal: AbortSignal) => Promise<ReviewerAnswer>;
 export type Lang = "ko" | "en" | "both";
 
@@ -52,7 +53,7 @@ export interface SlopDeps {
   extract?: (abs: string) => Promise<Extracted>;
   /** HEAD 버전(추적 파일) 추출. 없으면 전체 심사. 테스트가 git 없이 주입한다. */
   head?: (abs: string) => Promise<Extracted | undefined>;
-  /** Author provenance only; the required model is independent of the author's family. */
+  /** Author selectors. An Anthropic author moves the required judge to the OpenAI slot (judgeLane). */
   authors?: string[];
   mainModel?: string;
   advisory?: (signal: AbortSignal) => Promise<{ model?: string; skipped?: string }>;
@@ -482,8 +483,7 @@ async function settle<T>(family: SlopLane, call: () => Promise<ReviewerAnswer>, 
  * 한 reviewer에게 묻는다. 답을 해석할 수 없으면 같은 자리에 한 번만 다시 묻는다(2026-10-28 사용자 결정: 감사한 26호출 중 6건이 끝 괄호만
  * 빠진 JSON이었다). 답을 고치거나 다른 모델에 묻지 않고, 다시 받은 답도 해석할 수 없으면 그대로 실패다. 호출 오류는 다시 묻지 않는다.
  */
-async function ask<T>(request: ReviewRequest, deps: SlopDeps, signal: AbortSignal, read: Reader<T>): Promise<Ask<T>> {
-  const family = "anthropic";
+async function ask<T>(family: Lane, request: ReviewRequest, deps: SlopDeps, signal: AbortSignal, read: Reader<T>): Promise<Ask<T>> {
   const { system, prompt } = request;
   const first = await settle(family, () => deps.complete(family, system, prompt, signal), read);
   if (first.status.status !== "unparsable" || signal.aborted) return first;
@@ -508,6 +508,11 @@ async function askAdvisory(request: ReviewRequest, deps: SlopDeps, signal: Abort
   return answered;
 }
 
+/** The required judge never shares the Anthropic family with an author: Anthropic-authored text goes to the OpenAI slot. */
+export function judgeLane(authors: readonly string[]): Lane {
+  return authors.some((author) => authorFamily(author) === "anthropic") ? "openai" : "anthropic";
+}
+
 /**
  * 파일들을 심사한다. 이미 통과한 내용은 모델을 부르지 않고, 나머지는 기준 조합이 같은 것끼리 묶어 한 호출에 싣는다.
  * Required failures, missing answers, and findings control the gate. Advisory outcomes never do.
@@ -521,6 +526,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     if (!deps.mainModel) throw new Error('authors includes "main" but the session\'s current model could not be resolved; pass its selector explicitly.');
     return deps.mainModel;
   });
+  const judge = judgeLane(authors);
   const { ok, errors, internal } = resolveFiles(files, deps.cwd);
   const outcomes: FileOutcome[] = [...errors, ...internal];
   // 대상 여부는 바이트를 읽기 전에 정한다: 보이는 산출물이 아닌 파일(내부 기록·코드·테스트 등)은 읽지도, 추출하지도, reviewer에 보내지도 않고 통과도 남기지 않는다.
@@ -596,7 +602,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     return pieces.map((piece, index) => ({ id: pieces.length === 1 ? item.id : `${item.id}s${index + 1}`, item, ...piece, ...(pieces.length > 1 ? { part: `${index + 1}/${pieces.length}` } : {}) }));
   });
   const identified = await inPool(pack(units, (unit) => unit.text.length), MAX_PARALLEL_BATCHES, async (batch) => {
-    return { batch, answer: await ask(buildLanguageRequest(batch), deps, signal, readLanguages) };
+    return { batch, answer: await ask(judge, buildLanguageRequest(batch), deps, signal, readLanguages) };
   });
   const languages = new Map<Item, Set<string>>();
   const unidentified = new Map<Item, Failure>();
@@ -662,7 +668,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     }
   }
   // Start the advisory pool first, but don't serialize the required requests behind it.
-  const requiredWork = inPool(requests, MAX_PARALLEL_BATCHES, ({ request }) => ask(request, deps, signal, readAnswer));
+  const requiredWork = inPool(requests, MAX_PARALLEL_BATCHES, ({ request }) => ask(judge, request, deps, signal, readAnswer));
   const [judgments, opinions] = await Promise.all([requiredWork, advisoryWork]);
   type Hit = { source: Ask; finding: ParsedAnswer["files"][number]["findings"][number] };
   interface Failure { error: string; reviewer?: ReviewerStatus; record: boolean }
@@ -754,7 +760,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
   const statuses = [...reviewers.values()];
   if (reviewFilesOut.length > 0 || failedOut.length > 0 || failedAttempts.length > 0) {
     appendSlopRecord(deps.ledgerPath, {
-      type: "slop-review", reviewId, ts: now().toISOString(), model: reviewers.get("anthropic")?.model ?? "none",
+      type: "slop-review", reviewId, ts: now().toISOString(), model: reviewers.get(judge)?.model ?? "none",
       reviewers: statuses, files: reviewFilesOut, ...(failedOut.length > 0 ? { failed: failedOut } : {}), ...(failedAttempts.length > 0 ? { failedAttempts } : {}),
     });
   }

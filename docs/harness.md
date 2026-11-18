@@ -549,7 +549,7 @@ HTML 본문의 백틱은 일반 문자로 취급합니다. 기존 `script` 안�
 
 점검 기준은 공개 저장소에 각 라이선스(MIT, Apache-2.0)와 함께 들어 있는 세 스킬의 원문입니다. 평가 루브릭은 한국어 `humanizer`, 영어 `stop-slop`, HTML·UI 문구·슬라이드 `kill-ai-slop`의 세 가지 스킬 원문을 그대로 사용하며, `kill-ai-slop` 스캐너(`scripts/scan.mjs`)의 탐지 결과는 최종 판정이 아닌 참고 단서로 전달됩니다. 작성자는 `authors`로 지정하며 기본값은 Main입니다. 고정된 루브릭 원문은 시스템 프롬프트로, 검사 대상 산출물 본문만 사용자 메시지로 나눠 보내므로 같은 루브릭 조합의 호출은 제공자 프롬프트 캐시를 다시 쓸 수 있습니다.
 
-`modelRoles.crossReviewAnthropic`(Opus 5.5)이 작성자의 모델 계열과 관계없이 언어를 확인하고 통과를 판정합니다. 문체를 심사할 때는 `modelRoles.crossReviewAdvisory`(Gemini 4 Hydrogen) 요청을 먼저 시작하고, Opus는 자문을 기다리지 않고 독립적으로 심사합니다. 두 자리는 새 모델 심사에만 적용되며 내부 파일 제외와 동일 해시 통과 재사용은 그대로입니다.
+필수 판정자는 작성자의 모델 계열로 한 자리를 고릅니다. `authors`에 Anthropic 모델이 하나라도 있으면 `modelRoles.crossReviewOpenAI`(GPT-6.2 Astra)가, 그 밖의 작성자는 `modelRoles.crossReviewAnthropic`(Opus 5.5)이 언어를 확인하고 통과를 판정합니다. 그래서 Opus가 쓴 글을 Opus가 판정하지 않습니다. 문체를 심사할 때는 `modelRoles.crossReviewAdvisory`(Gemini 4 Hydrogen) 요청을 먼저 시작하고, 필수 판정자는 자문을 기다리지 않고 독립적으로 심사합니다. 필수 판정자가 실패하면 다른 자리로 대체하지 않고 통과도 기록하지 않습니다. 두 자리는 새 모델 심사에만 적용되며 내부 파일 제외와 동일 해시 통과 재사용은 그대로입니다.
 
 자문은 시작 시점부터 최대 60초만 기다립니다. AI Studio 중계기가 없거나 자문이 실패하거나 응답을 해석할 수 없어도 결과에 사유를 기록할 뿐 통과 판정은 바뀌지 않습니다. 응답 모델은 `reviewers`에 표시되며, `advisoryFindings`는 참고용이라 `resolve`로 닫을 필요가 없습니다. 필수 검토의 실패나 누락은 통과가 아닙니다. 기존 `R-GGL-n` 및 `R-ADV-n` 지적은 그대로 반박할 수 있습니다.
 

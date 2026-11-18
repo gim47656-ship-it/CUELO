@@ -114,7 +114,8 @@ describe("언어 범위: 기준이 없는 언어는 영어 기준으로 심사�
     };
     const out = await reviewFiles(["ko.md"], undefined, deps(cwd, complete), signal);
     expect(out.files[0]).toMatchObject({ status: "pass" });
-    expect(seen).toEqual([{ identifying: true, family: "anthropic" }, { identifying: false, family: "anthropic" }]);
+    // The fixture author is Anthropic, so the required lane is OpenAI for both identification and review (2026-11-19).
+    expect(seen).toEqual([{ identifying: true, family: "openai" }, { identifying: false, family: "openai" }]);
   });
 
   test("html 원문 층도 판별한다: 보이는 영어 글은 그대로인데 script 안 문구만 스페인어로 바뀌면(전체·delta 모두) 통과가 없다", async () => {

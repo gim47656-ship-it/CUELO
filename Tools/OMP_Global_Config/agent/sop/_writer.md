@@ -161,7 +161,8 @@
   `rule://cross-review-procedure` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
   `modelRoles` `crossReviewOpenAI`, `crossReviewAnthropic`, and `crossReviewAdvisory`.
-  For `slop_check` the Anthropic slot judges and the advisory slot gives a separate opinion;
+  For `slop_check` one required slot judges by author family (an Anthropic author goes to `crossReviewOpenAI`,
+  any other author to `crossReviewAnthropic`) and the advisory slot gives a separate opinion;
   never name another model for cost or speed, and route changes need the user first.
 - Report `validation` as an acceptance-condition map, not only a per-file or per-command result.
   Give one row per item, in brief order with its number or verbatim text: every `# Acceptance`

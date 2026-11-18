@@ -112,7 +112,7 @@ export default function slopGate(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "slop_check", label: "Slop Check", loadMode: "essential", approval: "read",
-    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to reviewer providers. The Anthropic slot alone judges; advisory findings never block. Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
+    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to reviewer providers. One required judge by author family (Anthropic author → OpenAI slot, else Anthropic slot); advisory findings never block. Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
     parameters: z.object({
       action: z.string().optional().describe("review(default) or resolve"),
       files: z.array(z.string()).optional().describe("cwd or home,/mnt/<drive>; excludes /tmp,~/.omp,~/.cache,node_modules,.git"),
