@@ -9,10 +9,11 @@ const eslintConfig = [
     ignores: ["Tools/**", ".omp/**", ".runtime-patch-home/**", ".gitnexus/**", ".next-verify/**", "doc/history/**/*.min.js"],
   },
   {
+    // Ratchet: new violations fail lint; existing ones are recorded in eslint-suppressions.json.
     rules: {
-      "react-hooks/immutability": "off",
-      "react-hooks/refs": "off",
-      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/immutability": "error",
+      "react-hooks/refs": "error",
+      "react-hooks/set-state-in-effect": "error",
     },
   },
 ];

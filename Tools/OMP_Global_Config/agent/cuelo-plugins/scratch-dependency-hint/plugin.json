@@ -1,0 +1,8 @@
+{
+  "id": "scratch-dependency-hint",
+  "name": "임시 스크립트 사전 확인 안내",
+  "description": "임시 스크립트에서 Bun 모듈이나 jq를 찾지 못하면 재실행 전에 확인할 사항을 알려 줍니다.",
+  "createdAt": "2026-11-20T07:39:39+09:00",
+  "extension": "index.ts",
+  "tools": []
+}

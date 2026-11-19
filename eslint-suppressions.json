@@ -1,0 +1,179 @@
+{
+  "components/AskForm.tsx": {
+    "react-hooks/refs": {
+      "count": 3
+    }
+  },
+  "components/ChatSearchBar.tsx": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "components/ChatWindow.tsx": {
+    "react-hooks/refs": {
+      "count": 25
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/FileViewer.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 3
+    }
+  },
+  "components/Gpt6HandleBadge.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/MessageView.tsx": {
+    "react-hooks/refs": {
+      "count": 6
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/ModelsConfig.tsx": {
+    "react-hooks/refs": {
+      "count": 2
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/NotificationPermission.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/PaletteTranscriptSearch.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/RunStatusBanners.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/SearchableSelect.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 3
+    }
+  },
+  "components/SessionSidebar.tsx": {
+    "react-hooks/refs": {
+      "count": 2
+    },
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/SettingsConfig.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/SidebarUsage.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/answer-status/DeliveryRows.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/answer-status/ResultPreview.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/translator/MenuScan.tsx": {
+    "react-hooks/refs": {
+      "count": 3
+    }
+  },
+  "components/translator/ShowCard.tsx": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "components/translator/TranslatorView.tsx": {
+    "react-hooks/refs": {
+      "count": 3
+    }
+  },
+  "components/translator/useSpeech.ts": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "components/translator/useVoiceInterpreter.ts": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "components/workspace/PluginLabPanel.tsx": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "components/workspace/ResourcePanel.tsx": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "components/workspace/RunTurnView.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 2
+    }
+  },
+  "components/workspace/SubagentArchivePanel.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "hooks/useI18n.tsx": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "hooks/useKeyboardShortcuts.ts": {
+    "react-hooks/refs": {
+      "count": 1
+    }
+  },
+  "hooks/useLiveOutputRate.ts": {
+    "react-hooks/refs": {
+      "count": 4
+    }
+  },
+  "hooks/useResizablePanel.ts": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "hooks/useRunXray.ts": {
+    "react-hooks/set-state-in-effect": {
+      "count": 3
+    }
+  },
+  "hooks/useSubagentUtterances.ts": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "hooks/useWeb6Utterances.ts": {
+    "react-hooks/set-state-in-effect": {
+      "count": 1
+    }
+  },
+  "lib/session-worktree/promotion.test.ts": {
+    "react-hooks/immutability": {
+      "count": 1
+    }
+  }
+}

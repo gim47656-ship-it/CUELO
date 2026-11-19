@@ -48,7 +48,7 @@ description: Before mistake correction or rule changes.
 | R9 | 실행 코드 변경 뒤 최소 검사, 지정 명령은 그대로 실행 및 보고 | eval | `evals/cases/security/missing-evidence.json`, `evals/cases/security/stale-validation-evidence.json` | |
 | R10 | 측정 수치는 횟수·편차·제약 요인과 번갈아 측정 | 문서 | — | |
 | R11 | 파이프 뒤 명령 성공을 검사 성공으로 보지 않고 exit code 보존 | 안내 | `extensions/command-guard/check-output-hint.ts`, `extensions/command-guard/check-output-hint.test.ts` | 명령 텍스트 휴리스틱이다. 종료 코드 보존은 검사 직후 `$?` 또는 `PIPESTATUS`, 검사 전 pipefail로 판정한다. 사건 근거는 보존 원문 R11. |
-| R12 | 임시 스크립트의 런타임·의존성 해석 먼저 확인 | 문서 | — | |
+| R12 | 임시 스크립트의 런타임·의존성 해석 먼저 확인 | 안내(부분) | `cuelo-plugins/scratch-dependency-hint/index.ts`, `cuelo-plugins/scratch-dependency-hint/index.test.ts` | `/tmp` 바로 아래 파일을 지목하는 Bash의 Bun import 실패 또는 `jq: command not found`를 보는 텍스트 휴리스틱이다. `jq` 오류는 단순 `bash /tmp/<파일>` 호출과 진단이 일치하면 종료 코드 0도 본다. 첫 실행 전 확인을 강제하거나 원래 오류를 바꾸지 않는다. 반복 근거는 저장소 루트 기준 `doc/history/2026/11/20-rule-promotion/main.md`. |
 | R13 | 일회성 산출물 정리·근거 후보 보고 | 문서 | — | |
 | R14 | 연속 테스트는 `test_session`으로 등록·재사용 | 구조 | `extensions/test-session.ts`, `extensions/lib/test-session-store.ts`, `extensions/tests/test-session.test.ts` | 등록할지는 문서. 2026-11-11부터 RULES.md에는 한 줄만 두고 세부는 도구 설명이 정본 |
 | R15 | 도구 평가는 `tool_trial`로 기준·후보 분리 기록 | 구조 | `extensions/tool-trial.ts`(PASS 없음·보수 판정), `extensions/tests/tool-trial.test.ts` | 쓸지는 문서. R14와 같은 한 줄 |
@@ -127,4 +127,4 @@ description: Before mistake correction or rule changes.
 | A37 | 요청 뒤 목표를 실행 조건, 대기와 완료 증거에 연결하고 작은 요청은 작게 처리 | 문서 | `AGENTS.md` 「TODO와 착수」, 「최우선: 사용자 메시지에 먼저 답한다」 | 목표 유지 개선은 미입증이며 자동 차단이나 목표 판정기를 추가하지 않는다. 평가 근거와 한계는 `../../doc/history/2026/11/05-goal-retention-stage2/main.md`. |
 | A38 | 무거운 작업을 PC 전체 메모리를 넘기도록 겹치지 않는다 | 차단(부분) | `extensions/command-guard/build-concurrency.ts`, `extensions/command-guard/build-reservations.ts` | Next production build만 차단한다. 다른 무거운 작업은 문서 수준이며 근거 없는 낮은 상한으로 단일 작업을 늦추지 않는다. 사건 근거는 보존 원문 A38. |
 
-아직 글뿐인 운영 규칙 중 다음 코드화 후보(판정이 기계적인 것): A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, R13 일회성 산출물 정리, R10 측정 수치의 횟수·편차. 판단이 필요한 규칙(R2·R21·R45, A33·A34 등)은 글로 남긴다.
+다음 코드화 후보는 A8 장기 프로세스 사전 고지, A22 세션 밖 job마다 감시 async, R13 일회성 산출물 정리, R10 측정 수치의 횟수와 편차다. 반복 사례와 당시에 관측할 수 있던 신호를 모두 확인할 때까지 문서 수준을 유지한다. 조사 근거와 판단이 필요한 행은 저장소 루트 기준 `doc/history/2026/11/20-rule-promotion/main.md`에 있다.
