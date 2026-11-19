@@ -4,6 +4,7 @@ import {
   type BalanceInput,
   type BalanceWallet,
   type CreditSettingInput,
+  type CreditWalletId,
 } from "./api-credits";
 import { OFFICE_CUE_ROOT, parseCueManifest, type CueManifest } from "./completion-audio";
 
@@ -989,12 +990,13 @@ export async function loadApiCredits(
   }
 }
 
-/** Hive 지갑의 총액·시작일을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
+/** 지갑 하나(Vertex 또는 Hive)의 총액·시작일을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
 export async function saveApiCreditSetting(
+  wallet: CreditWalletId,
   value: CreditSettingInput | null,
   options: CredentialActionOptions = {},
 ): Promise<void> {
-  await postCreditSettings({ wallet: "hive", value }, options);
+  await postCreditSettings({ wallet, value }, options);
 }
 
 /** 결제 화면에서 본 잔액과 그 시각을 지갑 하나에만 저장한다. value가 null이면 그 기록을 지운다. */

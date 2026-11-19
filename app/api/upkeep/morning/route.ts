@@ -8,8 +8,7 @@ import { maintainRecordedSessionWorktrees, startSessionWithWorktree } from "@/li
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { inspectDeploy } from "@/lib/upkeep/deploy";
-import { collectCloudChanges, findMorningRepo, importNightlyOutcomes, type MorningPlan, morningStateAfterRun, morningStateRelayCleared, parseSkillNames, planMorningRun, type ReleaseInfo, readMorningState, writeMorningState } from "@/lib/upkeep/morning";
-import { type RelayStatus, readRelayStatus } from "@/lib/upkeep/relay-accounts";
+import { collectCloudChanges, findMorningRepo, importNightlyOutcomes, type MorningPlan, morningStateAfterRun, parseSkillNames, planMorningRun, type ReleaseInfo, readMorningState, writeMorningState } from "@/lib/upkeep/morning";
 import { type NightlyResult, parseNightlyResult } from "@/lib/upkeep/nightly-result";
 import { refreshUpkeepAfterMarkChange } from "@/lib/upkeep/collect";
 
@@ -73,15 +72,14 @@ async function readRelease(warnings: string[]): Promise<ReleaseInfo | null> {
 }
 
 function describe(plan: Extract<MorningPlan, { action: "run" }>): string {
-  const { cloudCommits, skills, release, nightly, relay } = plan.triggers;
-  return `${cloudCommits} cloud commit(s), ${skills} skill(s), release ${release ?? "none"}, nightly ${nightly ?? "none"}, relay ${relay ? "changed" : "same"}`;
+  const { cloudCommits, skills, release, nightly } = plan.triggers;
+  return `${cloudCommits} cloud commit(s), ${skills} skill(s), release ${release ?? "none"}, nightly ${nightly ?? "none"}`;
 }
 
 async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: NightlyResult | null, nightlyInvalid: boolean) {
   const agentDir = getAgentDir();
   let plan: MorningPlan;
   let state;
-  let relay: RelayStatus | null = null;
   try {
     state = readMorningState(agentDir);
     const now = new Date();
@@ -101,10 +99,6 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
     }
     // 모양이 맞지 않는 결과는 빼고 나머지 보고는 그대로 한다.
     if (nightlyInvalid) warnings.push("클라우드 야간 실행 결과 파일을 해석하지 못해 이번 보고에서 뺐습니다.");
-    // 한도 대기가 풀렸는지는 앞선 가져오기가 끝난 지금 시각으로 본다.
-    const relayRead = await readRelayStatus(new Date());
-    if (relayRead.warning) warnings.push(relayRead.warning);
-    relay = relayRead.status;
     plan = planMorningRun({
       repoCwd,
       originHead: changes?.originHead ?? null,
@@ -118,20 +112,13 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
       acceptedSessionId: globalThis.__cueloMorningSessionId ?? null,
       now,
       warnings,
-      relay,
     });
   } catch (error) {
     log(`failed to plan: ${error instanceof Error ? error.message : String(error)}`);
     return NextResponse.json({ error: "Morning plan failed" }, { status: 500 });
   }
-  // 막힘이 풀린 것은 보고 없이 지나가도 기록에서 지워 같은 계정이 다시 막히면 또 알린다.
-  const clearRelay = () => {
-    const cleared = morningStateRelayCleared(state ?? null, relay);
-    if (cleared) writeMorningState(agentDir, cleared);
-  };
   if (plan.action === "skip") {
     log(`${dryRun ? "dry run " : ""}skipped: ${plan.reason}`);
-    if (!dryRun) clearRelay();
     return NextResponse.json({ action: "skipped", reason: plan.reason, ...(dryRun ? { dryRun } : {}) });
   }
   if (dryRun) {
@@ -141,7 +128,6 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
   // 변경을 모으는 사이 갱신이 시작됐을 수 있어 세션을 만들기 직전에 본다.
   if (getUpdateMutationBlock()) {
     log("skipped: update-draining");
-    clearRelay();
     return NextResponse.json({ action: "skipped", reason: "update-draining" });
   }
 

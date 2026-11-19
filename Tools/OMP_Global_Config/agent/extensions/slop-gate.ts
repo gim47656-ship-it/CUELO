@@ -1,10 +1,11 @@
 import { createConnection } from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { completeReviewer } from "./cross-review";
-import { ADVISORY_SLOT } from "./lib/cross-review";
+import { ADVISORY_SLOT, SLOT, isSameModel, reviewerOperationalFailure, type Lane } from "./lib/cross-review";
+import { directFallbackModel, isHydrogen, modelRoleSelector } from "./lib/model-routes";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
-import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
+import { reviewFiles, resolveFindings, type AdvisoryPreparation, type Lang, type SlopDeps } from "./slop-gate/review";
 
 // A registered local provider can outlive its relay. Check the socket before submitting prose
 // so the provider client's retry policy does not turn an absent relay into a long wait.
@@ -19,21 +20,44 @@ function relayListening(url: URL, signal: AbortSignal): Promise<boolean> {
   return promise;
 }
 
-async function slopAdvisory(ctx: ExtensionContext, signal: AbortSignal) {
-  // The legacy extension loader rewrites this import to the host SDK at runtime.
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_SLOT);
+async function slopAdvisory(ctx: ExtensionContext, signal: AbortSignal, judge: Lane, authors: readonly string[], primaryMs: number): Promise<AdvisoryPreparation> {
+  const selector = await modelRoleSelector(ctx.cwd, ADVISORY_SLOT);
   if (!selector) return { skipped: "Advisory slot is not configured." };
   const model = ctx.models.resolve(`@${ADVISORY_SLOT}`);
-  if (!model) return { model: selector, skipped: "Could not resolve the configured advisory model." };
-  const name = `${model.provider}/${model.id}`;
-  if (model.provider === "aistudio") {
+  const name = model ? `${model.provider}/${model.id}` : selector;
+  const candidate = isHydrogen(name) ? await directFallbackModel(ctx, "slopAdvisoryFallback") : undefined;
+  const requiredModel = candidate ? ctx.models.resolve(`@${SLOT[judge]}`) : undefined;
+  const candidateName = candidate ? `${candidate.provider}/${candidate.id}` : undefined;
+  const route = candidateName && !authors.some((author) => isSameModel(author, candidateName))
+    && !(requiredModel && isSameModel(`${requiredModel.provider}/${requiredModel.id}`, candidateName)) ? candidateName : undefined;
+  let unavailable = model ? undefined : "Could not resolve the configured advisory model.";
+  if (model?.provider === "aistudio") {
     const url = new URL(model.baseUrl);
-    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && !(await relayListening(url, signal))) {
-      return { model: name, skipped: "AI Studio relay is not listening." };
+    const probe = route ? AbortSignal.any([signal, AbortSignal.timeout(350)]) : signal;
+    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && !(await relayListening(url, probe))) {
+      unavailable = "AI Studio relay is not listening.";
     }
   }
-  return { model: name };
+  if (!route) return { model: name, skipped: unavailable };
+  const primaryDeadline = AbortSignal.timeout(primaryMs);
+  let primaryAvailable = !unavailable;
+  return {
+    model: unavailable ? route : name,
+    complete: async (_lane, system, prompt, attempt) => {
+      attempt.throwIfAborted();
+      if (primaryAvailable && !primaryDeadline.aborted) {
+        try {
+          const primary = AbortSignal.any([attempt, primaryDeadline]);
+          return await completeReviewer("advisory", prompt, ctx, primary, { system, purpose: "slop-gate", route: name });
+        } catch (error) {
+          if (attempt.aborted || !(await reviewerOperationalFailure(error))) throw error;
+          primaryAvailable = false;
+        }
+      }
+      attempt.throwIfAborted();
+      return completeReviewer("advisory", prompt, ctx, attempt, { system, purpose: "slop-gate", route });
+    },
+  };
 }
 
 /**
@@ -126,7 +150,7 @@ export default function slopGate(pi: ExtensionAPI): void {
       const result = await executeSlopCheck(params as SlopCheckParams, ctx, {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx),
         complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
-        advisory: (attempt) => slopAdvisory(ctx, attempt),
+        advisory: (attempt, judge, authors, primaryMs) => slopAdvisory(ctx, attempt, judge, authors, primaryMs),
       }, abort);
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };
     },

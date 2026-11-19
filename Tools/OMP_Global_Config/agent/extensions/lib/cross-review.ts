@@ -23,6 +23,7 @@ import {
   type AnyLedgerRecord,
 } from "./routing-ledger";
 import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
+import { beforeModelAbort, isHydrogen, operationalFailure } from "./model-routes";
 
 /**
  * 계열 교차검증. Anthropic·DeepSeek 모델이 쓴 코드는 OpenAI reviewer(Astra)가, OpenAI 모델이 쓴 코드는 Anthropic reviewer(Opus)가,
@@ -149,7 +150,7 @@ function modelKey(selector: string): { provider: string; id: string } {
 }
 
 /** 두 selector가 같은 모델인가. provider를 둘 다 적었으면 provider까지 같아야 하고, 한쪽이 id만이면 id로 본다. */
-function isSameModel(a: string, b: string): boolean {
+export function isSameModel(a: string, b: string): boolean {
   const left = modelKey(a);
   const right = modelKey(b);
   return left.id === right.id && (!left.provider || !right.provider || left.provider === right.provider);
@@ -1920,7 +1921,17 @@ export interface ReviewInput { files: string[]; acceptance: string; authors: str
 export interface ReviewerCompletion { model: string; text: string }
 export class ReviewerCallError extends Error {
   /** partial: 모델이 중간까지 낸 답(출력 한도·오류로 끝난 경우). 통과는 못 하지만 원문은 기록한다. stopReason: 모델이 stop이 아닌 이유로 멈췄을 때 그 이유(length면 출력 한도 잘림). */
-  constructor(message: string, readonly model: string, readonly partial?: string, readonly stopReason?: string) { super(message); }
+  readonly unavailable: boolean;
+  constructor(message: string, readonly model: string, readonly partial?: string, readonly stopReason?: string, options?: ErrorOptions & { unavailable?: boolean }) {
+    super(message, options);
+    this.unavailable = options?.unavailable === true;
+  }
+}
+
+export async function reviewerOperationalFailure(error: unknown): Promise<boolean> {
+  return error instanceof ReviewerCallError
+    ? error.unavailable || await operationalFailure(error.cause ?? error)
+    : operationalFailure(error);
 }
 /** 보조 검토자를 부르는 한 경로. model은 해석한 provider/id이고 complete는 실패를 ReviewerCallError로 던진다. */
 export interface AdvisoryReviewer { model: string; complete(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion> }
@@ -1945,7 +1956,8 @@ export interface ReviewDeps {
    * limitRoutes(2026-11-11 사용자 결정 「버택스로 넘겨」)는 complete가 공급자 한도(LIMIT_ERROR)로 실패했을 때만 읽는, 같은 모델의 다른 공급자 경로다(설정
    * 순서). 저자·필수 reviewer와 같은 모델을 뺀 첫 경로를 같은 취소 신호로 한 번 부른다. 없거나 비면 한도 실패도 기록만 한다.
    */
-  advisory?: AdvisoryReviewer & { limitRoutes?(): Promise<AdvisoryReviewer[]> };
+  advisory?: AdvisoryReviewer & { limitRoutes?(): Promise<AdvisoryReviewer[]>; directFallback?: AdvisoryReviewer };
+  requiredHydrogenFallback?: AdvisoryReviewer;
   /** 필수 reviewer가 끝난 뒤 보조 검토자를 더 기다리는 상한(ms). 테스트가 짧게 준다. 기본 ADVISORY_GRACE_MS. */
   advisoryGraceMs?: number;
   /**
@@ -2118,7 +2130,6 @@ interface NextState {
 
 /** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
 export const LIMIT_ERROR = /\b429\b|rate[_ -]?limit|usage[_ -]?limit|insufficient_quota|quota exceeded|exceed your account/i;
-const HYDROGEN_MODEL_ID = "gemini-4-hydrogen";
 const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-19: 「다른세션에서넘어온건데이거할때같이해줘」; replaces 2026-11-09)";
 
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
@@ -2361,7 +2372,7 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
  * reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다.
  * family advisory는 보조 검토자이며 stopReason은 그 실패가 출력 한도 잘림(length)인지 가르는 데 쓴다.
  */
-interface ReviewerOutcome<F extends Lane | "advisory" = Lane> { family: F; model: string; text: string; elapsedMs: number; error?: string; stopReason?: string; batches?: string[]; limitSubstitute?: CrossReviewReviewer["limitSubstitute"] }
+interface ReviewerOutcome<F extends Lane | "advisory" = Lane> { family: F; model: string; text: string; elapsedMs: number; error?: string; callError?: unknown; stopReason?: string; batches?: string[]; limitSubstitute?: CrossReviewReviewer["limitSubstitute"] }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
@@ -2669,7 +2680,12 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     chainAuthors.some((author) => isSameModel(author, model)) ? `the advisory model ${model} is an author of this chain`
       : families.some((lane) => { const required = deps.requiredModels?.[lane]; return !!required && isSameModel(required, model); }) ? `the advisory model ${model} is this round's required reviewer`
       : undefined;
-  // 그날 이미 한도로 실패한 보조 모델은 다시 부르지 않는다. 같은 모델의 다른 경로가 남아 있으면 그 경로로 바로 가고, 없으면 건너뛴다.
+  const hydrogenAdvisor = isHydrogen(advisor?.model);
+  const directAdvisor = hydrogenAdvisor ? advisor?.directFallback : undefined;
+  const requiredFallback = hydrogenAdvisor ? deps.requiredHydrogenFallback : undefined;
+  const requiredFallbackEligible = families.length === 1 && requiredFallback && !excluded(requiredFallback.model)
+    && !chainAuthors.some((author) => authorFamily(author) === authorFamily(requiredFallback.model)) ? requiredFallback : undefined;
+  let requiredFallbackClaimed = false;
   const cooldown = deps.advisoryCooldown ?? sharedAdvisoryCooldown();
   const coolingOf = (model: string): AdvisoryCooldownEntry | undefined => {
     const entry = cooldown.get(model);
@@ -2681,12 +2697,16 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const cooled = advisor && !probeRound && !excluded(advisor.model) ? coolingOf(advisor.model) : undefined;
   let cooledRoute: AdvisoryReviewer | undefined;
   if (advisor && cooled) {
-    try { cooledRoute = (await advisor.limitRoutes?.() ?? []).find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model)); } catch { /* 경로 조회 실패면 건너뛴다. */ }
+    if (hydrogenAdvisor) {
+      if (directAdvisor && !excluded(directAdvisor.model) && !coolingOf(directAdvisor.model)) cooledRoute = directAdvisor;
+    } else {
+      try { cooledRoute = (await advisor.limitRoutes?.() ?? []).find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model)); } catch { /* route lookup is optional */ }
+    }
   }
   const advisorySkip = !advisor ? `modelRoles.${ADVISORY_SLOT} is not configured`
     : probeRound ? "probe round: the advisory reviewer is asked on initial and delta rounds only"
     : excluded(advisor.model) ?? (cooled && !cooledRoute
-      ? `the advisory model ${advisor.model} hit a provider limit earlier today and is not asked again until ${new Date(cooled.until).toTimeString().slice(0, 5)} (local); no other route of the same model is available`
+      ? `the advisory model ${advisor.model} hit a provider limit earlier today and is not asked again until ${new Date(cooled.until).toTimeString().slice(0, 5)} (local); no eligible alternate is available`
       : undefined);
   const progress: ReviewProgress["reviewers"] = [
     ...families.map((family) => ({ family, state: "waiting" as const })),
@@ -2696,19 +2716,35 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const report = () => { if (!returned) deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, graceMs) }); };
   report();
   type LaneCompletion = ReviewerCompletion & { batches?: string[] };
-  // 나눈 라운드는 한 자리의 호출을 함께 시작하고, 하나가 실패하면 나머지를 끊는다(그 자리는 어차피 쓸 수 있는 답을 낼 수 없다).
-  const askLane = async (call: (prompt: string, attempt: AbortSignal) => Promise<ReviewerCompletion>, attempt: AbortSignal): Promise<LaneCompletion> => {
-    if (prompts.length === 1) return call(prompts[0]!, attempt);
-    const lane = new AbortController();
-    const stop = () => lane.abort();
-    if (attempt.aborted) lane.abort(); else attempt.addEventListener("abort", stop, { once: true });
-    try {
-      const answers = await Promise.all(prompts.map((prompt) => call(prompt, lane.signal).catch((error: unknown) => { lane.abort(); throw error; })));
-      const texts = answers.map((answer) => answer.text);
-      return { model: answers[0]!.model, text: texts.map((text, index) => `===== part ${index + 1}/${texts.length} =====\n${text}`).join("\n\n"), batches: texts };
-    } finally {
-      attempt.removeEventListener("abort", stop);
+  const askLane = async (call: (prompt: string, attempt: AbortSignal) => Promise<ReviewerCompletion>, attempt: AbortSignal, maySubstitute = false): Promise<LaneCompletion> => {
+    if (prompts.length === 1) return beforeModelAbort(attempt, () => call(prompts[0]!, attempt));
+    let answers: ReviewerCompletion[];
+    if (maySubstitute) {
+      // An operating failure in one batch must not hide a denial from another batch.
+      const results = await Promise.allSettled(prompts.map((prompt) => beforeModelAbort(attempt, () => call(prompt, attempt))));
+      let firstFailure: PromiseRejectedResult | undefined;
+      answers = [];
+      for (const result of results) {
+        if (result.status === "fulfilled") answers.push(result.value);
+        else {
+          if (!(await reviewerOperationalFailure(result.reason))) throw result.reason;
+          firstFailure ??= result;
+        }
+      }
+      if (firstFailure) throw firstFailure.reason;
+    } else {
+      const lane = new AbortController();
+      const stop = () => lane.abort(attempt.reason);
+      if (attempt.aborted) stop(); else attempt.addEventListener("abort", stop, { once: true });
+      try {
+        answers = await Promise.all(prompts.map((prompt) => beforeModelAbort(lane.signal, () => call(prompt, lane.signal))
+          .catch((error: unknown) => { lane.abort(error); throw error; })));
+      } finally {
+        attempt.removeEventListener("abort", stop);
+      }
     }
+    const texts = answers.map((answer) => answer.text);
+    return { model: answers[0]!.model, text: texts.map((text, index) => `===== part ${index + 1}/${texts.length} =====\n${text}`).join("\n\n"), batches: texts };
   };
   const runs = families.map(async (family, index): Promise<ReviewerOutcome> => {
     const started = Date.now();
@@ -2717,30 +2753,50 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       report();
     };
     const placeholder = `@${SLOT[family]}`;
-    const askRequired = async (call: Parameters<typeof askLane>[0], fallbackModel: string): Promise<ReviewerOutcome> => {
+    const askRequired = async (call: Parameters<typeof askLane>[0], fallbackModel: string, attempt = signal, maySubstitute = false): Promise<ReviewerOutcome> => {
       try {
-        const completion = await askLane(call, signal);
+        const completion = await askLane(call, attempt, maySubstitute);
         return { family, ...completion, elapsedMs: Date.now() - started };
       } catch (error) {
         const called = error instanceof ReviewerCallError ? error : undefined;
-        return { family, model: called?.model ?? fallbackModel, text: called?.partial ?? "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+        return { family, model: called?.model ?? fallbackModel, text: called?.partial ?? "", elapsedMs: Date.now() - started, callError: error, error: error instanceof Error ? error.message : String(error) };
       }
     };
-    let outcome = await askRequired((prompt, attempt) => deps.complete(family, prompt, attempt), placeholder);
-    if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)) {
+    let outcome = await askRequired((prompt, attempt) => deps.complete(family, prompt, attempt), placeholder, signal, hydrogenAdvisor);
+    if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)
+      && (!hydrogenAdvisor || await reviewerOperationalFailure(outcome.callError)) && !signal.aborted) {
       const requiredModel = deps.requiredModels?.[family];
       const primary = { primaryModel: outcome.model === placeholder ? requiredModel ?? placeholder : outcome.model, primaryError: outcome.error };
       let skippedReason: string | undefined;
-      if (!advisor || modelKey(advisor.model).id !== HYDROGEN_MODEL_ID) skippedReason = `modelRoles.${ADVISORY_SLOT} does not supply a Hydrogen route`;
-      else if (modelKey(primary.primaryModel).id === HYDROGEN_MODEL_ID || (requiredModel && modelKey(requiredModel).id === HYDROGEN_MODEL_ID)) skippedReason = "the required slot already used Hydrogen";
-      else if (chainAuthors.some((author) => modelKey(author).id === HYDROGEN_MODEL_ID)) skippedReason = "Hydrogen is an author of this chain";
-      else if (coolingOf(advisor.model)) skippedReason = `${advisor.model} is in provider-limit cooldown`;
-      if (advisor && !skippedReason) {
-        // 보조 호출과 별개로 필수와 같은 본문 전체를 이 자리의 취소 신호로 다시 심사한다.
-        outcome = await askRequired((prompt, attempt) => advisor.complete(prompt, attempt), advisor.model);
-        if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)) rememberLimit(advisor.model, outcome.error);
+      const candidate = requiredFallbackEligible && !isSameModel(requiredFallbackEligible.model, primary.primaryModel)
+        && !coolingOf(requiredFallbackEligible.model) && !requiredFallbackClaimed ? requiredFallbackEligible : undefined;
+      let hydrogenFailure: { model: string; error: string } | undefined;
+      if (!advisor || !hydrogenAdvisor) skippedReason = `modelRoles.${ADVISORY_SLOT} does not supply a Hydrogen route`;
+      else if (isHydrogen(primary.primaryModel) || isHydrogen(requiredModel)) skippedReason = "the required slot already used Hydrogen";
+      else if (chainAuthors.some(isHydrogen)) skippedReason = "Hydrogen is an author of this chain";
+      else {
+        const cooled = coolingOf(advisor.model);
+        if (cooled && !candidate) skippedReason = `${advisor.model} is in provider-limit cooldown`;
+        if (!cooled) {
+          // This is an independent mandatory call, never the advisory answer.
+          const attempt = candidate ? AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS / 2)]) : signal;
+          outcome = await askRequired(async (prompt, batchSignal) => {
+            const answer = await advisor.complete(prompt, batchSignal);
+            if (!isHydrogen(answer.model) || !isSameModel(advisor.model, answer.model)) {
+              throw new ReviewerCallError(`Hydrogen substitute returned unexpected model ${answer.model}.`, advisor.model);
+            }
+            return answer;
+          }, advisor.model, attempt, !!candidate);
+        }
+        const retry = cooled || (outcome.error !== undefined && await reviewerOperationalFailure(outcome.callError));
+        if (!cooled && retry && !signal.aborted && outcome.error && LIMIT_ERROR.test(outcome.error)) rememberLimit(advisor.model, outcome.error);
+        if (candidate && retry && !signal.aborted && !requiredFallbackClaimed) {
+          requiredFallbackClaimed = true;
+          hydrogenFailure = { model: advisor.model, error: cooled?.error ?? outcome.error! };
+          outcome = await askRequired(candidate.complete, candidate.model, AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS / 2)]));
+        }
       }
-      outcome.limitSubstitute = { ...primary, ...(skippedReason ? { skippedReason } : {}) };
+      outcome.limitSubstitute = { ...primary, ...(skippedReason ? { skippedReason } : {}), ...(hydrogenFailure ? { hydrogenFailure } : {}) };
     }
     // review가 취소됐으면 취소로 알린다. 600 s 제한 초과는 오류 문구로만 구분된다.
     finish(outcome.error === undefined ? "answered" : signal.aborted ? "cancelled" : "failed");
@@ -2748,12 +2804,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   });
   // 보조 검토자는 자기 취소 신호를 쓴다: 도구 취소를 따르고, 유예가 끝나면 이 호출이 직접 끊는다. 실패는 던지지 않고 결과로 돌려준다.
   const advisoryCancel = new AbortController();
+  const advisoryPrimaryDeadline = directAdvisor && !excluded(directAdvisor.model) && !coolingOf(directAdvisor.model) ? new AbortController() : undefined;
   const forwardAbort = () => advisoryCancel.abort();
   if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
   const advisoryStarted = Date.now();
   // 지금 부르는 보조 경로와, 한도로 실패해 그 경로로 넘어왔다면 원래 경로의 실패. 유예에서 끊긴 호출(late)도 이 값으로 기록한다.
   let advisoryAsked = advisor?.model ?? "";
   let advisoryLimited: CrossReviewAdvisoryOutcome["limited"];
+  let advisoryFallback: CrossReviewAdvisoryOutcome["fallback"];
   const advisoryRun = advisorySkip || !advisor ? undefined : (async (): Promise<ReviewerOutcome<"advisory">> => {
     const finish = (state: ReviewerProgressState) => {
       progress[families.length] = { family: "advisory", state, elapsedSec: Math.round((Date.now() - advisoryStarted) / 1000) };
@@ -2762,33 +2820,46 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     try {
       let completion: LaneCompletion;
       // 한도로 실패한 경로는 그날 기억한다. 취소로 끊긴 호출과 한도가 아닌 실패는 기억하지 않는다.
-      const askRoute = async (route: AdvisoryReviewer): Promise<LaneCompletion> => {
+      const askRoute = async (route: AdvisoryReviewer, attempt = advisoryCancel.signal): Promise<LaneCompletion> => {
         try {
-          return await askLane((prompt, attempt) => route.complete(prompt, attempt), advisoryCancel.signal);
+          return await askLane((prompt, batchSignal) => route.complete(prompt, batchSignal), attempt, route === advisor && !!directAdvisor);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          if (!advisoryCancel.signal.aborted && LIMIT_ERROR.test(message)) rememberLimit(route.model, message);
+          if (!advisoryCancel.signal.aborted && LIMIT_ERROR.test(message) && await reviewerOperationalFailure(error)) rememberLimit(route.model, message);
           throw error;
         }
       };
+      const askAlternate = async (route: AdvisoryReviewer, primaryError: string) => {
+        if (requiredFallbackEligible && isSameModel(requiredFallbackEligible.model, route.model)) {
+          await Promise.all(runs);
+          if (requiredFallbackClaimed) throw new ReviewerCallError(primaryError, advisor.model);
+        }
+        advisoryCancel.signal.throwIfAborted();
+        if (LIMIT_ERROR.test(primaryError)) advisoryLimited = { model: advisor.model, error: primaryError };
+        else advisoryFallback = { model: advisor.model, error: primaryError };
+        advisoryAsked = route.model;
+        return askRoute(route);
+      };
       if (cooled && cooledRoute) {
-        advisoryLimited = { model: advisor.model, error: cooled.error };
-        advisoryAsked = cooledRoute.model;
-        completion = await askRoute(cooledRoute);
+        completion = await askAlternate(cooledRoute, cooled.error);
       } else try {
-        completion = await askRoute(advisor);
+        const attempt = advisoryPrimaryDeadline
+          ? AbortSignal.any([advisoryCancel.signal, advisoryPrimaryDeadline.signal]) : advisoryCancel.signal;
+        completion = await askRoute(advisor, attempt);
       } catch (error) {
-        // 2026-11-11 사용자 결정 「버택스로 넘겨」: 공급자 한도 실패만 같은 모델의 다른 공급자 경로로 한 번 더 묻는다. 같은 취소 신호를 쓰므로 유예 상한은
-        // 그대로다. 한도가 아닌 실패, 경로 조회 실패, 쓸 경로 없음은 원래 실패를 그대로 기록한다.
         const message = error instanceof Error ? error.message : String(error);
-        if (advisoryCancel.signal.aborted || !LIMIT_ERROR.test(message)) throw error;
+        if (advisoryCancel.signal.aborted) throw error;
         let routes: AdvisoryReviewer[] = [];
-        try { routes = await advisor.limitRoutes?.() ?? []; } catch { /* 경로 조회 실패는 원래 실패를 가리지 않는다. */ }
+        if (hydrogenAdvisor) {
+          if (!directAdvisor || !(await reviewerOperationalFailure(error))) throw error;
+          routes = [directAdvisor];
+        } else {
+          if (!LIMIT_ERROR.test(message) || !(await reviewerOperationalFailure(error))) throw error;
+          try { routes = await advisor.limitRoutes?.() ?? []; } catch { /* preserve the original failure */ }
+        }
         const route = routes.find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model));
         if (!route || advisoryCancel.signal.aborted) throw error;
-        advisoryLimited = { model: advisor.model, error: message };
-        advisoryAsked = route.model;
-        completion = await askRoute(route);
+        completion = await askAlternate(route, message);
       }
       finish("answered");
       return { family: "advisory", model: completion.model, text: completion.text, elapsedMs: Date.now() - advisoryStarted, ...(completion.batches ? { batches: completion.batches } : {}) };
@@ -2805,8 +2876,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   let advisoryOutcome: ReviewerOutcome<"advisory"> | undefined;
   if (advisoryRun) {
     const grace = Promise.withResolvers<undefined>();
+    // Reserve the second half of the existing post-required grace, not the required reviewers' time.
+    const deadline = advisoryPrimaryDeadline && setTimeout(
+      () => advisoryPrimaryDeadline.abort(new DOMException("Advisory primary deadline expired", "TimeoutError")),
+      Math.max(1, Math.floor(graceMs / 2)),
+    );
     const timer = setTimeout(() => grace.resolve(undefined), graceMs);
     advisoryOutcome = await Promise.race([advisoryRun, grace.promise]);
+    clearTimeout(deadline);
     clearTimeout(timer);
     // 유예 안에 끝나지 않았으면 끊는다. 끊긴 호출이 나중에 돌려주는 결과는 아무도 읽지 않는다(advisoryRun은 거절하지 않는다).
     if (!advisoryOutcome) advisoryCancel.abort();
@@ -2831,7 +2908,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   // 보조 검토자 결과. 유예 안에 쓸 수 있는 답을 냈으면 그 지적을 이 라운드 지적에 합치고(advisory: true), 그 밖에는 이유와 함께 기록만 한다.
   // 한도로 같은 모델의 다른 경로에 넘어갔으면 어떤 결과든 원래 경로의 실패(limited)를 함께 남긴다.
   let advisory: CrossReviewAdvisoryOutcome;
-  const limited = advisoryLimited ? { limited: advisoryLimited } : {};
+  const limited = { ...(advisoryLimited ? { limited: advisoryLimited } : {}), ...(advisoryFallback ? { fallback: advisoryFallback } : {}) };
   if (advisorySkip || !advisoryRun) {
     advisory = { status: "skipped", ...(advisor ? { model: advisor.model } : {}), reason: advisorySkip ?? "not called" };
   } else if (!advisoryOutcome) {

@@ -3,7 +3,7 @@ import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/s
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { DEEPSEEK, GEMINI, HelperCallError, withFallback } from "../skim";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { sameModelRoutes } from "../lib/model-routes";
+import { directFallbackModel, operationalFailure, sameModelRoutes } from "../lib/model-routes";
 
 const primary = "aistudio/gemini-4-argon";
 const vertex = "google-vertex/gemini-4-argon";
@@ -49,4 +49,18 @@ test("R1-ANT-3 literal colon model tags retain the exact model-key chain", async
   } } }), async () => {
     expect(await sameModelRoutes(ctx.cwd, "ollama/llama3:8b")).toEqual(["lmstudio/llama3:8b", "other/llama3:8b"]);
   });
+});
+
+test("legacy model aliases cannot replace an exact fallback selector", async () => {
+  await withActiveSettings(Settings.isolated({ modelRoles: { preflightGeminiFallback: "openai-codex/gpt-special" } }), async () => {
+    expect(await directFallbackModel(ctx, "preflightGeminiFallback")).toBeUndefined();
+  });
+});
+
+test("missing Vertex ADC, normalized wire failures and a local deadline are operational; challenges are not", async () => {
+  expect(await operationalFailure(new Error("Vertex AI requires Application Default Credentials. Set GOOGLE_APPLICATION_CREDENTIALS."))).toBe(true);
+  expect(await operationalFailure({ stopReason: "error", errorStatus: 503, errorMessage: "Unavailable" })).toBe(true);
+  expect(await operationalFailure(new DOMException("Timed out", "TimeoutError"))).toBe(true);
+  expect(await operationalFailure({ stopReason: "error", errorStatus: 429, stopDetails: { type: "content_filter" } })).toBe(false);
+  expect(await operationalFailure(new Error("No API key for provider: test (session is restricted to its OAuth account pool)"))).toBe(false);
 });

@@ -86,6 +86,7 @@ import {
 } from "./ask-form/server";
 import { ASK_FORM_ACTIVITY_PREFIX } from "./ask-form/types";
 import { notifySessionWorktreeClosed, prepareResumedWorktree } from "./session-worktree/runtime";
+import { isRetiredProvider } from "./retired-providers";
 
 /** `extension_ui_input` data a timed ask dialog sends while the user is choosing or typing (components/ChatWindow.tsx). */
 const EXTENSION_UI_ACTIVITY = "activity";
@@ -1742,6 +1743,8 @@ export class AgentSessionWrapper {
         this.modelMutations += 1;
         if (presetTransaction) this.presetMutation = true;
         try {
+          // 접은 공급자(B.AI)로는 새로 전환하지 않는다. 이미 그 모델로 열린 세션의 기록은 그대로다.
+          if (isRetiredProvider(provider)) throw new Error(`${provider} is no longer offered`);
           // modelRegistry.find() takes (provider, modelId) as two arguments — passing a
           // pre-joined "provider/modelId" selector leaves modelId undefined and throws
           // inside the SDK before we ever get a chance to report "model not found".
@@ -1753,6 +1756,8 @@ export class AgentSessionWrapper {
           });
           if (lookup.miss) throw new Error(describeMissingModel(lookup.miss));
           const model = lookup.model;
+          // 호출자가 쓴 철자가 아니라 레지스트리가 돌려준 공급자로도 한 번 더 막는다.
+          if (isRetiredProvider(model.provider)) throw new Error(`${model.provider} is no longer offered`);
           // 되돌릴 상태는 **변경 전에** 잡는다: 전환 전 모델과 그 role 기록, 설정된 thinking,
           // 그리고 바꿀 provider의 기존 선호 계정. 모델 변경·계정 설정·thinking 적용은 이
           // 명령 하나의 동작이므로, 어느 단계든 실패하면 이 스냅샷으로 복원한 뒤 오류로 끝난다.
@@ -1817,6 +1822,8 @@ export class AgentSessionWrapper {
           await recoverMissingModelRefs(this.inner.modelRegistry, readConfiguredModelRoleRefs(this.inner.settings));
           const model = this.inner.resolveRoleModel(role);
           if (!model) throw new Error(`No model configured for role "${role}"`);
+          // 역할 고정은 그대로 두고, 접은 공급자 모델로 세션이 넘어가는 것만 막는다.
+          if (isRetiredProvider(model.provider)) throw new Error(`${model.provider} is no longer offered`);
           await this.inner.setModel(model, role);
           invalidateModelsCache();
           invalidateSessionListCache();

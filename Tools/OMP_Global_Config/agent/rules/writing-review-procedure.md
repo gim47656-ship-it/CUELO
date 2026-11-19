@@ -7,7 +7,7 @@ description: Before new/rewritten prose, draft or slop_check.
   `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
   UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
   초안 모델과 한 번의 대체 모델은 `config.yml`의 `modelRoles.draft`, `draftFallback`을 따른다.
-  주 모델이 한도에 걸리면 `retry.fallbackChains`에 같은 모델의 다른 경로가 있을 때 먼저 한 번 쓴다(2026-11-11 사용자 결정).
+  Hydrogen 초안의 운영 실패는 같은 모델의 다른 중계기로 보내지 않고 `draftFallback`에 한 번 넘긴다.
   설정한 대체가 실패하면 임의의 다른 모델로 넘어가지 않는다(참고 텍스트는 해당 제공자로
   전송). 결과는 직접 열어 사실·형식을 검토하고, 반영하기 전에 AI 슬롭 점검을 같은 작업에서 돌린다: 한국어 글은
   `humanizer`, 영어 글은 `stop-slop`, 화면·UI 문구는 `kill-ai-slop` 스킬 절차를 따른다. 틀린 사실과 슬롭만 고쳐

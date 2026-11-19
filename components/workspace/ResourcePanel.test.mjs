@@ -566,6 +566,50 @@ test("API 크레딧은 Hive 카드 하나에 캐릭터 얼굴·범위·추정 �
   assert.doesNotMatch(html, /만료일/, "the editor has no expiry field");
 });
 
+function googleWallet(extra = {}) {
+  return {
+    wallet: "google", scope: "project", source: "cloud-monitoring", since: "2026-10-24", sinceSource: "start-date",
+    status: "ok", error: null, observedAt: 1, priceSources: [], expiryDate: "2027-01-24", expiryDays: 66, unobserved: null, ledgerNote: null,
+    spentUsd: 4, spentComplete: false, totalUsd: 300, remainingUsd: 296, remainingUpperBound: false, upperBoundRows: true,
+    rows: [
+      { model: "gemini-4-argon", role: "hikari", inputTokens: 1_000_000, outputTokens: 0, otherTokens: 0, costUsd: 4, pricing: "upper-bound", pricingReason: "gross-price", errors429: 0 },
+      { model: "gemini-4-hydrogen", role: null, inputTokens: 0, outputTokens: 500_000, otherTokens: 0, costUsd: null, pricing: "unknown", pricingReason: null, errors429: 3 },
+    ],
+    ...extra,
+  };
+}
+
+test("Vertex 카드는 프로젝트 전체 사용량을 보여 주되 단가를 모르는 모델은 금액 미상이고 고정 쿼터는 공유 할당량으로 안내한다", () => {
+  const data = creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } });
+  data.google = googleWallet();
+  data.settings.google = { totalUsd: 300, startDate: "2026-10-24", expiryDate: "2027-01-24" };
+  const html = renderCredits(data);
+  assert.equal(html.match(/<section[^>]*data-credit-wallet=/g)?.length, 2);
+  const google = cardOf(html, "google");
+  assert.match(google, /Vertex \(Google Cloud\)/);
+  assert.match(google, /프로젝트 전체\(Cloud Monitoring\) · 2026-10-24부터/);
+  assert.match(google, /고정 쿼터는 조회할 수 없습니다\. 프로젝트가 할당량을 나눠 쓰기 때문에/);
+  assert.match(google, /gemini-4-hydrogen/);
+  assert.match(google, /단가 미상/, "no price in the table means no invented amount");
+  assert.match(google, /429 거절 3회/);
+  assert.match(google, /단가를 모르는 모델이 있어 사용액과 잔액을 추정하지 않습니다/);
+  assert.doesNotMatch(google, /role="progressbar"|추정 잔액<|\$296/, "an unpriced model keeps the balance from being shown as if it were exact");
+  assert.match(google, /D-66/);
+  assert.match(google, />크레딧 입력<|>수정</, "the card carries its own edit entry");
+});
+
+test("Vertex 카드는 ADC·모니터링 실패 사유를 밝히고 0% 막대를 그리지 않으며, 옛 사이드카 응답에는 카드를 만들지 않는다", () => {
+  const data = creditSnapshot();
+  data.google = googleWallet({ status: "error", error: "adc_unavailable", rows: [], spentUsd: 0, spentComplete: false, remainingUsd: null });
+  data.settings.google = { totalUsd: 300, startDate: "2026-10-24", expiryDate: "2027-01-24" };
+  const html = renderCredits(data);
+  assert.doesNotMatch(cardOf(html, "google"), /\$0(?:\.00)?</, "a failed read is never shown as zero spend");
+  assert.match(cardOf(html, "google"), /사용량을 읽지 못했습니다: Google 로그인\(ADC\)을 찾지 못했습니다/);
+  assert.doesNotMatch(cardOf(html, "google"), /role="progressbar"/);
+  assert.doesNotMatch(cardOf(html, "google"), /추정 잔액/);
+  assert.doesNotMatch(renderCredits(creditSnapshot()), /Vertex/);
+});
+
 test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나온다; 미상은 하한·상한으로, 조회 실패는 오류로 표시한다", () => {
   const empty = renderCredits(creditSnapshot());
   assert.equal(empty.match(/총액과 시작일을 넣으면 추정 잔액을 계산합니다\./g)?.length, 1);

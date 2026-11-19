@@ -41,3 +41,15 @@ test("an explicit login id is started only when it stores under the requested pr
   expect(resolveOAuthLoginId("openai-codex", "no-such-login")).toBeUndefined();
   expect(resolveOAuthLoginId("openai-codex", "")).toBeUndefined();
 });
+
+test("a retired provider (b-ai) is in no list and starts no login, while a stored credential does not bring it back", () => {
+  const withBai = buildProviderListingInputs(
+    [...MODEL_PROVIDERS, "b-ai"].map((provider) => ({ provider })),
+    { credentials: { list: (id: string) => (id === "b-ai" ? [{ credential: { type: "api_key" } }] : []) } as never, keys: { source: () => ({ kind: "stored" }) as never } },
+  );
+  expect(withBai.map((input) => input.id)).not.toContain("b-ai");
+  expect(buildApiKeyProviderList(withBai).map((p) => p.id)).not.toContain("b-ai");
+  expect(buildOAuthProviderList(withBai).map((p) => p.id)).not.toContain("b-ai");
+  expect(withBai.map((input) => input.id)).toContain("anthropic");
+  expect(resolveOAuthLoginId("b-ai")).toBeUndefined();
+});

@@ -9,6 +9,7 @@ import {
   type ProviderListingInput,
 } from "@/lib/provider-listing";
 import { getOmpRuntime, type OmpRuntime } from "@/lib/omp-runtime";
+import { isRetiredProvider } from "@/lib/retired-providers";
 
 /**
  * Providers whose only declared login is OAuth but whose transport still takes
@@ -95,6 +96,8 @@ export function buildProviderListingInputs(
     ...oauthByProvider.keys(),
     ...descriptorsById.keys(),
   ]);
+  // 접은 공급자는 이름만 남은 모델·로그인·설명자가 있어도 목록에 올리지 않는다(저장된 자격 증명은 그대로다).
+  for (const id of ids) if (isRetiredProvider(id)) ids.delete(id);
 
   const credentialTypes = new Map<string, ProviderCredentialType>();
   for (const id of ids) {
@@ -137,5 +140,6 @@ export function buildProviderListingInputs(
  * undefined, so a caller cannot start an unrelated provider's login.
  */
 export function resolveOAuthLoginId(provider: string, requested?: string | null): string | undefined {
+  if (isRetiredProvider(provider)) return undefined;
   return pickOAuthLoginId(availableOAuthLogins(), provider, requested);
 }

@@ -9,6 +9,7 @@ import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { invalidateOmpRuntime } from "@/lib/omp-runtime";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { isRetiredProvider } from "@/lib/retired-providers";
 export const dynamic = "force-dynamic";
 
 /**
@@ -120,7 +121,13 @@ export async function GET(req: Request) {
   }
   const read = readModelsConfig();
   if ("error" in read) return NextResponse.json({ error: read.error }, { status: 500 });
-  return NextResponse.json(read.config);
+  // 접은 공급자(B.AI)의 정의는 현재 설정이 아니므로 편집기에 돌려주지 않는다. 그 편집기로 그대로 저장하면 파일에서 빠진다.
+  const { providers } = read.config;
+  if (!isRecord(providers)) return NextResponse.json(read.config);
+  return NextResponse.json({
+    ...read.config,
+    providers: Object.fromEntries(Object.entries(providers).filter(([id]) => !isRetiredProvider(id))),
+  });
 }
 
 export async function PUT(req: Request) {
@@ -142,6 +149,12 @@ export async function PUT(req: Request) {
       && (typeof config.providers !== "object" || config.providers === null || Array.isArray(config.providers))
     ) {
       return NextResponse.json({ error: "providers must be an object" }, { status: 400 });
+    }
+    // 접은 공급자(B.AI)를 사용자 공급자로 새로 적는 요청은 거절한다. 적지 않은 저장은 평범한 저장이라
+    // 파일에 남아 있던 옛 정의가 함께 빠진다.
+    const readded = isRecord(config.providers) ? Object.keys(config.providers).filter(isRetiredProvider) : [];
+    if (readded.length > 0) {
+      return NextResponse.json({ error: `${readded.join(", ")} is no longer offered` }, { status: 400 });
     }
     const rejection = writeModelsConfig(config);
     if (rejection !== null) return NextResponse.json({ error: rejection }, { status: 400 });

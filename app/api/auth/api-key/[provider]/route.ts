@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { getOmpRuntime, invalidateOmpRuntime } from "@/lib/omp-runtime";
+import { isRetiredProvider } from "@/lib/retired-providers";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,10 @@ export async function GET(_req: Request, { params }: Params) {
 // POST /api/auth/api-key/[provider]  body: { apiKey: string }
 export async function POST(req: Request, { params }: Params) {
   const { provider } = await params;
+  // 접은 공급자에는 새 자격 증명을 저장하지 않는다. 이미 저장된 것은 건드리지 않는다.
+  if (isRetiredProvider(provider)) {
+    return NextResponse.json({ error: `${provider} is no longer offered` }, { status: 410 });
+  }
   try {
     const { apiKey } = await req.json() as { apiKey?: string };
     if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {

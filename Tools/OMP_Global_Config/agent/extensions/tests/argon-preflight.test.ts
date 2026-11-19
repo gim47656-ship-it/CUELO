@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuthStorage, ModelRegistry } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -11,6 +12,9 @@ import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settin
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
 import { clearPreparedTaskSession, storePreparedTaskBatch } from "../lib/prepared-task";
 import { bindTaskGuardSession, createTaskGuardState, reserveTaskCall, unbindTaskGuardSession } from "../command-guard/task-guard";
+import { translateInput } from "../user-input-interpreter";
+import { translateReply } from "../korean-reply-guard";
+import { createPreflightCheck } from "../lib/preflight-check";
 
 // The plugin's real handlers make the real completion call; a local OpenAI-compatible server stands in for the
 // opposite-family review role, records the user prompt and reports which model id was actually served.
@@ -18,7 +22,7 @@ const prompts: string[] = [];
 const served: string[] = [];
 /** Provider tag of each request, read from the base URL path each fake provider registers under. */
 const via: string[] = [];
-type Behavior = "ok" | "quota" | "outage" | "empty" | "secret" | "secretCut" | "hang" | "clean" | { delayMs: number } | { gate: Promise<void> };
+type Behavior = "ok" | "quota" | "outage" | "verify" | "empty" | "secret" | "secretCut" | "hang" | "clean" | { delayMs: number } | { gate: Promise<void>; after?: "quota" };
 /** The thinking effort each request asked for, aligned with `served`. */
 const efforts: Array<string | null | undefined> = [];
 /** Highest number of requests the server was handling at once, to prove the participants start together. */
@@ -52,9 +56,14 @@ beforeAll(async () => {
     const user = body.messages.find((m) => m.role === "user")?.content;
     prompts.push(typeof user === "string" ? user : (user as Array<{ text?: string }>).map((p) => p.text ?? "").join(""));
     onRequest.get(body.model)?.();
-    const mode = behavior.get(`${via.at(-1)}/${body.model}`) ?? behavior.get(body.model) ?? "ok";
+    let mode = behavior.get(`${via.at(-1)}/${body.model}`) ?? behavior.get(body.model) ?? "ok";
+    if (typeof mode === "object" && "gate" in mode) {
+      await mode.gate;
+      mode = mode.after ?? "ok";
+    }
     // `x-should-retry: false` makes the transport surface this daily-quota 429 at once; a bare 429 would be replayed six times over ~15 s inside completeSimple.
     if (mode === "quota") return new Response(JSON.stringify({ error: { message: "You exceeded your current quota. RESOURCE_EXHAUSTED", code: 429 } }), { status: 429, headers: { "content-type": "application/json", "x-should-retry": "false" } });
+    if (mode === "verify") return new Response(JSON.stringify({ error: { message: "Your account must be verified (429 retry hint)" } }), { status: 403, headers: { "content-type": "application/json", "x-should-retry": "false" } });
     if (mode === "outage") return new Response(JSON.stringify({ error: { message: "socket failed" } }), { status: 400, headers: { "content-type": "application/json", "x-should-retry": "false" } });
     if (mode === "hang") {
       const aborted = Promise.withResolvers<void>();
@@ -62,9 +71,8 @@ beforeAll(async () => {
       await aborted.promise;
       return new Response("", { status: 499 });
     }
-    // The latency is the thing under test (a counterpart slower than the budget left over); a fake clock cannot slow a real socket.
-    // A gate holds the answer until the test releases it, so ordering tests never depend on a wall-clock window.
-    if (typeof mode === "object") await ("gate" in mode ? mode.gate : Bun.sleep(mode.delayMs));
+    // Tests that hold a real socket against the preflight deadline need the server clock.
+    if (typeof mode === "object") await Bun.sleep(mode.delayMs);
     const text = mode === "empty" ? "" : mode === "secret" || mode === "secretCut" ? "key " + ["sk", "a".repeat(30)].join("-") : mode === "clean" ? EMPTY : "1. CSV 조건 확인";
     // "secretCut" ends on the output limit instead of a normal stop: an unusable response that still carries the secret.
     const finish = mode === "secretCut" ? "length" : "stop";
@@ -91,9 +99,9 @@ beforeAll(async () => {
   // provider, so a review role under a family-less provider would be rejected as a wrong-family target.
   provider("anthropic", ["claude-main", "claude-reviewer", fable]);
   provider("openai-codex", ["gpt-main", "gpt-reviewer"]);
-  provider("google-vertex", [argon]);
-  provider("aistudio", [argon]);
-  provider("fakepre", ["reviewer"]);
+  provider("google-vertex", [argon, "gemini-4-hydrogen"]);
+  provider("aistudio", [argon, "gemini-4-hydrogen"]);
+  provider("fakepre", ["reviewer", fable]);
   provider("hive", ["deepseek-ai/deepseek-v4.1-flash-1017"]);
 });
 afterAll(() => {
@@ -154,6 +162,7 @@ async function mainSession(restored: string[] = [], mainModel = "openai-codex/gp
   };
   await fire("session_start", {});
   return {
+    context: ctx as unknown as ExtensionContext,
     sessionId,
     say: async (text: string) => {
       await fire("input", { source: "interactive", text });
@@ -201,6 +210,85 @@ const withFableOnly = <T>(fn: () => Promise<T>): Promise<T> => withRoles({ prefl
 const older = (size: number) => Array.from({ length: 5 }, (_, i) => `OLDER_TURN_${i + 1}: ${"x".repeat(size)}`);
 /** The prompt's recent-user section, between its heading and the plan. */
 const recentSection = (prompt: string) => prompt.slice(prompt.indexOf("# 사용자의 최근 말\n"), prompt.indexOf("\n\n# 발주"));
+
+test("Hydrogen quota goes straight to the configured preflight model, not another Hydrogen route", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const fallback = "openai-codex/gpt-reviewer";
+  behavior.set(primary, "quota");
+  await withActiveSettings(Settings.isolated({
+    modelRoles: { ...reviewRoles, implGemini: primary, preflightGeminiFallback: fallback, preflightAnthropic: FABLE },
+    retry: { fallbackChains: { [primary]: ["aistudio/gemini-4-hydrogen"] } },
+  }), async () => {
+    const session = await mainSession();
+    const result = await session.preflight({ plan: "Check export." });
+    expect(result.content[0]!.text).toContain(fallback);
+    expect(served.toSorted()).toEqual(["claude-fable-5-2", "gemini-4-hydrogen", "gpt-reviewer"]);
+    expect(via).not.toContain("aistudio");
+  });
+});
+
+test("Hydrogen verification challenges cannot reach the configured fallback or the legacy counterpart", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  behavior.set(primary, "verify");
+  await withRoles({ implGemini: primary, preflightGeminiFallback: "openai-codex/gpt-reviewer" }, async () => {
+    const session = await mainSession();
+    await expect(session.preflight({ plan: "Check export." })).rejects.toThrow("Your account must be verified");
+    expect(served).toEqual(["gemini-4-hydrogen"]);
+  });
+});
+
+test("both Hydrogen translation directions use the configured direct role", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  behavior.set(primary, "quota");
+  await withRoles({
+    interpreter: primary,
+    interpreterFallback: "openai-codex/gpt-reviewer",
+  }, async () => {
+    const { context } = await mainSession();
+    const signal = new AbortController().signal;
+    expect(await translateInput("숫자는 10이다.", context, signal)).toContain("CSV");
+    expect(await translateReply("The value is 10.", context, signal)).toContain("CSV");
+    expect(served).toEqual(["gemini-4-hydrogen", "gpt-reviewer", "gemini-4-hydrogen", "gpt-reviewer"]);
+  });
+});
+
+test("preflight reserves fallback time on a primary deadline but never on caller cancellation", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const fallback = "openai-codex/gpt-reviewer";
+  behavior.set(primary, "hang");
+  await withRoles({ implGemini: primary, preflightGeminiFallback: fallback }, async () => {
+    const { context } = await mainSession();
+    const preflight = createPreflightCheck({ on: () => {} } as unknown as ExtensionAPI);
+    const result = await preflight.ask(context, "Check export.", "", 700);
+    expect(result).toMatchObject({ ok: true, opinions: [{ model: fallback }] });
+    expect(served).toEqual(["gemini-4-hydrogen", "gpt-reviewer"]);
+
+    served.length = 0;
+    const caller = new AbortController();
+    onRequest.set("gemini-4-hydrogen", () => caller.abort());
+    expect(await preflight.ask(context, "Check export.", "", 700, { signal: caller.signal })).toMatchObject({ ok: false });
+    expect(served).toEqual(["gemini-4-hydrogen"]);
+  });
+});
+
+test("a secondary participant that already claimed the same candidate is not asked twice", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const secondary = "fakepre/claude-fable-5-2";
+  const release = Promise.withResolvers<void>();
+  let secondaryCalls = 0;
+  onRequest.set("claude-fable-5-2", () => { if (++secondaryCalls === 2) release.resolve(); });
+  behavior.set(primary, { gate: release.promise, after: "quota" });
+  behavior.set(secondary, "quota");
+  await withActiveSettings(Settings.isolated({
+    modelRoles: { ...reviewRoles, implGemini: primary, preflightGeminiFallback: FABLE, preflightAnthropic: secondary },
+    retry: { fallbackChains: { [secondary]: [FABLE] } },
+  }), async () => {
+    const { context } = await mainSession();
+    const preflight = createPreflightCheck({ on: () => {} } as unknown as ExtensionAPI);
+    expect(await preflight.ask(context, "Check export.", "", 2_000)).toMatchObject({ ok: true, opinions: [{ model: FABLE }] });
+    expect(via.filter((provider) => provider === "anthropic")).toHaveLength(1);
+  });
+});
 
 describe("argon-preflight counterpart fallback when no Gemini role resolves", () => {
   test("a GPT Main asks the existing OpenAI-task Anthropic review role, and that model is the one that answers", async () => {

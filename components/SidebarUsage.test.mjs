@@ -17,7 +17,6 @@ function renderStrip(reports, onRelogin = () => {}) {
     usage: {
       state,
       loading: false,
-      bai: { status: "unmeasured" },
       async refresh() {
         return state;
       },
@@ -40,7 +39,7 @@ function drawnGroups(html) {
 function drawnRows(html) {
   return drawnGroups(html).flatMap((group) => [...group.html.matchAll(
     /navigator-usage-label">([^<]*)<\/span>(?:<span class="navigator-usage-state">[^<]*<\/span>)?<span class="navigator-usage-value"[^>]*>([^<]*)<\/span>/g,
-  )].filter((match) => match[1] !== "B.AI tokens").map((match) => ({ label: match[1], percent: match[2], account: group.account })));
+  )].map((match) => ({ label: match[1], percent: match[2], account: group.account })));
 }
 
 /** The 상태 labels the strip drew, in DOM order. */

@@ -10,6 +10,7 @@ import {
 } from "@/lib/models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
 import { listModelRoles, readConfiguredModelRoleRefs, readDefaultModelRole } from "@/lib/model-roles";
+import { isRetiredProvider } from "@/lib/retired-providers";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "@/lib/omp-runtime";
 
@@ -39,7 +40,9 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   // way the CLI does instead of comparing pattern strings literally.
   const scope = await resolveVisibleModels(modelRegistry, cfgEnabledModels.get(settings), settings);
   const { visible, thinkingLevelPins, warnings } = scope;
-  const modelList = visible.map((m) => ({
+  // 접은 공급자의 모델은 고를 수 없다. 이름·추론 단계 표는 지난 세션 표시를 위해 그대로 둔다.
+  const selectable = visible.filter((m) => !isRetiredProvider(m.provider));
+  const modelList = selectable.map((m) => ({
     id: m.id,
     name: m.name,
     provider: m.provider,
@@ -54,13 +57,13 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   const initial = selectInitialModelScope(scope, {
     ...(defaultRole ? { defaultModel: defaultRole } : {}),
   });
-  if (initial.model) {
+  if (initial.model && !isRetiredProvider(initial.model.provider)) {
     defaultModel = { provider: initial.model.provider, modelId: initial.model.id };
   }
 
   // omp assigns a model per scope of work; ship the whole role table so the
   // browser's selector can group models the same way `/model` does.
-  const roles = listModelRoles(settings, [...visible], modelRegistry);
+  const roles = listModelRoles(settings, [...selectable], modelRegistry);
 
   return withModelRuntimeError(
     {

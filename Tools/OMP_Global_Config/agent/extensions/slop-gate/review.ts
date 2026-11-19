@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { addAbortListener } from "node:events";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { ADVISORY_GRACE_MS, LANE_TAG, ReviewerCallError, authorFamily, type Lane } from "../lib/cross-review";
+import { beforeModelAbort } from "../lib/model-routes";
 import { secretFileName } from "../skim";
 import {
   appendSlopRecord, passFor, rawDataReason, readSlopRecords, sha256, trackable, visibilityOf, wslPath,
@@ -43,6 +43,7 @@ export interface Usage { input: number; output: number; cacheRead: number; cost:
 export interface ReviewerAnswer { model: string; text: string; usage?: Usage }
 type SlopLane = Lane | "advisory";
 export type Complete = (lane: SlopLane, system: string, prompt: string, signal: AbortSignal) => Promise<ReviewerAnswer>;
+export interface AdvisoryPreparation { model?: string; skipped?: string; complete?: Complete }
 export type Lang = "ko" | "en" | "both";
 
 export interface SlopDeps {
@@ -56,7 +57,7 @@ export interface SlopDeps {
   /** Author selectors. An Anthropic author moves the required judge to the OpenAI slot (judgeLane). */
   authors?: string[];
   mainModel?: string;
-  advisory?: (signal: AbortSignal) => Promise<{ model?: string; skipped?: string }>;
+  advisory?: (signal: AbortSignal, judge: Lane, authors: readonly string[], primaryMs: number) => Promise<AdvisoryPreparation>;
   advisoryTimeoutMs?: number;
 }
 
@@ -493,16 +494,8 @@ async function ask<T>(family: Lane, request: ReviewRequest, deps: SlopDeps, sign
   return { ...again, usage, status: { ...again.status, retry: true }, firstAttempt: first.status };
 }
 
-// Ignore answers after the deadline even if provider or auth cancellation is still unwinding.
-async function beforeAbort<T>(run: () => Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  const { promise, reject } = Promise.withResolvers<never>();
-  using listener = addAbortListener(signal, () => reject(signal.reason));
-  return await Promise.race([promise, run()]);
-}
-
-async function askAdvisory(request: ReviewRequest, deps: SlopDeps, signal: AbortSignal, model?: string): Promise<Ask> {
-  const answered = await settle("advisory", () => beforeAbort(() => deps.complete("advisory", request.system, request.prompt, signal), signal), readAnswer);
+async function askAdvisory(request: ReviewRequest, complete: Complete, signal: AbortSignal, model?: string): Promise<Ask> {
+  const answered = await settle("advisory", () => beforeModelAbort(signal, () => complete("advisory", request.system, request.prompt, signal)), readAnswer);
   answered.status.model ??= model;
   if (signal.aborted && answered.status.status !== "ok") answered.status.status = "late";
   return answered;
@@ -655,13 +648,14 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
   let advisoryWork: Promise<Ask[]> | undefined;
   if (deps.advisory && requests.length > 0) {
     const prepare = deps.advisory;
-    const budget = AbortSignal.any([signal, AbortSignal.timeout(deps.advisoryTimeoutMs ?? ADVISORY_GRACE_MS)]);
+    const timeoutMs = deps.advisoryTimeoutMs ?? ADVISORY_GRACE_MS;
+    const budget = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
     try {
       // A stalled relay check must not spend the full advisory budget before Opus starts.
       const preflight = AbortSignal.any([budget, AbortSignal.timeout(ADVISORY_PREFLIGHT_MS)]);
-      const { model, skipped } = await beforeAbort(() => prepare(preflight), preflight);
+      const { model, skipped, complete } = await beforeModelAbort(preflight, () => prepare(preflight, judge, authors, Math.max(1, Math.floor(timeoutMs / 2))));
       if (skipped) account({ family: "advisory", status: { family: "advisory", model, status: "skipped", error: skipped } });
-      else advisoryWork = inPool(requests, MAX_PARALLEL_BATCHES, ({ request }) => askAdvisory(request, deps, budget, model));
+      else advisoryWork = inPool(requests, MAX_PARALLEL_BATCHES, ({ request }) => askAdvisory(request, complete ?? deps.complete, budget, model));
     } catch (error) {
       const status = budget.aborted || (error instanceof DOMException && error.name === "TimeoutError") ? "late" : "error";
       account({ family: "advisory", status: { family: "advisory", status, error: error instanceof Error ? error.message : String(error) } });

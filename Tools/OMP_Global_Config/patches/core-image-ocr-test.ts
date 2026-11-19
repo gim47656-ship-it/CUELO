@@ -144,6 +144,7 @@ async function ask(options: {
 	path: string;
 	/** provider/id keys whose request fails with a provider error. */
 	fail?: string[];
+	failureMessage?: string;
 	/** provider/id key whose request is cut by the caller's abort (the read tool's own signal). */
 	abortOn?: string;
 }): Promise<{ calls: Call[]; text: string; error?: string }> {
@@ -180,7 +181,7 @@ async function ask(options: {
 		}
 		if (options.fail?.includes(key)) {
 			// Real provider errors can carry raw multi-line bodies; the fallback notice must still be one line.
-			return { role: "assistant", content: [], api: "x", provider: model.provider, model: model.id, usage, stopReason: "error", errorMessage: `upstream 503\n{"from": "${key}"}`, timestamp: Date.now() };
+			return { role: "assistant", content: [], api: "x", provider: model.provider, model: model.id, usage, stopReason: "error", errorMessage: options.failureMessage ?? `upstream 503\n{"from": "${key}"}`, timestamp: Date.now() };
 		}
 		return { role: "assistant", content: [{ type: "text", text: `answered by ${key}` }], api: "x", provider: model.provider, model: model.id, usage, stopReason: "stop", timestamp: Date.now() };
 	};
@@ -259,6 +260,17 @@ check(
 		/^\[OCR fallback: google-antigravity\/gemini-3\.8-flash failed \(upstream 503[^\n]*answered by anthropic\/claude-sonnet-5-5\]\nanswered by anthropic\/claude-sonnet-5-5$/.test(failover.text),
 	JSON.stringify(failover),
 );
+
+const explicitRoles = { ...split, ocrFallback: "anthropic/claude-sonnet-5-5:low" };
+const failingPair = ["google-antigravity/gemini-3.8-flash", "anthropic/claude-sonnet-5-5"];
+const noThird = await ask({ roles: explicitRoles, models: all, fail: failingPair, path: "shot.png?ocr=글자" });
+check("명시한 OCR 대체까지 실패해도 vision에 이미지를 다시 보내지 않는다", !!noThird.error && noThird.calls.map(c => c.model).join() === failingPair.join(), JSON.stringify(noThird));
+const denied = await ask({ roles: explicitRoles, models: all, fail: failingPair, failureMessage: "Google API error (403): verification required", path: "shot.png?ocr=글자" });
+check("접근 거절은 다른 OCR 제공자에게 보내지 않는다", !!denied.error && denied.calls.length === 1, JSON.stringify(denied));
+const limited = await ask({ roles: explicitRoles, models: all, fail: failingPair.slice(0, 1), failureMessage: "Google API error (429): Resource exhausted", path: "shot.png?ocr=글자" });
+check("한도 오류는 지정한 OCR 대체 한 곳으로 바로 넘긴다", limited.calls.map(c => c.model).join() === failingPair.join() && limited.calls[1]?.reasoning === "low" && limited.text.includes("answered by anthropic/claude-sonnet-5-5"), JSON.stringify(limited));
+const network = await ask({ roles: explicitRoles, models: all, fail: failingPair.slice(0, 1), failureMessage: "ECONNREFUSED: Unable to connect. Is the computer able to access the url?", path: "shot.png?ocr=글자" });
+check("Bun 연결 실패 때도 같은 대체를 사용한다", network.calls.map(c => c.model).join() === failingPair.join() && !network.error, JSON.stringify(network));
 
 const exhausted = await ask({ roles: split, chains: ocrChain, models: all, fail: ["google-antigravity/gemini-3.8-flash", "anthropic/claude-sonnet-5-5", "hive/deepseek-ai/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5-5"], path: "shot.png?ocr=글자" });
 check(

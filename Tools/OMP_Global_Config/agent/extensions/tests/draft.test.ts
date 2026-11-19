@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { draftDocument, type DraftCompletion } from "../draft";
-import type { HelperAnswer } from "../skim";
+import { DRAFT_FALLBACK, GEMINI as PRIMARY_ROLE, HelperCallError, type HelperAnswer } from "../skim";
 
 const GEMINI = "google-vertex/gemini-4-argon";
 const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
@@ -21,6 +22,62 @@ function context(cwd: string): ExtensionContext { return { cwd } as ExtensionCon
 /** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
 const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
 async function draftText(...args: Parameters<typeof draftDocument>): Promise<string> { return (await draftDocument(...args)).text; }
+
+test.each([
+  ["503 Service Unavailable", true],
+  ["429 Vertex usage limit", true],
+  ["Request blocked by Google (SAFETY): temporarily unavailable", false],
+  ["403 Your account must be verified (429 retry hint)", false],
+] as const)("draft Hydrogen failure %s reaches at most the configured direct route", async (failure, fallbackCalled) => {
+  const cwd = fixture();
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const fallback = "openai-codex/gpt-6.1-terra";
+  const called: string[] = [];
+  const ctx = { cwd, models: { resolve: (selector: string) => {
+    const exact = selector === "@draft" ? primary : selector === "@draftFallback" ? fallback : selector;
+    const [provider, id] = exact.split("/");
+    return { provider, id };
+  } } } as ExtensionContext;
+  const result = await withActiveSettings(Settings.isolated({
+    modelRoles: { draft: primary, draftFallback: fallback },
+    retry: { fallbackChains: { [primary]: ["aistudio/gemini-4-hydrogen"] } },
+  }), () => draftDocument({ instruction: "write", output: "checked.txt" }, ctx, signal, async (_prompt, _ctx, _signal, marker) => {
+    if (marker === PRIMARY_ROLE) {
+      called.push(primary);
+      throw new HelperCallError(failure, primary, { providerFailure: true });
+    }
+    called.push(typeof marker === "object" ? marker.route : marker === DRAFT_FALLBACK ? fallback : marker);
+    return reply("Drafted", fallback);
+  }));
+  expect(called).toEqual(fallbackCalled ? [primary, fallback] : [primary]);
+  expect(result.isError).toBe(!fallbackCalled);
+  if (fallbackCalled) expect(result.text).toContain(`model: ${fallback}`);
+  else expect(result.savedPath).toBeUndefined();
+});
+
+test("an unreadable configured draft primary falls back once without re-resolving it", async () => {
+  const cwd = fixture();
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const fallback = "openai-codex/gpt-6.1-terra";
+  let resolutions = 0;
+  const ctx = { cwd, models: { resolve: (selector: string) => {
+    if (selector === "@draft") {
+      resolutions++;
+      throw new Error("fixture: primary model registry unavailable");
+    }
+    return selector === fallback ? { provider: "openai-codex", id: "gpt-6.1-terra" } : undefined;
+  } } } as ExtensionContext;
+  const called: string[] = [];
+  const result = await withActiveSettings(Settings.isolated({ modelRoles: { draft: primary, draftFallback: fallback } }), () =>
+    draftDocument({ instruction: "write", output: "recovered.txt" }, ctx, signal, async (_prompt, _ctx, _signal, marker) => {
+      called.push(typeof marker === "object" ? marker.route : marker === DRAFT_FALLBACK ? fallback : marker);
+      return reply("Drafted", fallback);
+    }));
+  expect(resolutions).toBe(1);
+  expect(called).toEqual([fallback]);
+  expect(result.text).toContain("fixture: primary model registry unavailable");
+  expect(readFileSync(result.savedPath!, "utf8")).toBe("Drafted\n");
+});
 
 /** 중앙 디렉터리를 따라 ZIP 항목을 풀고 CRC를 대조한다. */
 function unzip(file: Buffer): Map<string, string> {

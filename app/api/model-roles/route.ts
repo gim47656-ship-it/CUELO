@@ -5,6 +5,7 @@ import { invalidateModelsCache } from "@/lib/models-cache";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "@/lib/omp-runtime";
 import { listModelRoles, readConfiguredModelRoleRefs, writeModelRole, type ModelRoleScope } from "@/lib/model-roles";
+import { isRetiredModelSelector } from "@/lib/retired-providers";
 import { resolveVisibleModels } from "@/lib/model-scope";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
@@ -66,6 +67,10 @@ export async function PUT(req: Request) {
     if (!role) return NextResponse.json({ error: "role required" }, { status: 400 });
     const scope: ModelRoleScope = body.scope === "project" ? "project" : "global";
     const selector = typeof body.selector === "string" ? body.selector.trim() : undefined;
+    // 접은 공급자(B.AI) 모델을 역할에 새로 지정하지 못하게 한다. 비우기(selector 없음)와 기존 지정은 그대로다.
+    if (selector && isRetiredModelSelector(selector)) {
+      return NextResponse.json({ error: "That provider is no longer offered" }, { status: 400 });
+    }
 
     const runtime = await getOmpRuntime();
     const settingsToWrite = scope === "global"

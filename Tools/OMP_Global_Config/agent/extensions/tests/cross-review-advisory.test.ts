@@ -365,6 +365,24 @@ describe("보조 검토자가 공급자 한도로 실패하면", () => {
   });
 });
 
+test("Hydrogen advisory outage takes one direct candidate and leaves mandatory verdict independent", async () => {
+  const primary = "google-vertex/gemini-4-hydrogen";
+  const direct = "openai-codex/gpt-6-luna";
+  const t = trace();
+  const d = deps(repo(), t, {
+    advisoryModel: primary, advisor: { ms: 1, error: new ReviewerCallError("503 Service Unavailable", primary) },
+    routes: [{ model: "aistudio/gemini-4-hydrogen", ms: 1 }],
+  });
+  d.advisory!.directFallback = { model: direct, complete: async () => {
+    t.routeCalls.push(direct);
+    return { model: direct, text: clean };
+  } };
+  const result = await runReview(input, d, signal);
+  expect(t.routeCalls).toEqual([direct]);
+  expect(result.advisory).toMatchObject({ status: "ok", model: direct });
+  expect(result.reviewers).toMatchObject([{ model: ASTRA, status: "ok" }]);
+});
+
 describe("required Hydrogen limit substitute", () => {
   const HYDROGEN = "aistudio/gemini-4-hydrogen";
   const PRIMARY_LIMIT = "429 rate_limit_error: required reviewer exhausted";
@@ -411,6 +429,50 @@ describe("required Hydrogen limit substitute", () => {
     expect(result.findings).toMatchObject([{ id: "R1-OAI-1", reviewer: HYDROGEN }]);
     expect(result.findings[0]?.advisory).toBeUndefined();
     expect(await runResolve({ reviewId: result.reviewId, resolutions: [] }, resolveDeps(d))).toMatchObject({ pass: false, open: ["R1-OAI-1"] });
+  });
+
+  test("a stale Hydrogen label cannot satisfy the mandatory lane with a different model", async () => {
+    const { d } = fixture(clean);
+    d.advisory!.complete = async () => ({ model: OPUS, text: clean });
+    const result = await runReview(input, d, signal);
+    expect(result.passable).toBe(false);
+    expect(result.reviewers[0]).toMatchObject({ status: "error", error: `Hydrogen substitute returned unexpected model ${OPUS}.` });
+  });
+
+  test("the Hydrogen advisory retains required-review time before advisory grace starts", async () => {
+    const t = trace();
+    const d = deps(repo(), t, { advisoryModel: HYDROGEN, advisor: { ms: 100 }, requiredMs: 180, graceMs: 100 });
+    d.advisory!.directFallback = { model: "openai-codex/gpt-6-luna", complete: async () => { throw new Error("premature fallback"); } };
+    const result = await runReview(input, d, signal);
+    expect(result.advisory).toMatchObject({ status: "ok", model: HYDROGEN });
+    expect(t.advisoryAborted).toBe(false);
+  });
+
+  test("a non-Hydrogen advisory still records a skipped legacy limit exception", async () => {
+    const { d } = fixture(clean, new ReviewerCallError("403 quota exceeded", ASTRA));
+    d.advisory!.model = ARGON;
+    const result = await runReview(input, d, signal);
+    expect(result.passable).toBe(false);
+    expect(result.reviewers[0]).toMatchObject({ limitSubstitute: { primaryError: "403 quota exceeded", skippedReason: expect.stringContaining("does not supply a Hydrogen route") } });
+  });
+
+  test.each([
+    ["503 Service Unavailable", "openai-codex/gpt-6-luna", true],
+    ["Request blocked by Google (SAFETY): temporarily unavailable", "openai-codex/gpt-6-luna", false],
+    ["403 Your account must be verified (429 retry hint)", "openai-codex/gpt-6-luna", false],
+    ["503 Service Unavailable", OPUS, false],
+    ["503 Service Unavailable", ASTRA, false],
+  ] as const)("required substitute with %s and candidate %s (called: %s)", async (reason, model, called) => {
+    const { d, requiredPrompts } = fixture(new ReviewerCallError(reason, HYDROGEN));
+    const fallbackPrompts: string[] = [];
+    d.requiredHydrogenFallback = { model, complete: async (prompt) => {
+      fallbackPrompts.push(prompt);
+      return { model, text: clean };
+    } };
+    const result = await runReview(input, d, signal);
+    expect(fallbackPrompts).toEqual(called ? requiredPrompts : []);
+    expect(result.passable).toBe(called);
+    expect(result.reviewers[0]).toMatchObject({ model: called ? model : HYDROGEN, resolvedModel: called ? model : HYDROGEN });
   });
 
   test.each([

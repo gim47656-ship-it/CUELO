@@ -1,10 +1,12 @@
 import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
 import { docx, parseCsv, parseWorkbook, xlsx } from "./draft/ooxml";
 import { findPdfBackend, renderPdf } from "./draft/pdf";
-import { collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
+import { beforeModelAbort, isHydrogen, modelRoleSelector } from "./lib/model-routes";
+import { GEMINI as DRAFT_PRIMARY, collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
 // Use the provider model's output limit and reject truncated drafts.
@@ -129,7 +131,7 @@ function prepare(format: Format, text: string, title: string): Prepared {
 
 type DraftResult = HelperResult & { savedPath?: string };
 export async function draftDocument(input: DraftInput, ctx: ExtensionContext, signal: AbortSignal,
-  complete: DraftCompletion = (prompt, context, attempt, model) => completeRole(prompt, context, attempt, model, { role: "draft" })): Promise<DraftResult> {
+  complete?: DraftCompletion): Promise<DraftResult> {
   if (!input.instruction?.trim() || !input.output?.trim()) return { text: "model: none\ninstruction과 output을 지정해 주세요.", isError: false };
   const overwrite = input.overwrite === true;
   let notes: string[] = [];
@@ -155,18 +157,34 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       `요청: ${input.instruction.trim()}`,
       ...chunks,
     ].join("\n\n");
-    // 형식 검증(CSV·JSON 파싱)까지가 한 시도다. 깨진 응답은 저장하지 않고 다음 모델로 넘긴다.
-    // 다음 모델은 modelRoles.draftFallback(없으면 고정 DeepSeek)이며, 설정된 대체가 실패하면 DeepSeek로 넘어가지 않는다.
-    const fallback = await resolveDraftFallback(ctx);
+    // Format validation remains part of the attempt; malformed content is never saved.
+    const selector = await modelRoleSelector(ctx.cwd, "draft");
+    let model: Model<Api> | undefined;
+    let resolutionError: HelperCallError | undefined;
+    if (selector) {
+      try {
+        model = ctx.models?.resolve("@draft");
+      } catch (error) {
+        // This is the synchronous catalog lookup; credential challenges happen in the model call.
+        resolutionError = new HelperCallError(message(error), selector, { cause: error }, true);
+      }
+    }
+    const primary = model ? `${model.provider}/${model.id}` : selector ?? "@draft";
+    const direct = isHydrogen(primary);
+    const fallback = await resolveDraftFallback(ctx, direct);
     const outcome = await withFallback(async (requested) => {
-      const answer = await complete(prompt, ctx, AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]), requested);
+      if (resolutionError && requested === DRAFT_PRIMARY) throw resolutionError;
+      const attempt = AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]);
+      const answer = await beforeModelAbort(attempt, () => complete
+        ? complete(prompt, ctx, attempt, requested)
+        : completeRole(prompt, ctx, attempt, requested, { role: "draft", primary: { selector, model } }));
       if (!answer.text.trim()) throw new HelperCallError(`${answer.model}가 빈 답을 반환했습니다.`, answer.model);
       try {
         return { model: answer.model, value: prepare(target.format, unwrap(answer.text), title) };
       } catch (error) {
         throw new HelperCallError(message(error), answer.model, { cause: error });
       }
-    }, signal, fallback, { ctx, role: "draft" });
+    }, signal, fallback, { ctx, role: "draft", primary, direct });
     if (outcome.status !== "done") {
       return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: outcome.status === "failed" };
     }

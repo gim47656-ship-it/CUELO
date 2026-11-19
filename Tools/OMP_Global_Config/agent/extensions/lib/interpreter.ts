@@ -1,5 +1,5 @@
 import type { ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
-import { sameModelRoutes } from "./model-routes";
+import { beforeModelAbort, directFallbackModel, isHydrogen, modelRoleSelector, operationalFailure, sameModelRoutes } from "./model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 /**
@@ -13,40 +13,56 @@ export const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bea
 
 /**
  * 통역 모델로 한 번 호출해 텍스트 답을 돌려준다. 출력 한도에서 끊기면 끊긴 답과 `truncated`를 함께 준다.
- * 2026-11-15: AI Studio Hydrogen이 사용 한도(429)에 걸리자 번역이 「[번역 실패]」로만 끝났다(사용자: 「b.ai 로 안넘어가서」).
- * 통역 모델이 사용 한도로 실패하면 프로필 대체 순서에 적힌 같은 모델의 다른 경로(b-ai, Vertex)를 차례로 시도한다.
+ * Hydrogen uses the one configured interpreterFallback, within the callers' existing total deadlines.
  */
 export async function interpret(prompt: string, purpose: string, ctx: ExtensionContext, signal: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   const { completeSimple, isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const role = findScopedSettings(ctx.cwd)?.getModelRole(INTERPRETER_ROLE) ? INTERPRETER_ROLE : "tiny";
+  const selector = await modelRoleSelector(ctx.cwd, INTERPRETER_ROLE);
+  const role = selector ? INTERPRETER_ROLE : "tiny";
   const primary = ctx.models.resolve(`@${role}`);
-  if (!primary) throw new Error(`modelRoles.${role} 모델을 해석하지 못했습니다.`);
+  const hydrogen = isHydrogen(primary ? `${primary.provider}/${primary.id}` : selector);
+  const fallback = hydrogen ? await directFallbackModel(ctx, "interpreterFallback") : undefined;
+  if (!primary && !fallback) throw new Error(`modelRoles.${role} 모델을 해석하지 못했습니다.`);
   const sessionId = ctx.sessionManager.getSessionId();
-  const models = [primary];
+  const models = primary ? [primary] : [fallback!];
   let lastError: unknown;
   for (let index = 0; index < models.length; index++) {
     const model = models[index]!;
     signal.throwIfAborted();
+    // Input has 20 s total; reply translation has 120 s total. Leave half for the alternate.
+    const timeout = primary && index === 0 && fallback ? AbortSignal.timeout(purpose === "user-input-translation" ? 10_000 : 60_000) : undefined;
+    const attempt = timeout ? AbortSignal.any([signal, timeout]) : signal;
+    let operating: boolean | undefined;
     try {
-      if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new Error(`${model.provider}/${model.id} 모델 자격을 찾지 못했습니다.`);
-      const response = await completeSimple(model, {
-        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-      }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal });
+      const response = await beforeModelAbort(attempt, async () => {
+        if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal: attempt }))) {
+          operating = true;
+          throw new Error(`${model.provider}/${model.id} 모델 자격을 찾지 못했습니다.`);
+        }
+        attempt.throwIfAborted();
+        return completeSimple(model, {
+          messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+        }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal: attempt });
+      });
       (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-        purpose, role, api: model.api, provider: model.provider, model: model.id,
+        purpose, role: model === fallback ? "interpreterFallback" : role, api: model.api, provider: model.provider, model: model.id,
         usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
       }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
       signal.throwIfAborted();
       const truncated = response.stopReason === "length";
-      if (response.stopReason !== "stop" && !truncated) throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
+      if (response.stopReason !== "stop" && !truncated) {
+        if (hydrogen) operating = await operationalFailure(response);
+        throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
+      }
       const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
       if (!text) throw new Error(`${role} 모델이 빈 답을 반환했습니다.`);
       return { text, truncated };
     } catch (error) {
       lastError = error;
       if (signal.aborted) throw error;
-      if (index === 0 && isUsageLimitOutcome(undefined, error instanceof Error ? error.message : String(error))) {
+      if (index === 0 && hydrogen) {
+        if (primary && fallback && (operating ?? await operationalFailure(error))) models.push(fallback);
+      } else if (index === 0 && primary && isUsageLimitOutcome(undefined, error instanceof Error ? error.message : String(error))) {
         for (const route of await sameModelRoutes(ctx.cwd, `${primary.provider}/${primary.id}`)) {
           const next = ctx.models.resolve(route);
           if (next) models.push(next);

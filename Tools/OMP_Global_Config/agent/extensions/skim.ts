@@ -1,8 +1,8 @@
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
-import { sameModelRoutes } from "./lib/model-routes";
+import { directFallbackModel, modelRoleSelector, operationalFailure, sameModelRoutes } from "./lib/model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 // Gemini의 큰 context(1M 토큰)를 무조건 채우지는 않되, 여러 문서·스킬 묶음을 한 번에 대조할 만큼은 받는다.
@@ -50,7 +50,7 @@ export function toolResult(result: HelperResult): { content: [{ type: "text"; te
 /** 어느 모델의 실패인지 함께 싣는 오류. 역할이 해석되기 전이면 model은 설정된 selector다. */
 export class HelperCallError extends Error {
   readonly providerFailure: boolean;
-  constructor(message: string, readonly model: string, options?: ErrorOptions & { providerFailure?: boolean }) {
+  constructor(message: string, readonly model: string, options?: ErrorOptions & { providerFailure?: boolean }, readonly unavailable = false) {
     super(message, options);
     this.providerFailure = options?.providerFailure === true;
   }
@@ -223,7 +223,12 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
  * maxTokens를 비우면 모델의 출력 최대치를 쓴다. acceptTruncated면 출력 상한에서 끊긴 답도 버리지 않고
  * 끊겼다는 안내를 붙여 돌려준다 — 사용량이 아니라 우리가 정한 상한 때문에 답 전체를 잃지 않게 한다.
  */
-export interface RoleCall { role: "skim" | "draft"; maxTokens?: number; acceptTruncated?: boolean }
+export interface RoleCall {
+  role: "skim" | "draft";
+  maxTokens?: number;
+  acceptTruncated?: boolean;
+  primary?: { selector?: string; model?: Model<Api> };
+}
 
 /**
  * 요청 표지가 지금 설정에서 가리키는 실제 `provider/id`. 자격·네트워크 없이 별칭만 푸는
@@ -249,21 +254,23 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
   const slotName = requested === GEMINI ? call.role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
-  const selector = slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : typeof requested === "object" ? requested.route : DEEPSEEK;
+  const pinned = requested === GEMINI ? call.primary : undefined;
+  const selector = pinned ? pinned.selector : slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : typeof requested === "object" ? requested.route : DEEPSEEK;
   if (!selector) throw new HelperCallError(`modelRoles.${slotName ?? call.role} 설정을 찾지 못했습니다.`, `@${slotName ?? call.role}`);
   // 해석 전에는 설정된 selector가, 해석 뒤에는 실제 provider/id가 이 호출의 이름이다. 그 사이 어디서 던져도(자격 갱신,
   // 호출 예외, 비용 장부 저장 실패) 같은 이름을 단 오류로 다시 던져 호출자가 요청 표지(Gemini)로 오해하지 않게 한다.
   let identity = selector;
   try {
-    const model = ctx.models.resolve(slotName ? `@${slotName}` : selector);
-    if (!model) throw new HelperCallError(`${typeof requested === "object" ? selector : `modelRoles.${slotName}`} 모델을 해석하지 못했습니다: ${selector}`, selector);
+    const model = pinned ? pinned.model : ctx.models.resolve(slotName ? `@${slotName}` : selector);
+    if (!model) throw new HelperCallError(`${typeof requested === "object" ? selector : `modelRoles.${slotName}`} 모델을 해석하지 못했습니다: ${selector}`, selector, undefined, true);
     const name = `${model.provider}/${model.id}`;
     // 고정 대체와 명시 경로는 이름이 정확히 같을 때만 부른다. slot은 해석된 모델을 부른다.
     if (!slotName && name !== selector) throw new HelperCallError(`${selector} 모델을 해석하지 못했습니다: ${name}`, typeof requested === "object" ? selector : name);
     identity = name;
     if (!model.input.includes("text")) throw new HelperCallError(`${name}은 텍스트 입력을 지원하지 않아 ${call.role} 도구에 쓸 수 없습니다.`, name);
     const sessionId = ctx.sessionManager.getSessionId();
-    if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name);
+    if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name, undefined, true);
+    signal.throwIfAborted();
     const maxTokens = call.maxTokens ?? model.maxTokens;
     const apiKey = ctx.modelRegistry.resolver(model, sessionId);
     let response: AssistantMessage;
@@ -285,7 +292,7 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
     const truncated = response.stopReason === "length" && call.acceptTruncated === true;
     if (response.stopReason !== "stop" && !truncated) {
-      throw new HelperCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, { providerFailure: response.stopReason === "error" });
+      throw new HelperCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, { cause: response, providerFailure: response.stopReason === "error" });
     }
     const answer = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
     if (!answer) throw new HelperCallError(`${name}가 빈 답을 반환했습니다.`, name);
@@ -319,9 +326,14 @@ export const FIXED_FALLBACK: FallbackTarget = { marker: DEEPSEEK, name: DEEPSEEK
  * draft 전용 선택 대체를 정한다. modelRoles.draftFallback이 없으면 고정 DeepSeek(기존 동작)이고, 값이 있으면(빈 값·해석
  * 불가 포함) 그 slot만 대체가 되어 실패해도 DeepSeek로 조용히 넘어가지 않는다. 같은 모델 재호출 판정은 별칭을 푼 실제 이름으로 한다.
  */
-export async function resolveDraftFallback(ctx: ExtensionContext): Promise<FallbackTarget> {
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const selector = findScopedSettings(ctx.cwd)?.getModelRole("draftFallback");
+export async function resolveDraftFallback(ctx: ExtensionContext, hydrogen: boolean): Promise<FallbackTarget | null> {
+  if (hydrogen) {
+    const model = await directFallbackModel(ctx, "draftFallback");
+    if (!model) return null;
+    const name = `${model.provider}/${model.id}`;
+    return { marker: { route: name }, name, label: "modelRoles.draftFallback" };
+  }
+  const selector = await modelRoleSelector(ctx.cwd, "draftFallback");
   if (selector === undefined) return FIXED_FALLBACK;
   let name = selector;
   try {
@@ -332,7 +344,7 @@ export async function resolveDraftFallback(ctx: ExtensionContext): Promise<Fallb
 }
 
 /** withFallback을 부른 자리. 대기 기록은 이 context의 modelRegistry·session·cwd 범위 안에서만 산다. */
-export interface HelperScope { ctx: ExtensionContext; role: RoleCall["role"] }
+export interface HelperScope { ctx: ExtensionContext; role: RoleCall["role"]; primary?: string; direct?: boolean }
 
 // Registry and session objects own these transient entries; a different live session cannot evict them.
 const LIMIT_COOLDOWN = new WeakMap<object, WeakMap<object, Map<string, number>>>();
@@ -382,10 +394,11 @@ async function limitExpiry(message: string, now: number): Promise<number | undef
  * 설정된 같은 모델의 다른 공급자 경로를 먼저 시도한다. 각 모델은 한 번만 부르며 사용자 취소는 즉시 멈춘다.
  * 공급자가 밝힌 복구 시각은 주 모델에만 기록한다. 실패 원문은 남기고, 건너뛴 호출은 짧은 안내로 대신한다.
  */
-export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget = FIXED_FALLBACK, scope?: HelperScope): Promise<FallbackOutcome<T>> {
+export async function withFallback<T>(attempt: (requested: HelperModel) => Promise<Attempted<T>>, signal: AbortSignal, fallback: FallbackTarget | null = FIXED_FALLBACK, scope?: HelperScope): Promise<FallbackOutcome<T>> {
   const failures: string[] = [];
   if (signal.aborted) return { status: "cancelled", failures };
-  const primary = scope ? requestedModelName(scope.ctx, GEMINI, scope.role) : undefined;
+  const primary = scope ? scope.primary ?? requestedModelName(scope.ctx, GEMINI, scope.role) : undefined;
+  const direct = scope?.direct === true;
   const slot = scope && primary ? cooldownSlot(scope.ctx, primary) : undefined;
   const now = Date.now();
   const ready = slot ? slot.map.get(slot.key) ?? 0 : 0;
@@ -394,18 +407,18 @@ export async function withFallback<T>(attempt: (requested: HelperModel) => Promi
   const tried = new Set<string>(waiting && primary ? [primary] : []);
   if (waiting && primary) failures.push(`${displayName(primary)} 건너뜀: 공급자 한도가 ${waitText(ready - now)} 뒤 풀립니다.`);
   const requests: HelperModel[] = waiting ? [] : [GEMINI];
-  if (waiting && scope && primary) {
+  if (waiting && !direct && scope && primary) {
     for (const route of await sameModelRoutes(scope.ctx.cwd, primary)) {
-      if (route !== fallback.name) requests.push({ route });
+      if (route !== fallback?.name) requests.push({ route });
     }
   }
-  requests.push(fallback.marker);
+  if (fallback) requests.push(fallback.marker);
   for (let index = 0; index < requests.length; index++) {
     const requested = requests[index]!;
     if (signal.aborted) return { status: "cancelled", failures };
-    const name = typeof requested === "object" ? requested.route : requested === GEMINI ? GEMINI : fallback.name;
+    const name = typeof requested === "object" ? requested.route : requested === GEMINI ? GEMINI : fallback?.name ?? requested;
     if (tried.has(name)) {
-      if (name === fallback.name) failures.push(`${displayName(name)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
+      if (fallback && name === fallback.name) failures.push(`${displayName(name)}는 ${fallback.label} 모델과 같아 다시 호출하지 않았습니다.`);
       continue;
     }
     if (requested !== GEMINI) tried.add(name);
@@ -418,6 +431,8 @@ export async function withFallback<T>(attempt: (requested: HelperModel) => Promi
       const text = raw.replace(/\s+/g, " ").trim();
       failures.push(`${typeof requested === "object" ? model : displayName(model)} 실패: ${text}`);
       if (signal.aborted) return { status: "cancelled", failures };
+      if (direct && requested === GEMINI && !(error instanceof HelperCallError && error.unavailable)
+        && !(await operationalFailure(error instanceof HelperCallError ? error.cause ?? error : error))) break;
       if (requested === GEMINI && error instanceof HelperCallError && error.providerFailure) {
         let limited = false;
         try {
@@ -430,9 +445,9 @@ export async function withFallback<T>(attempt: (requested: HelperModel) => Promi
             const expiry = await limitExpiry(raw, Date.now());
             if (expiry !== undefined && !signal.aborted) slot.map.set(slot.key, expiry);
           }
-          if (scope) {
+          if (scope && !direct) {
             const routes = await sameModelRoutes(scope.ctx.cwd, model);
-            requests.splice(index + 1, 0, ...routes.filter((route) => route !== fallback.name).map((route) => ({ route })));
+            requests.splice(index + 1, 0, ...routes.filter((route) => route !== fallback?.name).map((route) => ({ route })));
           }
         }
       }

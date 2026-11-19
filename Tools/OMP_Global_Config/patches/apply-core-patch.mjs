@@ -5105,112 +5105,6 @@ function evalRejectionResult(error: unknown): AgentToolResult<EvalToolDetails | 
 	// their own job results instead of blocking on \`wait\`.
 `,
 	},
-	// --- BAI socket/stream-read fallback 회귀 수리 (ArenaInterface 제안 inline, proposal 파일로 분리하지 않음) ---
-	// 범위: unexpected socket close / stream-read 이송 오류만 같은 모델 재시도 우선. 그 외 network 오류·
-	// UsageLimit·타 provider·abort·credential·unsafe replay 의미는 기존 그대로. 새 retry loop·설정·전역 gate 없음.
-	{
-		file: "src/session/turn-recovery.ts",
-		marker: `import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";`,
-		// 18.2.0은 같은 줄에 `sleepLong`이, 18.2.1은 provider-aware
-		// `extractProviderRetryHint`(`@oh-my-pi/pi-utils`가 아니라 pi-ai의
-		// `utils/retry-after`) 도입으로 `extractRetryHint`가 빠졌다. 가져오는 심볼
-		// 구성만 달라졌을 뿐 이 항목의 목적(전송 계층 판별 helper 추가)은 그대로다.
-		anchor: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";`,
-		patched: `import { logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
-import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";`,
-	},
-	{
-		file: "src/session/turn-recovery.ts",
-		// 18.9.1 은 바로 아래 refusal 주석을 refusal walk(한 턴에 모델당 한 번) 설명으로 바꿨다. 같은 블록을 같은 자리
-		// (fallback 판단 직전)에 넣는다(ADAPT). 두 판 적용본의 marker 가 같으므로 새 주석 첫 줄로 가른다.
-		excludes: "// The retry budget bounds same-model retries against a failing provider.",
-		marker: `const baiTransportSameModelRetry =`,
-		anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// A refusal chain stops at the retry budget: the exhausted-attempt
-`,
-		patched: `		// b-ai drops turns on transient socket/stream transport faults that say nothing
-		// about model health and replay safely on the same model, so the configured
-		// same-model retry budget is spent before the chain is consulted
-		// (BAI_TRANSPORT_SAME_MODEL_RETRY). A usage-limit error, an exhausted budget,
-		// an abort or fault the classifier does not call retriable, and every other
-		// provider keep the existing immediate-fallback behaviour.
-		const baiTransportSameModelRetry =
-			!retryBudgetExhausted &&
-			AIError.retriable(id) &&
-			!AIError.is(id, AIError.Flag.UsageLimit) &&
-			message.provider === "b-ai" &&
-			currentModel?.provider === "b-ai" &&
-			(isUnexpectedSocketCloseMessage(errorMessage) || AIError.isStreamReadErrorText(errorMessage));
-		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// A refusal chain stops at the retry budget: the exhausted-attempt
-`,
-		alternates: [{
-			file: "src/session/turn-recovery.ts",
-			requires: "// The retry budget bounds same-model retries against a failing provider.",
-			marker: `const baiTransportSameModelRetry =`,
-			anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// The retry budget bounds same-model retries against a failing provider. A
-`,
-			patched: `		// b-ai drops turns on transient socket/stream transport faults that say nothing
-		// about model health and replay safely on the same model, so the configured
-		// same-model retry budget is spent before the chain is consulted
-		// (BAI_TRANSPORT_SAME_MODEL_RETRY). A usage-limit error, an exhausted budget,
-		// an abort or fault the classifier does not call retriable, and every other
-		// provider keep the existing immediate-fallback behaviour.
-		const baiTransportSameModelRetry =
-			!retryBudgetExhausted &&
-			AIError.retriable(id) &&
-			!AIError.is(id, AIError.Flag.UsageLimit) &&
-			message.provider === "b-ai" &&
-			currentModel?.provider === "b-ai" &&
-			(isUnexpectedSocketCloseMessage(errorMessage) || AIError.isStreamReadErrorText(errorMessage));
-		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// The retry budget bounds same-model retries against a failing provider. A
-`,
-		}],
-	},
-	{
-		file: "src/session/turn-recovery.ts",
-		marker: `!(retryBudgetExhausted && classifierRefusal) &&
-				!baiTransportSameModelRetry`,
-		anchor: `			if (
-				allowModelFallback &&
-				retrySettings.modelFallback &&
-				!thinkingLoop &&
-				!waitForSiblingCredential &&
-				!(retryBudgetExhausted && classifierRefusal)
-			) {
-`,
-		patched: `			if (
-				allowModelFallback &&
-				retrySettings.modelFallback &&
-				!thinkingLoop &&
-				!waitForSiblingCredential &&
-				!(retryBudgetExhausted && classifierRefusal) &&
-				!baiTransportSameModelRetry
-			) {
-`,
-		// 18.5.0: upstream 이 같은 조건 끝에 첫 시도·스트리밍 진행이 있는 socket drop 의 같은 모델 1회 재시도를 넣었다
-		// (turn-recovery.ts:1623-1636·2630). 합집합으로 둔다: upstream 조건은 그대로 두고 b-ai 전송 장애(2회차 이후,
-		// 내용 없는 끊김, stream read 오류)만 뒤에 덧붙인다.
-		alternates: [{
-			// 18.9.1: classifier refusal 은 retry budget 이 아니라 refusal walk(모델당 한 번)로 끊는다(!refusalWalkRepeats).
-			// b-ai 전송 장애 조건은 refusal 과 무관하므로 같은 조건 끝에 그대로 덧붙인다(ADAPT).
-			file: "src/session/turn-recovery.ts",
-			requires: "!refusalWalkRepeats &&",
-			marker: `!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
-				!baiTransportSameModelRetry`,
-			anchor: `				!refusalWalkRepeats &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
-			) {
-`,
-			patched: `				!refusalWalkRepeats &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted) &&
-				!baiTransportSameModelRetry
-			) {
-`,
-		}],
-	},
 	// --- Codex whitespace-only tool-call argument loop recovery (2026-11-08) ---
 	// 실측(2026-11-08, gpt-6-astra): provider breaker(openai-codex-responses.ts:924)가 보인 text 뒤의
 	// degenerate tool call 을 버리고 replay 를 거절(:2723-2737)한 뒤 오류를 errorId 0 으로 끝냈다(AIError.classify 가 이
@@ -14180,6 +14074,34 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 		anchor: "/** Ask the resolved vision model a question about an already-loaded image. */\nexport async function askImageQuestion(\n",
 		patched: "/**\n * Ask the resolved vision model a question about an already-loaded image. CUELO: when that model fails and\n * `resolved.fallbacks` (an `?ocr=` question) holds more candidates, the next one is asked and the answer names the models\n * that failed. A caller abort is never retried.\n */\nexport async function askImageQuestion(\n\tsession: ToolSession,\n\tresolved: ResolvedImageQuestionModel,\n\timage: LoadedImageInput,\n\tquestion: string,\n\tsignal: AbortSignal | undefined,\n\tcompleteImpl: typeof completeSimple = completeSimple,\n): Promise<ImageQuestionResult> {\n\tconst attempts = [resolved, ...(resolved.fallbacks ?? [])];\n\tconst failures: string[] = [];\n\tfor (const [index, attempt] of attempts.entries()) {\n\t\ttry {\n\t\t\tconst answer = await askImageQuestionOnce(session, attempt, image, question, signal, completeImpl);\n\t\t\tif (failures.length === 0) return answer;\n\t\t\treturn { ...answer, text: `[OCR fallback: ${failures.join(\"; \")}; answered by ${answer.model}]\\n${answer.text}` };\n\t\t} catch (error) {\n\t\t\tif (signal?.aborted) throw error;\n\t\t\t// Provider errors can span lines; the notice above the answer stays one line.\n\t\t\tconst reason = (error instanceof Error ? error.message : String(error)).replace(/\\s+/g, \" \");\n\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);\n\t\t\tif (index < attempts.length - 1) continue;\n\t\t\tif (failures.length === 1) throw error;\n\t\t\tthrow new ToolError(`Every OCR candidate failed: ${failures.join(\"; \")}`);\n\t\t}\n\t}\n\tthrow new ToolError(\"Image question has no model to ask.\");\n}\n\n/** One image question against one model; see {@link askImageQuestion}. */\nasync function askImageQuestionOnce(\n",
 	},
+	// An explicit OCR fallback role is an allowlist, not the start of a route through other vision providers.
+	{
+		file: "src/utils/image-question.ts",
+		marker: "const pinnedOcrFallback =",
+		anchor: "\tconst activeModelPattern = session.getActiveModelString?.() ?? session.getModelString?.();",
+		patched: String.raw`	const pinnedOcrFallback = ocr && session.settings.getModelRole("ocrFallback");
+	if (pinnedOcrFallback) {
+		const candidates: ResolvedImageQuestionModel[] = [];
+		for (const pattern of ["@ocr", "@ocrFallback"]) {
+			const selector = session.settings.getModelRole(pattern.slice(1));
+			if (!selector) continue;
+			const model = availableModels.find(m => selector === m.provider + "/" + m.id || selector.replace(/:(off|minimal|low|medium|high|xhigh|max|auto)$/, "") === m.provider + "/" + m.id);
+			if (model && sendsImageInputOnWire(model) && !candidates.some(c => c.model === model)) candidates.push({ model, selectedPattern: pattern });
+		}
+		const [first, ...fallbacks] = candidates;
+		if (!first) throw new ToolError("Neither configured OCR model is available for images.");
+		return { ...first, fallbacks };
+	}
+	const activeModelPattern = session.getActiveModelString?.() ?? session.getModelString?.();`,
+	},
+	{
+		file: "src/utils/image-question.ts",
+		marker: "// Only operational OCR failures",
+		anchor: "\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);",
+		patched: String.raw`			// Only operational OCR failures may forward an image to an explicit alternate provider.
+			if (session.settings.getModelRole("ocrFallback") && !/^(?:No API key available for |Vertex AI requires Application Default Credentials\. |Image question timed out after |Google API error \((?:408|429|5\d\d)\):|upstream (?:429|5\d\d)\b|(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN):|fetch failed$|Failed to fetch$)/i.test(reason)) throw error;
+` + "\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);",
+	},
 	{
 		file: "src/tools/read.ts",
 		marker: "import { askImageQuestion, OCR_QUESTION_MARK, resolveImageQuestionModel }",
@@ -20984,8 +20906,6 @@ export function cueloIsFallbackKeyBillingRejection(
 	const withIntent = text => swap(swap(text, "{ duration: false });\n", `{ duration: false });\n${INTENT}`), "${duration} — ${job.label", "${duration} — ${intent}${job.label");
 	alternate(procRow, { marker: progressRow.marker, anchor: withIntent(progressRow.anchor), patched: withIntent(progressRow.patched) }, INTENT);
 
-	absorbed(byMarker('import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";'),
-		'import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";');
 	const fallbackGate = byMarker("const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined;");
 	alternate(fallbackGate, {
 		marker: "const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined && !this.#host.modelFallbackDisabled?.();",
@@ -24889,10 +24809,6 @@ for (const { file, extra, anchor } of [
 		const prior = entry.alternates?.at(-1) ?? entry;
 		alternate(entry, { marker: prior.marker, anchor: edit(prior.anchor), patched: edit(prior.patched) }, discriminator);
 	};
-
-	const sameModel = "!switchedCredential && currentSelector) {";
-	port(one(entry => entry.file === "src/session/turn-recovery.ts" && entry.marker === "const baiTransportSameModelRetry ="),
-		"#demotedReasoningOmittedFor", text => swap(text, sameModel, "!switchedCredential && !stripDemotedReasoning && currentSelector) {"));
 
 	const tagged = "function tagReportCredentialId(";
 	port(one(entry => entry.marker === "// Stored OAuth row behind this env-policy probe."), tagged, text => swap(text,

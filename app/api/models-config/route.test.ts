@@ -75,6 +75,40 @@ test("saving the loaded config unchanged keeps every provider and model definiti
   expect(coreLoadStatus()).toBe("ok");
 });
 
+const RETIRED_PROVIDER = {
+  baseUrl: "https://example.invalid/v1",
+  api: "openai-completions",
+  apiKey: "x",
+  models: [{ id: "m1", name: "M1" }],
+};
+
+const WITH_STALE_REGISTRATION = `${PROFILE}  b-ai:\n    baseUrl: ${RETIRED_PROVIDER.baseUrl}\n    api: ${RETIRED_PROVIDER.api}\n    apiKey: x\n    models:\n      - id: m1\n        name: M1\n`;
+
+test("a retired provider cannot be written through the editor, with or without a stale registration on disk", async () => {
+  for (const onDisk of [PROFILE, WITH_STALE_REGISTRATION]) {
+    writeFileSync(modelsPath, onDisk);
+    const { body } = await load();
+    body.providers["b-ai"] = RETIRED_PROVIDER;
+
+    expect(await save(body)).toEqual({ status: 400, body: { error: "b-ai is no longer offered" } });
+    expect(readFileSync(modelsPath, "utf8")).toBe(onDisk);
+  }
+});
+
+test("a stale retired registration is not returned and an ordinary save removes it while keeping every other provider", async () => {
+  writeFileSync(modelsPath, WITH_STALE_REGISTRATION);
+  const { status, body } = await load();
+  expect(status).toBe(200);
+  expect(Object.keys(body.providers)).toEqual(Object.keys((parseYaml(PROFILE) as ModelsBody).providers));
+
+  body.providers.hive.models!.push({ id: "deepseek-z", name: "DeepSeek Z" });
+  expect((await save(body)).status).toBe(200);
+  const saved = parseYaml(readFileSync(modelsPath, "utf8")) as ModelsBody;
+  expect(Object.keys(saved.providers)).toEqual(Object.keys((parseYaml(PROFILE) as ModelsBody).providers));
+  expect(saved.providers.hive.models!.map((m) => m.id)).toEqual(["deepseek-x", "deepseek-z"]);
+  expect(coreLoadStatus()).toBe("ok");
+});
+
 test("a blank model row is dropped while a new valid row round-trips", async () => {
   writeFileSync(modelsPath, PROFILE);
   const { body } = await load();

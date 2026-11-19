@@ -20,8 +20,7 @@ import { useNow } from "@/hooks/useNow";
 /**
  * The account usage the resource panel shows, kept permanently in view above the settings action and
  * outside the session list's scroll. It renders only what was actually reported - no placeholder
- * bars, no invented numbers: the limits the broker answered for, and the B.AI total the `omp stats`
- * aggregate recorded for that provider, with the span that total covers. It reads the app's single
+ * bars, no invented numbers: the limits the broker answered for. It reads the app's single
  * usage subscription, so it adds no polling of its own. The 「사용량」 button (and a click anywhere
  * on the strip) opens the full usage view, where errors are explained.
  *
@@ -233,20 +232,6 @@ function readSavedOrder(): string[] {
   }
 }
 
-/** Compact token units, the ones the resource panel's model rows print. */
-function formatTokenCount(value: number): string {
-  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-  if (value >= 1e3) return `${Math.round(value / 1e3)}K`;
-  return String(Math.round(value));
-}
-
-/** Month/day of an aggregation bound, the stamp the resource panel's range header prints. */
-function dayStamp(timestamp: number): string {
-  const date = new Date(timestamp);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
-
 /** 순서 버튼의 화살표. 글자보다 좁은 자리에서도 방향이 읽힌다. */
 function MoveArrow({ direction }: { direction: "up" | "down" }) {
   return (
@@ -280,7 +265,6 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
     }
     setSavedOrder(readSavedOrder());
   }, []);
-  const bai = usage.bai;
   const reports = usage.state.data?.reports ?? [];
   const now = useNow(NOW_TICK_MS);
   const accounts = orderStripAccounts(usageStripAccounts(reports, now), savedOrder);
@@ -327,15 +311,6 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
   const hidden = accounts.slice(visibleAccounts.length).reduce((sum, account) => sum + weight(account), 0);
   const authIssues = accounts.filter((account) => account.state === "auth").length;
 
-  // What the strip says about B.AI: the recorded total, or the reason it has no number. Printing
-  // 0 for an aggregation that was never read would be inventing a measurement.
-  const baiValue = bai.status === "measured"
-    ? formatTokenCount(bai.tokens)
-    : t(bai.status === "empty" ? "usage.baiEmpty" : "usage.baiUnmeasured");
-  const baiRange = bai.status === "measured" && bai.from !== null && bai.to !== null
-    ? t("usage.baiRange", { from: dayStamp(bai.from), to: dayStamp(bai.to) })
-    : null;
-
   // 계정 단위 상태. 인증 오류는 재로그인이 필요한지에 따라 이름이 다르다.
   const accountStateLabel = (account: UsageStripAccount): string | null => {
     if (account.state === "auth") {
@@ -349,7 +324,7 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
   const rowStateLabel = (row: UsageStripRow): string | null => (row.state === "spent" ? t("usage.limitSpent") : null);
 
   // The open button's name carries what the strip draws: every account and limit on screen with its
-  // state, the B.AI readout, plus how many rows the strip could not fit. The bars are decoration, and
+  // state, plus how many rows the strip could not fit. The bars are decoration, and
   // the account never reaches the eye through a hover title.
   const name = t("usage.open", {
     rows: [
@@ -363,15 +338,14 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
           return `${account.alias} ${row.label} ${row.percent}%${rowState === null ? "" : ` (${rowState})`}`;
         });
       }),
-      `${t("usage.bai")} ${baiValue}${baiRange === null ? "" : ` · ${baiRange}`}`,
     ].join(", "),
   }) + (hidden > 0 ? t("usage.openMore", { count: hidden }) : "");
 
   // 접힘 줄에 남기는 최소 정보: 가장 앞 계정의 첫 한도와 지금 몇 %인지, 한도가 없는 오류 계정이면
-  // 그 계정과 상태. 계정이 하나도 없으면 B.AI 누적값을 대신 보여 준다 — 어느 쪽도 새로 만든 숫자가 아니다.
+  // 그 계정과 상태. 계정이 하나도 없으면 비어 있다고만 말한다 — 새로 만든 숫자는 없다.
   const first = accounts[0];
   const summary = first === undefined
-    ? { label: t("usage.bai"), value: baiValue, danger: false }
+    ? { label: t("usage.none"), value: "", danger: false }
     : first.rows.length === 0
       ? { label: first.alias, value: accountStateLabel(first) ?? "", danger: true }
       : { label: first.rows[0].label, value: `${first.rows[0].percent}%`, danger: first.rows[0].percent >= 90 };
@@ -527,22 +501,6 @@ export function SidebarUsage({ usage, onOpen, onRelogin }: {
           {expanded ? t("usage.showLess") : t("usage.showMore", { count: hidden })}
         </button>
       )}
-      {/* The provider that actually served the requests, from the aggregation the resource panel
-          already reads and re-reads with the same usage refresh. It is not an account, so it never
-          takes part in the order. The caption is the span that total covers, so it is never read as
-          a live total, and a strip without a measurement says so instead of showing a zero. */}
-      <span className="navigator-usage-row">
-        <span className="navigator-usage-head">
-          <span className="navigator-usage-label">{t("usage.bai")}</span>
-          <span
-            className="navigator-usage-value"
-            style={bai.status === "measured" ? undefined : { color: "var(--text-muted)" }}
-          >
-            {baiValue}
-          </span>
-        </span>
-        {baiRange === null ? null : <span className="navigator-usage-account">{baiRange}</span>}
-      </span>
       <span className="navigator-usage-live" aria-live="polite">{announcement}</span>
     </div>
   );

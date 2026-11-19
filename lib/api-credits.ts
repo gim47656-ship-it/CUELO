@@ -4,7 +4,14 @@
  * 잔액(`balances`)은 공급자 결제 화면에서 보고 적어 둔 값과 그 확인 시각이다. 자동 조회가 아니다.
  */
 
+export type CreditWalletId = "google" | "hive";
 export type CreditPricing = "exact" | "upper-bound" | "unknown";
+
+export interface GoogleCreditSetting {
+  totalUsd: number;
+  startDate: string;
+  expiryDate: string | null;
+}
 
 export interface HiveCreditSetting {
   totalUsd: number;
@@ -35,6 +42,31 @@ interface WalletBase extends WalletTotals {
   error: string | null;
   observedAt: number;
   priceSources: string[];
+}
+
+export interface GoogleCreditRow {
+  model: string;
+  role: "hikari" | "interpreter" | "tts" | null;
+  inputTokens: number;
+  outputTokens: number;
+  otherTokens: number;
+  /** 단가를 모르는 모델(예: gemini-4-hydrogen)은 null. 금액을 지어내지 않는다. */
+  costUsd: number | null;
+  pricing: CreditPricing;
+  pricingReason: "gross-price" | "audio-rate" | null;
+  errors429: number;
+}
+
+/** Vertex 프로젝트(Cloud Monitoring, ADC) 전체 사용량. 이 PC만의 기록이 아니다. 총액·만료는 사용자가 적어 둔 값이다. */
+export interface GoogleCreditWallet extends WalletBase {
+  wallet: "google";
+  scope: "project";
+  source: "cloud-monitoring";
+  rows: GoogleCreditRow[];
+  expiryDate: string | null;
+  expiryDays: number | null;
+  unobserved: { days: number; from: string; to: string } | null;
+  ledgerNote: "ledger_unreadable" | "ledger_write_failed" | "ledger_read_failed" | "ledger_other_project" | null;
 }
 
 export interface HiveUsageCounts {
@@ -123,9 +155,11 @@ export interface WalletBalance {
 
 export interface ApiCreditsSnapshot {
   generatedAt: number;
-  settings: { hive: HiveCreditSetting | null };
+  settings: { google?: GoogleCreditSetting | null; hive: HiveCreditSetting | null };
   settingsError: string | null;
   priceCheckedAt: string;
+  /** 이 칸이 없는 옛 사이드카도 받는다(그때는 Vertex 카드가 보이지 않는다). */
+  google?: GoogleCreditWallet;
   hive: HiveCreditWallet;
   /** 이 칸이 없는 옛 사이드카도 받는다. */
   anthropic?: AnthropicPaidWallet;
@@ -135,13 +169,14 @@ export interface ApiCreditsSnapshot {
   balancesError?: string | null;
 }
 
-export type CreditSettingInput = { totalUsd: number; startDate: string };
+export type CreditSettingInput = { totalUsd: number; startDate: string; expiryDate?: string | null };
 export type BalanceInput = { amountUsd: number; observedAt: number };
 
 export function isApiCreditsSnapshot(value: unknown): value is ApiCreditsSnapshot {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ApiCreditsSnapshot>;
   return Boolean(record.settings && typeof record.settings === "object"
+    && (record.google === undefined || Array.isArray(record.google?.rows))
     && record.hive && Array.isArray(record.hive.rows)
     && (record.anthropic === undefined || Array.isArray(record.anthropic?.rows))
     && (record.balances === undefined || (Array.isArray(record.balances)
@@ -156,11 +191,13 @@ export interface CreditMeter {
   tone: "normal" | "warning" | "danger";
 }
 
-/** 남은 추정이 10% 아래면 경고, 다 썼으면 위험이다. */
-export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">): CreditMeter {
+/** 남은 추정이 10% 아래면 경고, 다 썼으면 위험이다. 만료가 7일 안이면 경고로 올린다. */
+export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">, expiryDays: number | null = null): CreditMeter {
   if (wallet.totalUsd === null || wallet.totalUsd <= 0) return { spentFraction: null, tone: "normal" };
   const fraction = wallet.spentUsd / wallet.totalUsd;
-  const tone = fraction >= 1 ? "danger" : fraction >= 0.9 ? "warning" : "normal";
+  const tone = fraction >= 1 || (expiryDays !== null && expiryDays < 0)
+    ? "danger"
+    : fraction >= 0.9 || (expiryDays !== null && expiryDays <= 7) ? "warning" : "normal";
   return { spentFraction: Math.max(0, Math.min(1, fraction)), tone };
 }
 
@@ -168,10 +205,12 @@ export function creditMeter(wallet: Pick<WalletTotals, "spentUsd" | "totalUsd">)
  * 입력 칸 문자열을 저장 요청 값으로 바꾼다. 형식 오류는 사이드카가 최종 판정하고, 여기서는 숫자로 못 읽는 총액만 막는다.
  * 쉼표와 `$`는 허용한다(`$1,000` → 1000).
  */
-export function creditSettingFromForm(form: { totalUsd: string; startDate: string }): CreditSettingInput | null {
+export function creditSettingFromForm(form: { totalUsd: string; startDate: string; expiryDate?: string }): CreditSettingInput | null {
   const total = Number(form.totalUsd.replace(/[$,\s]/g, ""));
   if (!form.totalUsd.trim() || !Number.isFinite(total)) return null;
-  return { totalUsd: total, startDate: form.startDate.trim() };
+  const value: CreditSettingInput = { totalUsd: total, startDate: form.startDate.trim() };
+  if (form.expiryDate !== undefined) value.expiryDate = form.expiryDate.trim() ? form.expiryDate.trim() : null;
+  return value;
 }
 
 /**
