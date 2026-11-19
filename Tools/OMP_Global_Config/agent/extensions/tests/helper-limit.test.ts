@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as retryUtils from "@oh-my-pi/pi-utils";
-import { completeRole, DEEPSEEK, GEMINI, DRAFT_FALLBACK, HelperCallError, skimQuestion, withFallback, type HelperModel } from "../skim";
+import { completeRole, FIXED_FALLBACK_MODEL, GEMINI, DRAFT_FALLBACK, HelperCallError, skimQuestion, withFallback, type HelperModel } from "../skim";
 import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { draftDocument } from "../draft";
 
@@ -29,7 +29,7 @@ test("skim keeps successful fallback and skips an explicitly cooling primary on 
   const complete = async (_prompt: string, _ctx: ExtensionContext, _signal: AbortSignal, model: HelperModel) => {
     calls.push(model);
     if (model === GEMINI) throw new HelperCallError(quota, primary, { providerFailure: true });
-    return { model: DEEPSEEK, text: "Visible fact (input.md:L1)" };
+    return { model: FIXED_FALLBACK_MODEL, text: "Visible fact (input.md:L1)" };
   };
   const input = { paths: ["input.md"], question: "What is the fact?" };
   const first = await skimQuestion(input, ctx, new AbortController().signal, complete);
@@ -37,10 +37,10 @@ test("skim keeps successful fallback and skips an explicitly cooling primary on 
   expect(first.isError).toBe(false);
   expect(first.text).toContain(quota);
   expect(second.isError).toBe(false);
-  expect(second.text).toContain(`model: ${DEEPSEEK}`);
+  expect(second.text).toContain(`model: ${FIXED_FALLBACK_MODEL}`);
   expect(second.text).toContain("Visible fact (input.md:L1)");
   expect(second.text).not.toContain("RESOURCE_EXHAUSTED");
-  expect(calls).toEqual([GEMINI, DEEPSEEK, DEEPSEEK]);
+  expect(calls).toEqual([GEMINI, FIXED_FALLBACK_MODEL, FIXED_FALLBACK_MODEL]);
 });
 
 test("configured fallback stays exact, expiry restores primary, and unknown delays do not suppress calls", async () => {

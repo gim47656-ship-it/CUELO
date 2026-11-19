@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import draft from "../draft";
 import * as realPdf from "../draft/pdf";
-import skim, { DEEPSEEK, GEMINI } from "../skim";
+import skim, { FIXED_FALLBACK_MODEL, GEMINI } from "../skim";
 
 // bun `mock.module`은 이미 import한 모듈의 live export를 바꾼다. 되돌릴 원본은 어떤 mock보다 먼저 값으로 잡아 둔다.
 const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPdf.renderPdf };
@@ -86,7 +86,7 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("terra-fake"), spec("image-only", ["image"])] });
   registry.registerProvider("google-vertex", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/google-vertex/v1`, models: [spec("gemini-4-argon")] });
   registry.registerProvider("aistudio", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/aistudio/v1`, models: [spec("gemini-4-argon"), spec("gemini-3.8-flash")] });
-  registry.registerProvider("hive", { ...provider, models: [spec("deepseek-ai/deepseek-v4.1-flash-1017")] });
+  registry.registerProvider("anthropic", { ...provider, models: [spec("claude-sonnet-5-5")] });
   const model = registry.find("fakeparent", "parent")!;
   const getApiKey = registry.getApiKey.bind(registry);
   registry.getApiKey = (async (target: { id: string }, ...rest: unknown[]) => {
@@ -192,42 +192,42 @@ describe("helper tool result contract through the SDK", () => {
     expect(out.usage).toEqual([["skim", "skim", "fakeglm", "glm-fake"]]);
   });
 
-  test("slot 모델 실패 뒤 DeepSeek 성공은 오류가 아니며 실패 경위와 두 시도의 사용량이 남는다", async () => {
+  test("slot 모델 실패 뒤 고정 대체(Sonnet) 성공은 오류가 아니며 실패 경위와 두 시도의 사용량이 남는다", async () => {
     behavior["glm-fake"] = "fail";
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
     expect(out.isError).toBe(false);
-    expect(out.text.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
+    expect(out.text.startsWith(`model: ${FIXED_FALLBACK_MODEL}`)).toBe(true);
     expect(out.text).toContain(`${GLM} 실패:`);
     expect(out.text).toContain("synthetic outage");
-    expect(requested).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
-    expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(requested).toEqual(["glm-fake", "claude-sonnet-5-5"]);
+    expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "claude-sonnet-5-5"]);
   });
 
   test("두 모델이 모두 실패하면 세션 toolResult.isError가 true이고 본문에 두 원인이 남는다", async () => {
     behavior["glm-fake"] = "fail";
-    behavior["deepseek-ai/deepseek-v4.1-flash-1017"] = "fail";
+    behavior["claude-sonnet-5-5"] = "fail";
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
     expect(out.isError).toBe(true);
     expect(out.text).toContain("model: none");
     expect(out.text).toContain(`${GLM} 실패:`);
-    expect(out.text).toContain("DeepSeek 실패:");
-    expect(requested).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(out.text).toContain("Sonnet 실패:");
+    expect(requested).toEqual(["glm-fake", "claude-sonnet-5-5"]);
   });
 
-  test("slot이 고정 대체와 같은 DeepSeek로 해석돼 실패하면 같은 모델을 다시 부르지 않고 오류로 끝난다", async () => {
-    behavior["deepseek-ai/deepseek-v4.1-flash-1017"] = "fail";
-    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: DEEPSEEK });
+  test("slot이 고정 대체와 같은 Sonnet으로 해석돼 실패하면 같은 모델을 다시 부르지 않고 오류로 끝난다", async () => {
+    behavior["claude-sonnet-5-5"] = "fail";
+    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: FIXED_FALLBACK_MODEL });
     expect(out.isError).toBe(true);
     expect(out.text).toContain("다시 호출하지 않았습니다");
-    expect(requested).toEqual(["deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(requested).toEqual(["claude-sonnet-5-5"]);
   });
 
-  test("텍스트 입력이 없는 모델로 설정되면 호출 없이 그 모델 이름으로 실패하고 DeepSeek 대체로 이어진다", async () => {
+  test("텍스트 입력이 없는 모델로 설정되면 호출 없이 그 모델 이름으로 실패하고 고정 대체(Sonnet)로 이어진다", async () => {
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: IMAGE_ONLY });
     expect(out.isError).toBe(false);
     expect(out.text).toContain(`${IMAGE_ONLY} 실패: ${IMAGE_ONLY}은 텍스트 입력을 지원하지 않아`);
-    expect(out.text.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
-    expect(requested).toEqual(["deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(out.text.startsWith(`model: ${FIXED_FALLBACK_MODEL}`)).toBe(true);
+    expect(requested).toEqual(["claude-sonnet-5-5"]);
   });
 
   test("보낼 텍스트가 없는 입력은 모델을 부르지 않고 오류도 아니다", async () => {
@@ -249,12 +249,12 @@ describe("helper tool result contract through the SDK", () => {
 
   test("draft: 두 모델이 모두 실패하면 파일 없이 isError toolResult를 돌려준다", async () => {
     behavior["glm-fake"] = "fail";
-    behavior["deepseek-ai/deepseek-v4.1-flash-1017"] = "fail";
+    behavior["claude-sonnet-5-5"] = "fail";
     const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
     roots.push(root);
     const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM }, root);
     expect(out.isError).toBe(true);
-    expect(out.text).toContain("DeepSeek 실패:");
+    expect(out.text).toContain("Sonnet 실패:");
     expect(existsSync(join(root, "out.md"))).toBe(false);
   });
 
@@ -267,9 +267,9 @@ describe("helper tool result contract through the SDK", () => {
     const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM }, root);
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`${GLM} 실패:`);
-    expect(out.text).toContain(`${DEEPSEEK}의 초안은 받았지만 out.md 저장에 실패했습니다:`);
+    expect(out.text).toContain(`${FIXED_FALLBACK_MODEL}의 초안은 받았지만 out.md 저장에 실패했습니다:`);
     expect(readFileSync(join(root, "out.md"), "utf8")).toBe("RACED");
-    expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "claude-sonnet-5-5"]);
   });
 
   test("draft: fallback으로 받은 초안의 PDF 변환이 실패하면 처음 실패 경위와 저장하지 않았다는 상태·원인을 담은 isError이고 사용량은 남는다", async () => {
@@ -283,9 +283,9 @@ describe("helper tool result contract through the SDK", () => {
       const out = await callTool("draft", { instruction: "보고서", output: "out.pdf" }, { draft: GLM }, root);
       expect(out.isError).toBe(true);
       expect(out.text).toContain(`${GLM} 실패:`);
-      expect(out.text).toContain(`${DEEPSEEK}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: mock PDF print failed`);
+      expect(out.text).toContain(`${FIXED_FALLBACK_MODEL}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: mock PDF print failed`);
       expect(existsSync(join(root, "out.pdf"))).toBe(false);
-      expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
+      expect(out.usage.map((row) => row[3])).toEqual(["glm-fake", "claude-sonnet-5-5"]);
     } finally {
       mock.module("../draft/pdf", () => ORIGINAL_PDF);
     }
@@ -293,7 +293,7 @@ describe("helper tool result contract through the SDK", () => {
     expect(realPdf.renderPdf).toBe(ORIGINAL_PDF.renderPdf);
   });
 
-  test("draft: 주 모델이 실패하면 modelRoles.draftFallback의 모델이 초안을 저장하고 DeepSeek는 부르지 않는다", async () => {
+  test("draft: 주 모델이 실패하면 modelRoles.draftFallback의 모델이 초안을 저장하고 고정 대체는 부르지 않는다", async () => {
     behavior["glm-fake"] = "fail";
     const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
     roots.push(root);
@@ -349,7 +349,7 @@ describe("helper tool result contract through the SDK", () => {
     expect(requested).toEqual(["glm-fake", "terra-fake"]);
   });
 
-  test("draft: draftFallback도 실패하면 DeepSeek로 넘어가지 않고 두 원인을 담은 오류로 끝난다", async () => {
+  test("draft: draftFallback도 실패하면 고정 대체로 넘어가지 않고 두 원인을 담은 오류로 끝난다", async () => {
     behavior["glm-fake"] = "fail";
     behavior["terra-fake"] = "fail";
     const root = mkdtempSync(join(tmpdir(), "helper-contract-work-"));
@@ -358,12 +358,12 @@ describe("helper tool result contract through the SDK", () => {
     expect(out.isError).toBe(true);
     expect(out.text).toContain(`${GLM} 실패:`);
     expect(out.text).toContain(`${TERRA} 실패:`);
-    expect(out.text).not.toContain("DeepSeek");
+    expect(out.text).not.toContain("Sonnet");
     expect(requested).toEqual(["glm-fake", "terra-fake"]);
     expect(existsSync(join(root, "out.md"))).toBe(false);
   });
 
-  test("draft: 설정한 draftFallback이 해석되지 않거나 텍스트 입력이 없으면 그 이름으로 실패하고 DeepSeek를 부르지 않는다", async () => {
+  test("draft: 설정한 draftFallback이 해석되지 않거나 텍스트 입력이 없으면 그 이름으로 실패하고 고정 대체를 부르지 않는다", async () => {
     for (const [selector, expected] of [
       [IMAGE_ONLY, `${IMAGE_ONLY} 실패: ${IMAGE_ONLY}은 텍스트 입력을 지원하지 않아`],
       ["nosuch/none", "nosuch/none 실패: modelRoles.draftFallback 모델을 해석하지 못했습니다: nosuch/none"],
@@ -375,7 +375,7 @@ describe("helper tool result contract through the SDK", () => {
       const out = await callTool("draft", { instruction: "보고서", output: "out.md" }, { draft: GLM, draftFallback: selector }, root);
       expect(out.isError).toBe(true);
       expect(out.text).toContain(expected);
-      expect(out.text).not.toContain("DeepSeek");
+      expect(out.text).not.toContain("Sonnet");
       expect(requested).toEqual(["glm-fake"]);
       requested.length = 0;
     }
@@ -391,30 +391,30 @@ describe("helper tool result contract through the SDK", () => {
     expect(requested).toEqual(["glm-fake"]);
   });
 
-  test("skim: draftFallback이 있어도 skim의 대체는 고정 DeepSeek다", async () => {
+  test("skim: draftFallback이 있어도 skim의 대체는 고정 Sonnet이다", async () => {
     behavior["glm-fake"] = "fail";
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM, draftFallback: TERRA });
     expect(out.isError).toBe(false);
-    expect(out.text.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
-    expect(requested).toEqual(["glm-fake", "deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(out.text.startsWith(`model: ${FIXED_FALLBACK_MODEL}`)).toBe(true);
+    expect(requested).toEqual(["glm-fake", "claude-sonnet-5-5"]);
   });
 
-  test("slot 모델의 자격 갱신이 던져도 실패는 그 모델 이름으로 남고 DeepSeek 대체는 한 번 이어진다", async () => {
+  test("slot 모델의 자격 갱신이 던져도 실패는 그 모델 이름으로 남고 고정 대체(Sonnet)는 한 번 이어진다", async () => {
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM }, undefined, { apiKeyThrows: "glm-fake" });
     expect(out.isError).toBe(false);
     expect(out.text).toContain(`${GLM} 실패: credential refresh down`);
     expect(out.text).not.toContain("Gemini 실패");
-    expect(out.text.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
-    expect(requested).toEqual(["deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(out.text.startsWith(`model: ${FIXED_FALLBACK_MODEL}`)).toBe(true);
+    expect(requested).toEqual(["claude-sonnet-5-5"]);
   });
 
-  test("slot이 DeepSeek일 때 비용 장부 저장이 던지면 실제 저장 실패를 DeepSeek 이름으로 알리고 같은 모델을 다시 부르지 않는다", async () => {
-    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: DEEPSEEK }, undefined, { usageThrows: "deepseek-ai/deepseek-v4.1-flash-1017" });
+  test("slot이 고정 대체(Sonnet)일 때 비용 장부 저장이 던지면 실제 저장 실패를 그 이름으로 알리고 같은 모델을 다시 부르지 않는다", async () => {
+    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: FIXED_FALLBACK_MODEL }, undefined, { usageThrows: "claude-sonnet-5-5" });
     expect(out.isError).toBe(true);
-    expect(out.text).toContain("DeepSeek 실패: ledger write failed");
+    expect(out.text).toContain("Sonnet 실패: ledger write failed");
     expect(out.text).toContain("다시 호출하지 않았습니다");
     expect(out.text).not.toContain("Gemini 실패");
-    expect(requested).toEqual(["deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(requested).toEqual(["claude-sonnet-5-5"]);
   });
 
 });
@@ -430,9 +430,9 @@ describe.skipIf(!analyzersPresent)("비공개 evals 분석기가 SDK 세션 tran
     const { analyzeGuardEffects } = await import(pathToFileURL(guardPath).href);
     const { analyzeLessonRecurrence } = await import(pathToFileURL(recurrencePath).href);
     behavior["glm-fake"] = "fail";
-    behavior["deepseek-ai/deepseek-v4.1-flash-1017"] = "fail";
+    behavior["claude-sonnet-5-5"] = "fail";
     const failed = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
-    behavior["deepseek-ai/deepseek-v4.1-flash-1017"] = "ok";
+    behavior["claude-sonnet-5-5"] = "ok";
     const fallback = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
     expect([failed.isError, fallback.isError]).toEqual([true, false]);
     const lesson = { id: "helper-final-failure", since: "2000-01-01T00:00:00Z", pattern: "model: none", callPattern: "guide\\.md" };

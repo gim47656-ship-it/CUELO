@@ -24,15 +24,15 @@ export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const GEMINI = "google-vertex/gemini-4-argon";
 // 조사 도구의 다른 모델 대체는 고정이다. 같은 모델의 다른 공급자 경로만 retry.fallbackChains에서 읽는다.
-export const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+export const FIXED_FALLBACK_MODEL = "anthropic/claude-sonnet-5-5";
 /** draft 전용 선택 대체 slot(modelRoles.draftFallback)을 부르라는 요청 표지. skim은 이 표지를 쓰지 않는다. */
 export const DRAFT_FALLBACK = "@draftFallback";
 /**
  * 모델 요청 표지다. GEMINI는 "역할 slot(modelRoles.skim·draft)으로 부른다"는 뜻이고 기본 설정의 모델 이름을 겸한다.
- * slot이 가리키는 실제 모델은 응답의 `model`이 말한다. DEEPSEEK는 고정 대체이며 항상 정확히 그 모델만 부른다.
+ * slot이 가리키는 실제 모델은 응답의 `model`이 말한다. FIXED_FALLBACK_MODEL은 고정 대체이며 항상 정확히 그 모델만 부른다.
  * DRAFT_FALLBACK은 modelRoles.draftFallback이 해석한 모델을, route 표지는 정확한 provider/id를 부른다.
  */
-export type HelperModel = typeof GEMINI | typeof DEEPSEEK | typeof DRAFT_FALLBACK | { route: string };
+export type HelperModel = typeof GEMINI | typeof FIXED_FALLBACK_MODEL | typeof DRAFT_FALLBACK | { route: string };
 
 export interface SkimInput { paths: string[]; question: string }
 /** 응답이 돌아온 모델의 실제 `provider/id`와 답. 표시·비용 귀속은 요청이 아니라 이 값을 따른다. */
@@ -55,7 +55,7 @@ export class HelperCallError extends Error {
     this.providerFailure = options?.providerFailure === true;
   }
 }
-const DISPLAY_NAME: Record<string, string> = { [GEMINI]: "Gemini", [DEEPSEEK]: "DeepSeek" };
+const DISPLAY_NAME: Record<string, string> = { [GEMINI]: "Gemini", [FIXED_FALLBACK_MODEL]: "Sonnet" };
 /** 기본 모델은 짧은 이름으로, 설정으로 바뀐 모델은 provider/id 그대로 표시한다. */
 export function displayName(model: string): string { return DISPLAY_NAME[model] ?? model; }
 /** 실패한 모델의 이름. 호출이 모델을 밝히지 못한 오류(주입 함수 등)는 요청한 모델 이름을 따른다. */
@@ -236,7 +236,7 @@ export interface RoleCall {
  */
 function requestedModelName(ctx: ExtensionContext, requested: HelperModel, role: RoleCall["role"]): string {
   const slot = requested === GEMINI ? role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
-  if (!slot) return typeof requested === "object" ? requested.route : DEEPSEEK;
+  if (!slot) return typeof requested === "object" ? requested.route : FIXED_FALLBACK_MODEL;
   try {
     const model = ctx.models.resolve(`@${slot}`);
     if (model) return `${model.provider}/${model.id}`;
@@ -246,7 +246,7 @@ function requestedModelName(ctx: ExtensionContext, requested: HelperModel, role:
 
 /**
  * 역할 slot(modelRoles.skim·draft가 가리키는 모델, 기본은 Gemini)·draft 전용 선택 대체 slot(modelRoles.draftFallback) 또는
- * 고정 DeepSeek 대체로 한 번 호출하고 응답이 돌아온 시도를 비용 장부에 남긴다. slot은 설정이 해석한 모델을 그대로 부르며
+ * 고정 Sonnet 대체로 한 번 호출하고 응답이 돌아온 시도를 비용 장부에 남긴다. slot은 설정이 해석한 모델을 그대로 부르며
  * 다른 모델로 바꾸지 않는다. 해석·자격·입력 능력이 맞지 않으면 그 모델 이름을 단 오류로 멈춘다.
  */
 export async function completeRole(prompt: string, ctx: ExtensionContext, signal: AbortSignal, requested: HelperModel, call: RoleCall): Promise<HelperAnswer> {
@@ -255,7 +255,7 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
   ]);
   const slotName = requested === GEMINI ? call.role : requested === DRAFT_FALLBACK ? "draftFallback" : undefined;
   const pinned = requested === GEMINI ? call.primary : undefined;
-  const selector = pinned ? pinned.selector : slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : typeof requested === "object" ? requested.route : DEEPSEEK;
+  const selector = pinned ? pinned.selector : slotName ? findScopedSettings(ctx.cwd)?.getModelRole(slotName) : typeof requested === "object" ? requested.route : FIXED_FALLBACK_MODEL;
   if (!selector) throw new HelperCallError(`modelRoles.${slotName ?? call.role} 설정을 찾지 못했습니다.`, `@${slotName ?? call.role}`);
   // 해석 전에는 설정된 selector가, 해석 뒤에는 실제 provider/id가 이 호출의 이름이다. 그 사이 어디서 던져도(자격 갱신,
   // 호출 예외, 비용 장부 저장 실패) 같은 이름을 단 오류로 다시 던져 호출자가 요청 표지(Gemini)로 오해하지 않게 한다.
@@ -319,12 +319,12 @@ export type FallbackOutcome<T> =
 
 /** withFallback의 두 번째 시도 대상. name은 같은 모델 재호출을 가르는 실제 `provider/id`(해석 전이면 설정 selector)다. */
 export interface FallbackTarget { marker: HelperModel; name: string; label: string }
-/** 기본 대체: 고정 DeepSeek. skim과 draftFallback이 없는 draft가 쓴다. */
-export const FIXED_FALLBACK: FallbackTarget = { marker: DEEPSEEK, name: DEEPSEEK, label: "고정 대체" };
+/** 기본 대체: 고정 Sonnet. skim과 draftFallback이 없는 draft가 쓴다. */
+export const FIXED_FALLBACK: FallbackTarget = { marker: FIXED_FALLBACK_MODEL, name: FIXED_FALLBACK_MODEL, label: "고정 대체" };
 
 /**
- * draft 전용 선택 대체를 정한다. modelRoles.draftFallback이 없으면 고정 DeepSeek(기존 동작)이고, 값이 있으면(빈 값·해석
- * 불가 포함) 그 slot만 대체가 되어 실패해도 DeepSeek로 조용히 넘어가지 않는다. 같은 모델 재호출 판정은 별칭을 푼 실제 이름으로 한다.
+ * draft 전용 선택 대체를 정한다. modelRoles.draftFallback이 없으면 고정 Sonnet이고, 값이 있으면(빈 값·해석
+ * 불가 포함) 그 slot만 대체가 되어 실패해도 Sonnet으로 조용히 넘어가지 않는다. 같은 모델 재호출 판정은 별칭을 푼 실제 이름으로 한다.
  */
 export async function resolveDraftFallback(ctx: ExtensionContext, hydrogen: boolean): Promise<FallbackTarget | null> {
   if (hydrogen) {

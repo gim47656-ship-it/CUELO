@@ -9,7 +9,7 @@ import { draftDocument, type DraftCompletion } from "../draft";
 import { DRAFT_FALLBACK, GEMINI as PRIMARY_ROLE, HelperCallError, type HelperAnswer } from "../skim";
 
 const GEMINI = "google-vertex/gemini-4-argon";
-const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
+const SONNET = "anthropic/claude-sonnet-5-5";
 const directories: string[] = [];
 const signal = new AbortController().signal;
 function fixture() {
@@ -222,7 +222,7 @@ describe("draft", () => {
     expect(existsSync(join(outside, "abs.md"))).toBe(false);
   });
 
-  test("Gemini 실패나 형식이 깨진 응답은 같은 prompt로 DeepSeek에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
+  test("Gemini 실패나 형식이 깨진 응답은 같은 prompt로 고정 대체(Sonnet)에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "facts.md"), "재고 12개");
     writeFileSync(join(cwd, ".env.local"), "PRIVATE_MARKER");
@@ -232,11 +232,11 @@ describe("draft", () => {
       return reply(model === GEMINI ? 'a,b\n"unclosed,1\n' : "```csv\n품목,수량\n장갑,12\n```", model);
     };
     const csv = await draftText({ instruction: "재고표", output: "stock.csv", paths: ["facts.md", ".env.local"] }, context(cwd), signal, brokenCsv);
-    expect(calls.map(({ model }) => model)).toEqual([GEMINI, DEEPSEEK]);
+    expect(calls.map(({ model }) => model)).toEqual([GEMINI, SONNET]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).toContain("재고 12개");
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
-    expect(csv.startsWith(`model: ${DEEPSEEK}`)).toBe(true);
+    expect(csv.startsWith(`model: ${SONNET}`)).toBe(true);
     expect(csv).toContain("Gemini 실패: CSV: 닫히지 않은 따옴표가 있습니다.");
     expect(csv).toContain(".env.local: 비밀 경로 제외");
     expect(readFileSync(join(cwd, "stock.csv"), "utf8")).toBe("\uFEFF품목,수량\n장갑,12\n");
@@ -244,12 +244,12 @@ describe("draft", () => {
     const called: string[] = [];
     const failed = await draftText({ instruction: "요약", output: "summary.md" }, context(cwd), signal, async (_p, _c, _s, model) => {
       called.push(model);
-      throw new Error(model === GEMINI ? "Gemini original 429" : "DeepSeek original 403");
+      throw new Error(model === GEMINI ? "Gemini original 429" : "Sonnet original 403");
     });
-    expect(called).toEqual([GEMINI, DEEPSEEK]);
+    expect(called).toEqual([GEMINI, SONNET]);
     expect(failed.startsWith("model: none")).toBe(true);
     expect(failed).toContain("Gemini 실패: Gemini original 429");
-    expect(failed).toContain("DeepSeek 실패: DeepSeek original 403");
+    expect(failed).toContain("Sonnet 실패: Sonnet original 403");
     expect(existsSync(join(cwd, "summary.md"))).toBe(false);
   });
 

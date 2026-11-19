@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { DEEPSEEK, GEMINI, HelperCallError, withFallback } from "../skim";
+import { FIXED_FALLBACK_MODEL, GEMINI, HelperCallError, withFallback } from "../skim";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { directFallbackModel, operationalFailure, sameModelRoutes } from "../lib/model-routes";
 
@@ -13,7 +13,7 @@ const ctx = { cwd: "/tmp/model-routes-contract", models: { resolve: () => ({ pro
 async function attempted(chains: Record<string, string[]>) {
   const calls: string[] = [];
   await withActiveSettings(Settings.isolated({ retry: { fallbackChains: chains } }), () => withFallback(async (marker) => {
-    const name = typeof marker === "object" ? marker.route : marker === GEMINI ? primary : DEEPSEEK;
+    const name = typeof marker === "object" ? marker.route : marker === GEMINI ? primary : FIXED_FALLBACK_MODEL;
     calls.push(name);
     throw new HelperCallError("429 RESOURCE_EXHAUSTED usage limit", name, { providerFailure: true });
   }, new AbortController().signal, undefined, { ctx, role: "skim" }));
@@ -22,23 +22,23 @@ async function attempted(chains: Record<string, string[]>) {
 
 test("exact base chain keeps same-id other-provider routes in order and strips effort without duplicates", async () => {
   expect(await attempted({ [primary]: [primary, `${primary}:high`, `${vertex}:auto`, vertex, "aistudio/gemini-3.8-flash", "@draft", "other/*", `${other}:low`] }))
-    .toEqual([primary, vertex, other, DEEPSEEK]);
+    .toEqual([primary, vertex, other, FIXED_FALLBACK_MODEL]);
 });
 
 test("wildcard, role, default and effort-suffixed keys do not grant helper routes", async () => {
   expect(await attempted({ "aistudio/*": [vertex], skim: [vertex], default: [vertex], [`${primary}:auto`]: [vertex] }))
-    .toEqual([primary, DEEPSEEK]);
+    .toEqual([primary, FIXED_FALLBACK_MODEL]);
 });
 
 test("an exact empty or different-model chain leaves the legacy fallback order alone", async () => {
   for (const chain of [[], ["aistudio/gemini-3.8-flash"]]) {
-    expect(await attempted({ [primary]: chain })).toEqual([primary, DEEPSEEK]);
+    expect(await attempted({ [primary]: chain })).toEqual([primary, FIXED_FALLBACK_MODEL]);
   }
 });
 
 test("R1-ANT-1 route settings failure cannot suppress the existing helper fallback", async () => {
   const getter = spyOn(cfgRetryFallbackChains, "get").mockImplementation(() => { throw new Error("route setting unavailable"); });
-  try { expect(await attempted({})).toEqual([primary, DEEPSEEK]); }
+  try { expect(await attempted({})).toEqual([primary, FIXED_FALLBACK_MODEL]); }
   finally { getter.mockRestore(); }
 });
 
