@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Exec, spawnExec } from "../../extensions/lib/cross-review";
@@ -307,5 +307,159 @@ describe("syncBehindUpstream", () => {
     const { local } = fixture();
     git(join(local, "..", "origin.git"), "update-ref", "-d", "refs/heads/main");
     expect((await sync(local)).note).toContain("아직 없어");
+  });
+  describe("원격이 더한 파일과 같은 이름·같은 바이트의 로컬 새 파일", () => {
+    test("겹친 새 파일이 모두 원격 바이트와 같으면 fast-forward로 받고 추적하며 흡수한 개수를 알린다", async () => {
+      const { other, local } = fixture();
+      mkdirSync(join(other, "dir"));
+      push(other, { "a.txt": "same-a\n", "dir/b.txt": "same-b\n" });
+      mkdirSync(join(local, "dir"));
+      writeFileSync(join(local, "a.txt"), "same-a\n");
+      writeFileSync(join(local, "dir", "b.txt"), "same-b\n");
+      writeFileSync(join(local, "unrelated.txt"), "keep\n");
+      const result = await sync(local);
+      expect(result.pulled).toBe(1);
+      expect(result.note).toContain("2개");
+      expect(result.note).toContain("흡수");
+      expect(git(local, "rev-parse", "HEAD")).toBe(git(other, "rev-parse", "HEAD"));
+      expect(git(local, "ls-files", "a.txt", "dir/b.txt").split("\n")).toEqual(["a.txt", "dir/b.txt"]);
+      expect(readFileSync(join(local, "a.txt"), "utf8")).toBe("same-a\n");
+      expect(readFileSync(join(local, "dir", "b.txt"), "utf8")).toBe("same-b\n");
+      expect(readFileSync(join(local, "unrelated.txt"), "utf8")).toBe("keep\n");
+      expect(git(local, "status", "--porcelain")).toBe("?? unrelated.txt");
+    });
+
+    test("하나라도 다르면 아무것도 바꾸지 않고 같은 것과 다른 것을 나눠 알린다", async () => {
+      const { other, local } = fixture();
+      push(other, { "a.txt": "same-a\n", "b.txt": "remote-b\n" });
+      writeFileSync(join(local, "a.txt"), "same-a\n");
+      writeFileSync(join(local, "b.txt"), "local-b\n");
+      writeFileSync(join(local, "unrelated.txt"), "keep\n");
+      const head = git(local, "rev-parse", "HEAD");
+      const result = await sync(local);
+      expect(result.pulled).toBe(0);
+      expect(result.note).toContain("바이트가 같은 새 파일: a.txt");
+      expect(result.note).toContain("다른 내용·삭제·형식: b.txt");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+      expect(readFileSync(join(local, "a.txt"), "utf8")).toBe("same-a\n");
+      expect(readFileSync(join(local, "b.txt"), "utf8")).toBe("local-b\n");
+      expect(readFileSync(join(local, "unrelated.txt"), "utf8")).toBe("keep\n");
+    });
+
+    test("로컬 삭제와 겹치면 지금처럼 받지 않는다", async () => {
+      const { other, local } = fixture();
+      push(other, { "task.ts": "export const task = 2;\n" });
+      rmSync(join(local, "task.ts"));
+      const head = git(local, "rev-parse", "HEAD");
+      const result = await sync(local);
+      expect(result.pulled).toBe(0);
+      expect(result.note).toContain("다른 내용·삭제·형식: task.ts");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+    });
+
+    test("autocrlf=true에서는 checkout이 쓸 CRLF 바이트와 같을 때만 같다고 본다", async () => {
+      const { other, local } = fixture();
+      git(local, "config", "core.autocrlf", "true");
+      push(other, { "crlf.txt": "line\n", "lf.txt": "line\n" });
+      writeFileSync(join(local, "crlf.txt"), Buffer.from("line\r\n"));
+      writeFileSync(join(local, "lf.txt"), Buffer.from("line\n"));
+      const head = git(local, "rev-parse", "HEAD");
+      const blocked = await sync(local);
+      expect(blocked.pulled).toBe(0);
+      expect(blocked.note).toContain("바이트가 같은 새 파일: crlf.txt");
+      expect(blocked.note).toContain("다른 내용·삭제·형식: lf.txt");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+      rmSync(join(local, "lf.txt"));
+      const result = await sync(local);
+      expect(result.pulled).toBe(1);
+      expect(readFileSync(join(local, "crlf.txt")).equals(Buffer.from("line\r\n"))).toBe(true);
+    });
+
+    test("받기가 실패하면 지웠던 새 파일을 원래 바이트로 되돌린다", async () => {
+      const { other, local } = fixture();
+      push(other, { "a.txt": "same-a\n" });
+      writeFileSync(join(local, "a.txt"), "same-a\n");
+      const head = git(local, "rev-parse", "HEAD");
+      const failing: Exec = async (command, args, options) =>
+        args[0] === "merge" ? { code: 1, stdout: "", stderr: "boom" } : spawnExec()(command, args, options);
+      const result = await syncBehindUpstream(spawnExec(), "git", local, failing);
+      expect(result.pulled).toBe(0);
+      expect(result.note).toContain("boom");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+      expect(readFileSync(join(local, "a.txt"), "utf8")).toBe("same-a\n");
+    });
+    test("되돌릴 때 실행 권한을 유지하고 그 자리에 생긴 심볼릭 링크 대상은 만들지 않는다", async () => {
+      const { other, local } = fixture();
+      push(other, { "a.txt": "same-a\n", "b.txt": "same-b\n" });
+      writeFileSync(join(local, "a.txt"), "same-a\n");
+      chmodSync(join(local, "a.txt"), 0o755);
+      writeFileSync(join(local, "b.txt"), "same-b\n");
+      const scratch = mkdtempSync(join(base, "scratch-"));
+      const failing: Exec = async (command, args, options) => {
+        if (args[0] !== "merge") return spawnExec()(command, args, options);
+        symlinkSync(join(scratch, "target"), join(local, "b.txt"));
+        return { code: 1, stdout: "", stderr: "boom" };
+      };
+      await expect(syncBehindUpstream(spawnExec(), "git", local, failing)).rejects.toThrow(/되돌리지 못한 새 파일: b\.txt/);
+      expect(lstatSync(join(local, "a.txt")).mode & 0o777).toBe(0o755);
+      expect(readFileSync(join(local, "a.txt"), "utf8")).toBe("same-a\n");
+      expect(existsSync(join(scratch, "target"))).toBe(false);
+    });
+
+    test("원격 파일 자리를 막는 로컬 폴더가 있으면 같은 파일도 지우지 않고 멈춘다", async () => {
+      const { other, local } = fixture();
+      push(other, { "a.txt": "same-a\n", "d": "remote-file\n" });
+      writeFileSync(join(local, "a.txt"), "same-a\n");
+      mkdirSync(join(local, "d"));
+      writeFileSync(join(local, "d", "child.txt"), "x\n");
+      const head = git(local, "rev-parse", "HEAD");
+      const result = await sync(local);
+      expect(result.pulled).toBe(0);
+      expect(result.note).toContain("바이트가 같은 새 파일: a.txt");
+      expect(result.note).toContain("d/child.txt(원격 경로를 막는 새 파일·폴더)");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+      expect(readFileSync(join(local, "a.txt"), "utf8")).toBe("same-a\n");
+    });
+
+    test("같은 원격 커밋이 .gitattributes를 바꾸면 바이트가 같아 보여도 흡수하지 않는다", async () => {
+      const { other, local } = fixture();
+      push(other, { ".gitattributes": "a.txt text eol=crlf\n", "a.txt": "line\n" });
+      writeFileSync(join(local, "a.txt"), "line\n");
+      const head = git(local, "rev-parse", "HEAD");
+      const result = await sync(local);
+      expect(result.pulled).toBe(0);
+      expect(result.note).toContain("다른 내용·삭제·형식: a.txt");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+    });
+    test("다른 폴더의 .gitattributes 변경은 흡수를 막지 않고, 원격 파일 자리의 빈 폴더는 멈춘다", async () => {
+      const { other, local } = fixture();
+      mkdirSync(join(other, "z"));
+      mkdirSync(join(other, "a"));
+      push(other, { "z/.gitattributes": "*.x text\n", "a/b.txt": "same-b\n" });
+      mkdirSync(join(local, "a"));
+      writeFileSync(join(local, "a", "b.txt"), "same-b\n");
+      const absorbedResult = await sync(local);
+      expect(absorbedResult.pulled).toBe(1);
+      expect(absorbedResult.note).toContain("1개");
+
+      push(other, { "d.txt": "remote-d\n" });
+      mkdirSync(join(local, "d.txt"));
+      const head = git(local, "rev-parse", "HEAD");
+      const blocked = await sync(local);
+      expect(blocked.pulled).toBe(0);
+      expect(blocked.note).toContain("d.txt(원격 파일 자리의 폴더)");
+      expect(git(local, "rev-parse", "HEAD")).toBe(head);
+    });
+    test("추적 중인 폴더를 원격이 같은 이름의 파일로 바꾸는 깨끗한 사본은 막지 않는다", async () => {
+      const { other, local } = fixture();
+      mkdirSync(join(other, "d"));
+      push(other, { "d/x.txt": "x\n" });
+      git(local, "pull", "-q", "--ff-only");
+      rmSync(join(other, "d"), { recursive: true });
+      push(other, { d: "now-a-file\n" });
+      const result = await sync(local);
+      expect(result.pulled).toBe(1);
+      expect(readFileSync(join(local, "d"), "utf8")).toBe("now-a-file\n");
+    });
   });
 });

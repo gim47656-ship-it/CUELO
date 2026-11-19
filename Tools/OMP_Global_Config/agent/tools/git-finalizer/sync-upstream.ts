@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Exec } from "../../extensions/lib/cross-review";
@@ -32,6 +32,7 @@ export interface UpstreamSync {
 export type ReadBytes = (git: string, args: string[], cwd: string) => Promise<Buffer>;
 
 interface Plan { path: string; abs: string; raw: Buffer; rawOid: string; base: Buffer; theirs: Buffer; merged: Buffer }
+interface Absorbed { path: string; abs: string; raw: Buffer; mode: number }
 
 const SHA = /^[0-9a-f]{40,64}$/;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -84,13 +85,65 @@ export async function syncBehindUpstream(exec: Exec, git: string, root: string, 
   const entries = split((await run(["--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"])).stdout);
   const overlap = entries.map((entry) => ({ path: entry.slice(3), untracked: entry.startsWith("??"), deleted: entry[1] === "D" }))
     .filter((file) => incoming.has(file.path));
-  const blocked = overlap.filter((file) => file.untracked || file.deleted).map((file) => file.path);
-  if (blocked.length) return skip(`원격 커밋 ${pulled}개가 로컬의 새 파일·삭제와 겹쳐 자동으로 받지 않았다: ${blocked.join(", ")}`);
+  // 원격이 이 경로에 놓을 바이트(checkout과 같은 필터 기준)와 로컬 새 파일 바이트가 같은 일반 파일만 흡수 대상이다.
+  // 이번 원격 커밋이 후보 경로에 적용되는 .gitattributes(루트 또는 상위 폴더)를 바꾸면 checkout이 쓸 바이트를 지금 작업 트리 속성으로 장담할 수 없어 흡수하지 않는다.
+  const attributeScopes = [...incoming].filter((path) => path === ".gitattributes" || path.endsWith("/.gitattributes")).map((path) => path.slice(0, -".gitattributes".length).replace(/\/$/, ""));
+  const identicalUntracked = async (path: string): Promise<Absorbed | undefined> => {
+    try {
+      if (attributeScopes.some((dir) => dir === "" || path.startsWith(`${dir}/`))) return undefined;
+      const abs = join(root, path);
+      const stat = lstatSync(abs);
+      if (!stat.isFile()) return undefined;
+      // 리터럴 경로로 조회하고 돌려받은 이름까지 대조한다(pathspec 마법 이름이 다른 항목의 모드를 빌리지 못하게).
+      const entry = (await run(["--literal-pathspecs", "ls-tree", "-z", upstream, "--", path])).stdout.split("\0")[0] ?? "";
+      const matched = /^(100644|100755) blob [0-9a-f]+\t([\s\S]*)$/.exec(entry);
+      if (!matched || matched[2] !== path) return undefined;
+      const raw = readFileSync(abs);
+      const theirs = await readBytes(git, ["cat-file", "--filters", `--path=${path}`, `${upstream}:${path}`], root);
+      return raw.equals(theirs) ? { path, abs, raw, mode: stat.mode & 0o7777 } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  // 겹친 새 파일이 원격이 놓을 바이트와 같으면(checkout과 같은 `cat-file --filters` 기준, 일반 파일만) 잃을 데이터가 없으므로 받는 쪽에 흡수한다.
+  // 로컬 삭제, 다른 바이트, 디렉터리·심볼릭 링크·실행 파일이 아닌 모드는 지금처럼 건드리지 않고 멈춘다.
+  const absorbed: Absorbed[] = [];
+  const identical: string[] = [];
+  const different: string[] = [];
+  for (const file of overlap.filter((entry) => entry.untracked || entry.deleted)) {
+    const path = file.path;
+    const kept = file.untracked ? await identicalUntracked(path) : undefined;
+    if (kept) { absorbed.push(kept); identical.push(path); } else different.push(path);
+  }
+  // 원격 경로를 막는 로컬 새 파일·폴더(원격 파일 D 자리의 폴더, 원격 D/x 자리의 파일 D)는 이름이 겹치지 않아도 git이 거절하므로 미리 가린다.
+  const ancestors = new Set<string>();
+  for (const path of incoming) for (let at = path.indexOf("/"); at !== -1; at = path.indexOf("/", at + 1)) ancestors.add(path.slice(0, at));
+  for (const entry of entries) {
+    const path = entry.slice(3);
+    if (!entry.startsWith("??") || incoming.has(path)) continue;
+    const parts = path.split("/");
+    if (ancestors.has(path) || parts.slice(0, -1).some((_, index) => incoming.has(parts.slice(0, index + 1).join("/")))) different.push(`${path}(원격 경로를 막는 새 파일·폴더)`);
+  }
+  // 원격 파일 자리에 로컬 폴더(빈 폴더는 status에 안 나온다)가 있어도 git이 거절한다.
+  for (const path of incoming) {
+    // 비어 있는 폴더만 막는다(내용이 있는 추적 폴더는 git이 지우고, 새 파일이 든 폴더는 위 status 검사가 가린다). 조회 실패는 없다고 보지 않는다.
+    try {
+      if (lstatSync(join(root, path)).isDirectory() && readdirSync(join(root, path)).length === 0) different.push(`${path}(원격 파일 자리의 폴더)`);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") different.push(`${path}(조회 실패: ${message(error)})`);
+    }
+  }
+  if (different.length) {
+    return skip(`원격 커밋 ${pulled}개가 로컬의 새 파일·삭제와 겹쳐 자동으로 받지 않았다: ${[...identical, ...different].join(", ")}`
+      + ` (원격과 바이트가 같은 새 파일: ${identical.join(", ") || "없음"}; 다른 내용·삭제·형식: ${different.join(", ")})`);
+  }
+  const absorbedPaths = new Set(identical);
 
   // 겹치는 파일을 작업 트리 바이트 공간에서 미리 병합한다. 충돌이 하나라도 있으면 작업 사본을 건드리지 않는다.
   const plans: Plan[] = [];
   const conflicts: string[] = [];
-  for (const { path } of overlap) {
+  for (const { path } of overlap.filter((file) => !absorbedPaths.has(file.path))) {
     if ((await run(["cat-file", "-e", `${upstream}:${path}`])).code !== 0) { conflicts.push(`${path}(원격에서 삭제)`); continue; }
     const abs = join(root, path);
     const raw = readFileSync(abs);
@@ -109,15 +162,22 @@ export async function syncBehindUpstream(exec: Exec, git: string, root: string, 
   if (conflicts.length) return skip(`원격 커밋 ${pulled}개가 로컬 수정과 충돌해 자동으로 받지 않았다: ${conflicts.join(", ")}. 작업 사본은 그대로다.`);
 
   // 원래 바이트 복사(객체 백업과 별도). 깨끗하게 끝나지 않으면 이 폴더를 남겨 되살릴 수 있게 한다.
-  const backupDir = plans.length ? mkdtempSync(join(tmpdir(), "git-finalize-sync-")) : "";
-  for (const plan of plans) {
-    mkdirSync(dirname(join(backupDir, plan.path)), { recursive: true });
-    writeFileSync(join(backupDir, plan.path), plan.raw);
+  const backupDir = plans.length || absorbed.length ? mkdtempSync(join(tmpdir(), "git-finalize-sync-")) : "";
+  try {
+    for (const plan of [...plans, ...absorbed]) {
+      mkdirSync(dirname(join(backupDir, plan.path)), { recursive: true });
+      writeFileSync(join(backupDir, plan.path), plan.raw);
+      if ("mode" in plan) chmodSync(join(backupDir, plan.path), plan.mode);
+    }
+  } catch (error) {
+    rmSync(backupDir, { recursive: true, force: true });
+    throw error;
   }
   const dropBackup = () => { if (backupDir) rmSync(backupDir, { recursive: true, force: true }); };
   const recovery = () => `겹친 파일의 원래 내용: ${backupDir} (백업 객체 ${plans.map((plan) => `${plan.path}=${plan.rawOid}`).join(", ")})`;
   // 준비하는 동안 파일이 또 바뀌었으면(편집기·다른 작업) 그 수정을 덮지 않도록 손대기 전에 멈춘다.
-  const changed = plans.filter((plan) => !readFileSync(plan.abs).equals(plan.raw)).map((plan) => plan.path);
+  const unchanged = (plan: { abs: string; raw: Buffer }) => { try { return readFileSync(plan.abs).equals(plan.raw); } catch { return false; } };
+  const changed = [...plans, ...absorbed].filter((plan) => !unchanged(plan)).map((plan) => plan.path);
   if (changed.length) {
     dropBackup();
     return skip(`병합을 준비하는 동안 ${changed.join(", ")}가 다시 바뀌어 원격 커밋을 받지 않았다. 작업 사본은 그대로다.`);
@@ -148,7 +208,21 @@ export async function syncBehindUpstream(exec: Exec, git: string, root: string, 
 
   // 겹친 파일을 기준판으로 돌려놓아야 fast-forward가 진행된다. 확인과 쓰기 사이에 await가 없다.
   let ffError: string | undefined;
+  const removed: Absorbed[] = [];
   try {
+    // 다른 호출이 그 사이 이미 받았으면(HEAD가 바뀜) 방금 추적된 파일을 지우지 않도록 멈춘다.
+    const headNow = (await commitExec(git, ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    if (headNow !== head) throw new Error(`HEAD가 ${head}에서 ${headNow || "확인 실패"}로 바뀌어 새 파일을 지우지 않았다`);
+    // 흡수할 새 파일은 한 파일씩 일반 파일·확인한 바이트인지 지우기 직전에 다시 보고 바로 지운다(사이에 await가 없다). 달라졌으면 거기서 멈춘다.
+    // 복원용 권한은 지우는 순간의 값으로 다시 잡는다(그 사이 chmod한 파일을 옛 권한으로 되돌리지 않게).
+    for (const item of absorbed) {
+      const stat = lstatSync(item.abs);
+      if (!stat.isFile() || !readFileSync(item.abs).equals(item.raw)) throw new Error(`${item.path}가 확인한 뒤 바뀌어 지우지 않았다`);
+      item.mode = stat.mode & 0o7777;
+      if (backupDir) chmodSync(join(backupDir, item.path), item.mode);
+      rmSync(item.abs);
+      removed.push(item);
+    }
     for (const plan of plans) { touched.add(plan.path); writeFileSync(plan.abs, plan.base); }
     const ff = await commitExec(git, ["merge", "--ff-only", "--no-overwrite-ignore", upstream], { cwd: root });
     if (ff.code !== 0) ffError = (ff.stderr || ff.stdout).trim();
@@ -156,18 +230,35 @@ export async function syncBehindUpstream(exec: Exec, git: string, root: string, 
     ffError = message(error);
   }
   const now = await commitExec(git, ["rev-parse", "HEAD"], { cwd: root }).then((r) => r.code === 0 ? r.stdout.trim() : "", () => "");
+  // 받지 못했으면 이 호출이 지운 새 파일만 원래 바이트·모드로 되돌린다. 자리가 비어 있을 때만(배타 생성) 쓰고, 이미 무언가 있으면 같은 바이트일 때만 인정한다.
+  const absorbedBad: string[] = [];
+  if (now !== upstream) {
+    for (const item of removed) {
+      try {
+        let present = true;
+        try { lstatSync(item.abs); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") present = false; else throw error; }
+        if (!present) {
+          mkdirSync(dirname(item.abs), { recursive: true });
+          writeFileSync(item.abs, item.raw, { flag: "wx", mode: item.mode });
+          chmodSync(item.abs, item.mode);
+        } else if (!lstatSync(item.abs).isFile() || !readFileSync(item.abs).equals(item.raw)) absorbedBad.push(item.path);
+      } catch (error) { absorbedBad.push(`${item.path}(${message(error)})`); }
+    }
+  }
   const settled = settle(now === upstream);
   const paths = plans.map((plan) => plan.path);
   if (now === upstream && settled.merged === plans.length) {
     dropBackup();
     const mergedNote = paths.length ? ` 양쪽이 고친 ${paths.join(", ")}는 충돌 없이 합쳤다.` : "";
-    return { pulled, merged: paths, note: `작업 사본이 원격보다 뒤처져 있어 원격 커밋 ${pulled}개를 fast-forward로 먼저 받았다.${mergedNote}` };
+    const absorbedNote = removed.length ? ` 원격과 바이트가 같은 로컬 새 파일 ${removed.length}개는 받는 파일로 흡수했다.` : "";
+    return { pulled, merged: paths, note: `작업 사본이 원격보다 뒤처져 있어 원격 커밋 ${pulled}개를 fast-forward로 먼저 받았다.${mergedNote}${absorbedNote}` };
   }
-  if (now === head && settled.restored === plans.length) {
+  if (now === head && settled.restored === plans.length && absorbedBad.length === 0) {
     dropBackup();
     return skip(`원격 커밋 ${pulled}개를 fast-forward로 받지 못해 작업 사본을 원래대로 두었다: ${ffError ?? "알 수 없는 이유"}`);
   }
   throw new Error(`원격 커밋을 받는 도중 상태가 어긋났다(HEAD ${now || "확인 실패"}, 받기 전 ${head}, 원격 ${upstream}${ffError ? `, ${ffError}` : ""}).`
     + `${settled.untouched.length ? ` 그 사이 다시 바뀐 파일은 건드리지 않았다: ${settled.untouched.join(", ")}.` : ""}`
+    + `${absorbedBad.length ? ` 되돌리지 못한 새 파일: ${absorbedBad.join(", ")}.` : ""}`
     + `${settled.errors.length ? ` 마무리하지 못한 파일: ${settled.errors.join("; ")}.` : ""} ${recovery()}`);
 }
