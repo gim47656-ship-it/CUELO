@@ -145,12 +145,16 @@ try {
 
     $cwdRepoRoot = $null
     $cwdCommonDir = $null
+    $cwdIsLinkedWorktree = $false
     try {
         $cwdRepoRoot = Get-RepositoryRootInPathNamespace $cwd
         $cwdCommonDir = Normalize-FullPath (Invoke-Git -WorkingDirectory $cwdRepoRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir')).Output
+        $cwdGitDir = Normalize-FullPath (Invoke-Git -WorkingDirectory $cwdRepoRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-dir')).Output
+        $cwdIsLinkedWorktree = -not $cwdGitDir.Equals($cwdCommonDir, $pathComparison)
     } catch {
         $cwdRepoRoot = $null
         $cwdCommonDir = $null
+        $cwdIsLinkedWorktree = $false
     }
 
     $selectedRepoRoot = $null
@@ -177,26 +181,48 @@ try {
 
     $repoRoot = $selectedRepoRoot
     $commonDir = $selectedCommonDir
+    # cwd 밖 파일은 사용자의 명시 지시(outsideCwdReason)가 있을 때만 허용한다. 다른 저장소 대상도 같은 규칙이다(2026-11-19).
+    # cwd 저장소 루트 바로 아래 파일(HANDOFF, CHANGELOG 같은 루트 문서)만 같은 저장소일 때 예외로 둔다.
+    $outsideCwdReason = ([string]$payload.outsideCwdReason).Trim()
+    # index.ts가 낡은 매니페스트를 직접 다시 만들어 더한 파일은 cwd 밖이어도 사용자 지시를 요구하지 않는다. 요청에 무엇이 실려 와도 이 파일 하나만 인정한다.
+    $scriptStart = [DateTime]::UtcNow
+    $generatedFiles = [Collections.Generic.HashSet[string]]::new($pathComparer)
+    foreach ($generated in @($payload.generatedFiles)) {
+        if (([string]$generated).Replace('\', '/') -eq 'Tools/CUELO_Setup/files/source-integrity.json') { [void]$generatedFiles.Add('Tools/CUELO_Setup/files/source-integrity.json') }
+    }
+    $outsideCwdMessage = $null
     if ($cwdRepoRoot) {
         $targetsBelongToCwdRepository = $commonDir.Equals($cwdCommonDir, $pathComparison)
-        if ($targetsBelongToCwdRepository) {
-            foreach ($file in $resolvedFiles) {
+        # 세션 전용 linked worktree 안이면 그 worktree 전체(같은 worktree 루트)는 지시 없이 허용한다. 여러 세션이 쓰는 main checkout과 다른 worktree·저장소는 아니다(사용자 결정 2026-11-19).
+        $targetsInCwdLinkedWorktree = $cwdIsLinkedWorktree -and $repoRoot.Equals($cwdRepoRoot, $pathComparison)
+        foreach ($file in $resolvedFiles) {
+            if ($targetsInCwdLinkedWorktree) { continue }
+            if (Test-PathWithin -Path $file.FullPath -Root $cwd) { continue }
+            if ($generatedFiles.Contains((Convert-ToRepoPath -FullPath $file.FullPath -Root $repoRoot))) { continue }
+            if ($targetsBelongToCwdRepository) {
                 $parentPath = [IO.Path]::GetDirectoryName($file.FullPath)
-                $isDirectRepoRootChild = $parentPath -and $parentPath.Equals($cwdRepoRoot, $pathComparison)
-                if (-not (Test-PathWithin -Path $file.FullPath -Root $cwd) -and -not $isDirectRepoRootChild) {
-                    throw "File path escapes the session cwd: $($file.Input)"
-                }
+                if ($parentPath -and $parentPath.Equals($cwdRepoRoot, $pathComparison)) { continue }
             }
+            $outsideCwdMessage = "File path escapes the session cwd: $($file.Input)"
+            break
         }
     } else {
         foreach ($file in $resolvedFiles) {
-            if (-not (Test-PathWithin -Path $file.FullPath -Root $cwd)) {
-                throw "File path escapes the session cwd: $($file.Input)"
+            if (-not (Test-PathWithin -Path $file.FullPath -Root $cwd) -and -not $generatedFiles.Contains((Convert-ToRepoPath -FullPath $file.FullPath -Root $repoRoot))) {
+                $outsideCwdMessage = "File path escapes the session cwd: $($file.Input)"
+                break
             }
         }
-        if (-not (Test-PathWithin -Path $repoRoot -Root $cwd)) {
-            throw "Discovered repository escapes the session cwd: $repoRoot"
+        if (-not $outsideCwdMessage -and -not (Test-PathWithin -Path $repoRoot -Root $cwd)) {
+            $outsideCwdMessage = "Discovered repository escapes the session cwd: $repoRoot"
         }
+    }
+    $outsideCwdUsed = $null
+    if ($outsideCwdMessage) {
+        if (-not $outsideCwdReason) {
+            throw "$outsideCwdMessage. Committing outside the session cwd requires the user's explicit instruction: pass it as outsideCwdReason."
+        }
+        $outsideCwdUsed = $outsideCwdReason
     }
 
     $seen = [Collections.Generic.HashSet[string]]::new($pathComparer)
@@ -377,6 +403,56 @@ try {
         [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', "branch.$branch.merge", $upstreamRef))
     }
 
+    # 커밋 뒤 안내(실패해도 커밋 결과는 그대로): 같은 작업이 만든 파일이 추적되지 않은 채 남는 일을 막으려고
+    # 커밋 경로의 가장 깊은 공통 상위 폴더(저장소 루트면 cwd) 아래에 남은 미추적·수정·stage된 파일을 알려 준다.
+    # push·검증이 끝난 뒤에 하고, 이미 오래 걸렸으면 건너뛰어 호출 제한 시간(180초) 안에 성공 응답이 나가게 한다.
+    $leftoverScope = $null
+    $leftoverTotal = 0
+    $leftoverFiles = @()
+    try {
+        if (([DateTime]::UtcNow - $scriptStart).TotalSeconds -lt 90) {
+            $commonSegments = $null
+            foreach ($repoPath in $repoPaths) {
+                $parts = @($repoPath -split '/')
+                # 배열이 한 개나 0개로 풀리지 않도록 List로 모은다.
+                $dirParts = [Collections.Generic.List[string]]::new()
+                for ($index = 0; $index -lt $parts.Count - 1; $index++) { $dirParts.Add([string]$parts[$index]) }
+                if ($null -eq $commonSegments) {
+                    $commonSegments = $dirParts
+                } else {
+                    $shared = 0
+                    while ($shared -lt $commonSegments.Count -and $shared -lt $dirParts.Count -and $commonSegments[$shared].Equals($dirParts[$shared], $pathComparison)) { $shared++ }
+                    $commonSegments.RemoveRange($shared, $commonSegments.Count - $shared)
+                }
+            }
+            $scopePath = $commonSegments -join '/'
+            if (-not $scopePath -and (Test-PathWithin -Path $cwd -Root $repoRoot)) { $scopePath = Convert-ToRepoPath -FullPath $cwd -Root $repoRoot }
+            if ($scopePath) {
+                $committedSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
+                foreach ($repoPath in $repoPaths) { [void]$committedSet.Add($repoPath) }
+                $states = [Collections.Generic.Dictionary[string, string]]::new($pathComparer)
+                $gitPrefix = @('-c', 'core.quotepath=false', '--literal-pathspecs')
+                foreach ($path in (Get-GitPaths -WorkingDirectory $repoRoot -GitArgs ($gitPrefix + @('ls-files', '--others', '--exclude-standard', '--', $scopePath)))) {
+                    if (-not $committedSet.Contains($path)) { $states[$path] = 'untracked' }
+                }
+                foreach ($path in (Get-GitPaths -WorkingDirectory $repoRoot -GitArgs ($gitPrefix + @('diff', '--no-renames', '--name-only', '--', $scopePath)))) {
+                    if (-not $committedSet.Contains($path)) { $states[$path] = 'modified' }
+                }
+                foreach ($path in (Get-GitPaths -WorkingDirectory $repoRoot -GitArgs ($gitPrefix + @('diff', '--cached', '--no-renames', '--name-only', '--', $scopePath)))) {
+                    if (-not $committedSet.Contains($path)) { $states[$path] = if ($states.ContainsKey($path)) { 'staged+modified' } else { 'staged' } }
+                }
+                $leftoverTotal = $states.Count
+                if ($leftoverTotal -gt 0) {
+                    $leftoverScope = $scopePath
+                    $leftoverFiles = @($states.Keys | Sort-Object { $_ } | Select-Object -First 20 | ForEach-Object { "$($states[$_]): $_" })
+                }
+            }
+        }
+    } catch {
+        $leftoverScope = $null
+        $leftoverTotal = 0
+        $leftoverFiles = @()
+    }
     $stage = 'complete'
     $result = [ordered]@{
         ok = $true
@@ -385,6 +461,12 @@ try {
         remote = $remote
         upstreamRef = $upstreamRef
         resumedPush = $resumedPush
+    }
+    if ($outsideCwdUsed) { $result['outsideCwdReason'] = $outsideCwdUsed }
+    if ($leftoverTotal -gt 0) {
+        $result['leftoverScope'] = $leftoverScope
+        $result['leftoverTotal'] = $leftoverTotal
+        $result['leftoverFiles'] = @($leftoverFiles)
     }
 } catch {
     $exitCode = 1

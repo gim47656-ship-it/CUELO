@@ -14,6 +14,7 @@ import {
   collectChanges,
   CrossReviewRefusal,
   decideGate,
+  passedBlobsInRoot,
   detectHidingLeads,
   detectMarkers,
   hardSecretPath,
@@ -1196,6 +1197,96 @@ describe("게이트", () => {
     const filler = `${JSON.stringify({ type: "dispatch", pad: "x".repeat(1000) })}\n`;
     writeFileSync(env.ledger, `${readFileSync(env.ledger, "utf8")}${filler.repeat(1200)}`);
     expect((await runGate(gateOptions(env))).decision?.uncovered).toEqual([]);
+  });
+
+  test("같은 저장소에서 통과한 같은 바이트는 다른 경로에서도 덮이고, 어느 통과가 덮었는지 알린다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    const resolved = await passReview(env, ["a.ts"]);
+    writeFileSync(join(env.work, "copy.ts"), MARKER_BASE);
+    const outcome = await runGate(gateOptions(env, { files: ["copy.ts"] }));
+    expect(outcome.decision?.required).toHaveLength(1);
+    expect(outcome.decision?.uncovered).toEqual([]);
+    expect(outcome.decision).toMatchObject({ reused: [{ path: "copy.ts", blob: blobOf(MARKER_BASE), fromPath: "a.ts", reviewId: resolved.reviewId }] });
+  });
+
+  test("통과 기록 없이 HEAD에만 있는 같은 바이트는 다른 경로에서 덮이지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    sh(env.work, "add", "a.ts");
+    sh(env.work, "commit", "-q", "-m", "unreviewed");
+    writeFileSync(join(env.work, "copy.ts"), MARKER_BASE);
+    await expect(runGate(gateOptions(env, { files: ["copy.ts"] }))).rejects.toThrow("- copy.ts: marker");
+  });
+
+  test("통과한 바이트와 다른 내용이면 다른 경로에서도 다시 요구한다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    await passReview(env, ["a.ts"]);
+    writeFileSync(join(env.work, "copy.ts"), `${MARKER_BASE}export const extra = 1;\n`);
+    await expect(runGate(gateOptions(env, { files: ["copy.ts"] }))).rejects.toThrow("- copy.ts: marker");
+  });
+
+  test("통과하지 못한 기록이 같은 바이트를 덮었어도 다른 경로를 면제하지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    const d = deps(env, { openai: finding("open one") });
+    const review = await runReview(input(), d, signal);
+    await runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
+    writeFileSync(join(env.work, "copy.ts"), MARKER_BASE);
+    await expect(runGate(gateOptions(env, { files: ["copy.ts"] }))).rejects.toThrow("- copy.ts: marker");
+  });
+
+  test("다른 저장소에서 통과한 같은 바이트는 면제하지 않는다", async () => {
+    const other = repo();
+    writeFileSync(join(other.work, "a.ts"), MARKER_BASE);
+    await passReview(other, ["a.ts"]);
+    const env = repo();
+    writeFileSync(env.ledger, readFileSync(other.ledger, "utf8"));
+    writeFileSync(join(env.work, "copy.ts"), MARKER_BASE);
+    await expect(runGate(gateOptions(env, { files: ["copy.ts"] }))).rejects.toThrow("- copy.ts: marker");
+    // 같은 저장소로 보면 같은 원장이 그 바이트를 덮는다(대조): other 저장소에서는 다른 경로도 통과한다.
+    writeFileSync(join(other.work, "copy.ts"), MARKER_BASE);
+    expect((await runGate(gateOptions(other, { files: ["copy.ts"] }))).decision?.uncovered).toEqual([]);
+  });
+
+  const round = (reviewId: string, root: string) => ({ type: "cross-review", reviewId, root }) as unknown as CrossReviewLedgerRecord;
+  const pass = (reviewId: string, files: { path: string; blob: string }[], inputs?: { path: string; blob: string }[]): CrossReviewLedgerRecord =>
+    ({ type: "cross-review-resolve", ts: "t", reviewId, chain: [reviewId], resolutions: [], open: [], pass: true, files, ...(inputs ? { inputs } : {}) });
+
+  test("decideGate: 다른 경로의 통과가 입력이 바뀌어 못 덮어도 같은 경로의 이어받기(carried)를 막지 않는다", () => {
+    const oldText = "export const a = 1;\n";
+    const text = "// note\nexport const a = 1;\n";
+    const change: ChangedFile = { path: "a.ts", status: "added", blob: blobOf(text), binary: false, changedLines: [], text: "", content: Buffer.from(text) };
+    const records = [
+      round("r1", "/repo"), pass("r1", [{ path: "a.ts", blob: blobOf(oldText) }]),
+      round("r2", "/repo"), pass("r2", [{ path: "b.ts", blob: blobOf(text) }], [{ path: "spec.md", blob: "5".repeat(40) }]),
+    ];
+    const decision = decideGate([change], ["a.ts"], records, new Map([["spec.md", "6".repeat(40)]]), new Map([[`a.ts\0${blobOf(oldText)}`, oldText]]), "/repo");
+    expect(decision.uncovered).toEqual([]);
+    expect(decision.carried).toMatchObject([{ path: "a.ts", reviewId: "r1", kind: "comment" }]);
+    // root를 모르면 다른 경로의 통과는 쓰지 않는다.
+    const bare: ChangedFile = { ...change, path: "c.ts" };
+    expect(decideGate([bare], ["c.ts"], records, new Map(), new Map(), undefined).uncovered).toHaveLength(1);
+  });
+
+  test("decideGate: 다른 경로의 통과에 묶인 입력이 그대로일 때만 덮고, 바뀌었으면 다시 요구한다", () => {
+    const blob = "b".repeat(40);
+    const change: ChangedFile = { path: "copy.ts", status: "added", blob, binary: false, changedLines: [], text: "", content: null };
+    const records = [round("r1", "/repo"), pass("r1", [{ path: "a.ts", blob }], [{ path: "spec.md", blob: "5".repeat(40) }])];
+    expect(decideGate([change], ["copy.ts"], records, new Map([["spec.md", "5".repeat(40)]]), new Map(), "/repo").uncovered).toEqual([]);
+    expect(decideGate([change], ["copy.ts"], records, new Map([["spec.md", "6".repeat(40)]]), new Map(), "/repo").uncovered).toHaveLength(1);
+  });
+
+  test("passedBlobsInRoot: 한 reviewId가 두 저장소로 기록돼 있으면 어느 쪽도 덮지 않는다", () => {
+    const blob = "b".repeat(40);
+    const records = [round("q", "/A"), pass("q", [{ path: "old.ts", blob }]), round("q", "/B")];
+    expect(passedBlobsInRoot(records, "/B").get(blob)).toBeUndefined();
+    expect(passedBlobsInRoot(records, "/A").get(blob)).toBeUndefined();
+    expect(passedBlobsInRoot([round("q", "/A"), pass("q", [{ path: "old.ts", blob }])], "/A").get(blob)).toMatchObject([{ path: "old.ts" }]);
+    // root가 없는 라운드 뒤에 root가 붙은 같은 ID는 앞선 통과를 그 저장소로 옮기지 못한다.
+    const rootless = { type: "cross-review", reviewId: "q" } as unknown as CrossReviewLedgerRecord;
+    expect(passedBlobsInRoot([rootless, pass("q", [{ path: "old.ts", blob }]), round("q", "/B")], "/B").get(blob)).toBeUndefined();
   });
 });
 

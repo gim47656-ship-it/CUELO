@@ -22,6 +22,10 @@ interface FinalizerResult {
   remote?: string;
   upstreamRef?: string;
   resumedPush?: boolean;
+  outsideCwdReason?: string;
+  leftoverScope?: string;
+  leftoverTotal?: number;
+  leftoverFiles?: string[];
 }
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
@@ -193,7 +197,87 @@ function isSourcePath(path: string, packagedTools: string[]): boolean {
   return true;
 }
 
-async function checkSourceManifest(
+class StaleManifestError extends Error {
+  constructor(message: string, readonly root: string) {
+    super(message);
+  }
+}
+
+type ManifestExec = (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string; stderr?: string }>;
+
+/**
+ * 매니페스트가 낡았으면 안내 문구의 두 명령을 같은 cwd·인자로 직접 실행해 다시 만들고, 매니페스트를 이번 커밋에 넣을 cwd 기준 경로를 돌려준다
+ * (2026-11-19: 안내대로 두 명령을 돌리고 매니페스트를 더해 다시 호출하면 늘 통과했다). 명령이 하나라도 실패하면 이전 매니페스트 바이트를 되돌리고
+ * 기존 오류에 명령 출력을 붙여 던진다. 헬퍼가 없는 저장소는 verifySourceManifest가 애초에 건너뛰므로 여기까지 오지 않는다.
+ * 낡음이 아닌 오류(목록 누락 등)는 그대로 던진다. 요청 파일 일부가 cwd 밖인데 outsideCwdReason이 없으면 finalizer가 거절할 요청이므로
+ * 저장소를 건드리지 않고 기존 오류를 그대로 던진다.
+ */
+async function checkSourceManifest(cwd: string, files: string[], exec: ManifestExec, outsideAuthorized: boolean): Promise<string | undefined> {
+  try {
+    await verifySourceManifest(cwd, files, exec);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof StaleManifestError)) throw error;
+    const insideCwd = files.every((file) => {
+      const outside = relative(resolve(cwd), resolve(cwd, file));
+      return outside !== ".." && !outside.startsWith(`..${sep}`) && !isAbsolute(outside);
+    });
+    if (!insideCwd && !outsideAuthorized) throw error;
+    const helperCwd = join(error.root, "Tools", "CUELO_Setup");
+    const manifestFile = join(error.root, ...manifestPath.split("/"));
+    let previous: Buffer | undefined;
+    try {
+      previous = await readFile(manifestFile);
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(`${error.message}\nThe current manifest could not be read, so it was not regenerated: ${readError instanceof Error ? readError.message : String(readError)}`);
+      }
+    }
+    // 되돌리기가 실패해도 낡음 오류와 헬퍼 출력은 잃지 않도록 결과 문구만 돌려준다.
+    const restore = async (): Promise<string> => {
+      try {
+        if (previous) await writeFile(manifestFile, previous);
+        else await rm(manifestFile, { force: true });
+        return "the previous manifest was restored";
+      } catch (restoreError) {
+        return `restoring the previous manifest FAILED (${restoreError instanceof Error ? restoreError.message : String(restoreError)}); inspect ${manifestPath}`;
+      }
+    };
+    const steps = [
+      ["files/source-build-helper.js", "create-manifest", "../..", "files/runtime-integrity.json", "--output", "files/source-integrity.json"],
+      ["files/source-build-helper.js", "verify-source", "../..", "files/source-integrity.json", "files/runtime-integrity.json"],
+    ];
+    const earlierOutputs: string[] = [];
+    for (const args of steps) {
+      let failure: string | undefined;
+      let text = "";
+      try {
+        const result = await exec("node", args, { cwd: helperCwd });
+        text = [result.stdout, result.stderr].map((part) => (part ?? "").trim()).filter(Boolean).join("\n");
+        if (result.code !== 0) failure = `exit ${result.code}: ${text}`;
+      } catch (spawnError) {
+        const attached = spawnError as { stdout?: unknown; stderr?: unknown };
+        text = [attached?.stdout, attached?.stderr].map((part) => (typeof part === "string" ? part.trim() : "")).filter(Boolean).join("\n");
+        failure = `${(spawnError instanceof Error ? spawnError.message : String(spawnError)) || "the command could not be started"}${text ? `: ${text}` : ""}`;
+      }
+      if (failure) {
+        const restored = await restore();
+        throw new Error(`${error.message}\nAutomatic regeneration failed at \`node ${args.slice(0, 2).join(" ")}\` (${failure}); ${restored}.${earlierOutputs.length ? `\nEarlier helper output: ${earlierOutputs.join(" | ")}` : ""}`);
+      }
+      if (text) earlierOutputs.push(text);
+    }
+    // 다시 만든 매니페스트로 한 번 더 대조한다. 그래도 어긋나면 되돌리고 원래 오류와 헬퍼 출력을 함께 보인다.
+    try {
+      await verifySourceManifest(cwd, files, exec);
+    } catch (recheckError) {
+      const restored = await restore();
+      throw new Error(`${error.message}\nThe manifest was regenerated but still does not match (${restored}): ${recheckError instanceof Error ? recheckError.message : String(recheckError)}${earlierOutputs.length ? `\nHelper output: ${earlierOutputs.join(" | ")}` : ""}`);
+    }
+    return relative(cwd, manifestFile).split(sep).join("/");
+  }
+}
+
+async function verifySourceManifest(
   cwd: string,
   files: string[],
   exec: (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string }>,
@@ -252,7 +336,7 @@ async function checkSourceManifest(
       throw new Error(`git_finalize: source manifest is missing ${path}. create-manifest reads only tracked files, so run \`git add -N ${path}\` first. ${manifestInstructions}`);
     }
     if (recorded !== hash) {
-      throw new Error(`git_finalize: source manifest is stale for ${path}. ${manifestInstructions}`);
+      throw new StaleManifestError(`git_finalize: source manifest is stale for ${path}. ${manifestInstructions}`, root);
     }
   }
 }
@@ -296,17 +380,18 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Main-only commit/push exact cwd-relative files in one repo, no globs/directories. message required; crossReviewHighRisk uses paths from files. Review/slop passes bind current content. crossReviewWaiver: explicit user instruction OR 2026-11-19 provider-limit exception after required Hydrogen also failed or could not be called (decision, reviewId, raw errors). slopGateWaiver: explicit user instruction only. Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
+    "Main-only commit/push exact cwd-relative files in one repo, no globs/directories. message required; crossReviewHighRisk uses paths from files. Review/slop passes bind current content. crossReviewWaiver: explicit user instruction OR 2026-11-19 provider-limit exception after required Hydrogen also failed or could not be called (decision, reviewId, raw errors). slopGateWaiver: explicit user instruction only. outsideCwdReason: the user's explicit instruction authorizing files outside the session cwd (another repo, another worktree, or the shared main checkout outside cwd); not needed inside the session's own linked worktree or for direct repo-root children of the cwd repo; without it such paths are rejected. A stale source manifest is regenerated and committed automatically. After a commit the result lists untracked/modified files left under the committed folder (not committed, advisory). Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
     crossReviewHighRisk: pi.zod.array(pi.zod.string()).optional(),
     crossReviewWaiver: pi.zod.string().optional(),
     slopGateWaiver: pi.zod.string().optional(),
+    outsideCwdReason: pi.zod.string().optional(),
   }),
 
   async execute(_toolCallId, params, onUpdate, _ctx, signal) {
-    const requested = params.files.map((value) => value.trim()).filter(Boolean);
+    let requested = params.files.map((value) => value.trim()).filter(Boolean);
     const message = params.message.trim();
     if (requested.length === 0) throw new Error("git_finalize requires at least one exact file path.");
     if (!message) throw new Error("git_finalize requires a non-empty commit message.");
@@ -328,7 +413,9 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       if (upstreamNote) onUpdate?.({ content: [{ type: "text", text: upstreamNote }], details: { phase: "upstream-sync" } });
       if (reattached.note) upstreamNote = [reattached.note, upstreamNote].filter(Boolean).join(" ");
     }
-    await checkSourceManifest(pi.cwd, requested, exec);
+    // 낡은 매니페스트는 여기서 다시 만들어 요청 파일에 더한다. 게이트 blob 수집(runGate)보다 앞이라 finalizer의 blob 대조와 어긋나지 않는다.
+    const regeneratedManifest = await checkSourceManifest(pi.cwd, requested, exec, Boolean(params.outsideCwdReason?.trim()));
+    if (regeneratedManifest && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, regeneratedManifest))) requested = [...requested, regeneratedManifest];
     // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.
     // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
     let gateBlobs: Record<string, string> | undefined;
@@ -378,7 +465,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     try {
       const windows = await windowsDrivePaths(pi.cwd, files, [pi.cwd, scriptPath, requestPath], exec);
       // gateBlobs: 게이트가 본 코드 파일의 blob. finalizer.ps1이 잠금 안에서 stage된 내용과 대조해, 게이트 뒤에 파일이 바뀌었으면 커밋하지 않는다.
-      await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message, ...(gateBlobs && Object.keys(gateBlobs).length > 0 ? { gateBlobs } : {}) }), "utf8");
+      const outsideCwdReason = params.outsideCwdReason?.trim();
+      await writeFile(requestPath, JSON.stringify({ cwd: windows?.[0] ?? pi.cwd, files, message, ...(outsideCwdReason ? { outsideCwdReason } : {}), ...(regeneratedManifest ? { generatedFiles: [manifestPath] } : {}), ...(gateBlobs && Object.keys(gateBlobs).length > 0 ? { gateBlobs } : {}) }), "utf8");
       const result = await pi.exec(
         process.platform === "win32" || windows ? "powershell.exe" : "pwsh",
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windows?.[1] ?? scriptPath, "-Request", windows?.[2] ?? requestPath],
@@ -412,10 +500,16 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
             type: "text",
             text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
               + (upstreamNote ? ` ${upstreamNote}` : "")
+              + (regeneratedManifest ? ` 소스 매니페스트(${manifestPath})가 낡아 다시 만들어 이번 커밋에 포함했다.` : "")
               + (parsed.resumedPush ? " 이미 커밋돼 있던 미전송 커밋을 함께 다시 보냈다." : "")
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")
               + (handoffNote ? ` ${handoffNote}` : "")
+              + (parsed.outsideCwdReason ? `\n세션 cwd 밖 경로를 사용자 지시(outsideCwdReason)로 커밋했다: ${parsed.outsideCwdReason}` : "")
+              + (parsed.leftoverTotal && parsed.leftoverFiles?.length
+                ? `\n커밋하지 않고 남은 파일(${parsed.leftoverScope}/ 아래 ${parsed.leftoverTotal}개, 이번 커밋에 포함되지 않음):\n${parsed.leftoverFiles.join("\n")}`
+                  + (parsed.leftoverTotal > parsed.leftoverFiles.length ? `\n... 외 ${parsed.leftoverTotal - parsed.leftoverFiles.length}개` : "")
+                : "")
               + (publication ? `\n${publication}` : "")
               + syncHint
           },

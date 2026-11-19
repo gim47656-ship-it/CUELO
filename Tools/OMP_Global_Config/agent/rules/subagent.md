@@ -665,10 +665,12 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   수용한 Main이 정확한 파일 목록과 message를 `git_finalize`에 넘기는 것이다.
 - 공유 작업 트리에서 비교 검사를 하려고 전체 `git stash`를 저장하거나 적용하지 않는다. 기준선은 별도 사본에서 실행하고, 프로세스 정리도 자신이 시작한 PID만 대상으로 한다.
 - `git_finalize`의 경로, 저장소 해석과 금지 입력은 도구 설명과 `tools/git-finalizer/finalizer.ps1`이 정본이다.
-  session cwd와 대상 프로젝트 경계를 지키고 sibling이나 다른 세션 worktree를 임의 마감하지 않는다.
-- Main의 raw Git fallback은 사용자가 그 외부 저장소 작업을 명시 요청했고, `git_finalize`를 먼저
-  호출했으며, 그 호출이 정확히 `File path escapes the session cwd`로 실패했고, target이 현재
-  저장소 밖의 별도 Git 저장소인 네 조건을 모두 충족할 때만 허용한다. 실행 전 branch/upstream,
+  session cwd와 대상 프로젝트 경계를 지키고 sibling이나 다른 세션 worktree를 임의 마감하지 않는다. 세션 자신의 linked
+  worktree 안은 cwd 밖이어도 그대로 마감한다. 그 밖(공유 main checkout의 다른 폴더, 다른 worktree, 다른 저장소)은
+  사용자의 명시 지시를 `outsideCwdReason`에 인용해서만 마감한다(2026-11-19 사용자 결정).
+- Main의 raw Git fallback은 사용자가 그 외부 저장소 작업을 명시 요청했고, `git_finalize`를 그 지시를 담은
+  `outsideCwdReason`과 함께 먼저 호출했으며, 그 호출이 그래도 정확히 `File path escapes the session cwd`로 실패했고,
+  target이 현재 저장소 밖의 별도 Git 저장소인 네 조건을 모두 충족할 때만 허용한다. 실행 전 branch/upstream,
   exact changed files, shared index 상태, remote/upstream ancestry를 확인하고 exact files만
   stage·commit·push하며 unrelated 변경은 포함하거나 되돌리지 않는다.
 - command-guard는 위 네 조건을 확인하지 못한다(사용자 요청 여부는 장치가 알 수 없다). 장치가 보는 것은 대상이 세션

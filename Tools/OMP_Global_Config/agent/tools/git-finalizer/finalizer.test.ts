@@ -30,6 +30,10 @@ interface FinalizerOutput {
   error?: string;
   commitSha?: string;
   resumedPush?: boolean;
+  outsideCwdReason?: string;
+  leftoverScope?: string;
+  leftoverTotal?: number;
+  leftoverFiles?: string[];
 }
 
 function run(command: string, args: string[], cwd?: string): CommandResult {
@@ -396,7 +400,7 @@ describe("git finalizer", () => {
     const sibling = await createAdditionalRepository(root, "doc/core");
     await mkdir(join(sibling.work, "src"));
     await writeFile(join(sibling.work, "src", "main.ts"), "export const core = 1;\n");
-    const underDocAncestor = await startTool(work, ["../doc/core/src/main.ts"]);
+    const underDocAncestor = await startTool(work, ["../doc/core/src/main.ts"], { outsideCwdReason: "user named the doc/core repo" });
     expect(underDocAncestor.error).toBeUndefined();
     expect(git(sibling.work, ["--git-dir", sibling.remote, "rev-parse", "refs/heads/main"])).toBe(git(sibling.work, ["rev-parse", "HEAD"]));
     expect(JSON.stringify(underDocAncestor.output)).toContain("`../doc/core/src`에서 저장소 루트까지 HANDOFF.md가 없다");
@@ -415,6 +419,101 @@ describe("git finalizer", () => {
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+  }, TEST_TIMEOUT_MS);
+
+  // 매니페스트를 실제로 다시 쓰는 작은 헬퍼: create-manifest는 고정 목록의 LF 해시를 쓰고, verify-source는 exit 코드만 정한다.
+  async function installRegeneratingHelper(work: string, failure?: string) {
+    const helper = join(work, "Tools", "CUELO_Setup", "files", "source-build-helper.js");
+    await writeFile(helper, failure ?? [
+      'const fs = require("fs"); const crypto = require("crypto");',
+      'const [command, root, , , out] = process.argv.slice(2);',
+      'if (command === "verify-source") process.exit(0);',
+      'const files = {};',
+      'for (const name of ["a.txt", "b.txt", "package.json", "Tools/runtime/entry.js"]) {',
+      '  files[name] = crypto.createHash("sha256").update(fs.readFileSync(root + "/" + name, "utf8").replace(/\\r\\n/g, "\\n")).digest("hex");',
+      '}',
+      'fs.writeFileSync(out, JSON.stringify({ files }));',
+      '',
+    ].join("\n"));
+    git(work, ["add", "--", "Tools/CUELO_Setup/files/source-build-helper.js"]);
+    git(work, ["commit", "-m", "helper"]);
+    git(work, ["push"]);
+  }
+
+  test("regenerates a stale source manifest and commits it with the requested file, including from a nested cwd", async () => {
+    const { root, work, remote } = await createManifestRepository();
+    await installRegeneratingHelper(work);
+    const manifest = "Tools/CUELO_Setup/files/source-integrity.json";
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+
+    const first = await startTool(work, ["a.txt"]);
+    expect(first.error).toBeUndefined();
+    expect(JSON.stringify(first.output)).toContain("다시 만들어 이번 커밋에 포함했다");
+    const sha = git(work, ["rev-parse", "HEAD"]);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]).split(/\r?\n/).sort()).toEqual(["Tools/CUELO_Setup/files/source-integrity.json", "a.txt"]);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(sha);
+    const committed = JSON.parse(git(work, ["show", `HEAD:${manifest}`])) as { files: Record<string, string> };
+    expect(committed.files["a.txt"]).toBe(createHash("sha256").update("changed-a\n").digest("hex"));
+    expect(git(work, ["status", "--short"])).toBe("");
+
+    // 매니페스트가 cwd 밖(Tools/runtime 아래 세션)이어도 직접 만든 매니페스트는 사용자 지시 없이 들어간다.
+    await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
+    const nested = await startTool(join(work, "Tools", "runtime"), ["entry.js"]);
+    expect(nested.error).toBeUndefined();
+    const nestedSha = git(work, ["rev-parse", "HEAD"]);
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", nestedSha]).split(/\r?\n/).sort()).toEqual([manifest, "Tools/runtime/entry.js"]);
+    expect(root).toBeTruthy();
+  }, TEST_TIMEOUT_MS);
+
+  test("keeps the stale-manifest error with the command output when regeneration fails", async () => {
+    const { work, remote } = await createManifestRepository();
+    await installRegeneratingHelper(work, 'console.error("boom from helper"); process.exit(3);\n');
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+
+    const { error } = await startTool(work, ["a.txt"]);
+    expect(error?.message).toContain("source manifest is stale for a.txt");
+    expect(error?.message).toContain("node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json");
+    expect(error?.message).toContain("Automatic regeneration failed");
+    expect(error?.message).toContain("boom from helper");
+    expect(error?.message).toContain("previous manifest was restored");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+  }, TEST_TIMEOUT_MS);
+
+  test("restores the previous manifest and reports both helper streams when verify-source fails after create-manifest rewrote it", async () => {
+    const { work } = await createManifestRepository();
+    await installRegeneratingHelper(work, [
+      'const fs = require("fs"); const [command, , , , out] = process.argv.slice(2);',
+      'if (command === "verify-source") { console.log("bad entry"); console.error("verification failed"); process.exit(3); }',
+      'fs.writeFileSync(out, "REPLACED");',
+      '',
+    ].join("\n"));
+    const manifestFile = join(work, "Tools", "CUELO_Setup", "files", "source-integrity.json");
+    const original = await readFile(manifestFile, "utf8");
+    await writeFile(manifestFile, original.replace(/}$/, ',"localEdit":true}'));
+    const edited = await readFile(manifestFile, "utf8");
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+
+    const { error } = await startTool(work, ["a.txt"]);
+    expect(error?.message).toContain("source manifest is stale for a.txt");
+    expect(error?.message).toContain("verification failed");
+    expect(error?.message).toContain("bad entry");
+    expect(await readFile(manifestFile, "utf8")).toBe(edited);
+  }, TEST_TIMEOUT_MS);
+
+  test("never regenerates the manifest for a request that the cwd boundary would reject", async () => {
+    const { work } = await createManifestRepository();
+    await installRegeneratingHelper(work);
+    const session = join(work, "session");
+    await mkdir(session);
+    const manifestFile = join(work, "Tools", "CUELO_Setup", "files", "source-integrity.json");
+    const before = await readFile(manifestFile, "utf8");
+    await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
+
+    const { error } = await startTool(session, ["../Tools/runtime/entry.js"]);
+    expect(error?.message).toContain("source manifest is stale for Tools/runtime/entry.js");
+    expect(await readFile(manifestFile, "utf8")).toBe(before);
   }, TEST_TIMEOUT_MS);
 
   test("allows a source and its matching manifest in the same commit", async () => {
@@ -567,6 +666,7 @@ describe("git finalizer", () => {
       "external-sibling",
       ["../../external/a.txt"],
       "change external file",
+      { outsideCwdReason: "user asked to commit the external repo file" },
     );
     expect(result.code, result.stderr || result.stdout).toBe(0);
     expect(output.ok).toBe(true);
@@ -595,6 +695,7 @@ describe("git finalizer", () => {
       "external-deleted",
       ["../../external/a.txt"],
       "delete external file",
+      { outsideCwdReason: "user asked to delete the external repo file" },
     );
     expect(result.code, result.stderr || result.stdout).toBe(0);
     expect(output.ok).toBe(true);
@@ -636,6 +737,265 @@ describe("git finalizer", () => {
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe(beforeIndex);
     expect(git(work, ["status", "--short"])).toBe(beforeStatus);
   }, TEST_TIMEOUT_MS);
+
+  test("rejects a same-repository file outside the session cwd without outsideCwdReason, then allows it with the reason", async () => {
+    const { root, remote, work } = await createRepository();
+    const project = join(work, "project");
+    await mkdir(project);
+    await mkdir(join(work, "sibling"));
+    await writeFile(join(work, "sibling", "file.txt"), "base-sibling\n");
+    git(work, ["add", "--", "sibling/file.txt"]);
+    git(work, ["commit", "-m", "add sibling file"]);
+    git(work, ["push"]);
+    await writeFile(join(work, "sibling", "file.txt"), "changed-sibling\n");
+    const beforeHead = git(work, ["rev-parse", "HEAD"]);
+
+    for (const [name, extra] of [["no-reason", {}], ["blank-reason", { outsideCwdReason: "   " }]] as const) {
+      const rejected = await startFinalizer(root, project, name, ["../sibling/file.txt"], "must fail", extra);
+      expect(rejected.result.code).toBe(1);
+      expect(rejected.output.stage).toBe("repository");
+      expect(rejected.output.error).toContain("File path escapes the session cwd");
+      expect(rejected.output.error).toContain("outsideCwdReason");
+      expect(rejected.output.error).toContain("explicit instruction");
+      expect(git(work, ["rev-parse", "HEAD"])).toBe(beforeHead);
+      expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+    }
+
+    const allowed = await startFinalizer(root, project, "with-reason", ["../sibling/file.txt"], "sibling change", {
+      outsideCwdReason: "  user asked to commit the sibling folder  ",
+    });
+    expect(allowed.result.code, allowed.result.stderr || allowed.result.stdout).toBe(0);
+    expect(allowed.output.outsideCwdReason).toBe("user asked to commit the sibling folder");
+    expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", allowed.output.commitSha!])).toBe("sibling/file.txt");
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(allowed.output.commitSha!);
+  }, TEST_TIMEOUT_MS);
+
+  test("a session inside its own linked worktree may commit any folder of that worktree, but not another worktree, without a reason", async () => {
+    const { root, work } = await createRepository();
+    const linked = join(root, "linked");
+    const other = join(root, "other-linked");
+    git(work, ["worktree", "add", "-b", "linked-branch", linked]);
+    git(work, ["worktree", "add", "-b", "other-branch", other]);
+    await mkdir(join(linked, "project"));
+    await mkdir(join(linked, "sibling"));
+    await writeFile(join(linked, "sibling", "file.txt"), "base-sibling\n");
+    git(linked, ["add", "--", "sibling/file.txt"]);
+    git(linked, ["commit", "-m", "sibling file"]);
+    await writeFile(join(linked, "sibling", "file.txt"), "changed-sibling\n");
+    await writeFile(join(other, "a.txt"), "changed-other-a\n");
+    const otherHead = git(other, ["rev-parse", "HEAD"]);
+
+    const rejected = await startFinalizer(root, join(linked, "project"), "other-worktree", ["../../other-linked/a.txt"], "must fail");
+    expect(rejected.result.code).toBe(1);
+    expect(rejected.output.error).toContain("outsideCwdReason");
+    expect(git(other, ["rev-parse", "HEAD"])).toBe(otherHead);
+
+    const allowed = await startFinalizer(root, join(linked, "project"), "own-worktree", ["../sibling/file.txt"], "sibling change");
+    expect(allowed.result.code, allowed.result.stderr || allowed.result.stdout).toBe(0);
+    expect(allowed.output.outsideCwdReason).toBeUndefined();
+    expect(git(linked, ["diff-tree", "--no-commit-id", "--name-only", "-r", allowed.output.commitSha!])).toBe("sibling/file.txt");
+  }, TEST_TIMEOUT_MS);
+
+  test("the finalizer exempts only the source manifest from the cwd boundary even when a request names other generated files", async () => {
+    const { root, work } = await createRepository();
+    const project = join(work, "project");
+    await mkdir(project);
+    await mkdir(join(work, "sibling"));
+    await writeFile(join(work, "sibling", "file.txt"), "base-sibling\n");
+    git(work, ["add", "--", "sibling/file.txt"]);
+    git(work, ["commit", "-m", "add sibling file"]);
+    git(work, ["push"]);
+    await writeFile(join(work, "sibling", "file.txt"), "changed-sibling\n");
+    const beforeHead = git(work, ["rev-parse", "HEAD"]);
+
+    const { result, output } = await startFinalizer(root, project, "generated-spoof", ["../sibling/file.txt"], "must fail", { generatedFiles: ["sibling/file.txt"] });
+    expect(result.code).toBe(1);
+    expect(output.error).toContain("outsideCwdReason");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(beforeHead);
+  }, TEST_TIMEOUT_MS);
+
+  test("a different repository outside the session cwd needs outsideCwdReason, one inside the cwd does not", async () => {
+    const { root, work } = await createRepository();
+    const external = await createAdditionalRepository(root, "external");
+    const project = join(work, "project");
+    await mkdir(project);
+    await writeFile(join(external.work, "a.txt"), "changed-external-a\n");
+    const externalHead = git(external.work, ["rev-parse", "HEAD"]);
+
+    const rejected = await startFinalizer(root, project, "external-no-reason", ["../../external/a.txt"], "must fail");
+    expect(rejected.result.code).toBe(1);
+    expect(rejected.output.stage).toBe("repository");
+    expect(rejected.output.error).toContain("outsideCwdReason");
+    expect(git(external.work, ["rev-parse", "HEAD"])).toBe(externalHead);
+
+    const allowed = await startFinalizer(root, project, "external-reason", ["../../external/a.txt"], "external change", {
+      outsideCwdReason: "user named the external repo",
+    });
+    expect(allowed.result.code, allowed.result.stderr || allowed.result.stdout).toBe(0);
+    expect(allowed.output.outsideCwdReason).toBe("user named the external repo");
+
+    // 같은 저장소가 아니어도 cwd 안의 중첩 저장소는 지시 없이 통과한다.
+    const inner = await createAdditionalRepository(work, "inner-repo");
+    await writeFile(join(inner.work, "a.txt"), "changed-inner-a\n");
+    const nested = await startFinalizer(root, work, "inner-no-reason", ["inner-repo/a.txt"], "inner change");
+    expect(nested.result.code, nested.result.stderr || nested.result.stdout).toBe(0);
+    expect(nested.output.outsideCwdReason).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  test("a direct repository-root child stays allowed from a nested cwd without a reason", async () => {
+    const { root, work } = await createRepository();
+    const project = join(work, "project");
+    await mkdir(project);
+    await writeFile(join(work, "a.txt"), "changed-root-a\n");
+
+    const { result, output } = await startFinalizer(root, project, "root-child", ["../a.txt"], "root child");
+    expect(result.code, result.stderr || result.stdout).toBe(0);
+    expect(output.outsideCwdReason).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  test("outsideCwdReason lets a cwd outside any repository commit one repository file but never an escape from the repository", async () => {
+    const { root, work } = await createRepository();
+    const session = join(root, "session");
+    await mkdir(session);
+    await writeFile(join(work, "a.txt"), "changed-a\n");
+    await writeFile(join(root, "stray.txt"), "not-in-a-repo\n");
+
+    const escape = await startFinalizer(root, session, "no-repo-escape", ["../stray.txt"], "must fail", { outsideCwdReason: "user said so" });
+    expect(escape.result.code).toBe(1);
+    expect(escape.output.error).not.toContain("outsideCwdReason");
+
+    const rejected = await startFinalizer(root, session, "no-repo-no-reason", ["../work/a.txt"], "must fail");
+    expect(rejected.result.code).toBe(1);
+    expect(rejected.output.error).toContain("outsideCwdReason");
+
+    const allowed = await startFinalizer(root, session, "no-repo-reason", ["../work/a.txt"], "outside change", { outsideCwdReason: "user named the work repo" });
+    expect(allowed.result.code, allowed.result.stderr || allowed.result.stdout).toBe(0);
+    expect(allowed.output.outsideCwdReason).toBe("user named the work repo");
+  }, TEST_TIMEOUT_MS);
+
+  describe("leftover file notice", () => {
+    async function seedDocs(work: string) {
+      await mkdir(join(work, "docs"), { recursive: true });
+      await writeFile(join(work, "docs", "a.txt"), "doc-a\n");
+      await writeFile(join(work, "docs", "b.txt"), "doc-b\n");
+      git(work, ["add", "--", "docs"]);
+      git(work, ["commit", "-m", "docs"]);
+      git(work, ["push"]);
+    }
+
+    test("lists untracked and modified files left under the committed folder but not the committed file or files elsewhere", async () => {
+      const { root, work } = await createRepository();
+      await seedDocs(work);
+      await writeFile(join(work, "docs", "a.txt"), "changed-a\n");
+      await writeFile(join(work, "docs", "b.txt"), "changed-b\n");
+      await mkdir(join(work, "docs", "qa"));
+      await writeFile(join(work, "docs", "qa", "1.txt"), "qa-1\n");
+      await writeFile(join(work, "docs", "qa", "2.txt"), "qa-2\n");
+      await writeFile(join(work, "elsewhere.txt"), "outside-scope\n");
+      await writeFile(join(work, ".gitignore"), "docs/ignored.txt\n");
+      await writeFile(join(work, "docs", "ignored.txt"), "ignored\n");
+
+      const { result, output } = await startFinalizer(root, work, "leftover", ["docs/a.txt"], "docs a");
+      expect(result.code, result.stderr || result.stdout).toBe(0);
+      expect(output.leftoverScope).toBe("docs");
+      expect(output.leftoverTotal).toBe(3);
+      expect(output.leftoverFiles).toEqual(["modified: docs/b.txt", "untracked: docs/qa/1.txt", "untracked: docs/qa/2.txt"]);
+      expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+    }, TEST_TIMEOUT_MS);
+
+    test("lists a tracked file that is staged but not committed", async () => {
+      const { root, work } = await createRepository();
+      await seedDocs(work);
+      await writeFile(join(work, "docs", "a.txt"), "changed-a\n");
+      await writeFile(join(work, "docs", "b.txt"), "changed-b\n");
+      // post-commit hook가 다른 파일을 stage해 두는 상황: 커밋 뒤 index에 남는 변경.
+      const hook = join(work, ".git", "hooks", "post-commit");
+      await writeFile(hook, "#!/bin/sh\ngit add -- docs/b.txt\n");
+      await chmod(hook, 0o755);
+
+      const { result, output } = await startFinalizer(root, work, "leftover-staged", ["docs/a.txt"], "docs a");
+      expect(result.code, result.stderr || result.stdout).toBe(0);
+      expect(git(work, ["diff", "--cached", "--name-only"])).toBe("docs/b.txt");
+      expect(output.leftoverFiles).toEqual(["staged: docs/b.txt"]);
+      expect(output.leftoverTotal).toBe(1);
+    }, TEST_TIMEOUT_MS);
+
+    test("falls back to the session cwd when the committed paths share only the repository root, and skips when the cwd is the root", async () => {
+      const { root, work } = await createRepository();
+      const project = join(work, "project");
+      await mkdir(project);
+      await writeFile(join(project, "new.txt"), "new\n");
+      await writeFile(join(work, "top.txt"), "top\n");
+      await writeFile(join(work, "a.txt"), "changed-a\n");
+
+      const fromProject = await startFinalizer(root, project, "root-fallback", ["../a.txt"], "root a");
+      expect(fromProject.result.code, fromProject.result.stderr || fromProject.result.stdout).toBe(0);
+      expect(fromProject.output.leftoverScope).toBe("project");
+      expect(fromProject.output.leftoverFiles).toEqual(["untracked: project/new.txt"]);
+
+      await writeFile(join(work, "b.txt"), "changed-b\n");
+      const fromRoot = await startFinalizer(root, work, "root-skip", ["b.txt"], "root b");
+      expect(fromRoot.result.code, fromRoot.result.stderr || fromRoot.result.stdout).toBe(0);
+      expect(fromRoot.output.leftoverScope).toBeUndefined();
+      expect(fromRoot.output.leftoverFiles).toBeUndefined();
+    }, TEST_TIMEOUT_MS);
+
+    test("finds the shared folder of several committed files and a root ancestor independent of file order", async () => {
+      const { root, work } = await createRepository();
+      await seedDocs(work);
+      await writeFile(join(work, "docs", "a.txt"), "changed-a\n");
+      await writeFile(join(work, "docs", "b.txt"), "changed-b\n");
+      await writeFile(join(work, "docs", "orphan.txt"), "orphan\n");
+      const same = await startFinalizer(root, work, "leftover-two", ["docs/a.txt", "docs/b.txt"], "docs both");
+      expect(same.result.code, same.result.stderr || same.result.stdout).toBe(0);
+      expect(same.output.leftoverScope).toBe("docs");
+      expect(same.output.leftoverFiles).toEqual(["untracked: docs/orphan.txt"]);
+
+      // 루트 파일이 앞에 와도 공통 상위는 저장소 루트라 cwd(루트)면 안내를 건너뛴다.
+      await writeFile(join(work, "a.txt"), "changed-root-a\n");
+      await writeFile(join(work, "docs", "a.txt"), "changed-a-again\n");
+      const mixed = await startFinalizer(root, work, "leftover-mixed", ["a.txt", "docs/a.txt"], "mixed");
+      expect(mixed.result.code, mixed.result.stderr || mixed.result.stdout).toBe(0);
+      expect(mixed.output.leftoverScope).toBeUndefined();
+    }, TEST_TIMEOUT_MS);
+
+    test("caps the list at 20 entries with the total count", async () => {
+      const { root, work } = await createRepository();
+      await seedDocs(work);
+      await writeFile(join(work, "docs", "a.txt"), "changed-a\n");
+      for (let index = 0; index < 22; index += 1) await writeFile(join(work, "docs", `extra-${String(index).padStart(2, "0")}.txt`), "x\n");
+
+      const { result, output } = await startFinalizer(root, work, "leftover-cap", ["docs/a.txt"], "docs a");
+      expect(result.code, result.stderr || result.stdout).toBe(0);
+      expect(output.leftoverTotal).toBe(22);
+      expect(output.leftoverFiles).toHaveLength(20);
+    }, TEST_TIMEOUT_MS);
+
+    test("the tool output says the leftover files were not committed and shows the outside-cwd reason", async () => {
+      const { root, work } = await createRepository();
+      await seedDocs(work);
+      process.env.OMP_CROSS_REVIEW_LEDGER = join(root, "ledger.jsonl");
+      await writeFile(join(work, "docs", "a.txt"), "changed-a\n");
+      await writeFile(join(work, "docs", "orphan.txt"), "orphan\n");
+
+      const done = await startTool(work, ["docs/a.txt"]);
+      expect(done.error).toBeUndefined();
+      const text = JSON.stringify(done.output);
+      expect(text).toContain("이번 커밋에 포함되지 않음");
+      expect(text).toContain("untracked: docs/orphan.txt");
+
+      await mkdir(join(work, "project"));
+      await mkdir(join(work, "other"));
+      await writeFile(join(work, "other", "o.txt"), "o\n");
+      git(work, ["add", "--", "other/o.txt"]);
+      git(work, ["commit", "-m", "other"]);
+      git(work, ["push"]);
+      await writeFile(join(work, "other", "o.txt"), "o2\n");
+      const outside = await startTool(join(work, "project"), ["../other/o.txt"], { outsideCwdReason: "user said to commit other" });
+      expect(outside.error).toBeUndefined();
+      expect(JSON.stringify(outside.output)).toContain("user said to commit other");
+    }, TEST_TIMEOUT_MS);
+  });
 
   test("rejects a linked worktree as the same repository from a nested cwd", async () => {
     const { root, remote, work } = await createRepository();

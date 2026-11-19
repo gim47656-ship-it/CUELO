@@ -1198,6 +1198,31 @@ export function coveredBlobs(records: readonly CrossReviewLedgerRecord[]): Map<s
   return covered;
 }
 
+/**
+ * 같은 저장소에서 통과한 resolve 기록이 덮은 blob → 그 blob을 덮은 (경로, 통과) 목록. 경로가 달라도 같은 바이트면 그 통과가 덮은 것으로 본다
+ * (사용자 결정 2026-11-19: 통과 기록이 있는 같은 바이트만, HEAD에 있다는 것만으로는 아님). 저장소는 resolve 기록이 가리키는 라운드 기록의 root로 가르며,
+ * 그 라운드 기록이 없거나 root가 다르면 덮지 않는다. 통과하지 못한 resolve는 아무것도 덮지 않는다.
+ */
+export function passedBlobsInRoot(records: readonly CrossReviewLedgerRecord[], root: string): Map<string, { path: string; pass: CoveringPass }[]> {
+  // 한 reviewId가 서로 다른 root로 기록돼 있으면 어느 저장소의 통과인지 정할 수 없으므로 아무것도 덮지 않는다.
+  const rootOf = new Map<string, string | null>();
+  // 저장소 루트는 git이 돌려준 실제 경로 그대로 비교한다(철자만 다른 root는 같은 저장소로 합치지 않아 덮지 않는다: fail-closed).
+  for (const record of records) {
+    if (record.type !== "cross-review") continue;
+    const next = typeof record.root === "string" && record.root ? pathKey(record.root) : null;
+    rootOf.set(record.reviewId, rootOf.has(record.reviewId) && rootOf.get(record.reviewId) !== next ? null : next);
+  }
+  const byBlob = new Map<string, { path: string; pass: CoveringPass }[]>();
+  for (const record of records) {
+    if (record.type !== "cross-review-resolve" || record.pass !== true) continue;
+    const recordRoot = rootOf.get(record.reviewId);
+    if (!recordRoot || recordRoot !== pathKey(root)) continue;
+    const pass: CoveringPass = { reviewId: record.reviewId, inputs: record.inputs ?? [] };
+    for (const { path, blob } of record.files) byBlob.set(blob, [...(byBlob.get(blob) ?? []), { path, pass }]);
+  }
+  return byBlob;
+}
+
 /** 통과가 묶은 입력 중 지금 blob이 기록과 다른 것. 지워졌거나 일반 파일이 아니거나 확인하지 못한 입력도 바뀐 것이다. */
 function changedInputs(inputs: readonly CrossReviewFile[], now: ReadonlyMap<string, string>): { path: string; state: string }[] {
   return inputs.filter(({ path, blob }) => now.get(path) !== blob).map(({ path }) => {
@@ -1208,14 +1233,16 @@ function changedInputs(inputs: readonly CrossReviewFile[], now: ReadonlyMap<stri
 
 /**
  * 게이트가 지금 blob을 확인해야 하는 의존 입력 경로: 바뀐 파일의 (경로, blob)을 덮는 통과 기록에 묶인 입력. anyBlob이면 그 경로의 옛 내용을 덮은
- * 통과(버전 문자열만 바뀐 내용으로 이어받을 후보)의 입력도 넣는다. 입력 없는 통과만 있으면 비어 있다.
+ * 통과(버전 문자열만 바뀐 내용으로 이어받을 후보)의 입력도 넣는다. root를 주면 같은 저장소에서 같은 blob을 통과시킨 다른 경로의 기록에 묶인 입력도 넣는다.
+ * 입력 없는 통과만 있으면 비어 있다.
  */
-export function boundInputPaths(changes: readonly ChangedFile[], records: readonly CrossReviewLedgerRecord[], anyBlob = false): string[] {
+export function boundInputPaths(changes: readonly ChangedFile[], records: readonly CrossReviewLedgerRecord[], anyBlob = false, root?: string): string[] {
   const covered = coveredBlobs(records);
+  const elsewhere = root === undefined ? undefined : passedBlobsInRoot(records, root);
   const paths = new Set<string>();
   for (const change of changes) {
     const blobs = covered.get(change.path);
-    const passes = anyBlob ? [...(blobs?.values() ?? [])].flat() : blobs?.get(change.blob) ?? [];
+    const passes = [...(anyBlob ? [...(blobs?.values() ?? [])].flat() : blobs?.get(change.blob) ?? []), ...(elsewhere?.get(change.blob) ?? []).map((item) => item.pass)];
     for (const pass of passes) for (const input of pass.inputs) paths.add(input.path);
   }
   return [...paths];
@@ -1260,6 +1287,9 @@ export const SAMPLE_MAX_FILES = 5;
  */
 export interface CarriedPass { path: string; blob: string; fromBlob: string; reviewId: string; kind: "version" | "comment" }
 
+/** 같은 저장소에서 같은 바이트를 통과시킨 다른 경로(fromPath)의 통과가 덮은 파일. 그 통과가 HEAD에 있다는 사실이 아니라 통과 기록이 근거다. */
+export interface ReusedPass { path: string; blob: string; fromPath: string; reviewId: string }
+
 /**
  * 두 내용에서 글자가 달라진 줄(줄 다중집합의 차이). 순서만 바뀐 줄은 나오지 않는다. 통과한 옛 내용과 지금 내용을 비교할 때 commentOnlyEdit이
  * 지시 주석 줄을 찾는 데 쓴다. 옛 내용 쪽 줄은 removed다.
@@ -1292,8 +1322,9 @@ export function trivialSincePass(path: string, before: string, after: string, pa
 /**
  * 검토가 필요한 파일과 덮이지 않은 파일을 정한다. highRisk는 high-risk로 선언한 저장소 상대 경로다. passedContent는 `${path}\0${blob}` → 그 경로의
  * 통과한 옛 내용이며, 지금 내용이 그 내용에서 사소한 수정(trivialSincePass)만 다르고 그 통과에 묶인 입력이 그대로면 그 통과가 지금 내용을 덮는다(carried).
+ * root(저장소 루트)를 주면 같은 저장소에서 통과한 다른 경로의 같은 바이트도 덮는 것으로 본다(reused). HEAD에 있다는 것만으로는 덮지 않는다.
  */
-export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map()): GateDecision & { carried?: CarriedPass[] } {
+export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map(), root?: string): GateDecision & { carried?: CarriedPass[]; reused?: ReusedPass[] } {
   // 표본은 지금처럼 커밋의 코드 경로 전체(path+blob)로 뽑는다. 뽑힌 뒤 표본 이유로 요구하는 것은 게이트 대상(주석·버전만 바뀐 수정·바이너리 자산 제외) 중
   // 프로젝트·스타일·디자이너 파일을 뺀, 바뀐 줄이 많은 SAMPLE_MAX_FILES개뿐이다.
   const declared = new Set(highRisk);
@@ -1316,16 +1347,26 @@ export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<s
     if (reasons.length > 0) required.push({ path: change.path, blob: change.blob, reasons });
   }
   const covered = coveredBlobs(records);
+  // 같은 저장소에서 같은 바이트를 통과시킨 다른 경로의 기록(root를 모르면 쓰지 않는다). 같은 경로의 통과가 우선한다.
+  const elsewhere = root === undefined ? new Map<string, { path: string; pass: CoveringPass }[]>() : passedBlobsInRoot(records, root);
   const current = new Map(changes.map((change) => [change.path, change.content] as const));
   const carried: CarriedPass[] = [];
+  const reused: ReusedPass[] = [];
   const uncovered = required.flatMap((file) => {
     const blobs = covered.get(file.path);
-    const passes = blobs?.get(file.blob);
-    if (passes?.length) {
-      // 같은 내용을 덮는 통과가 여러 개면 하나라도 묶인 입력이 모두 그대로일 때 덮인다. 입력을 선언하지 않은 통과는 묶인 입력이 없다.
-      const checked = passes.map((pass) => ({ pass, changed: changedInputs(pass.inputs, inputBlobs) }));
-      if (checked.some(({ changed }) => changed.length === 0)) return [];
-      const latest = checked[checked.length - 1];
+    const same = blobs?.get(file.blob) ?? [];
+    // 같은 내용을 덮는 통과가 여러 개면 하나라도 묶인 입력이 모두 그대로일 때 덮인다. 입력을 선언하지 않은 통과는 묶인 입력이 없다.
+    const checked = [
+      ...same.map((pass) => ({ path: file.path, pass })),
+      ...(elsewhere.get(file.blob) ?? []).filter((item) => item.path !== file.path),
+    ].map((item) => ({ ...item, changed: changedInputs(item.pass.inputs, inputBlobs) }));
+    const hit = checked.find(({ changed }) => changed.length === 0);
+    if (hit) {
+      if (hit.path !== file.path) reused.push({ path: file.path, blob: file.blob, fromPath: hit.path, reviewId: hit.pass.reviewId });
+      return [];
+    }
+    if (same.length) {
+      const latest = checked[same.length - 1];
       const names = latest.changed.map(({ path, state }) => `${path} (${state})`).join(", ");
       return [{ ...file, note: `a passed review covers this exact content, but input(s) that review was bound to changed after the pass: ${names}; the change was not checked against their current content, so rerun the review`, reviewInputs: latest.pass.inputs.map((input) => input.path) }];
     }
@@ -1341,7 +1382,7 @@ export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<s
     }
     return [{ ...file, note: blobs ? "a passed review exists for an older version of this file; the content changed after the pass by more than version strings or TS/JS comments and whitespace, so the new code needs a review (a later round of the same chain shows only the delta)" : undefined }];
   });
-  return { required, uncovered, ...(carried.length > 0 ? { carried } : {}) };
+  return { required, uncovered, ...(carried.length > 0 ? { carried } : {}), ...(reused.length > 0 ? { reused } : {}) };
 }
 
 /**
@@ -1378,7 +1419,9 @@ export async function earlyReviewNotice(cwd: string, absolutePath: string, exec:
     const change = changed[0];
     if (!change || change.status === "deleted" || !isGateTarget(change)) return undefined;
     const hits = detectMarkers(change.path, change.changedLines);
-    if (hits.length === 0 || coveredBlobs(readRecords()).get(change.path)?.get(change.blob)?.length) return undefined;
+    if (hits.length === 0) return undefined;
+    const records = readRecords();
+    if (coveredBlobs(records).get(change.path)?.get(change.blob)?.length || passedBlobsInRoot(records, resolved.root).get(change.blob)?.length) return undefined;
     const seen = new Set<string>();
     const shown = hits.filter((hit) => !seen.has(hit.trigger) && seen.add(hit.trigger)).slice(0, 3)
       .map((hit) => `${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}`);
@@ -1459,8 +1502,8 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
 
   const records = readCrossReviewRecords(options.ledgerPath);
   // 통과에 묶인 의존 입력은 그 통과가 이 변경을 덮을 때만 지금 blob을 읽는다. 입력 없는 통과만 있으면 아무것도 읽지 않는다.
-  let inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records));
-  let decision = decideGate(changed, highRiskPaths, records, inputBlobs);
+  let inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, false, resolved.root));
+  let decision = decideGate(changed, highRiskPaths, records, inputBlobs, new Map(), resolved.root);
   // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열·주석만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
   const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
   if (older.length > 0) {
@@ -1473,8 +1516,8 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
       }
     }
     if (passedContent.size > 0) {
-      inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, true));
-      decision = decideGate(changed, highRiskPaths, records, inputBlobs, passedContent);
+      inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, true, resolved.root));
+      decision = decideGate(changed, highRiskPaths, records, inputBlobs, passedContent, resolved.root);
     }
   }
   if (decision.uncovered.length === 0) return { checked: true, decision, gateBlobs };

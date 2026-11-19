@@ -11,7 +11,9 @@ import { listCheckpoints, restoreCheckpoint, snapshotTurn } from "../lib/turn-ch
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function git(root: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd: root, encoding: "utf8", env: { ...process.env, GIT_INDEX_FILE: undefined } }).trim();
+  return execFileSync("git", args, {
+    cwd: root, encoding: "utf8", env: { ...process.env, GIT_INDEX_FILE: undefined, LC_ALL: "C", LANGUAGE: "C" },
+  }).trim();
 }
 async function repo() {
   const root = await mkdtemp(join(tmpdir(), "cuelo-turn-test-")); roots.push(root);
