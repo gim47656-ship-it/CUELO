@@ -5,7 +5,7 @@
 // 하므로 디스크 경로를 고정한다(모듈 로딩 경계 테스트).
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import steeringReplyGate from "../agent/extensions/steering-reply-gate";
 import { createSettingsTestScope, mnemopiParentState, settingsLike } from "./core-test-settings";
 
@@ -295,8 +295,16 @@ const openNoMatch = await openAndCatch("relay-nomatch", relayHandle, { target: "
 check("일치하는 target이 없으면 새 탭 없이 실패한다", createdCount === createdBefore && openNoMatch.includes("No page target matched"), `delta=${createdCount - createdBefore} err=${openNoMatch}`);
 
 createdBefore = createdCount;
+const pickedBeforeConnected = picked.length;
 const openConnected = await openAndCatch("cdp-default", connectedHandle, { url: "https://example.com/docs" });
-check("connected(CDP)는 기존대로 보이는 탭을 채택한다", picked.at(-1) === "user-ompweb", `picked=${JSON.stringify(picked)} err=${openConnected}`);
+const upstreamConnectedTab = readFileSync(`${CORE}/tools/browser/tab-supervisor.ts`, "utf8").includes("Only `target` borrows an existing page.");
+if (upstreamConnectedTab) {
+	check("target 없는 connected(CDP)는 기존 사용자 탭을 빌리지 않는다", picked.length === pickedBeforeConnected, `picked=${JSON.stringify(picked)} err=${openConnected}`);
+	await openAndCatch("cdp-target", connectedHandle, { target: "CUELO" });
+	check("connected(CDP)도 명시 target만 기존 탭을 빌린다", picked.at(-1) === "user-ompweb", `picked=${JSON.stringify(picked)}`);
+} else {
+	check("connected(CDP)는 기존대로 보이는 탭을 채택한다", picked.at(-1) === "user-ompweb", `picked=${JSON.stringify(picked)} err=${openConnected}`);
+}
 check("connected는 새 탭을 만들지 않는다", createdCount === createdBefore, `delta=${createdCount - createdBefore}`);
 
 // 같은 이름 재개방: 새 탭을 또 만들지 않고 살아있는 탭을 재사용한다(기존 계약).
@@ -2372,7 +2380,8 @@ console.log("\nCUELO Next 서버 env 를 이름 있는 service 에도 넘기지 
 {
 	const serviceProbe = `const { Settings } = await import(${JSON.stringify(`${CORE}/config/settings.ts`)});
 const { startService, stopService, serviceLogs } = await import(${JSON.stringify(`${CORE}/launch/services.ts`)});
-const { closeDaemonClients } = await import(${JSON.stringify(`${CORE}/launch/client.ts`)});
+const coreDaemon = await import(${JSON.stringify(existsSync(`${CORE}/daemon/client.ts`) ? `${CORE}/daemon/client.ts` : `${CORE}/launch/client.ts`)});
+const closeDaemonClients = coreDaemon.closeDaemonClient ?? coreDaemon.closeDaemonClients;
 const session = { cwd: process.cwd(), settings: Settings.isolated({ "launch.enabled": true }), getSessionId: () => "hanse-service-env" };
 const lines = [];
 for (const pty of JSON.parse(process.env.HANSE_PROBE_PTY ?? "[false]")) {
@@ -2390,10 +2399,11 @@ for (const pty of JSON.parse(process.env.HANSE_PROBE_PTY ?? "[false]")) {
 	lines.push((log.split(/\\r?\\n/).find(line => line.includes("PROBE NODE_ENV")) ?? "<none>").trim());
 	await stopService(session, name).catch(() => {});
 }
-console.log(JSON.stringify(lines));
+const result = { lines, daemonPid: coreDaemon.daemonClient ? (await coreDaemon.daemonClient()).welcome.daemon.pid : undefined };
+console.log(JSON.stringify(result));
 // HANSE_PROBE_HOLD: 결과를 그 파일에 쓰고 stdin 이 닫힐 때까지 broker client 연결을 쥐고 있다(오래 떠 있는 standalone omp 역할).
 if (process.env.HANSE_PROBE_HOLD) {
-	await Bun.write(process.env.HANSE_PROBE_HOLD, JSON.stringify(lines));
+	await Bun.write(process.env.HANSE_PROBE_HOLD, JSON.stringify(result));
 	await Bun.stdin.text();
 }
 await closeDaemonClients();
@@ -2418,13 +2428,15 @@ process.exit(0);`;
 		__NEXT_PRIVATE_ORIGIN: "http://localhost:30141",
 	};
 	const serviceHome = mkdtempSync(join(tmpdir(), "hanse-service-home-"));
-	const runService = (cwd: string, env: Record<string, string>, pty: boolean[], serviceEnv: Record<string, string>): string[] => {
+	type ServiceProbeResult = { lines: string[]; daemonPid?: number };
+	const runService = (cwd: string, env: Record<string, string>, pty: boolean[], serviceEnv: Record<string, string>): ServiceProbeResult => {
 		const child = Bun.spawnSync([process.execPath, "-e", serviceProbe], {
 			cwd,
 			env: {
 				...operatorEnv,
 				HOME: serviceHome,
 				USERPROFILE: serviceHome,
+				OMP_DAEMON_DIR: join(serviceHome, "daemon", basename(cwd)),
 				HANSE_PROBE_PTY: JSON.stringify(pty),
 				HANSE_PROBE_SERVICE_ENV: JSON.stringify(serviceEnv),
 				...env,
@@ -2433,21 +2445,21 @@ process.exit(0);`;
 		});
 		const out = child.stdout.toString().trim().split(/\r?\n/).pop() ?? "";
 		try {
-			return JSON.parse(out) as string[];
+			return JSON.parse(out) as ServiceProbeResult;
 		} catch {
-			return [`<no result> ${out.slice(0, 200)} ${child.stderr.toString().trim().slice(0, 300)}`];
+			return { lines: [`<parse-error> ${out} stderr=${child.stderr.toString()}`] };
 		}
 	};
 	const cleanLine = "PROBE NODE_ENV=unset PORT=unset NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1";
 	const cueloCwd = mkdtempSync(join(tmpdir(), "hanse-service-cuelo-"));
-	const cuelo = runService(cueloCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false, true], { EXPLICIT: "1" });
+	const { lines: cuelo } = runService(cueloCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false, true], { EXPLICIT: "1" });
 	check(
 		"CUELO 가 띄운 broker 의 service(pipe·pty)에 서버 변수가 새지 않고 명시 env 는 남는다",
 		cuelo.length === 2 && cuelo.every(line => line === cleanLine),
 		`lines=${JSON.stringify(cuelo)}`,
 	);
 	const baselineCwd = mkdtempSync(join(tmpdir(), "hanse-service-baseline-"));
-	const [baselined] = runService(
+	const { lines: [baselined] } = runService(
 		baselineCwd,
 		{ ...serverEnv, CUELO_SHELL_ENV_BASELINE: JSON.stringify({ NODE_ENV: "test", PORT: "4000" }) },
 		[false],
@@ -2458,11 +2470,9 @@ process.exit(0);`;
 		baselined === "PROBE NODE_ENV=test PORT=5555 NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1",
 		`line=${baselined}`,
 	);
-	// Next 서버 밖에서 먼저 뜬 broker 는 자기 env 를 그대로 쓴다. 그 broker 를 CUELO 쪽 client 가 재사용해도
-	// client 가 보내는 spec.env 는 이미 걸러진 셸 env 라 서버 변수가 새지 않는다. 재사용은 결과 줄이 plain
-	// broker 의 NODE_ENV·PORT 를 보이는 것으로 드러난다(새 broker 였다면 둘 다 unset).
-	// standalone omp 처럼 plain broker 의 client 연결을 쥐고 있는 holder 를 띄운다. 프로세스가 끝나면 broker 도
-	// 함께 정리돼 다음 client 가 새 broker 를 띄우므로(2026-09-29 실측), 재사용 경우는 holder 가 살아 있는 동안 본다.
+	// The waiting standalone client keeps its daemon connection open while CUELO reuses it.
+	// v19 confirms reuse from the daemon PID rather than inferring it from child env:
+	// the client now carries its own resolved shell environment even on a shared daemon.
 	const plainCwd = mkdtempSync(join(tmpdir(), "hanse-service-plain-"));
 	const plainLine = "PROBE NODE_ENV=development PORT=5173 NEXT_RUNTIME=unset ORIGIN=unset KEEP_ME=1 EXPLICIT=1";
 	const holdFile = join(serviceHome, "plain-result.json");
@@ -2472,6 +2482,7 @@ process.exit(0);`;
 			...operatorEnv,
 			HOME: serviceHome,
 			USERPROFILE: serviceHome,
+			OMP_DAEMON_DIR: join(serviceHome, "daemon", basename(plainCwd)),
 			HANSE_PROBE_PTY: "[false]",
 			HANSE_PROBE_SERVICE_ENV: JSON.stringify({ EXPLICIT: "1" }),
 			HANSE_PROBE_HOLD: holdFile,
@@ -2484,19 +2495,26 @@ process.exit(0);`;
 		stderr: "ignore",
 	});
 	let plain = `<no result> holder exit=${holder.exitCode}`;
+	let plainDaemonPid: number | undefined;
 	for (const deadline = Date.now() + 120_000; Date.now() < deadline && holder.exitCode === null; await Bun.sleep(200)) {
 		try {
-			plain = (JSON.parse(readFileSync(holdFile, "utf8")) as string[])[0] ?? "<none>";
+			const result = JSON.parse(readFileSync(holdFile, "utf8")) as ServiceProbeResult;
+			plain = result.lines[0] ?? "<none>";
+			plainDaemonPid = result.daemonPid;
 			break;
 		} catch {
 			// holder 가 아직 결과를 쓰지 않았다.
 		}
 	}
 	check("Next 서버 밖에서 뜬 broker 의 service 는 NODE_ENV·PORT 를 그대로 둔다", plain === plainLine, `line=${plain}`);
-	const [reused] = runService(plainCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false], { EXPLICIT: "1" });
+	const reuse = runService(plainCwd, { ...serverEnv, CUELO_SHELL_ENV_BASELINE: "{}" }, [false], { EXPLICIT: "1" });
 	holder.stdin.end();
 	await holder.exited;
-	check("plain broker 를 CUELO client 가 재사용해도 서버 변수가 새지 않는다", reused === plainLine, `line=${reused}`);
+	check("plain broker 를 CUELO client 가 재사용해도 서버 변수가 새지 않는다",
+		existsSync(`${CORE}/daemon/client.ts`)
+			? plainDaemonPid !== undefined && reuse.daemonPid === plainDaemonPid && reuse.lines[0] === cleanLine
+			: reuse.lines[0] === plainLine,
+		`plain pid=${plainDaemonPid} reuse pid=${reuse.daemonPid} line=${reuse.lines[0]}`);
 	for (const dir of [cueloCwd, baselineCwd, plainCwd, serviceHome]) {
 		try {
 			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
@@ -3317,7 +3335,9 @@ console.log("\n[26] bash — service 이름 없는 env 는 그 호출에만 들�
 	);
 	// 공개 도구 경로(BashTool.execute name+env+ready)가 service 에도 env 를 launch 의 env 덧씌우기로 넣는지, 같은 키 검증을
 	// 쓰고 값의 공백·따옴표·$ 를 그대로 두는지 실제 broker service 로 본다.
-	const { closeDaemonClients: csCloseDaemonClients } = await import(`${CORE}/launch/client.ts`);
+	const csCloseDaemonClients = existsSync(`${CORE}/daemon/client.ts`)
+		? (await import(`${CORE}/daemon/client.ts`)).closeDaemonClient
+		: (await import(`${CORE}/launch/client.ts`)).closeDaemonClients;
 	const svc = await bash.execute("env-svc", {
 		command: 'echo "SVC A=[$A] B=[$B]"',
 		name: "hanse-env-svc",

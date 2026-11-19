@@ -39,7 +39,6 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     "unpdf",
     "ffmpeg-static",
-    "web-push",
     "@oh-my-pi/pi-coding-agent",
     "@oh-my-pi/pi-agent-core",
     "@oh-my-pi/pi-ai",

@@ -63,14 +63,13 @@ export function originName(url: string): string | null {
   return match && validName(match[1]) ? match[1] : null;
 }
 /**
- * Clones this PC already has under ~/src (and ~/cuelo-routines). A clone a running CUELO serves from
+ * Clones this PC already has under ~/src. A clone a running CUELO serves from
  * (`install: true`) still counts as present, so it is never offered for a fresh clone, but runSync must
  * never fetch or fast-forward it.
  */
 export async function discover(o: Options = {}): Promise<{ name: string; path: string; install?: true }[]> {
   const home = homeOf(o), src = join(home, "src");
   const entries = exists(src) ? readdirSync(src).map((n) => join(src, n)) : [];
-  entries.push(join(home, "cuelo-routines"));
   const found: { name: string; path: string; install?: true }[] = [];
   const installs = [resolve(home, "cuelo-run"), resolve(home, "app"), process.env.CUELO_APP_DIR, ...readBusySnapshots(join(home, ".omp/agent")).map((s) => s.appDir)]
     .filter((p): p is string => !!p).map((p) => { try { return realpathSync(p); } catch { return resolve(p); } });

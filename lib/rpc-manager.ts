@@ -1,6 +1,7 @@
 import { cfgEnabledModels } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isProviderRefusalMessage, normalizeTools } from "@oh-my-pi/pi-agent-core";
+import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import {
   applyResolvedSystemPromptInputs,
   createAgentSession,
@@ -300,6 +301,7 @@ const MAX_SUBAGENT_HISTORY = 128;
 
 const HANDOFF_ALLOWED_COMMAND_TYPES: Record<string, true> = {
   abort: true,
+  abort_compaction: true,
   extension_ui_input: true,
   extension_ui_response: true,
   get_commands: true,
@@ -364,11 +366,6 @@ export interface RpcSessionStartOptions {
    * pin이 걸리므로 첫 명령이 provider에 닿을 때부터 그 계정이 쓰인다.
    */
   accountOauthPosition?: number;
-  /**
-   * false면 코어가 사람의 답을 기다리는 질문(저장된 한도 리셋을 쓸지 묻는 선택 창, `ask` 도구)을 띄우지 않는다.
-   * 아무도 보지 않는 예약 루틴 세션용이다. 그 질문에는 제한 시간이 없어, 띄우면 세션이 닫힐 때까지 멈춘다.
-   */
-  interactivePrompts?: false;
 }
 
 type ProviderOAuthAccount = SessionOAuthAccountList["accounts"][number];
@@ -1875,11 +1872,7 @@ export class AgentSessionWrapper {
       }
 
       case "handoff": {
-        // omp 18 made handoff in-place: it summarizes the conversation into a
-        // handoff document and commits that as this session's compaction entry
-        // instead of minting a replacement session. It still rewrites history
-        // behind a oneshot model call, so it must not run while a prompt is
-        // streaming or any other work owns the session.
+        // Keep the web RPC exclusive while the SDK commits its in-place handoff.
         if (this.handoffRunning || this.promptRunning || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning) {
           throw new Error("Cannot hand off while the session is busy");
         }
@@ -1887,13 +1880,14 @@ export class AgentSessionWrapper {
         this.handoffRunning = true;
         notifyRunningChange();
         try {
-          // No result means the handoff was cancelled; the session is untouched.
-          const result = await this.inner.handoff(customInstructions);
-          if (!result) return { cancelled: true };
+          await this.inner.compact(customInstructions, { mode: "handoff" });
           // The session id and file are unchanged, so only the cached listing
           // (modified time, token counts) has gone stale.
           invalidateSessionListCache();
           return { cancelled: false };
+        } catch (error) {
+          if (error instanceof CompactionCancelledError) return { cancelled: true };
+          throw error;
         } finally {
           this.handoffRunning = false;
           notifyRunningChange();
@@ -2942,7 +2936,7 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
-  const { toolNames, initialModel, thinkingLevel, accountOauthPosition, interactivePrompts } = options;
+  const { toolNames, initialModel, thinkingLevel, accountOauthPosition } = options;
   const restrictTools = options.restrictTools === undefined ? undefined : [...new Set(options.restrictTools)];
   if (restrictTools?.some((name) => !(BUILTIN_TOOL_NAMES as readonly string[]).includes(name))) {
     throw new Error("restrictTools accepts builtin tool names only");
@@ -3080,7 +3074,6 @@ export async function startRpcSession(
         sessionManager,
         modelRegistry,
         hasUI: true,
-        ...(interactivePrompts === false ? { interactivePrompts } : {}),
         ...(initial.model ? { model: initial.model } : {}),
         ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
         ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),

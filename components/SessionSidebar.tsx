@@ -51,11 +51,7 @@ interface Props {
   onBackgroundTaskDone?: () => void;
   /** 「통역」 보기의 내용(안내 패널). 주어질 때만 보기 전환에 통역이 생긴다. */
   translatorPanel?: ReactNode;
-  /** 통역·루틴 보기가 선택돼 있는지. 가운데 화면 전환과 같은 값이라 부모(레일)가 들고 있다. */
   translatorActive?: boolean;
-  /** 「루틴」 보기의 내용(루틴 목록). 주어질 때만 보기 전환에 루틴이 생긴다. 통역 보기와 같은 자리를 쓴다. */
-  routinePanel?: ReactNode;
-  routineActive?: boolean;
   /** The list's place (프로젝트 or 우선순위), chosen in the shell's rail. */
   navigatorMode?: NavigatorMode;
   /** Running and answer-waiting sessions, for the rail badge, the phone top bar and the palette. */
@@ -400,7 +396,7 @@ async function patchProjectRegistry(updates: readonly ProjectRegistryUpdate[]): 
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, routinePanel, routineActive = false, navigatorMode = "projects", onActivityChange }: Props) {
+export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onBackgroundTaskDone, translatorPanel, translatorActive = false, navigatorMode = "projects", onActivityChange }: Props) {
   const { tt } = useTranslatorText();
   const { t, locale } = useI18n();
   const isMobile = useIsMobile();
@@ -1489,9 +1485,6 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
   // 통역 보기는 프로젝트·우선 보기 위에 얹힌다. 그 두 보기의 선택(과 저장값)은 그대로 남아,
   // 통역에서 돌아오면 떠나기 전 보기로 돌아간다.
   const translatorOn = translatorPanel !== undefined && translatorActive;
-  const routineOn = routinePanel !== undefined && routineActive;
-  // 통역·루틴 보기는 같은 자리(프로젝트·우선 보기 위)에 얹히고 한 번에 하나만 열린다(부모가 맞춘다).
-  const sideViewOn = translatorOn || routineOn;
   const ProjectPicker = cloudProjects ? CloudProjectPicker : DirectoryPicker;
 
   return (
@@ -1636,7 +1629,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         )}
 
       </div>
-      {cloudProjects && !sideViewOn && (
+      {cloudProjects && !translatorOn && (
         <button type="button" className="navigator-cloud-project" onClick={handleCustomPathClick}
           style={{ margin: "10px 12px 0", minHeight: 44, flexShrink: 0, border: 0, borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           {t("cloudProjects.launch")}
@@ -1647,10 +1640,10 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       {/* The place itself is chosen in the shell's rail; the list only names it and carries its tools. */}
       <div className="navigator-mode-bar">
         <h2 className="navigator-place-title">
-          {translatorOn ? tt("translator.tab") : routineOn ? t("routines.tab") : navigatorMode === "projects" ? t("sidebar.projects") : t("navigator.priority")}
+          {translatorOn ? tt("translator.tab") : navigatorMode === "projects" ? t("sidebar.projects") : t("navigator.priority")}
         </h2>
         <span className="navigator-mode-spacer" />
-        {!sideViewOn && navigatorMode === "projects" && (
+        {!translatorOn && navigatorMode === "projects" && (
           <button
             type="button"
             onClick={() => setShowHiddenProjects((show) => !show)}
@@ -1681,7 +1674,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
             </svg>
           </button>
         )}
-        {!sideViewOn && navigatorMode === "projects" && (
+        {!translatorOn && navigatorMode === "projects" && (
           <button
             className="navigator-add-project"
             type="button"
@@ -1719,8 +1712,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         )}
       </div>
       {translatorOn && translatorPanel}
-      {routineOn && routinePanel}
-      {!sideViewOn && navigatorMode === "projects" && (
+      {!translatorOn && navigatorMode === "projects" && (
         <label className="navigator-search" style={{ position: "relative", display: "block", margin: "0 8px 8px" }}>
           <svg
             width="14"
@@ -1766,7 +1758,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         </label>
       )}
 
-      {!sideViewOn && navigatorMode === "projects" && (
+      {!translatorOn && navigatorMode === "projects" && (
       <div
         id="navigator-projects-panel"
         className="navigator-session-list"
@@ -2644,7 +2636,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
       </div>
       )}
 
-      {!sideViewOn && (
+      {!translatorOn && (
         <ArchivedSessionsSection
           refreshKey={archiveRefreshKey}
           selectedSessionId={selectedSessionId}
@@ -2653,7 +2645,7 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
         />
       )}
 
-      {!sideViewOn && navigatorMode === "priority" && (
+      {!translatorOn && navigatorMode === "priority" && (
         <div
           id="navigator-priority-panel"
           style={{ flex: "1 1 auto", minHeight: 80, overflowY: "auto", padding: "0 6px 10px" }}

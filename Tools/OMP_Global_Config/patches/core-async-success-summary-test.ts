@@ -30,6 +30,9 @@ if (process.argv[2] !== "--worker") {
  const { initializeExtensions } = await import(`${core}/modes/runtime-init.ts`);
  // The explicit core target is runtime-selected; static imports could test another installation.
  const { formatAsyncSuccessPreview, buildAsyncResultBatchMessage } = await import(`${core}/session/async-job-delivery.ts`);
+ const { spillUrl } = await import(`${core}/../../pi-utils/src/index.ts`);
+ const newSpills = typeof spillUrl === "function";
+ const spillPattern = newSpills ? /full output at (local:\/\/(\d+)\.log)/ : /full output at (artifact:\/\/(\d+))/;
  const model = getBundledModel("openai", "gpt-4o-mini");
  const { session } = await createAgentSession({
   cwd: fixture, agentDir: fixture, agentId: "AsyncSuccess", model, getApiKey: () => "fixture",
@@ -111,14 +114,15 @@ if (process.argv[2] !== "--worker") {
   assert.ok(!message.includes("MIDDLE-OMITTED"), `${name}: middle omitted`);
   const body = message.slice(message.indexOf("HEAD-"), message.lastIndexOf("</system-notice>")).trimEnd();
   assert.ok(body.length <= 2100, `${name}: compact body (${body.length})`);
-  assert.ok(body.includes(`Result length: ${text.length} chars; full output at artifact://`));
-  const artifactId = body.match(/full output at artifact:\/\/(\d+)/)![1]!;
-  const path = await session.sessionManager.getArtifactPath(artifactId);
-  assert.ok(path, `${name}: link resolves through session artifact manager`);
-  assert.equal(readFileSync(path, "utf8"), text, `${name}: artifact recovers full original`);
-  assert.ok(transportContexts.some(context => context.includes(`full output at artifact://${artifactId}`)), `${name}: preview reaches the model transport`);
+  const link = body.match(spillPattern);
+  assert.ok(link, `${name}: full-output URL uses the pinned core's spill store`);
+  const [, url, artifactId] = link;
+  assert.ok(body.includes(`Result length: ${text.length} chars; full output at ${url}`));
+  const read = await session.getToolByName("read").execute("async-spill-read", { path: newSpills ? `${url}:raw` : url });
+  assert.ok(!read.isError && JSON.stringify(read.content).includes("MIDDLE-OMITTED"), `${name}: published URL recovers the omitted text`);
+  assert.ok(transportContexts.some(context => context.includes(`full output at ${url}`)), `${name}: preview reaches the model transport`);
   cases++;
-  console.log(`${name}: ${text.length} chars -> ${body.length} body chars; artifact://${artifactId} reads back ${text.length}; header/identity/tail retained`);
+  console.log(`${name}: ${text.length} chars -> ${body.length} body chars; ${url} reads back; header/identity/tail retained`);
   return artifactId;
  }
  try {
@@ -141,10 +145,10 @@ if (process.argv[2] !== "--worker") {
    cases++;
    console.log(`${name}: full ${text.length} chars unchanged`);
   }
-  const artifactId = await session.sessionManager.saveArtifact(output, "bash");
+  const artifactId = newSpills ? await session.sessionManager.saveArtifact(output) : await session.sessionManager.saveArtifact(output, "bash");
   const job = { type: "bash", status: "completed", latestDetails: { meta: { truncation: { artifactId } } } } as AsyncJob;
   const reused = await formatAsyncSuccessPreview(output, job, () => { throw new Error("must reuse existing artifact"); });
-  assert.ok(reused!.includes(`full output at artifact://${artifactId}`));
+  assert.ok(reused!.includes(`full output at ${newSpills ? spillUrl(artifactId) : `artifact://${artifactId}`}`));
   const existingPath = await session.sessionManager.getArtifactPath(artifactId!);
   assert.equal(readFileSync(existingPath!, "utf8"), output);
   for (const save of [async () => undefined, async () => { throw new Error("disk unavailable"); }]) {
@@ -186,8 +190,9 @@ if (process.argv[2] !== "--worker") {
     assert.ok(message.content.includes(full.slice(0, 1000)));
     // The existing prompt renderer collapses blank lines; check tail content/notices, not that whitespace.
     assert.ok(message.content.includes("1199\n1200") && message.content.includes("Command exited with code 0"));
-    const id = message.content.match(/full output at artifact:\/\/(\d+)/)![1]!;
-    const path = await session.sessionManager.getArtifactPath(id);
+    const link = message.content.match(spillPattern);
+    assert.ok(link, "real BashTool delivers a URL for the current spill store");
+    const path = await session.sessionManager.getArtifactPath(link[2]!);
     assert.ok(path);
     assert.equal(readFileSync(path, "utf8"), full);
    } else assert.ok(!message.content.includes("Result length:"), `${name}: real bash failure keeps original spill policy`);

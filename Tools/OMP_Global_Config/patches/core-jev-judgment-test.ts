@@ -153,7 +153,7 @@ const request = {
 		await assert.rejects(judge.withCandidate(rejectAccount), /Key limit exceeded/);
 		assert.equal(calls, 1);
 		offset = 59_000;
-		await assert.rejects(judge.withCandidate(rejectAccount), /rejected the account recently/);
+		await assert.rejects(judge.withCandidate(rejectAccount), /rejected the account(?: \(403\))? recently/);
 		assert.equal(calls, 1);
 		offset = 61_000;
 		await assert.rejects(judge.withCandidate(rejectAccount), /Key limit exceeded/);

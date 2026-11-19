@@ -1,9 +1,10 @@
 import type { CustomToolAPI, CustomToolContext, CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
+import { isEnoent, parseSpillUrl, spillFileName, spillUrl } from "@oh-my-pi/pi-utils";
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// artifact_search: on-demand literal keyword search over ONE session artifact (artifact://<id>).
+// artifact_search: on-demand literal keyword search over one current spill or historical artifact.
 // Architecture: existing OMP tool output -> existing artifact file (never modified) -> in-memory bun:sqlite FTS5
 // index built lazily on the first search -> locators for the native `read` tool, which stays the only evidence source.
 // Not semantic, no model call, no shell, no network, no write, no read-evidence registration.
@@ -60,14 +61,19 @@ interface SearchParams {
   offset?: number;
 }
 
-interface ArtifactManagerLike {
+interface ArtifactStore {
   readonly dir: string;
-  listFiles(): Promise<string[]>;
+  readonly sessionDir: string | null;
+}
+
+interface ArtifactTarget {
+  id: string;
+  url: string;
+  legacy: boolean;
 }
 
 interface OpenedArtifact {
-  id: string;
-  file: string;
+  url: string;
   handle: fs.promises.FileHandle;
   size: number;
   mtimeMs: number;
@@ -287,7 +293,7 @@ class IndexStore {
   ): Promise<{ entry: IndexEntry; release: () => void; cold: boolean }> {
     let closeSource = true;
     try {
-      // Admission (listFiles/open) is async, so cancellation and lifecycle events may have happened meanwhile.
+      // Admission is async, so cancellation and lifecycle events may have happened meanwhile.
       if (signal?.aborted) throw abortReason(signal);
       this.#assertCurrent(generation);
       const cached = this.#cache;
@@ -349,7 +355,7 @@ class IndexStore {
         try {
           const after = await src.handle.stat();
           if (after.size !== src.size || after.mtimeMs !== src.mtimeMs) {
-            throw new Error(`artifact://${src.id} changed while it was being indexed; retry the search`);
+            throw new Error(`${src.url} changed while it was being indexed; retry the search`);
           }
           if (controller.signal.aborted) throw abortReason(controller.signal);
           if (generation !== this.#generation) throw new Error("the session changed while the artifact was being indexed; retry the search");
@@ -387,42 +393,86 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pro
   return Promise.race([promise, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
-export function parseArtifactPath(value: string): string {
-  const match = /^artifact:\/\/(\d+)$/.exec(value.trim());
-  if (!match) {
-    throw new Error(`path must be exactly artifact://<numeric id> (for example artifact://12); got: ${JSON.stringify(value)}. No selectors, queries, files, or other URLs are accepted.`);
-  }
-  return match[1];
+function parseArtifactPath(value: string): ArtifactTarget | null {
+  const url = value.trim();
+  const legacy = /^artifact:\/\/(0|[1-9]\d*)$/.exec(url);
+  if (legacy && Number.isSafeInteger(Number(legacy[1]))) return { id: legacy[1], url, legacy: true };
+  const id = parseSpillUrl(url);
+  // The SDK parser also accepts selectors and numeric aliases. Search only exact spill URLs.
+  if (id !== undefined && Number.isSafeInteger(id) && url === spillUrl(id)) return { id: String(id), url, legacy: false };
+  return null;
 }
 
-/** Open the artifact for this session only: exactly one regular, non-symlink file with this id inside the manager's directory. */
-async function openArtifact(manager: ArtifactManagerLike, id: string): Promise<OpenedArtifact> {
-  const names = (await manager.listFiles()).filter((name) => name.startsWith(`${id}.`));
-  if (names.length === 0) throw new Error(`artifact://${id} does not exist in this session's artifact store.`);
-  if (names.length > 1) {
-    throw new Error(`artifact://${id} is ambiguous in this session's artifact store (${names.join(", ")}); refusing to guess. Use the native read tool on the exact artifact.`);
-  }
-  const name = names[0];
-  if (name.includes("/") || name.includes("\\") || name === "." || name === "..") throw new Error(`artifact://${id} has an unsafe file name; refusing.`);
-  const file = path.join(manager.dir, name);
-  const linkStat = await fs.promises.lstat(file);
-  if (linkStat.isSymbolicLink()) throw new Error(`artifact://${id} is a symbolic link; refusing to follow it out of the artifact store.`);
-  if (!linkStat.isFile()) throw new Error(`artifact://${id} is not a regular file.`);
-  const realDir = await fs.promises.realpath(manager.dir);
-  const realFile = await fs.promises.realpath(file);
-  if (path.dirname(realFile) !== realDir) throw new Error(`artifact://${id} resolves outside the artifact store; refusing.`);
-  const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+async function legacyFilename(dir: string, id: string, url: string): Promise<string> {
+  const prefix = `${id}.`;
+  const names = (await fs.promises.readdir(dir))
+    .filter((entry) => entry.startsWith(prefix) && /^[A-Za-z0-9_-]{1,64}\.log$/.test(entry.slice(prefix.length)));
+  if (names.length === 0) throw new Error(`${url} does not exist in this session's artifact store.`);
+  if (names.length > 1) throw new Error(`${url} is ambiguous in this session's artifact store; refusing to guess.`);
+  return names[0];
+}
+
+function directoryChanged(before: fs.BigIntStats, after: fs.BigIntStats): boolean {
+  return !after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino;
+}
+
+/** Resolve one filename within the chosen store and pin the regular file before reading bytes. */
+async function openArtifact(manager: ArtifactStore, { id, url, legacy }: ArtifactTarget): Promise<OpenedArtifact> {
+  const storeDir = legacy ? manager.sessionDir : manager.dir;
+  const missing = `${url} does not exist in this session's artifact store.`;
+  if (!storeDir) throw new Error(missing);
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.ino !== linkStat.ino || stat.dev !== linkStat.dev) throw new Error(`artifact://${id} changed while it was being opened; retry.`);
-    if (stat.size > MAX_ARTIFACT_BYTES) {
-      throw new Error(
-        `artifact://${id} is ${stat.size} bytes, above the ${MAX_ARTIFACT_BYTES}-byte search limit; nothing was indexed. Use the native read tool with line selectors (for example artifact://${id}:1-200 or artifact://${id}:-100).`,
-      );
+    const dir = path.resolve(storeDir);
+    const sessionDir = manager.sessionDir ? path.resolve(manager.sessionDir) : null;
+    // Allow aliases above the store, but not of either session-owned root.
+    const anchor = sessionDir === path.dirname(dir) ? sessionDir : dir;
+    const realParent = await fs.promises.realpath(path.dirname(anchor));
+    const realAnchor = path.join(realParent, path.basename(anchor));
+    const realDir = anchor === dir ? realAnchor : path.join(realAnchor, path.basename(dir));
+    const anchorStat = anchor === dir ? null : await fs.promises.lstat(realAnchor, { bigint: true });
+    const rootStat = await fs.promises.lstat(realDir, { bigint: true });
+    if (anchorStat?.isSymbolicLink() || rootStat.isSymbolicLink() || await fs.promises.realpath(dir) !== realDir) {
+      throw new Error(`${url} has a symbolic link in the artifact store root; refusing.`);
     }
-    return { id, file, handle, size: stat.size, mtimeMs: stat.mtimeMs, key: [realDir, id, name, `${stat.dev}:${stat.ino}`, stat.size, stat.mtimeMs].join("\0") };
+    if ((anchorStat && !anchorStat.isDirectory()) || !rootStat.isDirectory()) {
+      throw new Error(`${url} has no regular artifact store directory.`);
+    }
+
+    const name = legacy ? await legacyFilename(realDir, id, url) : spillFileName(id);
+    const file = path.join(realDir, name);
+    const linkStat = await fs.promises.lstat(file);
+    if (linkStat.isSymbolicLink()) throw new Error(`${url} is a symbolic link; refusing.`);
+    if (!linkStat.isFile() || linkStat.nlink !== 1) throw new Error(`${url} is not a regular file with one link.`);
+    // Nonblocking open avoids hanging if a regular file is swapped for a FIFO during admission.
+    const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+      const changed = `${url} or its store changed while it was being opened; retry.`;
+      const stat = await handle.stat();
+      // A directory may have been swapped and restored between lstat and open.
+      const openedPath = await fs.promises.readlink(`/proc/self/fd/${handle.fd}`).catch((cause: unknown) => {
+        throw new Error(`${url} cannot verify its opened file via /proc/self/fd; use native read if available.`, { cause });
+      });
+      if (
+        !stat.isFile() || stat.nlink !== 1 || stat.ino !== linkStat.ino || stat.dev !== linkStat.dev ||
+        openedPath !== file || await fs.promises.realpath(dir) !== realDir ||
+        directoryChanged(rootStat, await fs.promises.lstat(realDir, { bigint: true })) ||
+        (anchorStat && directoryChanged(anchorStat, await fs.promises.lstat(realAnchor, { bigint: true })))
+      ) {
+        throw new Error(changed);
+      }
+      if (legacy && await legacyFilename(realDir, id, url) !== name) throw new Error(changed);
+      if (stat.size > MAX_ARTIFACT_BYTES) {
+        throw new Error(
+          `${url} is ${stat.size} bytes, above the ${MAX_ARTIFACT_BYTES}-byte search limit; nothing was indexed. Use the native read tool with line selectors (for example ${url}:1-200 or ${url}:-100).`,
+        );
+      }
+      return { url, handle, size: stat.size, mtimeMs: stat.mtimeMs, key: [file, url, `${stat.dev}:${stat.ino}`, stat.size, stat.mtimeMs].join("\0") };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
   } catch (error) {
-    await handle.close().catch(() => undefined);
+    if (isEnoent(error)) throw new Error(missing);
     throw error;
   }
 }
@@ -487,7 +537,7 @@ function excerpt(line: string, at: number): string {
   return `${start > 0 ? "…" : ""}${line.slice(start, end)}${end < line.length ? "…" : ""}`;
 }
 
-function formatRange(id: string, row: ChunkRow, unitTokens: string[][], totalLines: number, rank: number): string {
+function formatRange(url: string, row: ChunkRow, unitTokens: string[][], totalLines: number, rank: number): string {
   const isSegment = row.char_start >= 0; // grouped rows store -1
   const lines = row.text.split(LINE_SEPARATOR);
   const hits: { line: number; text: string; at: number }[] = [];
@@ -505,7 +555,7 @@ function formatRange(id: string, row: ChunkRow, unitTokens: string[][], totalLin
   const from = Math.max(1, first - CONTEXT_LINES);
   const to = Math.min(totalLines, last + CONTEXT_LINES);
   const where = isSegment ? ` (long line, segment from char ${row.char_start}${located ? `, hit at char ${row.char_start + hits[0].at}` : ""})` : "";
-  const out = [`[${rank}] lines ${first}${last > first ? `-${last}` : ""}${where}  read: artifact://${id}:${from}-${to}  raw: artifact://${id}:raw:${from}-${to}`];
+  const out = [`[${rank}] lines ${first}${last > first ? `-${last}` : ""}${where}  read: ${url}:${from}-${to}  raw: ${url}:raw:${from}-${to}`];
   for (const hit of hits) out.push(`  ${hit.line}: ${hit.text}`);
   if (!located) out.push(`  (matching text not pinned to a line; the locator covers the whole matching range ${row.start_line}-${row.end_line})`);
   if (isSegment && located && row.char_start + hits[0].at >= NATIVE_READ_LINE_CHARS) {
@@ -539,12 +589,12 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
     loadMode: "discoverable" as const,
     approval: "read" as const,
     description:
-      "Literal keyword search inside ONE session artifact (`artifact://<id>`, the spilled full output of an earlier tool call). Not semantic: no model understands the question; it matches whole words (a query word also matches words that start with it), all words must appear in the same excerpt, case-insensitive; Korean works by whole word or word start, with no morphology. "
-      + "Returns ranked excerpts with line numbers and ready `read` locators. Excerpts only help you find where to look: read the original with the returned `artifact://<id>:<from>-<to>` locator before citing it as evidence or editing from it. "
-      + "No match does NOT prove the text is absent; page the artifact with the native `read` tool (for example `artifact://<id>:-100`). Line numbers are artifact output lines, not line annotations of an original source file that may appear inside the text. "
+      "Linux only. Literal keyword search inside ONE session spill (`local://<id>.log`) or historical artifact (`artifact://<id>`). Not semantic: no model understands the question; it matches whole words (a query word also matches words that start with it), all words must appear in the same excerpt, case-insensitive; Korean works by whole word or word start, with no morphology. "
+      + "Returns ranked excerpts with line numbers and ready `read` locators. Excerpts only help you find where to look: read the original with the returned locator before citing it as evidence or editing from it. "
+      + "No match does NOT prove the text is absent; page the original with the native `read` tool (for example `local://0.log:-100`). Line numbers are artifact output lines, not line annotations of an original source file that may appear inside the text. "
       + "Searches only this session's artifacts (a Maker shares its parent's ids), builds an in-memory index on first use, never changes the artifact, and refuses artifacts over 32 MiB. Use `limit`/`offset` to page results.",
     parameters: z.object({
-      path: z.string().describe("Exactly `artifact://<numeric id>`; no selectors, files, or other URLs"),
+      path: z.string().describe("Exactly `local://<numeric id>.log` or `artifact://<numeric id>`; no selectors, files, or other URLs"),
       query: z.string().describe("Literal words to look for, e.g. an error code or exception name. Punctuation is ignored; it is not a boolean or regex query"),
       limit: z.number().optional().describe(`Ranges to return, 1-${MAX_LIMIT} (default ${DEFAULT_LIMIT})`),
       offset: z.number().optional().describe("Ranges to skip, for paging (default 0)"),
@@ -552,7 +602,16 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
 
     async execute(_toolCallId: string, params: SearchParams, _onUpdate: unknown, ctx: CustomToolContext, signal?: AbortSignal) {
       const generation = store.generation; // before any await: lifecycle events during admission must reach this request
-      const id = parseArtifactPath(String(params.path ?? ""));
+      const sourcePath = String(params.path ?? "");
+      const target = parseArtifactPath(sourcePath);
+      const linux = process.platform === "linux";
+      if (!target) {
+        const platformNote = linux ? "" : " artifact_search ranked search requires Linux.";
+        throw new Error(`path must be exactly local://<numeric id>.log or artifact://<numeric id>; got: ${JSON.stringify(sourcePath)}. No selectors, queries, files, or other URLs are accepted.${platformNote}`);
+      }
+      if (!linux) {
+        throw new Error(`artifact_search ranked search requires Linux to verify opened spill files. Use native read with ${target.url}:1-200 or ${target.url}:-100 where available.`);
+      }
       const plan = planQuery(String(params.query ?? ""));
       const limit = integerParam("limit", params.limit, 1, MAX_LIMIT, DEFAULT_LIMIT);
       const offset = integerParam("offset", params.offset, 0, 1_000_000, 0);
@@ -560,7 +619,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
       const manager = ctx.sessionManager.getArtifactManager();
       if (!manager) throw new Error("This session has no artifact store, so artifact_search has nothing to search.");
 
-      const src = await openArtifact(manager, id);
+      const src = await openArtifact(manager, target);
       const { entry, release, cold } = await store.acquire(src, signal, generation);
       try {
         // acquire() still awaits closing the admitted handle after its own checks; recheck before touching the index.
@@ -584,7 +643,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
         const searchMs = Math.round((performance.now() - searchStarted) * 10) / 10;
 
         const header = [
-          `artifact_search artifact://${id}: literal word search (not semantic), ${entry.lines} lines, ${bytesLabel(entry.bytes)}. Index ${cold ? `built now in ${entry.indexMs} ms` : "reused from this session's cache"}.`,
+          `artifact_search ${src.url}: literal word search (not semantic), ${entry.lines} lines, ${bytesLabel(entry.bytes)}. Index ${cold ? `built now in ${entry.indexMs} ms` : "reused from this session's cache"}.`,
           "Excerpts are for discovery only: read the original with the read locator before treating anything here as evidence or editing from it. Line numbers are artifact output lines, not original source-file line annotations inside the text.",
         ];
         const lines = [...header];
@@ -592,7 +651,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
         let nextOffset: number | null = null;
         if (result.total === 0) {
           lines.push(
-            `No match for ${plan.units.map((u) => JSON.stringify(u)).join(", ")}. This does not prove the text is absent: only whole words or word starts are matched. Try other spellings or word forms, or page the original: artifact://${id}:1-200 or artifact://${id}:-100.`,
+            `No match for ${plan.units.map((u) => JSON.stringify(u)).join(", ")}. This does not prove the text is absent: only whole words or word starts are matched. Try other spellings or word forms, or page the original: ${src.url}:1-200 or ${src.url}:-100.`,
           );
         } else if (offset >= result.total) {
           lines.push(`offset ${offset} is past the ${result.total} matching ranges; use offset 0..${result.total - 1}.`);
@@ -604,7 +663,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
           );
           let used = lines.join("\n").length;
           for (const row of result.rows) {
-            const block = formatRange(id, row, plan.unitTokens, entry.lines, offset + shown + 1);
+            const block = formatRange(src.url, row, plan.unitTokens, entry.lines, offset + shown + 1);
             if (shown > 0 && used + block.length > MAX_OUTPUT_CHARS) break;
             lines.push(block);
             used += block.length + 1;
@@ -617,7 +676,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
           }
         }
         const details: ArtifactSearchDetails = {
-          artifact: `artifact://${id}`,
+          artifact: src.url,
           query: params.query,
           mode,
           total: result.total,

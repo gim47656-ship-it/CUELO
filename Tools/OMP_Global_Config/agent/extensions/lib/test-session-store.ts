@@ -2,12 +2,16 @@ import { randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { findScopedSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { daemonClientForProject } from "@oh-my-pi/pi-coding-agent/launch/client";
+import { canonicalProjectDir, daemonClient } from "@oh-my-pi/pi-coding-agent/daemon/client";
+import { projectScope, type UnitSnapshot } from "@oh-my-pi/pi-coding-agent/daemon/protocol";
+import { cfgSandboxEnabled, cfgShellPath } from "@oh-my-pi/pi-coding-agent/exec/settings";
+import { shellProcessCommand } from "@oh-my-pi/pi-coding-agent/exec/shell-process";
 import { cfgLaunchEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
-import { procmgr, tryAcquireFileLock, withFileLock } from "@oh-my-pi/pi-utils";
+import { tryAcquireFileLock, withFileLock } from "@oh-my-pi/pi-utils";
+import { prepareCueloSandboxEnv } from "@oh-my-pi/pi-utils/env";
 
 /**
- * test_session의 상태와 수명주기. 한 세션이 이름 붙인 테스트 범위(작업 공간 + SDK launch broker가 감독하는 프로세스)를
+ * test_session의 상태와 수명주기. 한 세션이 이름 붙인 테스트 범위(작업 공간 + SDK 데몬이 감독하는 프로세스)를
  * 턴을 넘어 다시 쓰고, 명시한 finish에서만 정리한다.
  *
  * - 상태는 세션마다 `<root>/<sessionKey>/state.json` 하나다. 여러 프로세스가 같은 파일을 고칠 수 있으므로 모든
@@ -16,8 +20,8 @@ import { procmgr, tryAcquireFileLock, withFileLock } from "@oh-my-pi/pi-utils";
  *   다시 읽은 상태의 같은 generation(daemonId)에만 반영한다.
  * - 작업 공간은 `<root>/<sessionKey>/ws/<scopeId>`에 새로 만든 디렉터리뿐이다. 기존 디렉터리를 맡지 않고, 지울 때는
  *   저장된 경로가 아니라 다시 계산한 경로의 실제 위치(realpath)를 확인한다.
- * - 프로세스는 broker generation(name·id·owner)으로만 식별한다. PID로 죽이지 않고, stop 요청에도 id를 실어 같은
- *   이름의 다른 실행을 건드리지 않는다. 확인할 수 없는 자원은 needs-cleanup으로 남긴다.
+ * - 데몬의 프로젝트, 서비스 이름, unit ID, generation, 세션 소유자를 확인한다. stop은 ID와 generation으로만
+ *   요청하며 PID로 죽이지 않는다. 이전 broker의 미종료 기록은 needs-cleanup으로 남긴다.
  */
 
 export type ScopeStatus = "active" | "needs-cleanup" | "finished";
@@ -28,6 +32,7 @@ export interface Resource {
   origin: "launched" | "tracked";
   service: string;
   daemonId: string;
+  generation?: string; // Absent on records written by the pre-19 project broker.
   startedAt: number;
   projectDir: string;
   command?: string;
@@ -66,6 +71,7 @@ export interface StoreState {
 export interface ServiceSnapshot {
   name: string;
   id: string;
+  generation: string;
   state: string;
   owner?: string;
   startedAt: number;
@@ -85,7 +91,7 @@ export interface LaunchSpec {
 export interface ServiceBackend {
   list(projectDir: string): Promise<ServiceSnapshot[]>;
   start(projectDir: string, spec: LaunchSpec, owner: string): Promise<{ daemon: ServiceSnapshot; readyTimedOut: boolean }>;
-  stop(projectDir: string, name: string, id: string, timeoutMs: number): Promise<ServiceSnapshot>;
+  stop(id: string, generation: string, timeoutMs: number): Promise<ServiceSnapshot>;
 }
 
 export interface Env {
@@ -286,10 +292,10 @@ export type Observation =
   | { kind: "ambiguous"; note: string };
 
 function classify(resource: Resource, sessionId: string, snapshot: ServiceSnapshot | undefined): Observation {
-  if (!snapshot) return { kind: "ended", state: "exited", note: "broker에 기록이 없음(이미 끝남)" };
+  if (!resource.generation) return { kind: "ambiguous", note: "이전 broker의 실행이라 종료를 확인할 수 없음" };
+  if (!snapshot) return { kind: "ambiguous", note: "데몬에서 이 실행의 종료를 확인할 수 없음" };
   const terminal = TERMINAL[snapshot.state] === true;
-  if (snapshot.id !== resource.daemonId) {
-    // broker는 이름당 기록 하나다. 다른 generation이 있으면 이 자원의 실행은 이미 대체돼 끝났다.
+  if (snapshot.id !== resource.daemonId || snapshot.generation !== resource.generation) {
     return terminal
       ? { kind: "ended", state: "exited", note: "같은 이름의 다른 실행으로 대체된 뒤 끝남" }
       : { kind: "ambiguous", note: `같은 이름 '${snapshot.name}'에 다른 실행(id ${snapshot.id}, owner ${snapshot.owner ?? "없음"})이 살아 있어 건드리지 않음` };
@@ -323,13 +329,13 @@ async function stopOne(env: Env, resource: Resource, observation: Observation, t
   if (observation.kind !== "live") return observation;
   let after: ServiceSnapshot;
   try {
-    after = await env.backend.stop(resource.projectDir, resource.service, resource.daemonId, timeoutMs);
+    after = await env.backend.stop(observation.snapshot.id, observation.snapshot.generation, timeoutMs);
   } catch (error) {
     return { kind: "ambiguous", note: `정지 요청이 실패함: ${message(error)}` };
   }
   const settled = classify(resource, env.sessionId, after);
   if (settled.kind === "live") return { kind: "ambiguous", note: `정지 요청 뒤에도 ${after.state} 상태` };
-  if (settled.kind === "ended" && after.id === resource.daemonId) return { kind: "ended", state: "stopped", note: "정지함", exitCode: after.exitCode };
+  if (settled.kind === "ended" && after.id === resource.daemonId && after.generation === resource.generation) return { kind: "ended", state: "stopped", note: "정지함", exitCode: after.exitCode };
   return settled;
 }
 
@@ -343,7 +349,7 @@ async function applyObservations(env: Env, scopeId: string, outcomes: Array<[Res
     if (!scope) return { value: undefined, write: false };
     const stamp = now();
     for (const [acted, observation] of outcomes) {
-      const current = scope.resources.find((item) => item.key === acted.key && item.daemonId === acted.daemonId);
+      const current = scope.resources.find((item) => item.key === acted.key && item.daemonId === acted.daemonId && item.generation === acted.generation);
       if (!current || current.state !== acted.state || current.updatedAt !== acted.updatedAt) continue;
       if (observation.kind === "live") {
         if (current.state !== "running") Object.assign(current, { state: "running", note: undefined, updatedAt: stamp });
@@ -475,7 +481,7 @@ async function launchLocked(env: Env, input: LaunchInput, key: string, scopeId: 
   const workspace = workspacePath(env, scope.id);
   const cwd = input.cwd ? resolve(workspace, input.cwd) : workspace;
   const ready = normalizeReady(input.ready);
-  const service = `ts-${scope.id}-${key}`.slice(0, 43).replace(/[-.]+$/, "") + `-${randomBytes(2).toString("hex")}`;
+  const service = `ts-${scope.id}-${key}`.slice(0, 22).replace(/[-.]+$/, "") + `-${randomBytes(12).toString("hex")}`;
   const started = await env.backend.start(env.projectDir, {
     name: service,
     command: input.command,
@@ -486,7 +492,7 @@ async function launchLocked(env: Env, input: LaunchInput, key: string, scopeId: 
   const daemon = started.daemon;
   const stamp = now();
   const record: Resource = {
-    key, origin: "launched", service, daemonId: daemon.id, startedAt: daemon.startedAt, projectDir: env.projectDir,
+    key, origin: "launched", service, daemonId: daemon.id, generation: daemon.generation, startedAt: daemon.startedAt, projectDir: env.projectDir,
     command: input.command, state: TERMINAL[daemon.state] ? "exited" : "running", updatedAt: stamp,
     ...(TERMINAL[daemon.state] ? { note: daemon.exitReason ?? "준비 전에 끝남", exitCode: daemon.exitCode } : {}),
   };
@@ -560,7 +566,7 @@ export async function trackResource(env: Env, input: { name: string; resource: s
   if (TERMINAL[snapshot.state]) throw new TestSessionError(`'${input.service}'는 이미 ${snapshot.state} 상태입니다.`);
   const stamp = now();
   const record: Resource = {
-    key, origin: "tracked", service: snapshot.name, daemonId: snapshot.id, startedAt: snapshot.startedAt,
+    key, origin: "tracked", service: snapshot.name, daemonId: snapshot.id, generation: snapshot.generation, startedAt: snapshot.startedAt,
     projectDir: env.projectDir, state: "running", updatedAt: stamp,
   };
   const updated = await updateState(env, (state) => {
@@ -761,49 +767,52 @@ function message(error: unknown): string {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// SDK launch broker backend
+// SDK daemon backend
 
-/**
- * 실제 backend: 이 프로세스가 이미 쓰는 프로젝트 broker 연결을 공유한다. 명령은 세션 설정의 셸로 감싸고
- * (bash `name` 서비스와 같은 방식), launch.enabled가 꺼진 세션에서는 띄우지 않는다. 서비스는 persist·detached가 아니어서
- * broker가 끝나면 함께 끝난다.
- */
+function serviceSnapshot(unit: UnitSnapshot): ServiceSnapshot {
+  return { name: unit.key, id: unit.id, generation: unit.generation, state: unit.state, owner: unit.owner,
+    startedAt: unit.startedAt, exitCode: unit.exitCode, exitReason: unit.exitReason };
+}
+
+/** startService replaces a live namesake; stopService stops by name. Neither is safe for a saved test scope. */
 export function brokerBackend(): ServiceBackend {
   return {
     async list(projectDir) {
-      const result = await (await daemonClientForProject(projectDir)).request({ op: "list" });
-      if (result.op !== "list") throw new Error("broker list 응답이 아닙니다.");
-      return result.daemons;
+      const { units } = await (await daemonClient()).request({ op: "list", kind: "proc", scope: projectScope(await canonicalProjectDir(projectDir)) });
+      return units.map(serviceSnapshot);
     },
     async start(projectDir, spec, owner) {
       const settings = findScopedSettings(projectDir);
-      if (settings && !cfgLaunchEnabled.get(settings)) throw new TestSessionError("이 세션은 서비스 실행(launch.enabled)이 꺼져 있습니다.");
-      const shell = settings ? settings.getShellConfig() : procmgr.getShellConfig();
-      const result = await (await daemonClientForProject(projectDir)).request({
-        op: "start",
-        spec: {
-          name: spec.name,
-          application: shell.shell,
-          args: [...shell.args, `${shell.prefix ? `${shell.prefix} ` : ""}${spec.command}`],
-          env: { ...shell.env, ...spec.env },
-          cwd: spec.cwd,
-          pty: false,
-          ready: spec.ready,
-          restart: "no",
-          persist: false,
-          detached: false,
+      if (!settings || !cfgLaunchEnabled.get(settings)) throw new TestSessionError("세션의 서비스 실행 권한(launch.enabled)을 확인할 수 없습니다.");
+      const shell = settings.getShellConfig();
+      const forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);
+      const application = forceSandbox ? join(settings.getAgentDir(), "sandbox/bash") : shell.shell;
+      const sandboxed = /[/\\]sandbox[/\\]bash$/.test(application);
+      const command = `${shell.prefix ? `${shell.prefix} ` : ""}${spec.command}`;
+      const procCommand = sandboxed ? { application, args: ["-c", command] }
+        : cfgShellPath.get(settings) ? { application, args: [...shell.args, command] }
+        : shellProcessCommand({ command });
+      const env = { ...shell.env, ...spec.env };
+      const client = await daemonClient();
+      const { unit, created, lease } = await client.request({
+        op: "open", kind: "proc", scope: projectScope(await canonicalProjectDir(projectDir)), key: spec.name, owner,
+        proc: {
+          ...procCommand,
+          env: sandboxed ? prepareCueloSandboxEnv(env, projectDir, settings.getAgentDir(), shell.env.HOME ?? process.env.HOME ?? "", forceSandbox) : env,
+          cwd: spec.cwd, pty: false, ready: spec.ready,
         },
-        owner,
-        replace: false,
-        awaitReady: true,
+        policy: { hold: "leases", idleMs: 0, onIdle: "stop", restart: "no", survive: "exec" },
+        replace: false, awaitReady: true,
       });
-      if (result.op !== "start") throw new Error("broker start 응답이 아닙니다.");
-      return { daemon: result.daemon, readyTimedOut: result.readyTimedOut };
+      if (!created || unit.owner !== owner) {
+        if (lease) await client.request({ op: "release", lease });
+        throw new TestSessionError(`서비스 '${spec.name}'가 이미 있어 실행을 맡지 않았습니다.`);
+      }
+      return { daemon: serviceSnapshot(unit), readyTimedOut: !!spec.ready && unit.readyAt === undefined && !TERMINAL[unit.state] };
     },
-    async stop(projectDir, name, id, timeoutMs) {
-      const result = await (await daemonClientForProject(projectDir)).request({ op: "stop", name, id, timeoutMs });
-      if (result.op !== "stop") throw new Error("broker stop 응답이 아닙니다.");
-      return result.daemon;
+    async stop(id, generation, timeoutMs) {
+      const { unit } = await (await daemonClient()).request({ op: "stop", unit: id, generation, timeoutMs });
+      return serviceSnapshot(unit);
     },
   };
 }

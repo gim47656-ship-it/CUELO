@@ -146,9 +146,9 @@ check(
 
 // 300줄 창이 read 예산(150KB)은 통과하지만 전달 단계 spill(50KB)에서 다시 잘린다.
 writeFileSync(join(files, "wide.txt"), `${Array.from({ length: 2000 }, (_, i) => row(i + 1, 400)).join("\n")}\n`);
-const wide = await delivered("wide.txt:100");
+const wide = await delivered("wide.txt:100-");
 const shown = [...wide.matchAll(/L(\d{5})/g)].map(match => Number(match[1]));
-const resume = Number(wide.match(/Use :(\d+) to continue/)?.[1]);
+const resume = Number(wide.match(/Use (?:wide\.txt)?:(\d+)-? to continue/)?.[1]);
 check(
 	"spill 재잘림: 재개 offset은 실제로 전달한 마지막 행 바로 다음이다",
 	shown.length > 0 && resume === shown.at(-1)! + 1,

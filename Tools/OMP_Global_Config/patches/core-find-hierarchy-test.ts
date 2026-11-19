@@ -36,6 +36,7 @@ interface StubOptions {
 	failKind?: Seen["kind"];
 	/** hang the folder request until the signal aborts */
 	hangFolder?: boolean;
+	hangNames?: boolean;
 	/** hang this kind of content request about billing/ files until the signal aborts */
 	hangBilling?: "sketch" | "verify";
 }
@@ -63,7 +64,7 @@ function stubJudge(seen: Seen[], options: StubOptions = {}) {
 						: "sketch";
 			seen.push({ kind, json: JSON.stringify(request), questions: keys.length });
 			if (options.failKind === kind) throw new Error(`stub ${kind} failure`);
-			if ((kind === "folder" && options.hangFolder) || (kind === options.hangBilling && JSON.stringify(request.state).includes("billing/"))) {
+			if ((kind === "name" && options.hangNames) || (kind === "folder" && options.hangFolder) || (kind === options.hangBilling && JSON.stringify(request.state).includes("billing/"))) {
 				const { promise, reject } = Promise.withResolvers<never>();
 				if (opts?.signal?.aborted) reject(opts.signal.reason);
 				opts?.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true });
@@ -140,6 +141,7 @@ interface Hit {
 }
 interface Result {
 	hits: Hit[];
+	lexicalFallback?: unknown[];
 	stats: { failures: string[]; errors: number; requests: number; failed?: number };
 }
 // 18.17.0+ takes the call deadline apart from the caller's cancel signal; older cores time out through the signal.
@@ -324,6 +326,14 @@ try {
 		assert.equal((result.stats.failed ?? result.stats.errors) > 0, true);
 	}
 	ok("provider 실패는 던지지 않고 stats.failures 에 남으며 폴더 실패 시 baseline hit 이 그대로다");
+
+	if (readFileSync(`${CORE}/tools/jfind/cascade.ts`, "utf8").includes("function fallbackMatches(")) {
+		const seen: Seen[] = [];
+		const result = await timedSearch(tree(), stubJudge(seen, { hangNames: true }), 1500);
+		assert.ok(seen.length && seen.every(({ kind }) => kind === "name"));
+		assert.ok(result.lexicalFallback?.length);
+		ok("파일명 판정 시간 초과 뒤 추가 판정 없이 원문 키워드 일치를 반환한다");
+	}
 
 	// 9. 전체 timeout 은 완료된 baseline 을 보존하고, 사용자 취소는 그대로 던진다.
 	{

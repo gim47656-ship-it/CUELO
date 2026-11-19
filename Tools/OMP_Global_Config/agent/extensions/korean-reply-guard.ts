@@ -123,7 +123,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateRepl
     // 번역과 알림은 lib/quiet-delivery로 보낸다: 번역은 모델 문맥에서 빠지는데도 aside라 wait를 끊었다(2026-11-16, 7일 표본 번역 28·알림 20).
     const quiet = createQuietDelivery(pi);
     const show = (ctx: ExtensionContext, content: string, source: { sourceTimestamp: number | undefined; sourceHash: string }) =>
-      quiet({ customType: TRANSLATION_TYPE, content, display: true, attribution: "agent", details: source }, ctx);
+      quiet({ customType: TRANSLATION_TYPE, content, display: true, excludeFromContext: true, attribution: "agent", details: source }, ctx);
 
     onSessionLifecycle(pi, { start: reset });
     pi.on("session_shutdown", reset);
@@ -134,9 +134,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateRepl
       const text = textOf(message.content);
       if (text.trim()) skipEnglish = userWroteEnglish(text);
     });
-    // 번역은 사람이 읽는 표시용이라 모델 문맥에서 뺀다(autolearn-saved와 같은 취급). 처음부터 늘 빠지므로 이미 보낸 문맥이 바뀌지 않는다.
-    // 알림은 지우지 않는다: 이미 보낸 앞쪽 알림을 빼면 그 지점부터 provider 프롬프트 캐시가 깨져 대화 전체를 다시 쓴다
-    // (2026-10-29 실측: 5분 안 캐시 재작성 90턴 중 27턴이 이 직후). 알림 하나는 짧아 쌓여도 재작성보다 싸다.
+    // Older saved translation rows lack excludeFromContext. Keep those out of model history on resume.
     pi.on("context", (event) => {
       const messages = event.messages as { role?: string; customType?: string }[];
       const kept = messages.filter((m) => !(m.role === "custom" && m.customType === TRANSLATION_TYPE));

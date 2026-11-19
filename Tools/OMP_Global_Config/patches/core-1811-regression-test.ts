@@ -99,7 +99,9 @@ if (CORE_PACKAGE === undefined) {
 const CORE = `${importBase(CORE_PACKAGE)}/src`;
 console.log(`대상 ${CORE}`);
 // pi-ai 18.4.2(18.4 계열로 판정)의 `limits.rotate()` 는 boolean 이 아니라 `{ switched }` 를 돌려준다. 가짜 풀도 대상 core 의 계약을 따른다.
-const piAiManifest: unknown = JSON.parse(await fsp.readFile(join(CORE_PACKAGE, "../pi-ai/package.json"), "utf8"));
+const aiRoot = resolveScopePackage(CORE_PACKAGE, "pi-ai", "package.json");
+if (!aiRoot) throw new Error("Missing pi-ai package for the target core");
+const piAiManifest: unknown = JSON.parse(await fsp.readFile(join(aiRoot, "package.json"), "utf8"));
 const piAiVersion =
 	typeof piAiManifest === "object" && piAiManifest !== null && "version" in piAiManifest ? String(piAiManifest.version) : "0.0.0";
 const [piAiMajor = 0, piAiMinor = 0] = piAiVersion.split(".").map(Number);
@@ -443,7 +445,9 @@ await section("[4] 공유 브라우저 타깃 소유권과 수확 경계", async
 	const registryModule = await import(`${CORE}/tools/browser/orphan-registry.ts`);
 	const { closeCdpTarget, collectOrphanTargets, forgetSharedTarget, recordSharedTarget, resetOrphanRegistryForTest } =
 		registryModule;
-	const { daemonRuntimeDir } = await import(`${CORE}/launch/paths.ts`);
+	const utilsRoot = resolveScopePackage(CORE_PACKAGE, "pi-utils", "src/dirs.ts");
+	if (!utilsRoot) throw new Error("Missing pi-utils package for the target core");
+	const { getDaemonRuntimeDir: daemonRuntimeDir } = await import(`${importBase(utilsRoot)}/src/dirs.ts`);
 
 	// 실재하지 않는 임시 프로젝트 경로라 해시 디렉터리가 어떤 실제 프로젝트와도 겹치지 않는다.
 	const projectDir = join(tmpdir(), `omp-1811-harness-${process.pid}-${Date.now().toString(36)}`);

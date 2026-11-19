@@ -265,13 +265,6 @@ export interface AgentSessionLike {
   resolveRoleModel(role: string): ModelLike | undefined;
   navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<NavigateTreeResult>;
   branch(entryId: string): Promise<{ cancelled: boolean }>;
-  /**
-   * Generate a handoff document with a oneshot LLM call and commit it as this
-   * session's compaction entry. omp 18 made this in-place: the session keeps
-   * its id and file, and the document becomes the summary that recent history
-   * is kept against. Resolves to `undefined` when the handoff is cancelled.
-   */
-  handoff(customInstructions?: string): Promise<{ document: string; savedPath?: string } | undefined>;
   setThinkingLevel(level: string | undefined, persist?: boolean): void;
   configuredThinkingLevel(): string | undefined;
   /**
@@ -287,7 +280,7 @@ export interface AgentSessionLike {
   isFastModeActive(): boolean;
   /** 켜기에서 `false`는 이 모델에 Fast가 없다는 뜻이다. 끄기는 family가 없을 때만 `false`. */
   setFastMode(enabled: boolean): boolean;
-  compact(customInstructions?: string): Promise<unknown>;
+  compact: AgentSession["compact"];
   getSessionStats(): Omit<SessionStatsInfo, "sessionName">;
   getLastAssistantText(): string | undefined;
   /**

@@ -25076,6 +25076,541 @@ import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";`,
 ` + before);
 }
 
+// 19.0.0: preserve 18.22.2 rollback candidates and port only to the new source shapes.
+{
+	const one = (file, marker) => {
+		const entries = EDITS.filter(entry => entry.file === file && entry.marker === marker);
+		if (entries.length !== 1) throw new Error(`19.0.0 candidate ${file}: ${entries.length}/1 entries for ${JSON.stringify(marker)}`);
+		return entries[0];
+	};
+	const alternate = (entry, discriminator, candidate) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file: entry.file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`19.0.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const prior = entry => entry.alternates?.at(-1) ?? entry;
+	const port = (entry, discriminator, edit, file = entry.file) => {
+		const { marker, anchor, patched } = prior(entry);
+		alternate(entry, discriminator, { file, marker: edit(marker), anchor: edit(anchor), patched: edit(patched) });
+	};
+	const rewrite = (entry, discriminator, anchor, patched, marker = patched, file = entry.file) => {
+		alternate(entry, discriminator, { file, marker, anchor, patched });
+	};
+	const retainMarker = (entry, discriminator, edit, file = entry.file) => {
+		const { marker, anchor, patched } = prior(entry);
+		rewrite(entry, discriminator, edit(anchor), edit(patched), marker, file);
+	};
+	const mapped = (from, to) => text => text.includes(from) ? swap(text, from, to) : text;
+	const versionEdit = (file, discriminator, anchor, patched, old) => EDITS.push({
+		file, requires: discriminator, marker: patched, anchor, patched,
+		alternates: [{ file, excludes: discriminator, marker: old, anchor: old, patched: old }],
+	});
+
+	const advisor = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&xYe(c))continue';
+	const advisorEntry = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	rewrite(advisorEntry, advisor, advisor, advisor);
+
+	port(one("src/tools/wait.ts", "runningAgentsOutsideJobs,"), "describeEvictedJob,",
+		mapped("buildJobResult, ", "buildJobResult, describeEvictedJob, "));
+
+	port(one("src/task/executor.ts", "\n\t\t\t\t\tmodelPatternRequested: modelPatterns.length > 0"),
+		"modelPatternParentFallback", mapped("modelPatternAuthFallback:", "modelPatternParentFallback:"));
+	port(one("src/sdk.ts", "modelPatternRequested?: string;"), "modelPatternParentFallback",
+		mapped(
+			"\t/** Authenticated fallback selector for deferred subagent model patterns. */\n\tmodelPatternAuthFallback?: string;",
+			"\t/**\n\t * Parent model selector a subagent falls back to when its deferred patterns\n\t * resolve to no model, or to one without credentials.\n\t */\n\tmodelPatternParentFallback?: string;",
+		));
+
+	const builtinDrops = "\t\tthis.#builtinDrops.clear();";
+	retainMarker(one("src/mcp/manager.ts", "\t\tthis.#selectionConnected.clear();"), builtinDrops,
+		mapped("\t\tthis.#sources.clear();\n", `\t\tthis.#sources.clear();\n${builtinDrops}\n`));
+
+	const excludedCustom = "if (m.excludeFromContext || !isCustomMessageContent(m.content)) return [];";
+	retainMarker(one("src/session/messages.ts", 'if (m.customType === "autolearn-saved") return [];'), excludedCustom,
+		mapped("if (!isCustomMessageContent(m.content)) return [];", excludedCustom));
+
+	const ask = "onAbandon: partial => {";
+	const askAnchor = [
+		"\t\t\t\tanswered = await untilAborted(dialogSignal, () =>",
+		"\t\t\t\t\tformDialog(html, {",
+		"\t\t\t\t\t\ttimeout,",
+		"\t\t\t\t\t\tsignal: dialogSignal,",
+		"\t\t\t\t\t\tacceptImages: true,",
+		"\t\t\t\t\t\tonAbandon: partial => {",
+		"\t\t\t\t\t\t\tgiven = partial;",
+		"\t\t\t\t\t\t},",
+		"\t\t\t\t\t}),",
+		"\t\t\t\t);",
+		"\t\t\t} else {",
+		"\t\t\t\tanswered = await askFieldByField(extensionUi, form, timeout, dialogSignal);",
+	].join("\n");
+	rewrite(one("src/tools/ask.ts", "\t\t\t\tconst richResult = await waitForUser(showRichDialog);"), ask, askAnchor,
+		swap(swap(swap(askAnchor,
+			"answered = await untilAborted(dialogSignal, () =>", "const showRichDialog = () => untilAborted(dialogSignal, () =>"),
+			"\n\t\t\t} else {", "\n\t\t\t\tanswered = await waitForUser(showRichDialog);\n\t\t\t} else {"),
+			"answered = await askFieldByField(extensionUi, form, timeout, dialogSignal);",
+			"answered = await waitForUser(() => askFieldByField(extensionUi, form, timeout, dialogSignal));"),
+		"answered = await waitForUser(() => askFieldByField(extensionUi, form, timeout, dialogSignal));");
+
+	const agentProtocol = "src/internal-urls/agent-protocol.ts";
+	const agentPeer = "async #resolvePeer(url: InternalUrl, target: PidTarget)";
+	port(one(agentProtocol, 'import { type AgentRef, AgentRegistry, formatAgentActivityWatch } from "../registry/agent-registry";'),
+		agentPeer, text => text.replace("type AgentRef, AgentRegistry, type AgentRegistryApi", "AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID")
+			.replace(", formatAgentActivityWatch }", ", formatAgentActivityWatch, type AgentRef }"));
+	port(one(agentProtocol, "${formatAgentActivityWatch(ref.activityWatch)}"), agentPeer,
+		mapped("\t\t\tempty: sections.length === 0 && !lastText,\n", "\t\t\tempty: sections.length === 0 && !lastText,\n\t\t\tpublishedEmpty,\n"));
+
+	retainMarker(one("src/internal-urls/proc-protocol.ts", "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}"),
+		'import type { UnitSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";', mapped("${job.status} ${duration}", "${jobState(job)} ${duration}"));
+
+	const evalDecl = "// CUELO: optional inventories belong to the existing helpers topic.";
+	const evalEntry = one("src/tools/eval.ts", evalDecl);
+	const evalTopics = "src/tools/eval-doc-topics.ts";
+	const evalImport = 'import type { EvalPreludeDefinition } from "../eval/preludes";';
+	EDITS.push({
+		file: "src/tools/eval-doc-topics.ts",
+		marker: 'import { type EvalPreludeDefinition, evalPreludeSummary } from "../eval/preludes";',
+		anchor: evalImport,
+		patched: 'import { type EvalPreludeDefinition, evalPreludeSummary } from "../eval/preludes";',
+		alternates: [{ file: "src/tools/eval.ts", marker: "import evalHelpersTopic from ", anchor: "import evalHelpersTopic from ", patched: "import evalHelpersTopic from " }],
+	});
+	retainMarker(evalEntry, "export function evalTemplateContext(", text => text, evalTopics);
+
+	// The pre-existing switch guard must still short-circuit the upstream retry branch.
+	const retry = one("src/session/turn-recovery.ts", "if (!switchedModel && !staleOpenAIResponsesReplayError");
+	const retryAnchor = "\t\tif (\n\t\t\t!staleOpenAIResponsesReplayError &&\n\t\t\t!switchedCredential &&\n\t\t\t!stripDemotedReasoning &&\n\t\t\t!resampleMidStreamRefusal &&\n\t\t\tcurrentSelector\n\t\t) {";
+	const retryPatched = swap(retryAnchor, "!staleOpenAIResponsesReplayError", "!switchedModel &&\n\t\t\t!staleOpenAIResponsesReplayError");
+	rewrite(retry, "#midStreamRefusalResampled = false;", retryAnchor, retryPatched);
+
+	const promptRead = "src/prompts/tools/read.md";
+	const documentTypes = "PDF/DOCX/PPTX/XLSX/EPUB:";
+	retainMarker(one(promptRead, "Ranges ONLY in path"), documentTypes,
+		mapped(
+			"- :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60.",
+			"- :50 line 50; :50- from line 50 on; :50-200 inclusive; :50+150 counts lines; :-60 last 60.",
+		));
+	const rangedRead = one(promptRead, "Ranges ONLY in path").alternates.at(-1);
+	rangedRead.anchor = swap(rangedRead.anchor, "\n- Beside :raw a bare number is that one line (:17:raw), :17-:raw runs on.", "");
+	const readSources = one(promptRead, "- Dirs: root complete, children 12;");
+	// The actual upstream document types are also the discriminator, so keep them in the compression.
+	rewrite(readSources, documentTypes,
+		swap(prior(readSources).anchor, "PDF/documents:", documentTypes),
+		swap(prior(readSources).patched, "Docs text", `${documentTypes} text`), readSources.marker);
+
+	const promptBash = "src/prompts/tools/bash.md";
+	const notifyDoc = "`notify` (regex; implies `async`)";
+	const bashOpen = one(promptBash, "Persistent bash 5.3; explicit cwd");
+	rewrite(bashOpen, notifyDoc,
+		swap(prior(bashOpen).anchor, "; `pty` = interactive", "{{#if hasPty}}; `pty` = interactive{{/if}}"),
+		swap(prior(bashOpen).patched, "; pty interactive", "{{#if hasPty}}; pty interactive{{/if}}"), bashOpen.marker);
+	const readyDoc = one(promptBash, "- ready: log regex/port");
+	port(readyDoc, notifyDoc, mapped("127.0.0.1", "localhost"));
+
+	const promptWait = "src/prompts/tools/wait.md";
+	const waitChain = "- Agent you wait on is waiting on you? Answer it first.";
+	const waitOpen = one(promptWait, "Only when completely blocked:");
+	const waitAnchor = prior(waitOpen).anchor
+		.replace("this run.", "this run{{#if subagent}}, or on your parent's next message{{/if}}.")
+		.replace("Returns at once.", "Returns at once; so does a wait on an agent that is idle with nothing to wake it, or that is waiting on you.")
+		.replace("- Result in,", `${waitChain}\n- Result in,`);
+	rewrite(waitOpen, waitChain, waitAnchor, `${prior(waitOpen).patched}\n${waitChain}`, waitOpen.marker);
+	const waitRepeat = one(promptWait, "- Empty result, still blocked:");
+	const repeatAnchor = `${prior(waitRepeat).anchor.slice(0, -1)}, longer for a reply.`;
+	rewrite(waitRepeat, waitChain, repeatAnchor, "- Empty result, still blocked: wait alone now (up to {{longest}}, longer for a reply).", waitRepeat.marker);
+
+	const promptEval = "src/prompts/tools/eval.md";
+	const preludeListing = "{{#if summary}}: {{summary}}{{/if}}";
+	const evalDoc = one(promptEval, "{{name}}=xd://eval/{{name}}");
+	const evalGuide = one(promptEval, "{{/each}}\n{{#each inlinePreludes}}");
+	const terse = `{{name}}=xd://eval/{{name}}${preludeListing}`;
+	// A new-only discriminator must remain after both entries have run.
+	rewrite(evalDoc, preludeListing, `- \`{{name}}\`${preludeListing} → xd://eval/{{name}}`, terse, terse);
+	retainMarker(evalGuide, preludeListing, mapped("- `{{name}}`: {{summary}}", `- \`{{name}}\`${preludeListing}`));
+
+	// Read local agent progress through the same scoped ID used for the output lookup.
+	const agentScope = one(agentProtocol, 'if (ref && ref.kind !== "advisor" && (callerRoot === undefined || registry.rootOf(ref.id) === callerRoot))');
+	const resolveOutput = "\t\tconst { outputId, dirs, registry } = target;\n";
+	rewrite(agentScope, agentPeer, resolveOutput,
+		"\t\tconst { outputId, dirs, registry, callerRoot } = target;\n");
+	const localAgent = (anchor, patched) => versionEdit(agentProtocol, agentPeer, anchor, patched, 'readonly scheme = "agent";');
+	localAgent("\tregistry?: AgentRegistryApi;\n\t/** Last status published by the peer",
+		"\tregistry?: AgentRegistryApi;\n\tcallerRoot?: string;\n\t/** Last status published by the peer");
+	localAgent("\t\treturn this.#resolveOutput(url, {\n\t\t\toutputId: pid ? (pid.address.id ?? MAIN_AGENT_ID) : outputId,",
+		"\t\tconst callerRoot = callerRootId(registry, context?.session);\n\t\treturn this.#resolveOutput(url, {\n\t\t\tcallerRoot,\n\t\t\toutputId: rootScopedAgentId(pid ? (pid.address.id ?? MAIN_AGENT_ID) : outputId, callerRoot),");
+	localAgent("\t\tconst extraction = target.segments.length > 0;\n",
+		"\t\tconst extraction = target.segments.length > 0;\n\t\tconst localRef = registry?.get(outputId);\n\t\tconst ref = callerRoot === undefined || registry?.rootOf(outputId) === callerRoot ? localRef : undefined;\n");
+	for (const call of [
+		"this.#resolveProgress(url, progress, extraction)",
+		"this.#resolveProgress(url, progress, false, true)",
+	]) {
+		const block = `\t\t\tconst ref = registry?.get(outputId);\n\t\t\tconst progress = ref && ref.kind !== "advisor" ? ref : await target.remoteProgress?.();\n\t\t\tif (progress) return ${call};`;
+		localAgent(block, block.replace("const ref = registry?.get(outputId);", "// Use the caller-scoped ref resolved above."));
+	}
+	localAgent('\t\t\t\t\t.filter(candidate => candidate.kind !== "advisor")\n\t\t\t\t\t.map(candidate => candidate.id) ?? [];',
+		'\t\t\t\t\t.filter(candidate => candidate.kind !== "advisor" && (callerRoot === undefined || registry.rootOf(candidate.id) === callerRoot))\n\t\t\t\t\t.map(candidate => candidate.id) ?? [];');
+	localAgent('\tid: string;\n\tstatus: string;\n\tsession: AgentSessionHandle | null;',
+		'\tid: string;\n\tstatus: string;\n\tactivityWatch?: AgentRef["activityWatch"];\n\tsession: AgentSessionHandle | null;');
+	// Park handles starting recipients before the normal send gate, so scope it too.
+	localAgent("\t\tconst to = pid && !pid.local ? named : resolveRecipient(registry, senderId, named);",
+		"\t\tconst senderRoot = registry.rootOf(senderId);\n\t\tconst to = pid && !pid.local ? named : rootScopedAgentId(resolveRecipient(registry, senderId, named), senderRoot);");
+	localAgent("\t\tconst recipient = registry.get(to);\n\t\tconst startingJob =",
+		"\t\tconst recipient = registry.get(to);\n\t\tif (recipient && registry.rootOf(to) !== senderRoot) throw new Error(`Agent \"${to}\" belongs to a different top-level session.`);\n\t\tconst startingJob =");
+	// The upstream blank test's old marker prefix survived, but the final-watch lookup must use the scoped ref.
+	const outputWatch = one(agentProtocol, "\t\tif (!extraction) content += formatAgentActivityWatch(registry.get(outputId)?.activityWatch);");
+	rewrite(outputWatch, agentPeer, prior(outputWatch).anchor,
+		prior(outputWatch).patched.replace("registry.get(outputId)?.activityWatch", "ref?.activityWatch"),
+		"\t\tif (!extraction) content += formatAgentActivityWatch(ref?.activityWatch);");
+
+	const ircBus = "src/irc/bus.ts";
+	const ircMesh = "export type IrcSend =";
+	const deliver = "\tasync #deliver(message: IrcMessage, options: { localOnly?: boolean }): Promise<IrcDeliveryReceipt> {";
+	const opts = "opts?: { signal?: AbortSignal; countsAsReply?: boolean }";
+	const deliverWithOpts = deliver.replace("options: { localOnly?: boolean }", `opts: { localOnly?: boolean; signal?: AbortSignal; countsAsReply?: boolean }`);
+	retainMarker(one(ircBus, "different top-level session"), ircMesh,
+		mapped("\tasync #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {", deliver));
+	const send = one(ircBus, "opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }");
+	port(send, ircMesh, text => text
+		.replace('send(msg: Omit<IrcMessage, "id" | "ts">', "send({ localOnly, ...msg }: IrcSend")
+		.replace("seq: ++this.#sendSeq };", "seq: ++this.#sendSeq, excerpt: excerptOf(message.body) };")
+		.replace("await this.#deliver(message);", "await this.#deliver(message, { localOnly });")
+		.replace("await this.#deliver(message, opts);", "await this.#deliver(message, { localOnly, ...opts });"));
+	const cancelDelivery = one(ircBus, "\tasync #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean; signal?: AbortSignal; countsAsReply?: boolean }): Promise<IrcDeliveryReceipt> {");
+	const cancelled = '\t\tif (opts?.signal?.aborted) return { to: message.to, outcome: "failed", error: "IRC delivery cancelled." };';
+	rewrite(cancelDelivery, ircMesh, deliver, `${deliverWithOpts}\n${cancelled}`, deliverWithOpts);
+	versionEdit(ircBus, ircMesh, "const mesh = ref || options.localOnly ? undefined : agentMesh();",
+		"const mesh = ref || opts.localOnly ? undefined : agentMesh();", "export interface IrcWaitFilter {");
+
+	const bashTool = "src/tools/bash.ts";
+	const bashNotify = "const notifySource = blankToUndefined(rawNotify);";
+	const readyOnly = one(bashTool, "// HANSE: env without a service name exports into the command\n\t\t\tthrow new ToolError(");
+	const readyNoName = '\t\t} else if (ready !== undefined) {\n\t\t\tpendingNotices.push("Ignored ready: service-only, and no service name was given.");';
+	// Upstream no longer treats env as a service-only option; preserve the new ready notice.
+	rewrite(readyOnly, bashNotify, readyNoName, readyNoName);
+	for (const [marker, tail] of [
+		['\t"env?": type.record("string", "string"), // HANSE: env restored\n});\n\nconst bashSchemaWithAsyncAndService = type({', "\n\nconst bashSchemaWithAsyncAndService"],
+		['\t"env?": type.record("string", "string"), // HANSE: env restored\n});\n\ntype BashToolSchema =', "\n\n// Without an interactive UI"],
+	]) {
+		rewrite(one(bashTool, marker), bashNotify, `\t"ready?": SERVICE_READY,\n});${tail}`,
+			`\t"ready?": SERVICE_READY,\n\t"env?": type.record("string", "string"), // HANSE: env restored\n});${tail}`);
+	}
+	const bashEnv = one(bashTool, "\t\tconst env = nonEmptyRecord(rawEnv); // HANSE: env restored\n");
+	retainMarker(bashEnv, bashNotify, mapped("const asyncRequested = rawAsync === true;", bashNotify));
+
+	const evalSdk = one("src/sdk.ts", "\t\t\t\tmcpPrelude ??= createMcpEvalPrelude(toolSession);");
+	const sdkNamespaces = "const bindsMcpToEval =";
+	const dsm = "\t\t\tif (cfgDisasmBackend.get(settings) !== undefined) {";
+	// Retain CUELO's prelude hooks in addition to native per-server namespaces.
+	rewrite(evalSdk, sdkNamespaces, dsm, [
+		"\t\t\tif (toolSession.mcpManager) {",
+		"\t\t\t\tmcpPrelude ??= createMcpEvalPrelude(toolSession);",
+		"\t\t\t\tbuiltins.push(mcpPrelude);",
+		"\t\t\t}",
+		"\t\t\tskillScriptsPrelude ??= createSkillScriptsEvalPrelude(toolSession);",
+		"\t\t\tbuiltins.push(skillScriptsPrelude);",
+		dsm,
+	].join("\n"), evalSdk.marker);
+	const mcpPrelude = one("src/eval/preludes.ts", "export function createMcpEvalPrelude(session: ToolSession): EvalPreludeDefinition {");
+	retainMarker(mcpPrelude, "export interface HostEvalPreludeDefinition", mapped(
+		"\t}\n\t// Even a call that fails",
+		'\t}\n\tif (!definition.invoke) throw new Error(`Eval prelude "${name}" has no host calls.`);\n\t// Even a call that fails',
+	));
+
+	// The daemon now starts as a new per-user process. Scrub the spawn env before
+	// it becomes the process's C environ; its PTYs no longer need an env -u shim.
+	const oldBroker = "src/launch/broker.ts";
+	const daemonClient = "src/daemon/client.ts";
+	const daemonSpawn = "const spawn = resolveWorkerSpawnCmd(DAEMON_WORKER_ARG);";
+	const daemonImport = 'import { resolveCliEntryCmd, resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";';
+	const daemonHelper = 'import { hostNextServerEnvUnsets } from "@oh-my-pi/pi-utils/env";';
+	for (const marker of [daemonHelper, "const brokerDroppedHostEnv = new Set<string>();", "const dropped = [...brokerDroppedHostEnv]"]) {
+		rewrite(one(oldBroker, marker), daemonSpawn, daemonSpawn, daemonSpawn, daemonSpawn, daemonClient);
+	}
+	const daemonEnv = `\t${daemonSpawn}\n\tconst child = Bun.spawn(spawn.cmd, {\n\t\tcwd: spawn.cwd,\n\t\tenv: workerEnvFromParent(),`;
+	rewrite(one(oldBroker, "brokerDroppedHostEnv.add(name);"), daemonSpawn, daemonEnv,
+		swap(daemonEnv, "\n\tconst child", "\n\tconst env = workerEnvFromParent();\n\tfor (const name of hostNextServerEnvUnsets(env, {})) delete env[name];\n\tconst child")
+			.replace("env: workerEnvFromParent(),", "env,"),
+		"for (const name of hostNextServerEnvUnsets(env, {})) delete env[name];", daemonClient);
+	EDITS.push({
+		file: "src/daemon/client.ts",
+		requires: daemonSpawn,
+		marker: daemonHelper,
+		anchor: daemonImport,
+		patched: `${daemonImport}\n${daemonHelper}`,
+		alternates: [{ file: oldBroker, marker: 'const LOG_FILE = "output.log";', anchor: 'const LOG_FILE = "output.log";', patched: 'const LOG_FILE = "output.log";' }],
+	});
+
+	const findNames = one("src/tools/jfind/cascade.ts", 'if (!outcome.ok) this.#fail("extra filenames", outcome.error);');
+	const deadlineNaming = "deadlineHit = await this.#untilDeadline(naming);";
+	const deadlineAnchor = prior(findNames).anchor.replace(
+		'\t\tif (ranking.ranker === "judge") {',
+		'\t\t// Set when the deadline cuts judging short before verification: the\n\t\t// remaining judge waves are skipped and literal matches stand in.\n\t\tlet deadlineHit = false;\n\t\tif (ranking.ranker === "judge") {',
+	).replace("await this.#dispatch(this.#options.judge, nameJobs,", "const naming = this.#dispatch(this.#options.judge, nameJobs,")
+		.replace("\t\t\t});\n\t\t}\n", `\t\t\t});\n\t\t\t${deadlineNaming}\n\t\t}\n`);
+	const deadlinePatched = swap(prior(findNames).patched, "await this.#dispatch(this.#options.judge, nameJobs,",
+		"const naming = this.#dispatch(this.#options.judge, nameJobs,") + "\t\tawait this.#untilDeadline(naming);\n";
+	rewrite(findNames, "if (!deadlineHit) {", deadlineAnchor, deadlinePatched, findNames.marker);
+	const findSelect = one("src/tools/jfind/cascade.ts", "// Stable sort: ties keep the lexical order of `extra`.");
+	const readPhase = "const { filesystem, query, onProgress } = this.#options;";
+	const selectBody = swap(prior(findSelect).patched, readPhase, `${readPhase}\n\t\tlet deadlineHit = this.#options.deadline?.aborted === true;`);
+	rewrite(findSelect, "if (!deadlineHit) {", prior(findSelect).anchor,
+		swap(selectBody, "Promise<{ hits: FindHit[]; timeout?: FindTimeout }>", "Promise<{ hits: FindHit[]; timeout?: FindTimeout; files: FilePlan[] }>"), findSelect.marker);
+	const findRun = one("src/tools/jfind/cascade.ts", "// HANSE: lexRanked keeps the capped-out tail for the hierarchical directory pass");
+	const namingStart = "await this.#dispatch(this.#options.judge, nameJobs,";
+	const namingEnd = "onProgress?.(`filename ranking ${named}/${ranked.length}`);\n\t\t\t});";
+	const runBody = swap(swap(prior(findRun).patched, namingStart, "const naming = this.#dispatch(this.#options.judge, nameJobs,"),
+		namingEnd, `${namingEnd}\n\t\t\tawait this.#untilDeadline(naming);`);
+	rewrite(findRun, "if (!deadlineHit) {", prior(findRun).anchor,
+		swap(swap(runBody, "return { hits, timeout };", "return { hits, timeout, files };"),
+			"const { hits, timeout } = await this.#readAndVerify", "const { hits, timeout, files } = await this.#readAndVerify"), findRun.marker);
+
+	// A repaired billing or authentication setting is rechecked on the next request after one minute.
+	const accountRejection = 'return { reason: `rejected the account (${status})`, cooldownMs: Number.POSITIVE_INFINITY };';
+	versionEdit("src/judgment/index.ts", 'reason: "is unavailable in this region (451)"', accountRejection,
+		accountRejection.replace("Number.POSITIVE_INFINITY", "CANDIDATE_REJECTION_COOLDOWN_MS"), "const CANDIDATE_TIMEOUT_COOLDOWN_MS = 30_000;");
+
+	// Embedded shell processes in v19 ignore shellPath. Route the sandboxed
+	// service/PTY cases through the existing wrapper; do not fall through to it.
+	const serviceFile = "src/launch/services.ts";
+	const serviceSpawn = [
+		"\t\t...shellProcessCommand({",
+		'\t\t\tcommand: `${shell.prefix ? `${shell.prefix} ` : ""}${params.command}`,',
+		"\t\t\tsource,",
+		"\t\t\tcwd: urlCwd,",
+		"\t\t}),",
+	].join("\n");
+	const serviceSandbox = '\t\t...(/[/\\\\]sandbox[/\\\\]bash$/.test(shell.shell)\n\t\t\t? { application: shell.shell, args: ["-c", `${shell.prefix ? `${shell.prefix} ` : ""}${params.command}`] }\n' +
+		serviceSpawn.replace("\t\t...shellProcessCommand", "\t\t\t: shellProcessCommand").replace("\t\t}),", "\t\t})),");
+	versionEdit(serviceFile, "const source = params.seed ? await writeServiceSeed(", serviceSpawn, serviceSandbox,
+		"export async function startService(");
+	const ptyFile = "src/tools/bash-interactive.ts";
+	const terminalEnv = "function terminalEnv(exports: Record<string, string>)";
+	const ptySettings = "\tconst settings = await Settings.init();\n";
+	const oldPtySettings = '\tconst forceSandbox = process.platform === "linux" && cfgSandboxEnabled.get(settings);\n\tconst { shell: configuredShell, env: shellEnv } = settings.getShellConfig();\n\tconst resolvedShell = forceSandbox ? path.join(settings.getAgentDir(), "sandbox/bash") : configuredShell;';
+	rewrite(one(ptyFile, oldPtySettings), terminalEnv, ptySettings, `${ptySettings}${oldPtySettings}\n` +
+		'\tconst sandbox = process.platform === "linux" && /[/\\\\]sandbox[/\\\\]bash$/.test(resolvedShell);\n',
+		"\tconst sandbox = process.platform");
+	const oldPtyEnv = EDITS.find(entry => entry.file === ptyFile && entry.marker.includes("...interactiveShellEnv, TERM:"));
+	const ptyLaunch = "\t\t\t\t\t\t\tapplication: options.application,\n\t\t\t\t\t\t\targs: options.args,\n\t\t\t\t\t\t\tcwd: options.cwd,\n\t\t\t\t\t\t\ttimeoutMs: options.timeoutMs,\n\t\t\t\t\t\t\tenv: terminalEnv(options.env),";
+	const sandboxPty = ptyLaunch
+		.replace("application: options.application,", "application: sandbox ? resolvedShell : options.application,")
+		.replace("args: options.args,", 'args: sandbox ? ["-c", options.command] : options.args,')
+		.replace("env: terminalEnv(options.env),", 'env: sandbox ? prepareCueloSandboxEnv(terminalEnv(options.env), options.cwd, settings.getAgentDir(), shellEnv.HOME ?? process.env.HOME ?? "", forceSandbox) : terminalEnv(options.env),');
+	rewrite(oldPtyEnv, terminalEnv, ptyLaunch, sandboxPty);
+
+	const modelControls = one("src/session/model-controls.ts", "function raiseToAutoThinkingFloor(");
+	const effortImport = 'import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";\n';
+	rewrite(modelControls, "settleAutoThinkingLevel(): void",
+		prior(modelControls).anchor, swap(prior(modelControls).patched, effortImport, ""), prior(modelControls).marker);
+
+	// Legacy spills are sibling files of the v19 local/ root, never aliases for it.
+	const router = "src/internal-urls/router.ts";
+	const router19 = "): Promise<InternalResource<string | Buffer>> {";
+	const routerImport = 'import * as path from "node:path";';
+	const legacyImports = [
+		'import { constants as fsConstants } from "node:fs";',
+		'import * as fs from "node:fs/promises";',
+		'import { isEnoent } from "@oh-my-pi/pi-utils";',
+		routerImport,
+	].join("\n");
+	versionEdit(router, router19, routerImport, legacyImports, routerImport);
+	const firstClass = "export class InternalUrlRouter {";
+	versionEdit(router, router19, firstClass, String.raw`export async function openLegacyArtifactForRead(url: InternalUrl, context?: ResolveContext) {
+	const id = url.rawHost ?? url.hostname;
+	if (!/^\d+$/.test(id) || !/^artifact:\/\/\d+$/i.test(url.rawHref ?? url.href)) {
+		throw new ToolError("Legacy artifact URL requires a numeric ID: artifact://0");
+	}
+	if (process.platform !== "linux") throw new ToolError("Legacy artifact reads require Linux; the original file has not been changed");
+	const root = context?.localProtocolOptions?.getArtifactsDir?.();
+	if (!root || !path.isAbsolute(root)) throw new ToolError("No session - legacy artifacts unavailable");
+	const outside = "Legacy artifact " + id + " is not a regular file inside this session's artifacts directory";
+	const inRoot = await fs.lstat(root).catch(error => {
+		if (!isEnoent(error)) throw error;
+	});
+	if (inRoot && !inRoot.isDirectory()) throw new ToolError(outside);
+	if (!inRoot) throw new ToolError("Legacy artifact " + id + " not found in this session");
+	const canonical = await fs.realpath(root);
+	const { O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = fsConstants;
+	// Pin the directory before looking up an entry; the lookup can't be
+	// redirected to a different parent even if the pathname moves.
+	const folder = await fs.open(canonical, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+	const same = (a: { dev: number; ino: number }, b: { dev: number; ino: number }) => a.dev === b.dev && a.ino === b.ino;
+	try {
+		if (!same(await folder.stat(), inRoot)) throw new ToolError(outside);
+		const pinned = "/proc/self/fd/" + folder.fd;
+		const prefix = id + ".";
+		let name: string | undefined;
+		for (const entry of await fs.readdir(pinned)) {
+			if (!entry.startsWith(prefix) || !/^[A-Za-z0-9_-]{1,64}\.log$/.test(entry.slice(prefix.length))) continue;
+			if (name !== undefined) throw new ToolError("Legacy artifact " + id + " matches multiple files");
+			name = entry;
+		}
+		if (name === undefined) throw new ToolError("Legacy artifact " + id + " not found in this session");
+		const pinnedFile = path.join(pinned, name);
+		const file = path.join(canonical, name);
+		const before = await fs.lstat(pinnedFile);
+		if (!before.isFile() || before.nlink !== 1) throw new ToolError(outside);
+		const handle = await fs.open(pinnedFile, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+		try {
+			const stat = await handle.stat();
+			const verified = await fs.realpath("/proc/self/fd/" + handle.fd) === file;
+			if (!stat.isFile() || stat.nlink !== 1 || !same(stat, before) || !same(await fs.lstat(root), inRoot) || !verified) {
+				throw new ToolError(outside);
+			}
+			return { file, handle, size: stat.size };
+		} catch (error) {
+			await handle.close();
+			throw error;
+		}
+	} finally {
+		await folder.close();
+	}
+}
+
+const legacyArtifactHandler: ProtocolHandler = {
+	scheme: "artifact",
+	spec: { backing: "virtual", selectors: "lines", immutable: true },
+	async resolve(url, context) {
+		const { handle, size } = await openLegacyArtifactForRead(url, context);
+		try {
+			if (size > 8 * 1024 * 1024) throw new ToolError("Legacy artifact exceeds the full-resource read limit");
+			const bytes = Buffer.allocUnsafe(size);
+			let offset = 0;
+			while (offset < size) {
+				const { bytesRead } = await handle.read(bytes, offset, size - offset, offset);
+				if (bytesRead === 0) break;
+				offset += bytesRead;
+			}
+			return { url: url.href, content: bytes.toString("utf8", 0, offset), contentType: "text/plain", size: offset };
+		} finally {
+			await handle.close();
+		}
+	},
+};
+
+` + firstClass, firstClass);
+	const localHandler = "\t\tthis.register(new LocalProtocolHandler());";
+	const readTool = "src/tools/read.ts";
+	const read19 = 'import { isRemoteTextWritable, writeRemoteMirror } from "../edit/remote-mirror";';
+	const readImport = 'import { isMarkdownPath } from "@oh-my-pi/pi-tui/lang-from-path";';
+	versionEdit(readTool, read19, readImport,
+		`import { openLegacyArtifactForRead } from "../internal-urls/router";\n${readImport}`, readImport);
+	const readTarget = "\t\t\tconst target = await internalRouter.target(";
+	versionEdit(readTool, read19, readTarget, String.raw`			// Keep the checked descriptor alive throughout the native paged read. Never
+			// hand the user's mutable artifact pathname back to the filesystem pipeline.
+			if (process.platform === "linux" && extractUriScheme(peeled.path) === "artifact") {
+				if (question !== undefined || parsed.kind === "image") throw new ToolError("Legacy artifacts support text reads only");
+				const parsedUrl = parseInternalUrl(peeled.path);
+				const { file, handle } = await openLegacyArtifactForRead(parsedUrl, sessionResolveContext(this.session, { signal }));
+				try {
+					const fdPath = "/proc/self/fd/" + handle.fd;
+					const result = await this.#readFilesystemPath(fdPath, {
+						located: { url: peeled.path, path: fdPath, sel: peeled.sel, spec: schemeSpec! },
+						lexicalAbsolutePath: file, signal, toolContext, plainWindow,
+					});
+					const details: ReadToolDetails = result.details ?? {};
+					details.resolvedPath = file;
+					details.meta = { ...details.meta, source: { type: "internal", value: peeled.path } };
+					return { ...result, details };
+				} finally {
+					await handle.close();
+				}
+			}
+` + readTarget, readImport);
+	EDITS.push({
+		file: "src/internal-urls/router.ts",
+		requires: router19,
+		marker: "this.register(legacyArtifactHandler);",
+		anchor: localHandler,
+		patched: `${localHandler}\n\t\tthis.register(legacyArtifactHandler);`,
+		alternates: [{ file: router, excludes: router19, marker: localHandler, anchor: localHandler, patched: localHandler }],
+	});
+
+	// A provider safety refusal is terminal, not a retry/failover or queued continuation.
+	const refusalRecovery = "src/session/turn-recovery.ts";
+	const refusal19 = "#midStreamRefusalResampled = false;";
+	const refusalClassifier = 'return stopType === "refusal" || stopType === "sensitive";';
+	versionEdit(refusalRecovery, refusal19, refusalClassifier,
+		`${refusalClassifier.slice(0, -1)} ||\n\t\t\tAIError.is(AIError.classifyMessage(message), AIError.Flag.ContentBlocked);`, refusalClassifier);
+	const applyRetry = "\tasync #applyRetryPolicy(message: AssistantMessage, options?: RetryPolicyOptions): Promise<boolean> {";
+	versionEdit(refusalRecovery, refusal19, applyRetry, `${applyRetry}\n\t\tif (this.isClassifierRefusal(message)) return false;`, applyRetry);
+	const advisorSession = "src/session/session-advisors.ts";
+	const advisor19 = 'import { journalCompletion } from "./model-usage-journal";';
+	const advisorFailure = '\t\tconst assistantFailure = failedMessage?.stopReason === "error" ? failedMessage : undefined;';
+	versionEdit(advisorSession, advisor19, advisorFailure, `${advisorFailure}\n\t\tif (assistantFailure && (isClassifierRefusal(assistantFailure) || AIError.is(AIError.classifyMessage(assistantFailure), AIError.Flag.ContentBlocked))) return false;`,
+		"export class SessionAdvisors");
+
+	const agentSession = "src/session/agent-session.ts";
+	const session19 = 'import { PROVIDER_REFUSAL_CUSTOM_TYPE, providerRefusalData } from "./provider-refusal";';
+	const agentEdit = (anchor, patched) => versionEdit(agentSession, session19, anchor, patched, "export class AgentSession");
+	const refuseNotice = "Provider safety refusal. Send a new message to continue.";
+	const refused = "this.#awaitingFreshInputAfterRefusal()";
+	const refusedField = "\t#prunedTerminalFailure: AssistantMessage | undefined = undefined;";
+	agentEdit(refusedField, `${refusedField}
+
+	#awaitingFreshInputAfterRefusal(): boolean {
+		// The persisted refusal is excluded from model context but still controls
+		// resumption after a process restart. Only a later human message clears it.
+		const last = this.sessionManager.getBranch().findLast(entry =>
+			(entry.type === "custom" && entry.customType === PROVIDER_REFUSAL_CUSTOM_TYPE) ||
+			(entry.type === "custom_message" && entry.customType === "cuelo-provider-safety-stop") ||
+			(entry.type === "message" && entry.message.role === "user" && entry.message.attribution === "user"),
+		);
+		return last?.type === "custom" || last?.type === "custom_message";
+	}`);
+	const turnHook = "\t\tthis.agent.setOnTurnEnd(async (messages, signal, context) => {\n\t\t\tif (signal?.aborted) return;";
+	agentEdit(turnHook, `${turnHook}\n\t\t\tif (messages.some(message => message.role === "assistant" && this.#recovery.isClassifierRefusal(message))) return;`);
+	const providerLog = "\t\t\tlogProviderTurnError(msg);";
+	agentEdit(providerLog, `${providerLog}
+			if (this.#recovery.isClassifierRefusal(msg)) {
+				this.#prunedTerminalFailure = msg;
+				this.#recovery.removeAssistantMessageFromActiveContext(msg);
+				await this.#recovery.onErrorSettledWithoutRetry(msg, COMPACTION_CHECK_NONE);
+				this.#recovery.resolveRetry();
+				maintenanceRoute("provider-safety-refusal");
+				this.#recordWithoutTurn([{
+					role: "custom", customType: "cuelo-provider-safety-stop", content: ${JSON.stringify(refuseNotice)}, display: true,
+					excludeFromContext: true, attribution: "agent", timestamp: Date.now(),
+				}]);
+				endLoop();
+				return;
+			}`);
+	const resumeIdle = "\tasync #resumeIdle(onAdmitted?: () => void): Promise<void> {";
+	agentEdit(resumeIdle, `${resumeIdle}\n\t\tif (${refused}) throw new Error(${JSON.stringify(refuseNotice)});`);
+	const manualRetry = "\tasync retry(): Promise<boolean> {\n\t\tconst didRetry = await this.#recovery.retry(this.#prunedTerminalFailure);";
+	agentEdit(manualRetry, manualRetry.replace("\n\t\tconst didRetry", `\n\t\tif (${refused}) return false;\n\t\tconst didRetry`));
+	const followUpGate = "\t#canAutoContinueForFollowUp(): boolean {\n\t\tif (this.isRetrying) return false;";
+	agentEdit(followUpGate, followUpGate.replace("this.isRetrying", `this.isRetrying || ${refused}`));
+	const wakeSuppressed = "\t#agentInitiatedTurnsSuppressed(): boolean {";
+	agentEdit(wakeSuppressed, `${wakeSuppressed}\n\t\tif (${refused}) return true;`);
+	const continuedRun = "\t): Promise<AgentContinueOutcome> {\n\t\ttry {";
+	agentEdit(continuedRun, `\t): Promise<AgentContinueOutcome> {\n\t\tif (${refused}) return { status: "skipped", reason: "should-continue-false" };\n\t\ttry {`);
+	const wakeIrc = "\t\t\t\tobservation = this.#startTurnObservation(records);\n\t\t\t\treturn this.agent.prompt(records);";
+	agentEdit(wakeIrc, `\t\t\t\tif (${refused}) {\n\t\t\t\t\tthis.#recordWithoutTurn(records);\n\t\t\t\t\treturn;\n\t\t\t\t}\n${wakeIrc}`);
+	const yieldDelivery = "\t\t\t\tif (this.#clientBridge?.deferAgentInitiatedTurns) {\n\t\t\t\t\tthis.#recordWithoutTurn(messages);";
+	agentEdit(yieldDelivery, yieldDelivery.replace("this.#clientBridge?.deferAgentInitiatedTurns", `this.#clientBridge?.deferAgentInitiatedTurns || ${refused}`));
+	const agentPrompt = "\t\t\tconst run = this.agent.prompt(prepared.length > 1 ? prepared : message);";
+	agentEdit(agentPrompt, `\t\t\tif (${refused}) return false;\n${agentPrompt}`);
+	const promptBegin = "\tasync #prompt(text: string, options?: PromptOptions): Promise<boolean> {";
+	agentEdit(promptBegin, `${promptBegin}\n\t\tif (${refused} && (options?.synthetic || (options?.attribution ?? "user") !== "user" || !text.trim())) {\n\t\t\tthrow new Error(${JSON.stringify(refuseNotice)});\n\t\t}`);
+	const queuedFollowUp = "\tasync followUp(text: string, images?: ImageContent[], options?: FollowUpOptions): Promise<void> {";
+	agentEdit(queuedFollowUp, `${queuedFollowUp}\n\t\tif (${refused}) throw new Error(${JSON.stringify(refuseNotice)});`);
+
+	const asyncDelivery = "src/session/async-job-delivery.ts";
+	const async19 = "export function commandIdentity(";
+	const asyncPreview = one(asyncDelivery, "// CUELO: success-only async head/tail preview.");
+	retainMarker(asyncPreview, async19, mapped('" chars; full output at artifact://" + artifactId',
+		'" chars; full output at " + spillUrl(artifactId)'));
+	const asyncUtils = 'import { prompt } from "@oh-my-pi/pi-utils";';
+	versionEdit(asyncDelivery, async19, asyncUtils, 'import { prompt, spillUrl } from "@oh-my-pi/pi-utils";', asyncUtils);
+	const saveAsync = one(agentSession, "\t\tconst successPreview = await formatAsyncSuccessPreview(text, job, async result => {");
+	rewrite(saveAsync, session19, prior(saveAsync).anchor,
+		swap(prior(saveAsync).patched, "async result => {\n\t\t\tconst { path, id } = await this.sessionManager.allocateArtifactPath(\"async\");\n\t\t\tif (!path || !id) return undefined;\n\t\t\tawait writeArtifact(path, result);\n\t\t\treturn id;\n\t\t}", "result => this.sessionManager.saveArtifact(result)"),
+		"const successPreview = await formatAsyncSuccessPreview(text, job, result => this.sessionManager.saveArtifact(result));");
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

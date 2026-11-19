@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { endSession, type Env, finishScope, launchResource, listScopes, readState, type ServiceBackend, type ServiceSnapshot, startScope, trackResource, workspacePath } from "../lib/test-session-store";
 
-// test_session의 소유·경로 안전과 프로세스 간 read-modify-write, 그리고 실제 확장 loader·SDK launch broker로 여러 턴·reload·
-// 세션 종료·resume·정리를 거치는 smoke. broker를 쓰는 부분은 사용자 프로필(~/.omp/run)을 건드리지 않게 HOME을 격리한
-// 자식 프로세스에서 돈다.
+// Run the real extension loader and its services in a child with a private HOME and daemon endpoint.
 
 const EXTENSIONS = fileURLToPath(new URL("..", import.meta.url));
 const STORE = join(EXTENSIONS, "lib", "test-session-store.ts");
@@ -140,17 +138,17 @@ function racingBroker() {
         return snapshot;
       },
       start: async (_project, spec, owner) => {
-        const daemon: ServiceSnapshot = { name: spec.name, id: crypto.randomUUID(), state: "running", owner, startedAt: Date.now() };
+        const daemon: ServiceSnapshot = { name: spec.name, id: crypto.randomUUID(), generation: crypto.randomUUID(), state: "running", owner, startedAt: Date.now() };
         daemons.set(spec.name, daemon);
         const hook = broker.onStart;
         broker.onStart = undefined;
         await hook?.();
         return { daemon, readyTimedOut: false };
       },
-      stop: async (_project, name, id) => {
+      stop: async (id, generation) => {
         if (broker.stopFails) throw new Error("broker connection closed");
-        const daemon = daemons.get(name)!;
-        if (daemon.id === id) daemon.state = "exited";
+        const daemon = [...daemons.values()].find((item) => item.id === id)!;
+        if (daemon.generation === generation) daemon.state = "exited";
         return daemon;
       },
     } satisfies ServiceBackend,
@@ -197,7 +195,7 @@ describe("test_session launch 기록 전 경합", () => {
     let winner: string | undefined;
     // 시작과 기록 사이에 이 세션이 bash로 띄운 서비스를 같은 자원 이름으로 track한다.
     broker.onStart = async () => {
-      broker.daemons.set("agent-svc", { name: "agent-svc", id: crypto.randomUUID(), state: "running", owner: "s", startedAt: Date.now() });
+      broker.daemons.set("agent-svc", { name: "agent-svc", id: crypto.randomUUID(), generation: crypto.randomUUID(), state: "running", owner: "s", startedAt: Date.now() });
       winner = (await trackResource(env, { name: "race", resource: "engine", service: "agent-svc" })).resource.daemonId;
     };
     const outer = launchResource(env, { name: "race", resource: "engine", command: "serve" });
@@ -234,6 +232,21 @@ describe("test_session 관측·정리 경합", () => {
     const scope = (await readState(env)).scopes[0];
     expect(scope.status).toBe("finished");
     expect(scope.resources.map((item) => item.state)).toEqual(["stopped"]);
+  });
+
+  test("an unresolved pre-19 record never authorizes stop or workspace cleanup", async () => {
+    const root = scratch();
+    const broker = racingBroker();
+    const env = { root, sessionId: "s", projectDir: root, backend: broker.backend };
+    const { workspace } = await startScope(env, { name: "legacy" });
+    await launchResource(env, { name: "legacy", resource: "engine", command: "serve" });
+    const statePath = join(root, "s", "state.json");
+    const state = await readState(env);
+    delete state.scopes[0].resources[0].generation;
+    writeFileSync(statePath, JSON.stringify(state));
+    expect((await finishScope(env, { name: "legacy" })).scope.status).toBe("needs-cleanup");
+    expect([...broker.daemons.values()][0].state).toBe("running");
+    expect(existsSync(workspace)).toBe(true);
   });
 
   test("같은 범위의 finish가 겹치면 뒤 호출은 바로 거절되고, 앞 호출의 남긴 목록이 실제 남은 파일과 같다", async () => {
@@ -284,7 +297,9 @@ const { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = awai
 const { join } = await import("node:path");
 const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai");
 const { AuthStorage, createAgentSession, ModelRegistry, SessionManager, Settings } = await import("@oh-my-pi/pi-coding-agent");
-const { daemonClientForProject } = await import("@oh-my-pi/pi-coding-agent/launch/client");
+import { canonicalProjectDir, daemonClient } from "@oh-my-pi/pi-coding-agent/daemon/client";
+import { projectScope } from "@oh-my-pi/pi-coding-agent/daemon/protocol";
+const { brokerBackend } = await import(process.env.TS_STORE);
 const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
 const extensionErrors = [];
 const root = process.env.TS_ROOT;
@@ -297,10 +312,10 @@ registry.registerProvider("fakeparent", { baseUrl: "http://127.0.0.1:9/v1", apiK
 const model = registry.find("fakeparent", "parent");
 const obs = {};
 let callNo = 0;
-async function open(sessionManager) {
+async function open(sessionManager, shellPath) {
   const { session } = await createAgentSession({
     cwd: work, agentDir, model, modelRegistry: registry, sessionManager,
-    settings: Settings.isolated({ tools: { approvalMode: "yolo" } }),
+    settings: Settings.isolated({ tools: { approvalMode: "yolo" }, ...(shellPath ? { shellPath } : {}) }),
     additionalExtensionPaths: [process.env.TS_EXTENSION], disableExtensionDiscovery: true, enableMCP: false, enableLsp: false, skipPythonPreflight: true,
     skills: [], rules: [], contextFiles: [], toolNames: ["test_session"],
   });
@@ -334,10 +349,16 @@ async function open(sessionManager) {
     },
   };
 }
-const client = await daemonClientForProject(work);
-const sh = (command) => ({ application: "/bin/sh", args: ["-c", command], env: {}, cwd: work, pty: false, restart: "no", persist: false, detached: false });
-const services = async () => Object.fromEntries((await client.request({ op: "list" })).daemons.map((d) => [d.name, { state: d.state, id: d.id, owner: d.owner }]));
-await client.request({ op: "start", spec: { name: "unrelated-svc", ...sh("exec sleep 300") }, owner: "someone-else", replace: true, awaitReady: true });
+const scope = projectScope(await canonicalProjectDir(work));
+const client = await daemonClient();
+const fixture = async (key, owner, replace = false) => (await client.request({
+  op: "open", kind: "proc", scope, key, owner, replace,
+  proc: { application: "/bin/sh", args: ["-c", "exec sleep 300"], env: {}, cwd: work, pty: false },
+  policy: { hold: "leases", idleMs: 0, onIdle: "stop", restart: "no" },
+})).unit;
+const services = async () => Object.fromEntries((await client.request({ op: "list", kind: "proc", scope })).units.map((d) => [d.key, { state: d.state, id: d.id, generation: d.generation, owner: d.owner }]));
+try {
+const unrelated = await fixture("unrelated-svc", "someone-else");
 
 const ENGINE = "test -f engine.bin || { echo fetched >> fetch.log; echo bin > engine.bin; }; echo engine-ready; exec sleep 300";
 const launchEngine = { action: "launch", name: "nexus", resource: "engine", command: ENGINE, ready: { log: "engine-ready", timeout: 20 } };
@@ -353,7 +374,7 @@ obs.launch2 = await s1.call(launchEngine);
 obs.start2 = await s1.call({ action: "start", name: "nexus" });
 await s1.session.reload();
 obs.listAfterReload = await s1.call({ action: "list" });
-await client.request({ op: "start", spec: { name: "agent-svc", ...sh("exec sleep 300") }, owner: sid, replace: true, awaitReady: true });
+await fixture("agent-svc", sid);
 obs.track = await s1.call({ action: "track", name: "nexus", resource: "helper", service: "agent-svc" });
 obs.trackForeign = await s1.call({ action: "track", name: "nexus", resource: "foreign", service: "unrelated-svc" });
 obs.stopEngine = await s1.call({ action: "stop", name: "nexus", resource: "engine" });
@@ -375,42 +396,54 @@ await s2.session.dispose();
 await sm2.close();
 
 const sm1b = await SessionManager.open(sm1.getSessionFile(), sessionsDir);
-const s1b = await open(sm1b);
+const shellPath = join(root, "fixture-shell");
+writeFileSync(shellPath, '#!/bin/sh\nexport TEST_CONFIGURED_SHELL=custom\nexec /bin/sh "$@"\n', { mode: 0o755 });
+const s1b = await open(sm1b, shellPath);
 obs.resumedSameSession = sm1b.getSessionId() === sid;
 obs.listAfterResume = await s1b.call({ action: "list" });
 obs.brokerAfterResume = await services();
-obs.launch3 = await s1b.call(launchEngine);
+obs.launch3 = await s1b.call({ ...launchEngine, command: 'echo "$TEST_CONFIGURED_SHELL" > shell-used; ' + ENGINE });
+obs.shellUsed = readFileSync(join(ws, "shell-used"), "utf8").trim();
 const engineService = obs.launch3.details.resource.service;
-await client.request({ op: "start", spec: { name: engineService, ...sh("exec sleep 300") }, owner: "intruder", replace: true, awaitReady: true });
+// A daemon restart can change generation without changing ID. Simulate a restart between observation and stop.
+const observed = obs.launch3.details.resource;
+const { unit: restarted } = await client.request({ op: "restart", unit: observed.daemonId });
+await brokerBackend().stop(observed.daemonId, observed.generation, 2000);
+obs.restartSurvived = (await services())[engineService];
+obs.restarted = { id: restarted.id, generation: restarted.generation };
+const intruder = await fixture(engineService, "intruder", true);
 obs.finishBlocked = await s1b.call({ action: "finish", name: "nexus" });
 obs.afterBlocked = { broker: await services(), scratch: existsSync(join(ws, "scratch.tmp")) };
-await client.request({ op: "stop", name: engineService, timeoutMs: 2000 });
+await client.request({ op: "stop", unit: intruder.id, generation: intruder.generation, timeoutMs: 2000 });
 obs.finishDone = await s1b.call({ action: "finish", name: "nexus" });
 obs.workspaceEnd = existsSync(ws) ? readdirSync(ws, { recursive: true }).map(String).sort() : null;
 obs.brokerEnd = await services();
 await s1b.session.dispose();
 await sm1b.close();
-await client.request({ op: "stop", name: "unrelated-svc", timeoutMs: 2000 });
-auth.close();
+await client.request({ op: "stop", unit: unrelated.id, generation: unrelated.generation, timeoutMs: 2000 });
 obs.engineServices = [obs.launch1, obs.launch2, obs.relaunch, obs.launch3].map((item) => item.details.resource.service);
 obs.daemonIds = [obs.launch1, obs.launch2, obs.relaunch, obs.launch3].map((item) => item.details.resource.daemonId);
 obs.sid = sid;
 obs.extensionErrors = extensionErrors;
 obs.ws = ws;
 console.log("OBS " + JSON.stringify(obs));
+} finally {
+  await client.request({ op: "shutdown" });
+  auth.close();
+}
 process.exit(0);
 `;
 
-describe("test_session 실제 확장 loader와 SDK launch broker", () => {
+describe("test_session 실제 확장 loader와 SDK 데몬", () => {
   test("여러 턴·reload·세션 종료·resume·정리에서 재사용·정지·보존·정리 필요가 실제 broker 상태와 맞는다", async () => {
-    const root = scratch();
+    const root = mkdtempSync(join(homedir(), ".test-session-"));
+    roots.push(root);
     const home = join(root, "home");
     mkdirSync(home);
-    // 상태·실행 디렉터리를 격리 HOME 아래로 보낸다. 빈 값으로 두면 Bun이 cwd 기준 상대 경로(bun/@t@)에 캐시를 쓰므로 키를 지운다.
-    const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("XDG_") && key !== "PI_CODING_AGENT_DIR"));
+    // Pass no caller daemon address, profile overrides, or provider credentials to this child.
     const child = Bun.spawn([process.execPath, "-e", SMOKE], {
       cwd: EXTENSIONS,
-      env: { ...inherited, HOME: home, OMP_TEST_SESSION_DIR: join(root, "store"), TS_ROOT: root, TS_EXTENSION: EXTENSION },
+      env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, OMP_DAEMON_DIR: join(root, "daemon"), OMP_TEST_SESSION_DIR: join(root, "store"), TS_ROOT: root, TS_EXTENSION: EXTENSION, TS_STORE: STORE },
       stdout: "pipe", stderr: "pipe",
     });
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -460,6 +493,11 @@ describe("test_session 실제 확장 loader와 SDK launch broker", () => {
     expect(obs.listAfterResume.details.scopes[0].resources.map((item: { state: string }) => item.state)).toEqual(["stopped", "stopped"]);
     expect(obs.brokerAfterResume[obs.engineServices[2]]).toEqual(obs.brokerAfterShutdown[obs.engineServices[2]]);
     expect(Object.keys(obs.brokerAfterResume).sort()).toEqual(Object.keys(obs.brokerAfterShutdown).sort());
+    expect(obs.shellUsed).toBe("custom");
+    expect(obs.restartSurvived.id).toBe(obs.daemonIds[3]);
+    expect(obs.restartSurvived.generation).not.toBe(obs.launch3.details.resource.generation);
+    expect(obs.restartSurvived).toMatchObject(obs.restarted);
+    expect(obs.restartSurvived.state).toMatch(/starting|ready|running/);
     // 같은 이름에 다른 소유자의 실행이 살아 있으면 멈추지 않고 정리 필요로 남기며 작업 공간을 지우지 않는다.
     expect(obs.finishBlocked.text).toContain("정리가 끝나지 않았습니다(정리 필요)");
     expect(obs.finishBlocked.details.scope.status).toBe("needs-cleanup");

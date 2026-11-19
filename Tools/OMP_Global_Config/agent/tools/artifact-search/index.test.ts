@@ -1,15 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import * as zod from "@oh-my-pi/omptype/zod";
 import { SessionManager, type CustomToolContext } from "@oh-my-pi/pi-coding-agent";
+import { spillFileName, spillUrl } from "@oh-my-pi/pi-utils";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createArtifactSearchTool, MAX_ARTIFACT_BYTES, parseArtifactPath, planQuery, type ArtifactSearchDetails } from "./index";
+import { createArtifactSearchTool, MAX_ARTIFACT_BYTES, planQuery, type ArtifactSearchDetails } from "./index";
 
-// 검증 범위: 실제 SessionManager/ArtifactManager가 만든 artifact 파일을 이 도구가 색인·검색하는 동작(격리, 위치표, 취소, 수명주기, 거부).
-// 가짜 경계: 없음. 모델·네트워크는 쓰지 않는다. 실제 `read` 도구와의 줄 번호 일치는 evidence/smoke.ts.txt(SDK 스모크)가 증명한다.
-// 미증명: 실제 모델이 이 도구를 고르는지, 수 MiB를 넘는 로그에서의 지연(벤치마크 evidence 참고).
+// All payloads are synthetic, using real SDK SessionManager and ArtifactManager storage. No model calls.
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "artifact-search-test-"));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
@@ -17,7 +16,7 @@ afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 interface Fixture {
   sm: SessionManager;
   ctx: CustomToolContext;
-  save(content: string, toolType?: string): Promise<string>;
+  save(content: string): Promise<string>;
   dir(): string;
 }
 
@@ -30,7 +29,7 @@ function session(): Fixture {
   const ctx = { sessionManager: sm } as unknown as CustomToolContext;
   const manager = sm.getArtifactManager();
   if (!manager) throw new Error("fixture session has no artifact manager");
-  return { sm, ctx, save: (content, toolType = "bash") => manager.save(content, toolType), dir: () => manager.dir };
+  return { sm, ctx, save: (content) => manager.save(content), dir: () => manager.dir };
 }
 
 function newTool(readChunkBytes?: number) {
@@ -38,10 +37,54 @@ function newTool(readChunkBytes?: number) {
 }
 type Tool = ReturnType<typeof newTool>;
 
-async function search(tool: Tool, ctx: CustomToolContext, id: string, query: string, extra: { limit?: number; offset?: number; signal?: AbortSignal } = {}) {
-  const result = await tool.execute("t", { path: `artifact://${id}`, query, limit: extra.limit, offset: extra.offset }, undefined, ctx, extra.signal);
+async function search(tool: Tool, ctx: CustomToolContext, target: string, query: string, extra: { limit?: number; offset?: number; signal?: AbortSignal } = {}) {
+  const url = /^\d+$/.test(target) ? spillUrl(target) : target;
+  const result = await tool.execute("t", { path: url, query, limit: extra.limit, offset: extra.offset }, undefined, ctx, extra.signal);
   return { text: result.content[0].text, details: result.details as ArtifactSearchDetails };
 }
+
+describe("input and platform admission", () => {
+  // These cases must finish without consulting any session or opening any store.
+  const noSession = {
+    get sessionManager(): never {
+      throw new Error("unexpected artifact store access");
+    },
+  } as CustomToolContext;
+
+  test("refuses ranked search outside Linux for both namespaces without consulting the store", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const tool = newTool();
+    try {
+      for (const value of ["win32", "darwin"]) {
+        Object.defineProperty(process, "platform", { ...platform, value });
+        for (const url of [spillUrl(0), "artifact://0"]) {
+          await expect(search(tool, noSession, url, "needle")).rejects.toThrow(`ranked search requires Linux to verify opened spill files. Use native read with ${url}:1-200`);
+          await expect(search(tool, noSession, url, "!!!")).rejects.toThrow(`ranked search requires Linux to verify opened spill files. Use native read with ${url}:1-200`);
+        }
+        await expect(search(tool, noSession, "local://PLAN.md", "needle")).rejects.toThrow("ranked search requires Linux");
+      }
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  test("refuses untrusted paths, including non-spill local files and selectors", async () => {
+    const tool = newTool();
+    const bad = [
+      "artifact://12:1-5", "artifact://12/../x", "artifact://abc", "artifact://", "/etc/passwd", "file:///etc/passwd",
+      "../0.bash.log", "agent://1", "artifact://1?x=1", "local://PLAN.md", "local://foo/0.log", "local://../0.log",
+      "local://%30.log", "local://0.log/../1.log", "local://0.log:raw:1", "local://0.log?x=1", "local://00.log",
+      "local://9007199254740993.log", "artifact://00", "artifact://9007199254740993",
+    ];
+    for (const url of bad) await expect(search(tool, noSession, url, "needle")).rejects.toThrow("path must be exactly");
+  });
+
+  test("normalizes query words and rejects unusable queries", () => {
+    expect(planQuery('a"b* OR (c)').units).toEqual(["a b", "OR", "c"]);
+    expect(() => planQuery('"*()-:^')).toThrow("no searchable word characters");
+    expect(() => planQuery("x".repeat(600))).toThrow("longer than");
+  });
+});
 
 /** The line numbers a result block reports as hits (`  <line>: ...`). */
 function hitLines(text: string): number[] {
@@ -72,7 +115,7 @@ function noiseLog(lines: number): string[] {
   return Array.from({ length: lines }, (_, i) => `2026-10-22T10:${String(i % 60).padStart(2, "0")}:00Z INFO worker-${i % 7} processed item ${i} in ${i % 13}ms status=ok`);
 }
 
-describe("unique error in a long log", () => {
+describe.skipIf(process.platform !== "linux")("unique error in a long log", () => {
   test("finds the single hidden error and its stack, and the returned locator reads back the original lines", async () => {
     const fx = session();
     const lines = noiseLog(40_000);
@@ -85,7 +128,7 @@ describe("unique error in a long log", () => {
     const { text, details } = await search(tool, fx.ctx, id, "E-QX7731");
     expect(details.total).toBe(1);
     expect(hitLines(text)).toEqual([27_346]);
-    const locator = /read: artifact:\/\/\d+:(\d+)-(\d+)/.exec(text)!;
+    const locator = /read: local:\/\/\d+\.log:(\d+)-(\d+)/.exec(text)!;
     const slice = lines.slice(Number(locator[1]) - 1, Number(locator[2]));
     expect(slice.join("\n")).toContain("E-QX7731 settlement rejected");
     expect(slice.join("\n")).toContain("ZqLedgerReconcileException");
@@ -102,7 +145,7 @@ describe("unique error in a long log", () => {
     const tool = newTool();
     expect((await search(tool, fx.ctx, id, "alpha")).details.cache).toBe("cold");
     expect((await search(tool, fx.ctx, id, "needle")).details.cache).toBe("warm");
-    const file = path.join(fx.dir(), fs.readdirSync(fx.dir()).find((f) => f.startsWith(`${id}.`))!);
+    const file = path.join(fx.dir(), spillFileName(id));
     fs.writeFileSync(file, "alpha\nreplacement-token\n");
     fs.utimesSync(file, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
     const after = await search(tool, fx.ctx, id, "replacement");
@@ -112,7 +155,31 @@ describe("unique error in a long log", () => {
   });
 });
 
-describe("session isolation", () => {
+describe.skipIf(process.platform !== "linux")("current and historical output namespaces", () => {
+  test("the real SDK creates a current spill without replacing same-id historical evidence", async () => {
+    const fx = session();
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const legacyFile = path.join(legacyDir, "0.bash.log");
+    fs.writeFileSync(legacyFile, "historical quartzmarker\n");
+    const before = { hash: sha(legacyFile), mtime: fs.statSync(legacyFile).mtimeMs };
+    const id = await fx.save("current cobaltmarker\n");
+    expect(id).toBe("0");
+    const tool = newTool();
+    const find = (url: string, query: string) => tool.execute("t", { path: url, query }, undefined, fx.ctx);
+    const current = await find("local://0.log", "cobaltmarker");
+    expect(current.details).toMatchObject({ artifact: "local://0.log", total: 1 });
+    expect(current.content[0].text).toContain("read: local://0.log:1-1  raw: local://0.log:raw:1-1");
+    const legacy = await find("artifact://0", "quartzmarker");
+    expect(legacy.details).toMatchObject({ artifact: "artifact://0", total: 1 });
+    expect(legacy.content[0].text).toContain("read: artifact://0:1-1  raw: artifact://0:raw:1-1");
+    expect((await find("artifact://0", "cobaltmarker")).details.total).toBe(0);
+    expect((await find("local://0.log", "quartzmarker")).details.total).toBe(0);
+    expect({ hash: sha(legacyFile), mtime: fs.statSync(legacyFile).mtimeMs }).toEqual(before);
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("session isolation", () => {
   test("the same artifact id in two session roots never mixes results, including ids missing from one root", async () => {
     const a = session();
     const b = session();
@@ -140,51 +207,95 @@ describe("session isolation", () => {
   });
 });
 
-describe("path and store admission", () => {
-  test("accepts only artifact://<digits>", () => {
-    expect(parseArtifactPath("artifact://12")).toBe("12");
-    for (const bad of ["artifact://12:1-5", "artifact://12/../x", "artifact://abc", "artifact://", "/etc/passwd", "file:///etc/passwd", "../0.bash.log", "agent://1", "artifact://1?x=1"]) {
-      expect(() => parseArtifactPath(bad)).toThrow("artifact://<numeric id>");
+describe.skipIf(process.platform !== "linux")("store admission", () => {
+  test("rejects historical numeric aliases regardless of matching on-disk names", async () => {
+    const fx = session();
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const tool = newTool();
+    for (const id of ["00", "9007199254740993"]) {
+      fs.writeFileSync(path.join(legacyDir, `${id}.bash.log`), "not allocated by the old SDK\n");
+      await expect(search(tool, fx.ctx, `artifact://${id}`, "allocated")).rejects.toThrow("path must be exactly");
     }
   });
 
-  test("refuses a symlinked artifact that points outside the store, and leaves the target untouched", async () => {
+  for (const legacy of [false, true]) {
+    const scheme = legacy ? "artifact" : "local";
+    test(`refuses symlinked and hardlinked ${scheme} output and leaves the target untouched`, async () => {
+      const fx = session();
+      await fx.save("placeholder\n");
+      const target = path.join(legacy ? fx.sm.getArtifactManager()!.sessionDir! : fx.dir(), legacy ? "0.bash.log" : "0.log");
+      const url = legacy ? "artifact://0" : spillUrl(0);
+      const outside = fs.mkdtempSync(path.join(scratch, "outside-"));
+      const file = path.join(outside, "sentinel.txt");
+      fs.writeFileSync(file, "outside-marker\n");
+      if (!legacy) fs.unlinkSync(target);
+      const tool = newTool();
+      fs.symlinkSync(file, target, "file");
+      await expect(search(tool, fx.ctx, url, "outside-marker")).rejects.toThrow("symbolic link");
+      fs.unlinkSync(target);
+      fs.linkSync(file, target);
+      await expect(search(tool, fx.ctx, url, "outside-marker")).rejects.toThrow("not a regular file with one link");
+      expect(fs.readFileSync(file, "utf8")).toBe("outside-marker\n");
+    });
+  }
+
+  test("refuses a symlinked session directory for both namespaces", async () => {
     const fx = session();
-    const id = await fx.save("placeholder\n");
-    const outside = path.join(scratch, "outside-secret.txt");
-    fs.writeFileSync(outside, "outside-secret-token\n");
-    const link = path.join(fx.dir(), fs.readdirSync(fx.dir()).find((f) => f.startsWith(`${id}.`))!);
-    fs.rmSync(link);
-    fs.symlinkSync(outside, link);
-    await expect(search(newTool(), fx.ctx, id, "outside-secret-token")).rejects.toThrow("symbolic link");
-    expect(fs.readFileSync(outside, "utf8")).toBe("outside-secret-token\n");
+    const outside = fs.mkdtempSync(path.join(scratch, "outside-root-"));
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.mkdirSync(path.dirname(legacyDir), { recursive: true });
+    fs.mkdirSync(path.join(outside, path.basename(fx.dir())));
+    fs.writeFileSync(path.join(outside, "0.bash.log"), "outside-marker\n");
+    fs.writeFileSync(path.join(outside, path.basename(fx.dir()), "0.log"), "outside-marker\n");
+    fs.symlinkSync(outside, legacyDir, "junction");
+    const tool = newTool();
+    await expect(search(tool, fx.ctx, "artifact://0", "outside-marker")).rejects.toThrow("symbolic link");
+    await expect(search(tool, fx.ctx, spillUrl(0), "outside-marker")).rejects.toThrow("symbolic link");
   });
 
   test("refuses ambiguous ids instead of guessing a file", async () => {
     const fx = session();
-    const id = await fx.save("first file token-one\n");
-    fs.writeFileSync(path.join(fx.dir(), `${id}.other.log`), "second file token-two\n");
-    await expect(search(newTool(), fx.ctx, id, "token")).rejects.toThrow("ambiguous");
+    const id = await fx.save("current token\n");
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.writeFileSync(path.join(legacyDir, `${id}.bash.log`), "first file token-one\n");
+    fs.writeFileSync(path.join(legacyDir, `${id}.other.log`), "second file token-two\n");
+    const tool = newTool();
+    await expect(search(tool, fx.ctx, `artifact://${id}`, "token")).rejects.toThrow("ambiguous");
+    expect((await search(tool, fx.ctx, id, "token")).details.total).toBe(1);
   });
 
   test("a numeric prefix is not an id: artifact://1 never matches 12.bash.log", async () => {
     const fx = session();
-    fs.mkdirSync(fx.dir(), { recursive: true });
-    fs.writeFileSync(path.join(fx.dir(), "12.bash.log"), "twelve\n");
-    await expect(search(newTool(), fx.ctx, "1", "twelve")).rejects.toThrow("does not exist");
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, "12.bash.log"), "twelve\n");
+    await expect(search(newTool(), fx.ctx, "artifact://1", "twelve")).rejects.toThrow("does not exist");
+  });
+
+  test("missing files do not fall through to the other namespace", async () => {
+    const fx = session();
+    const current = await fx.save("only-current\n");
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.writeFileSync(path.join(legacyDir, "12.bash.log"), "only-historical\n");
+    fs.writeFileSync(path.join(legacyDir, "12.unrelated.txt"), "not an artifact\n");
+    const tool = newTool();
+    await expect(search(tool, fx.ctx, `artifact://${current}`, "only-current")).rejects.toThrow("does not exist");
+    await expect(search(tool, fx.ctx, "12", "only-historical")).rejects.toThrow("does not exist");
+    expect((await search(tool, fx.ctx, "artifact://12", "only-historical")).details.total).toBe(1);
   });
 
   test("refuses an artifact above the size limit with a native-read fallback and indexes nothing", async () => {
     const fx = session();
     fs.mkdirSync(fx.dir(), { recursive: true });
-    const big = path.join(fx.dir(), "40.bash.log");
+    const big = path.join(fx.dir(), "40.log");
     fs.closeSync(fs.openSync(big, "w"));
     fs.truncateSync(big, MAX_ARTIFACT_BYTES + 1);
-    await expect(search(newTool(), fx.ctx, "40", "anything")).rejects.toThrow("artifact://40:1-200");
+    await expect(search(newTool(), fx.ctx, "40", "anything")).rejects.toThrow("local://40.log:1-200");
   });
 });
 
-describe("query handling", () => {
+describe.skipIf(process.platform !== "linux")("query handling", () => {
   test("operators and quotes are literal text, never FTS syntax", async () => {
     const fx = session();
     const id = await fx.save("plain line with alpha and beta\nNEAR AND OR NOT markers\n");
@@ -192,9 +303,6 @@ describe("query handling", () => {
     for (const query of ['alpha" OR "', "alpha*", "(alpha", "NEAR(alpha beta, 1)", "alpha:beta", "-alpha", "alpha^"]) {
       await expect(search(tool, fx.ctx, id, query)).resolves.toBeDefined();
     }
-    expect(planQuery('a"b* OR (c)').units).toEqual(["a b", "OR", "c"]);
-    await expect(search(tool, fx.ctx, id, '"*()-:^')).rejects.toThrow("no searchable word characters");
-    await expect(search(tool, fx.ctx, id, "x".repeat(600))).rejects.toThrow("longer than");
   });
 
   test("an empty artifact and an absent word report no match with a native-read fallback", async () => {
@@ -205,7 +313,7 @@ describe("query handling", () => {
     const e = await search(tool, fx.ctx, empty, "hello");
     expect(e.details).toMatchObject({ total: 0, lines: 0 });
     expect(e.text).toContain("does not prove the text is absent");
-    expect(e.text).toContain(`artifact://${empty}:-100`);
+    expect(e.text).toContain(`${spillUrl(empty)}:-100`);
     expect((await search(tool, fx.ctx, full, "missing")).text).toContain("does not prove the text is absent");
   });
 
@@ -241,7 +349,7 @@ describe("query handling", () => {
   });
 });
 
-describe("long lines and Unicode", () => {
+describe.skipIf(process.platform !== "linux")("long lines and Unicode", () => {
   test("finds a token deep inside a 600 KB single JSON line and anywhere past a segment cut", async () => {
     const fx = session();
     const filler = Array.from({ length: 30_000 }, (_, i) => `{"k${i}":"v${i}"}`).join(",");
@@ -281,7 +389,7 @@ describe("long lines and Unicode", () => {
   });
 });
 
-describe("cancellation, lifecycle, concurrency", () => {
+describe.skipIf(process.platform !== "linux")("cancellation, lifecycle, concurrency", () => {
   const big = () => noiseLog(30_000).join("\n");
 
   test("an already-aborted signal rejects without indexing; the next call works", async () => {
@@ -371,11 +479,11 @@ describe("cancellation, lifecycle, concurrency", () => {
   });
 });
 
-describe("the original artifact", () => {
+describe.skipIf(process.platform !== "linux")("the original artifact", () => {
   test("is never modified by indexing or searching", async () => {
     const fx = session();
     const id = await fx.save(`${noiseLog(5000).join("\n")}\nunique-marker-ab12\n`);
-    const file = path.join(fx.dir(), fs.readdirSync(fx.dir()).find((f) => f.startsWith(`${id}.`))!);
+    const file = path.join(fx.dir(), spillFileName(id));
     const before = { hash: sha(file), mtime: fs.statSync(file).mtimeMs };
     const tool = newTool();
     await search(tool, fx.ctx, id, "unique-marker-ab12");
@@ -395,30 +503,35 @@ function fdCount(): number | null {
     return null;
   }
 }
-/** Ctx whose manager.listFiles() (the first async step of admission) waits for `gate`; `entered` resolves once it was called. */
-function delayedCtx(fx: Fixture, gate: Promise<void>): { ctx: CustomToolContext; entered: Promise<void> } {
-  const real = fx.sm.getArtifactManager()!;
+/** Pauses the real store's file open after path admission, without changing the manager. */
+function gateOpen(file: string) {
+  const target = path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+  const original = fs.promises.open;
   const entered = Promise.withResolvers<void>();
-  const manager = {
-    dir: real.dir,
-    listFiles: async () => {
+  const gate = Promise.withResolvers<void>();
+  fs.promises.open = async (...args: Parameters<typeof original>) => {
+    if (args[0] === target) {
       entered.resolve();
-      await gate;
-      return real.listFiles();
+      await gate.promise;
+    }
+    return original(...args);
+  };
+  return {
+    entered: entered.promise,
+    release: () => gate.resolve(),
+    restore: () => {
+      fs.promises.open = original;
+      gate.resolve();
     },
   };
-  // Test seam: execute() only reads sessionManager.getArtifactManager().
-  return { ctx: { sessionManager: { getArtifactManager: () => manager } } as unknown as CustomToolContext, entered: entered.promise };
 }
 /** Holds the first FileHandle.read until released; later reads pass straight through. */
-async function gateFirstRead(): Promise<{ started: Promise<void>; secondAdmitted: Promise<void>; release: () => void; restore: () => void }> {
+async function gateFirstRead() {
   const probe = await fs.promises.open(import.meta.path, "r");
-  const proto = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<unknown>; stat: (...args: unknown[]) => Promise<unknown> };
+  const proto = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<unknown> };
   await probe.close();
   const originalRead = proto.read;
-  const originalStat = proto.stat;
   const started = Promise.withResolvers<void>();
-  const admitted = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   let first = true;
   proto.read = function patched(this: unknown, ...args: unknown[]) {
@@ -427,24 +540,16 @@ async function gateFirstRead(): Promise<{ started: Promise<void>; secondAdmitted
     started.resolve();
     return gate.promise.then(() => originalRead.apply(this, args));
   };
-  // After the first read is pending, the next handle.stat() is the second caller's admission (its last async admission step).
-  proto.stat = function patched(this: unknown, ...args: unknown[]) {
-    const result = originalStat.apply(this, args);
-    if (!first) void result.then(() => admitted.resolve());
-    return result;
-  };
   return {
     started: started.promise,
-    secondAdmitted: admitted.promise,
-    release: () => gate.resolve(),
     restore: () => {
       proto.read = originalRead;
-      proto.stat = originalStat;
+      gate.resolve();
     },
   };
 }
 
-describe("review r1 regressions", () => {
+describe.skipIf(process.platform !== "linux")("review r1 regressions", () => {
   test("R1-OAI-1: an ordinary error code straddling a long-line cut is found, with its line and char offset", async () => {
     const fx = session();
     const id = await fx.save(`${"x".repeat(1994)} ERR_CONN_RESET tail\nnext line\n`);
@@ -476,7 +581,7 @@ describe("review r1 regressions", () => {
     const { text, details } = await search(newTool(), fx.ctx, id, "ERR_CONN_RESET");
     expect(details.total).toBe(1);
     expect(hitLines(text)).toEqual([61]);
-    const locator = /read: artifact:\/\/\d+:(\d+)-(\d+)/.exec(text)!;
+    const locator = /read: local:\/\/\d+\.log:(\d+)-(\d+)/.exec(text)!;
     expect(rows.slice(Number(locator[1]) - 1, Number(locator[2])).join("\n")).toContain("ERR_CONN_RESET");
     const split = await search(newTool(), fx.ctx, id, "ERR CONN_RESET");
     expect(split.details.total).toBeGreaterThanOrEqual(1);
@@ -493,11 +598,7 @@ describe("review r1 regressions", () => {
       await gate.started;
       ac.abort(new Error("first left"));
       await expect(first).rejects.toThrow("first left");
-      const second = search(tool, fx.ctx, id, "wanted-needle");
-      await gate.secondAdmitted; // second's admission finished; the cancelled build's read is still pending
-      await new Promise((resolve) => setImmediate(resolve));
-      gate.release();
-      const result = await second;
+      const result = await search(tool, fx.ctx, id, "wanted-needle"); // completes while the cancelled build's read is still held
       expect(result.details).toMatchObject({ total: 1, cache: "cold" });
     } finally {
       gate.restore();
@@ -509,20 +610,22 @@ describe("review r1 regressions", () => {
     const id = await fx.save("alpha needle\n");
     const tool = newTool();
     await search(tool, fx.ctx, id, "needle"); // warm the cache
-    const gate = Promise.withResolvers<void>();
     const ac = new AbortController();
     const before = fdCount();
-    const delayed = delayedCtx(fx, gate.promise);
-    const running = search(tool, delayed.ctx, id, "needle", { signal: ac.signal });
-    const outcome = running.then(
-      () => "answered",
-      (error: Error) => error.message,
-    );
-    await delayed.entered;
-    ac.abort(new Error("cancelled in admission"));
-    gate.resolve();
-    expect(await outcome).toBe("cancelled in admission");
-    if (before !== null) expect(fdCount()).toBeLessThanOrEqual(before);
+    const gate = gateOpen(path.join(fx.dir(), spillFileName(id)));
+    try {
+      const outcome = search(tool, fx.ctx, id, "needle", { signal: ac.signal }).then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+      await gate.entered;
+      ac.abort(new Error("cancelled in admission"));
+      gate.release();
+      expect(await outcome).toBe("cancelled in admission");
+      if (before !== null) expect(fdCount()).toBeLessThanOrEqual(before);
+    } finally {
+      gate.restore();
+    }
   });
 
   for (const reason of ["switch", "shutdown"]) {
@@ -530,21 +633,141 @@ describe("review r1 regressions", () => {
       const fx = session();
       const id = await fx.save("alpha needle\n");
       const tool = newTool();
-      const gate = Promise.withResolvers<void>();
-      const delayed = delayedCtx(fx, gate.promise);
-      const running = search(tool, delayed.ctx, id, "needle");
-      const outcome = running.then(
-        () => "answered",
-        (error: Error) => error.message,
-      );
-      await delayed.entered;
-      tool.onSession({ reason });
-      gate.resolve();
-      expect(await outcome).toContain("session");
+      const gate = gateOpen(path.join(fx.dir(), spillFileName(id)));
+      try {
+        const outcome = search(tool, fx.ctx, id, "needle").then(
+          () => "answered",
+          (error: Error) => error.message,
+        );
+        await gate.entered;
+        tool.onSession({ reason });
+        gate.release();
+        expect(await outcome).toContain("session");
+      } finally {
+        gate.restore();
+      }
       const next = await search(tool, fx.ctx, id, "needle");
       expect(next.details.cache).toBe("cold");
     });
   }
+
+  test("rejects a store root swapped for an escaping link during admission even if the file inode matches", async () => {
+    const fx = session();
+    const id = await fx.save("original needle\n");
+    const originalDir = fx.dir();
+    const movedDir = path.join(fs.mkdtempSync(path.join(scratch, "moved-root-")), "local");
+    const gate = gateOpen(path.join(originalDir, spillFileName(id)));
+    try {
+      const outcome = search(newTool(), fx.ctx, id, "needle").then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+      await gate.entered;
+      fs.renameSync(originalDir, movedDir);
+      fs.symlinkSync(movedDir, originalDir, "junction");
+      gate.release();
+      expect(await outcome).toContain("store changed while it was being opened");
+    } finally {
+      gate.restore();
+    }
+  });
+
+  test("rejects a replaced session-owned parent even if the spill directory and file inodes are unchanged", async () => {
+    const fx = session();
+    const id = await fx.save("original needle\n");
+    const sessionDir = fx.sm.getArtifactManager()!.sessionDir!;
+    const parked = `${sessionDir}-parked`;
+    const gate = gateOpen(path.join(fx.dir(), spillFileName(id)));
+    try {
+      const outcome = search(newTool(), fx.ctx, id, "needle").then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+      await gate.entered;
+      fs.renameSync(sessionDir, parked);
+      fs.mkdirSync(sessionDir);
+      fs.renameSync(path.join(parked, path.basename(fx.dir())), fx.dir());
+      gate.release();
+      expect(await outcome).toContain("store changed while it was being opened");
+    } finally {
+      gate.restore();
+    }
+  });
+
+  test("rejects a historical ID that gains a second valid file during admission", async () => {
+    const fx = session();
+    const legacyDir = fx.sm.getArtifactManager()!.sessionDir!;
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const original = path.join(legacyDir, "0.bash.log");
+    fs.writeFileSync(original, "original needle\n");
+    const gate = gateOpen(original);
+    try {
+      const outcome = search(newTool(), fx.ctx, "artifact://0", "needle").then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+      await gate.entered;
+      fs.writeFileSync(path.join(legacyDir, "0.other.log"), "second needle\n");
+      gate.release();
+      expect(await outcome).toContain("ambiguous");
+    } finally {
+      gate.restore();
+    }
+  });
+
+  test("reports unavailable descriptor validation without claiming the spill is missing", async () => {
+    const fx = session();
+    const id = await fx.save("original needle\n");
+    const readlink = fs.promises.readlink;
+    fs.promises.readlink = (async (...args: Parameters<typeof readlink>) => {
+      if (String(args[0]).startsWith("/proc/self/fd/")) throw Object.assign(new Error("proc unavailable"), { code: "ENOENT" });
+      return readlink(...args);
+    }) as typeof readlink;
+    try {
+      await expect(search(newTool(), fx.ctx, id, "needle")).rejects.toThrow("cannot verify its opened file via /proc/self/fd");
+    } finally {
+      fs.promises.readlink = readlink;
+    }
+  });
+
+  test("rejects a transient root substitution even when the root is restored before descriptor validation", async () => {
+    const fx = session();
+    const id = await fx.save("original needle\n");
+    const dir = fs.realpathSync(fx.dir());
+    const file = path.join(dir, spillFileName(id));
+    const outside = fs.mkdtempSync(path.join(scratch, "outside-race-"));
+    const parked = `${dir}-parked`;
+    fs.writeFileSync(path.join(outside, spillFileName(id)), "outside race-marker\n");
+    const lstat = fs.promises.lstat;
+    const open = fs.promises.open;
+    function restoreRoot() {
+      if (!fs.existsSync(parked)) return;
+      fs.unlinkSync(dir);
+      fs.renameSync(parked, dir);
+    }
+    fs.promises.lstat = ((...args: Parameters<typeof lstat>) => {
+      if (args[0] === file && !fs.existsSync(parked)) {
+        fs.renameSync(dir, parked);
+        fs.symlinkSync(outside, dir, "junction");
+      }
+      return lstat(...args);
+    }) as typeof lstat;
+    fs.promises.open = async (...args: Parameters<typeof open>) => {
+      const handle = await open(...args);
+      if (args[0] === file) {
+        restoreRoot();
+        fs.promises.lstat = lstat;
+      }
+      return handle;
+    };
+    try {
+      await expect(search(newTool(), fx.ctx, id, "race-marker")).rejects.toThrow("changed while it was being opened");
+    } finally {
+      fs.promises.lstat = lstat;
+      fs.promises.open = open;
+      restoreRoot();
+    }
+  });
 });
 
 /** The next FileHandle.close really closes the handle but its returned promise is withheld until released. */
@@ -566,7 +789,7 @@ async function gateNextClose(): Promise<{ entered: Promise<void>; release: () =>
   return { entered: entered.promise, release: () => gate.resolve(), restore: () => void (proto.close = original) };
 }
 
-describe("review r2 regression (R2-OAI-1)", () => {
+describe.skipIf(process.platform !== "linux")("review r2 regression (R2-OAI-1)", () => {
   const events = [
     { name: "abort", expected: "left during close", warmAfter: true },
     { name: "switch", expected: "session", warmAfter: false },

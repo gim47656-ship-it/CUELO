@@ -14,7 +14,7 @@
 // Source: `OMP_CORE_PATCH_BACKUP/src/modes/interactive-mode.ts` (pristine) when given, else the target's file
 // (pristine or already patched; both resolve). The target is never written. Nothing here touches a real session.
 //   OMP_CORE_PATCH_TARGET=<core> bun run patches/core-observer-lifecycle-test.ts
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,7 +49,7 @@ try {
 	const root = join(scratch, "pkg");
 	const filePath = join(root, FILE);
 	const mk = (text: string) => {
-		Bun.spawnSync(["mkdir", "-p", join(root, "src/modes")]);
+		mkdirSync(join(root, "src/modes"), { recursive: true });
 		writeFileSync(filePath, text);
 	};
 	const entries = EDITS.filter(entry => entry.file === FILE);
@@ -108,6 +108,7 @@ try {
 			$_observerUiSyncTimer: undefined,
 			$_todoHudSubagentKey: opts.key ?? "",
 			$_todoPhasesOwner: undefined,
+			$_trayShown: () => false,
 			session: {},
 			ui: { requestRender: () => void calls.requestRender!++ },
 			syncRunningSubagentBadge: () => opts.badge ?? false,

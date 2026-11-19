@@ -3,9 +3,11 @@
  * 직전 7일(index 1) 두 묶음으로 센다. 라이브 서버의 요청 처리를 막지 않도록 약 8ms마다 이벤트 루프에
  * 양보한다. 읽은 값이 없으면 0이 아니라 호출자가 미측정으로 다룰 수 있게 원 건수를 그대로 넘긴다.
  */
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls/local-root";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
@@ -382,12 +384,28 @@ const HARNESS_NOTICE = new RegExp([
 ].map((r) => r.source).join("|"));
 
 /**
- * core shake는 오래된 도구 결과 본문을 세션 파일 안에서 이 자리표시로 바꾸고, 원문은 세션 artifact 폴더(세션 파일 경로에서
- * `.jsonl`을 뺀 폴더)의 `<id>.shake.log`에 `### region <n> (…)` 머리 뒤에 남긴다. 실패 분류(사전 점검 안내·의도된 중단 제외,
- * 원인 줄)는 원문을 봐야 하므로 오류 결과의 자리표시는 원문으로 되돌린다. 원문을 못 찾으면 자리표시 그대로 센다
+ * 코어는 세션에서 접은 도구 결과를 자리표시로 바꾸고, 새 로그는 local/<id>.log에, 이전 로그는 <id>.shake.log에 남긴다.
+ * 오류 결과의 분류와 원인 줄은 원문에서 구한다. 원문을 못 찾으면 자리표시 그대로 센다.
  * (11-13 사무실 점검: shake된 사전 점검 안내 4건이 발주 거절로 세어져 dispatch-rejects가 문제로 올라감).
  */
-const SHAKEN_RESULT = /^\[shaken ~(\d+) tokens — recover: artifact:\/\/(\d+) \(region (\d+)\)\]$/;
+const SHAKEN_RESULT = /^\[shaken ~(\d+) tokens — recover: (?:artifact:\/\/(\d+)|local:\/\/(\d+)\.log) \(region (\d+)\)\]$/;
+
+async function readShakeLog(file: string, root: string): Promise<string | null> {
+  try {
+    const expected = join(await realpath(root), relative(root, file));
+    // Check the opened file itself, not a pathname that can change before the read.
+    const handle = await open(expected, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.nlink !== 1 || await realpath(`/proc/self/fd/${handle.fd}`) !== expected) return null;
+      return await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 /**
  * shake 원문 파일에서 region 하나. core는 머리 `### region <n> (<도구>, ~<토큰> tok)`, 빈 줄, 원문, 빈 줄을 `\n`으로 이어 쓴다.
@@ -801,11 +819,16 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           if (!call || !m.toolCallId) continue;
           let resultText = m.isError ? textOf(m.content) : "";
           const shaken = SHAKEN_RESULT.exec(resultText.trim());
-          if (shaken) {
-            const file = join(path.slice(0, -".jsonl".length), `${shaken[2]}.shake.log`);
+          if (shaken && process.platform === "linux") {
+            const sessionDir = path.slice(0, -".jsonl".length);
+            const file = shaken[2] ? join(sessionDir, `${shaken[2]}.shake.log`)
+              : join(resolveLocalRoot({ getArtifactsDir: () => sessionDir, getSessionId: () => sessionId }), `${shaken[3]}.log`);
             let log = shakeLogs.get(file);
-            if (log === undefined) shakeLogs.set(file, (log = await readFile(file, "utf8").catch(() => null)));
-            resultText = (log === null ? null : shakeRegionText(log, Number(shaken[3]), shaken[1])) ?? resultText;
+            if (log === undefined) {
+              log = await readShakeLog(file, dirname(sessionDir));
+              shakeLogs.set(file, log);
+            }
+            resultText = (log === null ? null : shakeRegionText(log, Number(shaken[4]), shaken[1])) ?? resultText;
           }
           const args = pendingArgs.get(m.toolCallId);
           pendingArgs.delete(m.toolCallId);

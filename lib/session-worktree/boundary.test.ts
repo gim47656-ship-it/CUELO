@@ -64,7 +64,6 @@ if (!mode) {
       const { promise: gate, resolve: release } = Promise.withResolvers<void>();
       const { promise: finished, resolve: swept } = Promise.withResolvers<void>();
       mock.module("../attachment-cleanup", () => ({ ensureAttachmentCleanupScheduler() {} }));
-      mock.module("../routines/scheduler", () => ({ ensureRoutineScheduler() {} }));
       mock.module("../session-busy-state", () => ({ ensureSessionBusyStateWriter: async () => {} }));
       mock.module("../update-interrupt", () => ({ recoverAbruptStop: async () => { events.push("recovery-start"); await gate; events.push("recovery-done"); return { queued: [id] }; } }));
       mock.module("./runtime", () => ({ maintainRecordedSessionWorktrees: async () => { events.push("sweep"); swept(); } }));

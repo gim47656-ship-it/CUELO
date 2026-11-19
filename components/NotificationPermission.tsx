@@ -11,7 +11,6 @@ interface NotificationPermissionState {
   permission: Permission;
   dismissed: boolean;
   request: () => void;
-  requestPermission: () => Promise<Permission>;
   dismiss: () => void;
 }
 
@@ -34,26 +33,13 @@ export function useNotificationPermission(): NotificationPermissionState {
     return () => window.removeEventListener("focus", refresh);
   }, [refresh]);
 
-  const requestPermission = useCallback(async (): Promise<Permission> => {
-    if (!("Notification" in window)) return null;
-    if (Notification.permission !== "default") {
-      refresh();
-      return Notification.permission;
-    }
-    try {
-      const next = await Notification.requestPermission();
-      setPermission(next);
-      return next;
-    } catch (error) {
-      refresh();
-      throw error;
-    }
-  }, [refresh]);
-
   const request = useCallback(() => {
-    // Keep permission ownership in this hook, including requests from the routine board.
-    void requestPermission().catch(refresh);
-  }, [refresh, requestPermission]);
+    if (!("Notification" in window) || Notification.permission !== "default") {
+      refresh();
+      return;
+    }
+    void Notification.requestPermission().then(setPermission, refresh);
+  }, [refresh]);
 
   const dismiss = useCallback(() => {
     setDismissed(true);
@@ -64,7 +50,7 @@ export function useNotificationPermission(): NotificationPermissionState {
     }
   }, []);
 
-  return { permission, dismissed, request, requestPermission, dismiss };
+  return { permission, dismissed, request, dismiss };
 }
 
 type NotificationPermissionProps = NotificationPermissionState & {
