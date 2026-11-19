@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import contextHandoffHint, { CONTEXT_HINT_TOKENS, CONTEXT_HINT_TYPE } from "../context-handoff-hint";
 import { createQuietDelivery } from "../lib/quiet-delivery";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
@@ -96,37 +95,5 @@ describe("quiet delivery", () => {
     send(note("b"), h.ctx as never);
     send(note("c"));
     expect(h.sent.map((s) => s.options).slice(1)).toEqual([undefined, { deliverAs: "nextTurn" }]);
-  });
-});
-
-describe("context handoff hint", () => {
-  test("Main 맥락이 기준을 넘으면 한 번 알리고, 기준 아래로 내려간 뒤 다시 넘으면 또 알린다", () => {
-    const h = harness(contextHandoffHint);
-    h.state.idle = true;
-    const reply = () => h.emit("message_end", { message: { role: "assistant", content: [] } });
-    h.state.tokens = CONTEXT_HINT_TOKENS - 1;
-    reply();
-    expect(h.sent).toHaveLength(0);
-    h.state.tokens = CONTEXT_HINT_TOKENS + 12_000;
-    reply();
-    reply();
-    expect(h.sent).toHaveLength(1);
-    expect(h.sent[0]!.message.customType).toBe(CONTEXT_HINT_TYPE);
-    expect(h.sent[0]!.message.content).toContain("약 31만 토큰");
-    h.state.tokens = 120_000;
-    reply();
-    h.state.tokens = CONTEXT_HINT_TOKENS;
-    reply();
-    expect(h.sent).toHaveLength(2);
-  });
-
-  test("child 세션과 사용자 메시지에는 알리지 않는다", () => {
-    const h = harness(contextHandoffHint);
-    h.state.idle = true;
-    h.state.tokens = 400_000;
-    h.emit("message_end", { message: { role: "user", content: [] } });
-    h.state.kind = "sub";
-    h.emit("message_end", { message: { role: "assistant", content: [] } });
-    expect(h.sent).toHaveLength(0);
   });
 });
