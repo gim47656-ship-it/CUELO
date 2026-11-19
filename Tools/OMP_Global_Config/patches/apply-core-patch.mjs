@@ -9361,6 +9361,26 @@ export function scheduleEmbedding(beam: BeamMemoryState, items: readonly EmbedIt
 	},
 	{
 		file: "../pi-mnemopi/src/core/beam/store.ts",
+		marker: "// CUELO: explicit forget receipt",
+		anchor: `export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean {
+	let deleted = 0;
+	transaction(beam.db, () => {
+`,
+		patched: `export const CUELO_FORGET_PROTOCOL = 1;
+export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean {
+	let deleted = 0;
+	transaction(beam.db, () => {
+		// CUELO: explicit forget receipt. Trim does not call this path. Keep no content or topic.
+		beam.db.run("CREATE TABLE IF NOT EXISTS cuelo_forgotten (id TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID");
+		beam.db.run(\`INSERT OR IGNORE INTO cuelo_forgotten(id)
+			SELECT id FROM working_memory WHERE id = ?1 AND session_id = ?2
+			UNION SELECT json_extract(metadata_json, '$.cuelo_sync_winning_id') FROM working_memory
+			WHERE id = ?1 AND session_id = ?2 AND json_type(metadata_json, '$.cuelo_sync_winning_id') = 'text'\`,
+			[memoryId, beam.sessionId]);
+`,
+	},
+	{
+		file: "../pi-mnemopi/src/core/beam/store.ts",
 		marker: "scheduleEmbeddingBatches, vecAvailable",
 		anchor: 'import { type EmbedItem, scheduleEmbedding, vecAvailable, vecInsert } from "./helpers";\n',
 		patched: 'import { type EmbedItem, scheduleEmbedding, scheduleEmbeddingBatches, vecAvailable, vecInsert } from "./helpers";\n',

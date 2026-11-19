@@ -3225,6 +3225,25 @@ console.log("\n[25a-1] autolearn capture — 성공한 저장만 교훈 첫 문�
 	);
 }
 
+// Intentional forget and automatic capacity trimming must not look alike to the peer.
+{
+	const { BeamMemory } = await import(`${CORE}/../../pi-mnemopi/src/core/beam/index.ts`);
+	const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "default", config: { workingMemoryLimit: 1 } });
+	try {
+		const trimmed = beam.remember("scratch", { timestamp: new Date(Date.now() - 60000).toISOString() });
+		const id = beam.remember("explicit forget", { metadata: { cuelo_sync_winning_id: "origin-id" } });
+		beam.db.run("CREATE TRIGGER hold BEFORE DELETE ON working_memory BEGIN SELECT RAISE(ABORT,'hold'); END");
+		let aborted = false;
+		try { beam.forgetWorking(id); } catch { aborted = true; }
+		check("forget receipt rolls back with failed delete", aborted && !!beam.get(id) &&
+			!beam.db.query("SELECT 1 FROM sqlite_master WHERE name='cuelo_forgotten'").get());
+		beam.db.run("DROP TRIGGER hold");
+		check("explicit forget records both IDs but eviction records neither content nor receipt", beam.forgetWorking(id) &&
+			!beam.get(trimmed) && JSON.stringify(beam.db.query("SELECT id FROM cuelo_forgotten ORDER BY id").all().map((v: {id: string}) => v.id))
+				=== JSON.stringify([id, "origin-id"].sort()));
+	} finally { beam.close(); }
+}
+
 // 2026-09-29 실측: 재구축 묶음이 한꺼번에 worker 줄에 서서 뒤 묶음·첫 턴 회상이 120초 제한에 걸렸다.
 console.log("\n[25b] mnemopi — 중단된 임베딩 재구축은 16건 묶음을 하나씩 차례로 보낸다");
 {
