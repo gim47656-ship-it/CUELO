@@ -41,12 +41,8 @@ description: Before delegation, child review or Git handoff.
 
 - 단일 정의 `agent/sop/maker.md`는 `model:"@implSonnet"`를 기본으로 하며 발주별 `tasks[].model`로
   `config.yml` `modelRoles`의 slot을 고른다. 등급은 `NORMAL`·`HARD`, 후보 이름은 라우팅 슬롯을 식별한다.
-  모든 Maker 후보 slot은 `:auto`이고 child는 `solutionSpace`로 판단한다. 강도 범위와 모델별 예외의 정본은
-  `harness-policy.json`의 `routing.effortSelection`, 실제 값은 `config.yml`의 `autoEffort`와 `providers`다.
-  2026-11-08 사용자 결정: 일반 작업과 추론이 필요한 작업을 구분하고 모델이 선언하지 않은 단계는 고르지 않는다.
-  2026-11-10 사용자 결정: 모델별 기본 강도를 일반 범위보다 먼저 적용한다.
-  2026-11-11 사용자 결정: 모델별 기본 강도와 `xhighAsMax` 예외를 `config.yml`로 관리한다.
-  2026-11-17 사용자 결정: `capHigh` 목록을 확장하고 에이전트 출처 메시지는 현재 강도를 유지한다. 첫 `solutionSpace` 분류는 보존한다.
+  모든 Maker 후보 slot은 `:auto`다. `routing.modelSelection.profiles`의 `startEffort`와 `maxEffort`가
+  Maker의 시작 강도와 상한을 정한다. Main의 모델별 하한과 상한은 `config.yml`의 `autoEffort`와 `providers`에 남는다.
   재시작 알림과 짧은 말은 현재 강도를 유지하고 사람 steering은 같은 턴에서 올리기만 한다.
   확률 기준, 맥락 입력, 오류와 호출 누적에 따른 한 단계 승격은 `extensions/auto-effort.ts`와 설정이 정한다.
   확률이 없으면 기존 선택을 유지하며 `ultrathink`는 누적 승격에서 제외한다.
@@ -56,19 +52,18 @@ description: Before delegation, child review or Git handoff.
   Anthropic 계정의 하루 몫 소진은 Maker 추천과 발주를 바꾸지 않는다. 어려운 UI는 계정 상태와 무관하게 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천하고, Main이 명시한 Anthropic Maker 후보도 하루 몫 때문에 추가 근거나 대체를 요구하지 않는다(2026-11-11 사용자 정정: 메이커는 동작해야 한다). 하루 몫은 새 최상위 세션의 모델도 바꾸지 않는다(2026-11-11 사용자 결정으로 하루 몫 예외와 YUKI 시작 전환을 뺐다). 실제 한도 도달이나 사용 불가 계정에는 기존 폴백을 적용하고 한도 표시를 유지한다.
   Main은 설계·원인·상태 소유자·호출 계약·수용 조건을 구현 가능한 범위로 먼저 정리한다(모든 줄을 미리 풀지는 않는다). Maker는 국소 탐색·구현·검증을 맡는다.
   수행 주체를 모델보다 먼저 정한다. 위치와 접근이 명확하고 위임의 실질적 이득이 없는 작은 작업은 Main이 직접 구현하고 검증한다. 이를 확인하려고 `maker_route`를 부르지 않는다. 기존 담당자의 국소 수정은 그 담당자와 모델을 유지하며, 아래 모델 추천은 근거를 갖춘 새 발주에만 적용한다.
-  한정된 실패 재작업을 다른 담당자에게 넘길 때는 Main이 실패 근거와 바뀐 접근을 정하고, 기존 담당자가 쓰기를 멈춘 뒤 미완 변경과 유효한 검증 결과를 인계한다. 동일 범위의 추가 지시나 통상적 검증 보정만으로 새 작업자를 만들지 않는다. 원인이 해소되지 않은 반복 실패는 기존 Main 반환 기준을 따른다.
+  한정된 실패 재작업을 다른 담당자에게 넘길 때는 Main이 실패 근거와 바뀐 접근을 정하고, 기존 담당자가 쓰기를 멈춘 뒤 미완 변경과 유효한 검증 결과를 인계한다. 동일 범위의 추가 지시나 통상적 검증 보정만으로 새 작업자를 만들지 않는다.
   `maker_route`는 Jev 판단으로 다음을 추천한다. 우선순위는 반복 실패 → 큰 교차 경계 재설계 → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 보통 UI → 일반 구현이다.
-  - 방향이 정해졌고 남은 UI 판단이 없는 NORMAL 구현은 DeepSeek(`NORMAL_DEEPSEEK`)를 먼저 추천한다. 후보가 없거나 관측 소진이면 Sonnet(`NORMAL_SONNET`)을 추천한다(2026-11-18 사용자 결정). 같은 조건의 HARD는 Sonnet(`HARD_CODE_SONNET`)만 추천한다. 준비된 복잡한 상태 구현과 테스트, 반복 수정도 포함한다. 해당 순서에 쓸 수 있는 후보가 없으면 추천 없이(`profile: null`) Main 재판단 사유를 돌려주며 발주는 막지 않는다. Main이 한도를 확인한 뒤 다른 후보를 `ROUTING_REASON` 한 줄과 함께 직접 지정할 수 있다. 크기와 위험은 별개이고 HARD라는 이름만으로 Main에 돌려보내지 않는다. 요청 중 오류 폴백은 `retry.fallbackChains`가 정하며 `maker_route` 추천과 별개다.
-  - 어려운 UI/UX(`uiDifficulty`가 `DIFFICULT`)는 Opus(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천한다(2026-11-10 사용자 결정: 「아니다 오퍼스 5.5 로 가자...」). Opus 후보가 없거나 관측 소진이면 Sonnet·Sol·DeepSeek로 자동 대체하지 않고 추천 없이 Main이 다시 판단한다. `uiUxBoundary`는 남은 UI 판단의 존재일 뿐 어려움이 아니다.
+  - 방향이 정해졌고 남은 UI 판단이 없는 NORMAL 구현은 Sonnet 5.5(`NORMAL_SONNET`), 같은 조건의 HARD는 Sol 6.2(`HARD_CODE_SOL`)를 추천한다. 준비된 복잡한 상태 구현, 테스트와 통상적 수정도 이 기준을 따른다.
+  - 어려운 UI/UX(`uiDifficulty`가 `DIFFICULT`)는 Opus 5.5(`NORMAL_OPUS`, HARD면 `HARD_UI_OPUS`)를 추천한다. `uiUxBoundary`는 남은 UI 판단의 존재일 뿐 어려움이 아니다.
     `DIFFICULT`는 구현자에게 아직 정해지지 않은 큰 시각·상호작용 설계 판단이 있다는 사실이 있을 때다: 새로 만들거나 재구성하는 화면의 레이아웃·구성, 반응형, 정보구조, 시각 디자인·모션,
     접근성·포커스·터치 표적 동작, 사용자 상호작용 흐름의 모양이다. UI 파일, HARD 등급, 작업 크기, UI 경계의 존재만으로는 아니다.
     기존 화면 패턴·명세·Main이 준비한 방향이 배치·문구·동작을 정했으면 `ROUTINE`이며 Sonnet(`NORMAL_SONNET`, HARD면 `HARD_UI_SONNET`)을 추천한다(2026-11-11 사용자 결정). 한정된 설계나 한정된 실패 재작업이 함께면 Sol이 먼저다. Sonnet 후보가 없거나 관측 소진이면 DeepSeek·Opus로 자동 대체하지 않고 추천 없이 Main이 다시 판단한다. 남은 UI 판단이 없으면 `NONE`이며 다른 우선 조건이 없는 한 일반 구현 순서를 따른다. 사실이 너무 얇아 보통인지 어려운지 정할 수 없으면 둘 중 어느 쪽으로도 추측하지 않고 `UNKNOWN`이다(추천 없이 Main에게 알리고 막지 않는다).
-  - 한정된 설계(`boundedDesign`이 `BOUNDED`)는 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL`)을 추천한다. 구현자가 알고리즘, 상태 모델, 배치 가운데 골라야 하거나 아직 열려 있는 근본 원인을 찾아야 하지만 목표와 수용 조건, 승인된 계약이 분명하고 선택이 기존 상태 소유자와 공개 계약, 모듈 경계 안에서 끝나는 경우다.
+  - 한정된 설계(`boundedDesign`이 `BOUNDED`)는 Sol 6.2(`NORMAL_SOL`, HARD면 `HARD_BOUNDED_SOL`)을 추천한다. 구현자가 알고리즘, 상태 모델, 배치 가운데 골라야 하거나 아직 열려 있는 근본 원인을 찾아야 하지만 목표와 수용 조건, 승인된 계약이 분명하고 선택이 기존 상태 소유자와 공개 계약, 모듈 경계 안에서 끝나는 경우다.
     Main이 접근과 계약을 정해 구현·검증만 남았으면 복잡한 상태 처리여도 `NONE`이라 일반 구현 순서를 따른다. 실패한 테스트나 반복 수정만으로 `BOUNDED`가 되지 않는다(실패 재작업은 `reworkNature`가 본다). 사실이 얇으면 `UNKNOWN`이며 추천 없이 Main에게 알리고 막지 않는다.
-  - `FINDING_ID` 재작업은 Jev의 `reworkNature`가 `BOUNDED_FAILURE`(이전 구현이 이름 붙은 한정된 원인으로 실패했고 남은 수정이 기존 설계 안)일 때 Sol(`NORMAL_SOL`, HARD면 `HARD_CODE_SOL`)을 추천한다.
-    의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정(`NOT_FAILURE`)은 실패한 구현이 아니므로 일반 추천 기준을 따른다. 판단은 `failureEvidence`·facts·원장 이력(`history`)에 적힌 사실에서만 하고 재시도 횟수 같은 숫자 기준은 만들지 않는다.
-  - 큰 교차 경계 재설계(`designOpen` 0.5 이상. 새 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계 변경이 필요하거나 제품·구조 방향 자체가 열린 경우. 기존 소유자와 승인된 계약 안의 한정된 설계는 해당하지 않는다)와 같은 검사가 수정 뒤에도 다시 실패하거나 원인이 불명·모순인 반복 실패(`RETURN_TO_MAIN`, UI 여부와 무관)는 추천 없이(`profile: null`, 사유 포함) Main으로 돌아온다. Main이 근거·원인·남은 판단을 정리해 접근을 바꾸고 `maker_route`를 다시 실행하며, Sonnet·Opus가 난제를 끝없이 재시도하거나 frontier Maker로 올라가지 않는다.
-    이 두 결정만 `beforeTask`에서 발주를 막는다. 임의의 `ROUTING_REASON`이나 다른 후보 선택으로 우회할 수 없고, 사실이나 확정 구현이 바뀐 새 준비에서 결정이 풀렸을 때만 발주된다. 과거 실패 기록만으로 계속 막지 않으며 이미 실행 중인 owner와 모델은 바꾸지 않는다.
+  - 한정된 실패 재작업(`reworkNature`가 `BOUNDED_FAILURE`)은 Sol 6.2(`NORMAL_SOL`, HARD면 `HARD_BOUNDED_SOL`)을 추천한다. 이미 실패한 구현의 원인이 알려졌고 남은 수정이 기존 설계 안에 있는 경우다.
+    의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정은 구현 실패가 아니다. `FINDING_ID` 표기가 아니라 `failureEvidence`와 `facts`로 구분한다.
+  - 반복 실패(`RETURN_TO_MAIN`)와 큰 교차 경계 재설계(`designOpen` 0.5 이상)는 UI 여부와 무관하게 Astra 6.2(`HARD_ASTRA`)를 추천한다. 같은 원인이 해결되지 않았거나 지금 접근이 실패한 근거, 정본 상태 소유자나 공개 계약 및 모듈 경계를 다시 설계할 필요가 있는 경우다. Main은 실패 근거 또는 열린 판단과 보존할 계약을 브리프에 적는다. 이 두 판정 자체는 발주를 막지 않으며 같은 담당자의 실행 중 모델을 바꾸지 않는다.
     Jev가 불가이거나 답이 없거나 열린 설계·UI 난이도·한정된 설계를 `UNKNOWN`으로 두면 실패도 열린 설계도 어려운 UI도 아닌 모름이다. 추천 없이 Main에게 알리지만 막지 않고, 더 비싼 모델의 근거로도 쓰지 않으며 기존 `ROUTING_REASON` 경로로만 발주한다.
   - 한도 여유 비교나 과거 성공률만으로 후보를 바꾸지 않는다. Anthropic 하루 몫 소진도 Maker 후보를 바꾸는 근거가 아니며, 미관측은 소진이 아니고 해당 결정의 후보가 없으면 null과 Main 재판단 사유를 돌려준다. Maker 정의의 Sonnet 기본값은 유지하며, Sol 또는 Opus 후보가 없다고 다른 모델로 자동 대체하지 않는다.
     Sol은 관측 사용률이나 계정 신호로 소진 판정하지 않는다(2026-11-11 사용자 결정: 「sol 한도도 크레딧이있으니까 실제 발주가 나갔다가 거절되면 돌리는걸로하자」).
@@ -76,7 +71,7 @@ description: Before delegation, child review or Git handoff.
     다음 발주도 다시 시도하며 core의 계정 차단과 쿨다운은 유지한다.
     첫 모델 요청이 공급자 거절로 끝난 Maker(stopReason error, 도구 호출 0, 파일 변경 없음)는 같은 child 안에서 `retry.fallbackChains`의 다음 모델로 한 번 자동 재발주된다(2026-11-18 사용자 결정: 「시작하자마자 거절되고 한 일이 없는 Maker는 대체 순서의 다음 모델로 한 번 자동 재발주하고, Main과 너에게 그 사실과 원래 오류를 바로 알림」, `extensions/lib/start-reject-fallback.ts`). Main은 원래 모델, 원문 오류, 새 모델이 담긴 알림을 받으면 수동으로 다시 발주하지 않는다. 대체 모델도 첫 요청에서 거절되거나 다음 모델이 없으면 그 사실을 알리고 멈춘다. 이 시작 실패 child는 owner와 placement 후보에서 빠지므로 Main이 같은 준비(preparedId와 이름)로 다시 발주할 수 있다.
     DeepSeek로 시작한 Maker가 실제 요청에서 core 분류상 사용 한도 오류를 받으면, 첫 요청이든 작업 중이든 같은 child에서 `NORMAL_SONNET`(`modelRoles.implSonnet`, auto)으로 한 번 전환한다(2026-11-18 사용자 결정). 대화와 완료한 도구 작업은 보존하고 child가 끝날 때까지 DeepSeek로 돌아가지 않는다. Main에 원 모델, 원문 오류, 새 모델을 알리고 라우팅 원장에 남긴다. Sonnet을 쓸 수 없거나 Sonnet도 끝내 실패하면 더 전환하지 않고 오류를 알린다. 일시적인 429, 네트워크 오류, 다른 Maker와 Main 및 helper의 동작은 기존 정책을 따른다.
-  - `HARD_CODE_OPUS`, `HARD_CODE_TERRA`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. Gemini와 GLM은 2026-11-11 사용자 결정으로 Maker 후보가 아니다. `implGemini`는 HIKARI 호출과 사전 점검에만 쓰고, 두 모델로 발주하면 후보 밖이라 근거를 적어도 거절된다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다.
+  - `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `NORMAL_DEEPSEEK`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. Gemini와 GLM은 Maker 후보가 아니다. `implGemini`는 HIKARI 호출과 사전 점검에만 쓰고, 두 모델로 발주하면 후보 밖이라 근거를 적어도 거절된다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다.
     라우팅 슬롯 식별자는 유지하고 실제 모델과 alias, 교차검토 모델은 `config.yml`을 참조한다.
     일반 Maker 추천 후보와 helper 슬롯은 구별하며 다른 모델의 과거 평가를 현재 슬롯의 성능 증거로 옮기지 않는다.
     추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.
@@ -113,7 +108,7 @@ description: Before delegation, child review or Git handoff.
   **위임 판단**(`routing.modelSelection.delegationCriteria`)을 한 번에 묻는다. 위임 판단은
   facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 적힌 사실만으로 답하고
   등급, 난이도, 모델 강도와 독립이다. 위치와 접근이 명확한 작은 작업에서 인계 부담보다 전문성, 병렬 처리나 문맥 분리의 이득이 없으면 MAIN이고, 독립 조각에서 그 이득이 있으면 MAKER다. 근거가 부족하면 UNKNOWN이다.
-  결과의 `routes[].delegationAdvice`는 판단과 이유, 다음 행동을 Main에게 보여 준다. Main은 먼저 기존 담당자의 이어가기와 Main 반환 조건을 확인하고, 그 밖의 MAIN은 직접 처리한다. UNKNOWN은 현재 근거로 판단하며 같은 질문을 다시 보내거나 더 비싼 모델을 고르는 근거로 쓰지 않는다.
+  결과의 `routes[].delegationAdvice`는 판단과 이유, 다음 행동을 Main에게 보여 준다. Main은 먼저 기존 담당자가 이어갈 일인지 보고, MAIN이면 직접 처리한다. UNKNOWN은 현재 근거로 판단하며 같은 질문을 다시 보내거나 더 비싼 모델을 고르는 근거로 쓰지 않는다.
   원장의 `delegationAdvice`는 그대로 남고, 이 안내는 새 발주 차단이나 모델 자동 변경이 아니다. 현재 후보, 필수 교차검토, 소유권과 승인 경계는 유지한다. 같은 브리프에 별도 `judge()`를 호출하지 않는다.
   기본값과 준비 연결은 `rule://task-guard` 및 `routing.modelSelection.preparedReference`가 정한다.
   추천 변경, Jev 불가, 중복 판정과 사실의 모순은 `ROUTING_REASON` 한 줄로 설명한다.
@@ -142,14 +137,12 @@ description: Before delegation, child review or Git handoff.
 - `task.enableEffort:false`로 coarse 매핑을 끄고 `tasks[].model`의 `:auto` suffix로 child auto를 켠다.
   실제 core 우선순위는 coarse effort > selector suffix > agent 기본 > pattern-derived이고 생성 기본도
   `thinking-level: auto`다. task hook은 후보 selector를 `:auto`로 보정하고 coarse `effort`를 제거한 사실을 한 줄로 알린다.
-- child auto의 분류 입력은 발주 항목의 `solutionSpace`다. 해결 방법·설계가 주어졌는지, 어떤 원인·설계가
+  `solutionSpace`는 남은 판단을 설명한다. 해결 방법이나 설계가 주어졌는지, 어떤 원인이나 설계가
   아직 열려 있는지를 적는다. 열린 항목에는 타당한 설계가 여럿이거나 원인을 모르는 판단만 적고, 기존 패턴·명세·Main
   방향이 이미 정한 국소 세부(열 너비·배치·문구 등)는 열린 항목이 아니라 주어진 제약으로 적어 정해진 조각이
   정해진 대로 읽히게 한다. 이것은 정확한 서술이며 강도를 올리거나 내리는 수단이 아니다.
   작업량으로 넓히지 않고 모델·등급·강도·형제 조정을 적지 않는다.
-  child는 첫 턴을 `solutionSpace`로 분류한다. 이후 Main 지시와 peer 전달, child 보고는 구조적 에이전트 출처로 현재 강도를 유지하고 분류기를 부르지 않는다. 출처가 없는 기존 전달 경로에만 `autoEffort.holdPrefixes`의 실제 조율 태그를 설정할 수 있으며 루틴과 세션 시작 접두사는 넣지 않는다. 매 도구 호출마다 다시 판정하지 않으며, 설정한 오류나 호출 누적 임계값에 따른 한 단계 승격만 허용한다.
-  분류 실패·timeout이면 child의 직전 단계(첫 분류 전에는 잠정 단계)를 유지하고 하네스가 concrete 강도로 대신하지 않는다
-  (`routing.effortSelection`).
+  첫 요청은 해당 프로필의 시작 강도를 적용한다. 일반 HARD는 `medium`, 나머지는 `high`다. 이후 Auto는 이 하한과 `xhigh` 사이에서 모델이 지원하는 단계를 고른다. 에이전트 출처 후속 지시는 현재 강도를 유지한다. Maker는 도구 100회 또는 오류 15회마다 범위 안에서 한 단계 올릴 수 있다. Main은 기존 하한과 상한을 유지하며 사람의 새 턴에서 도구 80회 또는 오류 4회에 한 번만 올린다. 자세한 계약은 `routing.effortSelection`을 따른다.
 - 입력은 목표·수용 조건·확인 범위/호출 관계·확정 방향/패턴 locator·남은 판단·보존 계약·검사다.
   사실·가설·미확인을 구별하고 unknown은 null로 둔다. 현재/이전/희망 모델·등급·강도와 근거 없는
   쉬움/복잡함을 공유 state 전체에서 제외한다. 원문·소스·diff·로그·비밀은 보내지 않는다.

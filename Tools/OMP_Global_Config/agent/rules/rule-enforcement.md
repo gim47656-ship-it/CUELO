@@ -45,7 +45,7 @@ description: Before mistake correction or rule changes.
 | R6 | hash·checksum은 경계가 요구할 때만 | 문서 | — | |
 | R7 | 영구 gate는 Main이 근거·위치를 정한 뒤 | 문서 | — | |
 | R8 | obsolete 제거, 삭제만 확인하는 테스트 금지 | 문서 | — | |
-| R9 | 실행 코드 변경 뒤 최소 검사, 지정 명령은 그대로 실행·보고 | eval | `evals/cases/security/missing-evidence.json`, `evals/cases/security/stale-validation-evidence.json`; Maker 검증 지시 유지는 `patches/core-subagent-verify-test.ts` | |
+| R9 | 실행 코드 변경 뒤 최소 검사, 지정 명령은 그대로 실행 및 보고 | eval | `evals/cases/security/missing-evidence.json`, `evals/cases/security/stale-validation-evidence.json` | |
 | R10 | 측정 수치는 횟수·편차·제약 요인과 번갈아 측정 | 문서 | — | |
 | R11 | 파이프 뒤 명령 성공을 검사 성공으로 보지 않고 exit code 보존 | 안내 | `extensions/command-guard/check-output-hint.ts`, `extensions/command-guard/check-output-hint.test.ts` | 명령 텍스트 휴리스틱이다. 종료 코드 보존은 검사 직후 `$?` 또는 `PIPESTATUS`, 검사 전 pipefail로 판정한다. 사건 근거는 보존 원문 R11. |
 | R12 | 임시 스크립트의 런타임·의존성 해석 먼저 확인 | 문서 | — | |
@@ -103,9 +103,9 @@ description: Before mistake correction or rule changes.
 | A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
 | A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내, 검사(부분) | `extensions/lib/maker-routing.ts` `delegationAdviceOf`, `extensions/tests/maker-routing.test.ts` | 기존 판단을 결과의 행동 권고로 보여 주고 기존 담당자를 우선한다. Main의 실제 위임 선택을 강제하는 새 차단은 없으며 요청당 child 상한과 소유권 가드는 그대로다 |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
-| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 차단(부분) | `extensions/lib/maker-routing.ts` `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts`, `extensions/lib/anthropic-quota.ts` | 2026-11-11 사용자 배분은 `rule://subagent`가 정본이다. 큰 재설계와 반복 실패는 재준비 전 차단하고 모름과 후보 소진은 Main이 판단한다. Anthropic 하루 몫은 추천, 발주와 새 세션 모델을 바꾸지 않는다. |
+| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 안내, 차단(부분) | `extensions/lib/maker-routing.ts` `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts`, `extensions/lib/anthropic-quota.ts` | 큰 재설계와 반복 실패는 Astra를 추천하며 그 판정 자체로 막지 않는다. 모름과 후보 소진은 Main이 판단한다. Anthropic 하루 몫은 추천, 발주와 새 세션 모델을 바꾸지 않는다. |
 | A17 | Main은 Maker 경로를 고치지 않고 검사를 반복하지 않는다 | 문서 | — | OwnerWriteGuard는 Maker 쓰기만 본다 |
-| A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | 검사 | `patches/core-subagent-verify-test.ts`, `evals/cases/security/missing-evidence.json` | 최종 확인과 N회 반복 순서는 `writerValidation.finalSuiteOrder`와 Maker SOP를 따른다. 사건 근거는 보존 원문 A18. |
+| A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | eval | `evals/cases/security/missing-evidence.json` | 최종 확인과 N회 반복 순서는 `writerValidation.finalSuiteOrder`와 Maker SOP를 따른다. 사건 근거는 보존 원문 A18. |
 | A19 | `wait`는 Main 전용 | 구조 | `patches/core-subagent-wait-test.ts` | |
 | A20 | Maker가 도는 동안 Main 몫을 먼저 한다 | 문서 | — | 2026-10-19 지적. A4 차단은 Maker 대기를 보지 않음 |
 | A21 | TODO는 상태 전환 자리에서 바로 갱신 | 안내 | `extensions/todo-nudge.ts`, `extensions/lib/task-progress.ts` | |

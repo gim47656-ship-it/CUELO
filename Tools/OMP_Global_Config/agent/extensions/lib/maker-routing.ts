@@ -6,6 +6,7 @@ import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-tas
 import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
 import { briefSkillCoverage, dispatchRequiredSkills, isRequiredSkillAnswerKey, loadRequiredSkillContract, requiredSkillGaps, requiredSkillQuestions, selectRequiredSkills, type RequiredSkillSelection, type RequiredSkillSource } from "./skill-evidence";
 import { accountUnusable, readSidecarQuota, type QuotaSnapshot } from "./anthropic-quota";
+import type { MakerEffortRange } from "./auto-effort-policy";
 export type { QuotaSnapshot } from "./anthropic-quota";
 
 export interface RoutingFacts {
@@ -81,7 +82,7 @@ export interface Owner {
   /** 과거 원장 row처럼 소유 경로를 알 수 없는 owner. ownedPaths가 비어도 빈 소유가 아니다. */
   ownershipUnknown?: boolean;
 }
-/** `efforts`는 그 모델이 registry에 선언한 단계다. Maker는 `:auto`로 이 단계 전체를 오가며, 단계가 없으면 auto가 고를 것이 없다. */
+/** `efforts` is the model's supported ladder; the selected profile supplies its Maker range. */
 interface Candidate { profile: string; model: string; efforts: readonly string[] }
 /** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
 export interface UnavailableCandidate { profile: string; model: string; reason: string }
@@ -90,14 +91,13 @@ export interface NormalAllocation {
   state: "observed" | "unavailable";
   profile: string | null;
   reason: string;
-  /** true면 Main이 원인·접근을 정리해 다시 준비해야 하는 결정이다. beforeTask가 이 준비로는 어떤 후보도 발주하지 못하게 한다. */
-  returnToMain: boolean;
+  returnToMain: false;
 }
 /** 같은 준비→발주 계약에서 공유하는 provider online 갱신 시도. 값은 실패 사유이고 null이면 성공이다. */
 type RefreshAttempts = Map<string, Promise<string | null>>;
 interface RoutingPolicy {
   modelSelection: {
-    profiles: Record<string, { modelConfigPath: string; workClass: string }>;
+    profiles: Record<string, { modelConfigPath: string; workClass: string; startEffort: MakerEffortRange["start"]; maxEffort: MakerEffortRange["max"] }>;
     criteria: Record<string, string>;
     hardFocusCriteria: Record<string, string>;
     uiUxBoundaryCriteria: string;
@@ -255,15 +255,10 @@ export function crossReviewAdviceOf(answers: Record<string, RoutingAnswer> | nul
 function delegationAdviceOf(
   answers: Record<string, RoutingAnswer> | null,
   placement: RoutingPlacement,
-  returnReason: string | null,
   criteria: Record<string, string>,
 ) {
   const value = answers?.delegation?.choice;
   const choice = value === "MAIN" || value === "MAKER" ? value : "UNKNOWN";
-  if (returnReason) return {
-    choice, action: "main-decision", reason: returnReason,
-    nextAction: "Main이 실패 근거와 접근을 다시 정합니다. 기존 담당자에게 같은 실패를 반복시키거나 새 후보로 우회하지 않습니다.",
-  };
   if (placement.owner && (placement.action === "instruct-existing" || placement.action === "retarget-existing")) return {
     choice, action: placement.action, reason: "이 범위를 맡은 기존 담당자가 식별됐습니다.",
     nextAction: `기존 담당자 ${placement.owner.name ?? ""}에게 이어서 지시합니다. 국소 수정은 현재 모델을 유지하고, 실제 이관은 변경과 검증 근거를 보존해 소유권을 넘긴 뒤 결정합니다.`,
@@ -581,26 +576,25 @@ function placementOf(
 
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-/** Settled NORMAL with no UI judgment prefers DeepSeek, then Sonnet (user decision 2026-11-18).
- * Settled HARD and routine UI stay Sonnet; difficult UI uses Opus; bounded design and failed rework use Sol.
- * Anthropic daily-share exhaustion never moves a Maker candidate. Open redesign, repeated failure,
- * UNKNOWN and no usable candidate in the lane retain their existing decisions. */
-const SETTLED_NORMAL_ORDER: readonly string[] = ["NORMAL_DEEPSEEK", "NORMAL_SONNET"];
-const SETTLED_HARD_ORDER: readonly string[] = ["HARD_CODE_SONNET"];
-const OPUS_NORMAL_ORDER: readonly string[] = ["NORMAL_OPUS"];
-const OPUS_HARD_UI_ORDER: readonly string[] = ["HARD_UI_OPUS"];
-const SOL_NORMAL_ORDER: readonly string[] = ["NORMAL_SOL"];
-const SOL_HARD_ORDER: readonly string[] = ["HARD_CODE_SOL"];
-const SONNET_NORMAL_UI_ORDER: readonly string[] = ["NORMAL_SONNET"];
-const SONNET_HARD_UI_ORDER: readonly string[] = ["HARD_UI_SONNET"];
+const ASTRA_ORDER = ["HARD_ASTRA"];
+const SETTLED_NORMAL_ORDER = ["NORMAL_SONNET"];
+const SETTLED_HARD_ORDER = ["HARD_CODE_SOL"];
+const OPUS_NORMAL_ORDER = ["NORMAL_OPUS"];
+const OPUS_HARD_UI_ORDER = ["HARD_UI_OPUS"];
+const SOL_NORMAL_ORDER = ["NORMAL_SOL"];
+const SOL_HARD_ORDER = ["HARD_BOUNDED_SOL"];
+const SONNET_NORMAL_UI_ORDER = ["NORMAL_SONNET"];
+const SONNET_HARD_UI_ORDER = ["HARD_UI_SONNET"];
+const MAKER_EFFORT = Symbol.for("cuelo.makerEffort");
+const effortRangeOf = (profile: RoutingPolicy["modelSelection"]["profiles"][string]): MakerEffortRange =>
+  ({ start: profile.startEffort, max: profile.maxEffort });
 const SETTLED_BASIS = "Main이 방향을 정했고 남은 UI 판단이 없는 구현입니다.";
 const DIFFICULT_UI_BASIS = "정말 어려운 UI/UX 판단이 남아 Opus가 맡습니다.";
 const ROUTINE_UI_BASIS = "기존 화면 패턴이나 명세 안에서 UI 판단이 남아 Sonnet이 맡습니다.";
 const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sol이 맡습니다.";
 const BOUNDED_REWORK_BASIS = "경계가 정해진 구현 실패 재작업은 Sol이 맡습니다.";
-const RETURN_REMEDY = "Main이 원인과 근거를 검토해 접근·범위·계약·수용 조건을 바꾸고 maker_route를 다시 실행하세요. 갱신된 준비가 해결된 구조와 한정된 구현으로 판정되면 그 준비로 발주할 수 있습니다(임의의 ROUTING_REASON으로는 넘길 수 없습니다).";
-const RETURN_REWORK_REASON = `같은 원인의 한정된 수정이 남지 않았거나 현재 접근이 실패했다는 증거가 있어 반복 실패로 판단했습니다(의도한 RED 테스트·일시적 인프라 실패는 제외). Opus 재시도나 frontier Maker 승격으로 잇지 않습니다. ${RETURN_REMEDY}`;
-const OPEN_DESIGN_REASON = `승인된 접근이 정본 상태 소유권·모듈 간 공개 데이터/API 계약·모듈 경계의 미해결 변경 없이는 수용 조건을 만족하지 못하거나 제품·구조 방향 자체가 열려 있는 큰 교차 경계 재설계가 남았습니다. ${RETURN_REMEDY}`;
+const REPEAT_FAILURE_BASIS = "같은 원인이 해결되지 않았거나 현재 접근이 실패한 반복 실패는 Astra 6.2가 맡습니다. Main은 실패 근거와 이전 접근의 한계를 브리프에 적습니다.";
+const OPEN_DESIGN_BASIS = "상태 소유권, 모듈 간 공개 계약 또는 구조 방향이 열린 큰 재설계는 Astra 6.2가 맡습니다. Main은 남은 판단과 보존할 계약을 브리프에 적습니다.";
 const UNKNOWN_DESIGN_REASON = "Jev가 열린 설계 여부를 판단하지 못했습니다(모름). 모르는 것은 실패가 아니며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
 const UNKNOWN_UI_REASON = "Jev가 남은 UI/UX 판단의 난이도를 판단하지 못했습니다(모름). 어렵다고 올리지도 보통이라고 확정하지도 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
 const UNKNOWN_BOUNDED_REASON = "Jev가 남은 설계 판단이 한정된 것인지 정해진 것인지 판단하지 못했습니다(모름). 어느 쪽으로도 추측하지 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
@@ -650,10 +644,6 @@ function allocate(
   };
 }
 
-/** Main이 직접 정리해야 하는 결정이다. profile 없음과 함께 이 준비로는 발주를 막는다. */
-const returnToMain = (quota: QuotaSnapshot, reason: string): NormalAllocation => ({
-  state: quota.state === "observed" ? "observed" : "unavailable", profile: null, reason, returnToMain: true,
-});
 /** Jev가 모른다는 결정이다. 막지 않고 Main이 ROUTING_REASON으로 정하는 기존 경로에 남긴다. */
 const unknownDecision = (quota: QuotaSnapshot, reason: string): NormalAllocation => ({
   state: quota.state === "observed" ? "observed" : "unavailable", profile: null, reason, returnToMain: false,
@@ -669,7 +659,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   type Prepared = Judgment & {
     revision: string;
     profile: string | null;
-    returnToMain: string | null;
     candidates: Candidate[];
     owners: Owner[];
     publicationToken: symbol;
@@ -718,7 +707,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
   };
   const policy = deps.policy ?? loadRoutingPolicy;
   async function candidateSet(ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts): Promise<CandidateSet> {
-    // 후보 강도는 registry가 그 모델에 선언한 단계 전체다. Maker는 :auto로 이 안을 오가므로 정책 구간으로 좁히지 않는다.
+    // Keep the full registry ladder; the selected profile clamps it in the child.
     if (deps.candidates) return {
       available: (await deps.candidates(ctx, current)).filter((candidate) => candidate.efforts.length > 0),
       unavailable: [],
@@ -833,7 +822,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
   };
 
-  const INSTRUCTION = `Main이 생각하고 준비하고 검수합니다. 방향이 정해졌고 남은 UI 판단이 없는 NORMAL 구현은 DeepSeek를 먼저 추천하고, 후보가 없거나 관측 소진이면 Sonnet을 추천합니다(2026-11-18 사용자 결정). 같은 조건의 HARD는 Sonnet, 어려운 UI/UX(uiDifficulty=DIFFICULT)는 Opus입니다. 기존 상태 소유자와 승인된 계약 안의 한정된 설계(원인이 아직 열려 있는 심층 원인 분석 포함, boundedDesign=BOUNDED)와 구현 실패 재작업(reworkNature=BOUNDED_FAILURE)은 Sol, 그 둘이 아니면서 기존 화면 패턴이나 명세 안에서 UI 판단이 남는 보통 UI(uiDifficulty=ROUTINE)는 Sonnet입니다. HARD의 DeepSeek는 명시 선택 전용입니다. 어려운 UI의 Opus 추천과 보통 UI의 Sonnet 추천은 Anthropic 하루 몫 소진과 무관하게 유지되고, Maker 후보는 하루 몫으로 바뀌지 않습니다. 미관측과 모름은 소진이 아닙니다. 큰 교차 경계 재설계(designOpen)와 반복 실패(RETURN_TO_MAIN)는 UI 여부와 무관하게 Main으로 돌아오고 이 준비로는 ROUTING_REASON이나 다른 후보로 발주할 수 없습니다. Main이 원인과 근거를 검토해 접근, 범위, 계약 또는 수용 조건을 바꿔 다시 준비한 판단만 발주됩니다. FINDING_ID가 아니라 failureEvidence와 facts로 판단합니다. 의도한 RED, 일시적 인프라 실패와 일상적 검증 보정은 실패 재작업이 아닙니다. Jev 불가와 UNKNOWN은 추천 없이 Main이 ROUTING_REASON으로 정하며 막지 않고 더 비싼 모델의 근거도 아닙니다. 추천과 다른 선택과 기존 owner 대신 새 발주는 ROUTING_REASON이 필요합니다. 같은 owner의 이어가기, 실행 중 모델, 완료된 작업, 계정 쿨다운과 리셋, warm/exact pin은 유지합니다. 해당 순서에 쓸 수 있는 후보가 없으면 추천 없이 Main이 다시 판단하며, 발주는 막지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name은 생략하면 복원되고 agent는 생략하면 maker입니다. 강도는 child auto가 고릅니다. Main은 profile, recommendations, placement, history, normalAllocation, hardAllocation, routes[].briefGaps와 ownershipOverlaps를 확인합니다.`;
+  const INSTRUCTION = `Main이 준비하고 검수합니다. 새 발주 추천 순서: 1 반복 실패(RETURN_TO_MAIN)와 2 큰 재설계(designOpen 0.5 이상)는 Astra 6.2, 3 어려운 UI는 Opus 5.5, 4 한정된 설계와 5 한정된 실패 재작업은 Sol 6.2, 6 보통 UI와 7 NORMAL 구현은 Sonnet 5.5, 7 HARD 구현은 Sol 6.2입니다. 7 HARD만 medium에서 시작하고 나머지는 high에서 시작하며 최대는 xhigh입니다. Main은 실패 근거와 열린 판단을 브리프에 적습니다. FINDING_ID 표기, 의도한 RED, 일시적 인프라 오류와 검증 보정은 실패 근거가 아닙니다. DeepSeek는 추천하지 않으며 명시 선택에는 ROUTING_REASON이 필요합니다. 모름과 후보 소진은 추천을 내지 않으며 Main이 ROUTING_REASON과 함께 후보를 직접 선택하거나 사실을 보강합니다. 추천과 다른 선택과 기존 owner 대신 새 발주에도 ROUTING_REASON이 필요합니다. 계정 하루 몫은 추천을 바꾸지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name을 생략하면 복원되고 agent를 생략하면 maker입니다.`;
   /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
   async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
     const current = policy();
@@ -994,7 +983,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         const prepared: Prepared = {
           revision,
           profile: null,
-          returnToMain: null,
           candidates,
           publicationToken: publicationClaims[index]!.token,
           refreshAttempts: new Map(refreshAttempts),
@@ -1053,12 +1041,10 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         // 재작업은 FINDING_ID 표기가 아니라 failureEvidence·facts에 적힌 사실로 Jev가 본다. 표기를 빼도 반복 실패가 우회되지 않는다.
         const nature = answers?.reworkNature?.choice;
         const failedRework = nature === "BOUNDED_FAILURE";
-        const returnRework = nature === "RETURN_TO_MAIN";
-        // 우선순위: 반복 실패 → 큰 교차 경계 재설계 → (모름) → 어려운 UI → 한정된 설계 → 한정된 실패 재작업 → 보통 UI → 일반 구현.
-        // 앞의 둘은 UI 여부와 무관하게 Main이 갖는다. 한정된 설계와 실패 재작업은 Sol, 그 뒤에 남은 보통 UI는 Sonnet이다.
+        const repeatFailure = nature === "RETURN_TO_MAIN";
         const decide = (): NormalAllocation => {
-          if (returnRework) return returnToMain(quota, RETURN_REWORK_REASON);
-          if (architectureOpen) return returnToMain(quota, OPEN_DESIGN_REASON);
+          if (repeatFailure) return allocate(candidates, quota, ASTRA_ORDER, REPEAT_FAILURE_BASIS);
+          if (architectureOpen) return allocate(candidates, quota, ASTRA_ORDER, OPEN_DESIGN_BASIS);
           if (!designKnown) return unknownDecision(quota, UNKNOWN_DESIGN_REASON);
           if (!uiKnown) return unknownDecision(quota, UNKNOWN_UI_REASON);
           if (!boundedKnown) return unknownDecision(quota, UNKNOWN_BOUNDED_REASON);
@@ -1068,11 +1054,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           if (routineUi) return allocate(candidates, quota, hard ? SONNET_HARD_UI_ORDER : SONNET_NORMAL_UI_ORDER, ROUTINE_UI_BASIS);
           return allocate(candidates, quota, hard ? SETTLED_HARD_ORDER : SETTLED_NORMAL_ORDER, SETTLED_BASIS);
         };
-        // 등급(workClass) 답이 없어도 열린 구조 결정이나 반복 실패가 이미 드러났으면 그 결정은 Main의 것이다(부분 판정으로 차단을 우회하지 못한다).
-        const classified = normal || hard;
-        const decided = classified || returnRework || architectureOpen ? decide() : null;
+        const decided = normal || hard || repeatFailure || architectureOpen ? decide() : null;
         publication.prepared.profile = decided?.profile ?? null;
-        publication.prepared.returnToMain = decided?.returnToMain ? decided.reason : null;
+        if (repeatFailure && !tasks[index]!.assessment.failureEvidence?.some(item => item.trim())) {
+          (publication.route.briefGaps ??= []).push("반복 실패의 failureEvidence에 실패 근거와 이전 접근의 한계를 적으세요.");
+        }
+        if (architectureOpen && !tasks[index]!.assessment.remainingJudgments?.some(item => item.trim())) {
+          (publication.route.briefGaps ??= []).push("큰 재설계의 remainingJudgments에 열린 판단과 보존할 계약을 적으세요.");
+        }
         publication.route.normalAllocation = hard ? null : decided;
         publication.route.hardAllocation = hard ? decided : null;
       }
@@ -1098,11 +1087,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         candidates,
         unavailableCandidates,
         quota,
-        instruction: `먼저 routes[].delegationAdvice와 placement로 수행 주체를 정합니다. 명백한 작은 직접 작업은 maker_route 없이 Main이 끝내고, 이미 준비했다면 main-direct 조언을 따릅니다. 기존 담당자의 국소 수정은 새 발주 없이 그 담당자가 이어갑니다. 아래 모델 추천은 실제 새 발주를 선택한 경우에만 적용하며 이 조언은 새 차단 조건이 아닙니다. ${INSTRUCTION}`,
+        instruction: `먼저 routes[].delegationAdvice와 placement로 수행 주체를 정합니다. 명백한 작은 직접 작업은 maker_route 없이 Main이 끝내고, 이미 준비했다면 main-direct 조언을 따릅니다. 기존 담당자의 국소 수정은 새 발주 없이 그 담당자가 이어갑니다. 아래 모델 추천은 실제 새 발주를 선택한 경우에만 적용하며 이 조언은 새 차단 조건이 아닙니다. 발주 전 routes[].briefGaps와 ownershipOverlaps를 확인하세요. ${INSTRUCTION}`,
         routes: publications.map((publication, index) => ({
-          delegationAdvice: delegationAdviceOf(publication.prepared.answers, publication.route.placement, publication.prepared.returnToMain, current.modelSelection.delegationCriteria),
+          delegationAdvice: delegationAdviceOf(publication.prepared.answers, publication.route.placement, current.modelSelection.delegationCriteria),
           ...publication.route,
           profile: publication.prepared.profile,
+          effortRange: publication.prepared.profile ? effortRangeOf(current.modelSelection.profiles[publication.prepared.profile]!) : null,
           normalAllocation: publication.route.normalAllocation,
           hardAllocation: publication.route.hardAllocation,
           uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
@@ -1137,6 +1127,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     }
     const tasks = (Array.isArray(canonicalInput.tasks) ? canonicalInput.tasks : [canonicalInput]) as Record<string, unknown>[];
     const normalizedItems = new Map<number, Record<string, unknown>>();
+    const ranges: [index: number, range: MakerEffortRange][] = [];
     const atGeneration = generation;
     // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.
     // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
@@ -1214,33 +1205,33 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (prepared.revision !== revision) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
       const owners = relevantOwners(contract, allOwners);
       if (ownerRevision(prepared.owners) !== ownerRevision(owners)) return { block: true, reason: "현재 소유권 충돌 조건이 바뀌었습니다. maker_route로 owner placement만 다시 판단하세요." };
-      // 같은 모델이 여러 profile에 있을 수 있다(HARD_*). 추천 profile, 이어서 추천 등급의 profile로 본다.
-      // 추천 등급에 그 모델이 없거나 등급을 모르면(Jev 불가) 그 모델의 첫 profile로 본다. 추천과 다른 profile은 아래에서 ROUTING_REASON을 요구한다.
-      // 2026-10-08 사용자 결정: Maker는 auto로만 발주한다. 강도는 child auto 분류기가 solutionSpace와 이후 Main 지시로 고른다.
+      // A recommendation disambiguates a shared model; an override normally uses the
+      // assessed work grade. A prepared profile remains the fallback without an assessment.
       const cut = requested.lastIndexOf(":");
       const sameModel = candidates.filter((candidate) => candidate.model === (cut > 0 ? requested.slice(0, cut) : requested));
-      const grade = (prepared.profile ? current.modelSelection.profiles[prepared.profile]?.workClass : undefined)
-        ?? prepared.answers?.workClass?.choice;
+      const answers = prepared.answers;
+      const grade = answers?.workClass?.choice ?? current.modelSelection.profiles[prepared.profile]?.workClass;
       const sameGrade = sameModel.filter((candidate) => current.modelSelection.profiles[candidate.profile]?.workClass === grade);
+      const bounded = answers?.boundedDesign?.choice === "BOUNDED" || answers?.reworkNature?.choice === "BOUNDED_FAILURE";
+      const solProfile = grade === "HARD" ? bounded ? "HARD_BOUNDED_SOL" : "HARD_CODE_SOL" :
+        grade === "NORMAL" ? "NORMAL_SOL" : undefined;
       const selected = sameModel.find((candidate) => candidate.profile === prepared.profile)
+        ?? sameModel.find((candidate) => candidate.profile === solProfile)
         ?? sameGrade[0]
         ?? sameModel[0];
       if (!selected) return { block: true, reason: "maker_route가 확인한 후보를 지정하세요." };
       const canonicalModel = `${selected.model}:auto`;
-      if (requested !== canonicalModel || item.effort !== undefined) {
+      const rewritesModel = requested !== canonicalModel || item.effort !== undefined;
+      if (rewritesModel) {
         const { effort: _effort, ...normalized } = item;
         normalizedItems.set(itemIndex, { ...normalized, model: canonicalModel });
         notices.push(`[MakerRoute] model '${requested}' → '${canonicalModel}'${item.effort !== undefined ? "; effort 제거" : ""}.`);
       }
-      const answers = prepared.answers;
       const profile = prepared.profile;
       const placement = placementOf(prepared, owners);
       const workspace = workspaceOf(canonicalInput, item);
       const conflicts = activeConflicts(contract.ownedPaths, workspace, allOwners);
       if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
-      // 신선한 prepared 정책·owner snapshot을 확인한 뒤, 예약·spawn 이전의 이 경계에서 Main 반환 결정을 강제한다.
-      // 임의의 ROUTING_REASON이나 후보 지정으로는 넘길 수 없고, 사실을 바꿔 다시 준비한 판단만 통과한다.
-      if (prepared.returnToMain) return { block: true, reason: `'${clipped(name, 40)}'은 Main으로 돌아온 결정입니다. ${prepared.returnToMain}` };
       const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
       const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
       // 승인 판정과 원장 본문은 같은 해석을 쓴다: ROUTING_REASON 줄 안의 비어 있지 않은 근거만 인정하고 줄바꿈은 소비하지 않는다.
@@ -1259,6 +1250,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
           : `추천 ${profile ?? "없음"}${recommendedModel ? `(${recommendedModel})` : ""} 대신 ${selected.profile}(${selected.model})을 골랐습니다`;
         return { block: true, reason: `${label}: ${why}. Main이 같은 기준으로 정한 근거를 남기려면 ${where}` };
       }
+      ranges.push([itemIndex, effortRangeOf(current.modelSelection.profiles[selected.profile]!)]);
       const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
       const recommendedCandidate = candidates[recommended];
       const workClass = answers?.workClass?.choice ?? null;
@@ -1328,6 +1320,15 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       canonicalInput = Array.isArray(canonicalInput.tasks)
         ? { ...canonicalInput, tasks: tasks.map((item, index) => normalizedItems.get(index) ?? item) }
         : normalizedItems.get(0)!;
+    }
+    // The symbol is not an argument revision. Attach it only after the entire
+    // call passes, including when a prepared brief or another guard clones it.
+    const submitted = Array.isArray(input.tasks) ? input.tasks : [input];
+    for (const [index, range] of ranges) {
+      const normalized = normalizedItems.get(index);
+      const item = normalized ?? tasks[index]!;
+      Reflect.set(item, MAKER_EFFORT, range);
+      if (!normalized && submitted[index] !== item) Reflect.set(submitted[index], MAKER_EFFORT, range);
     }
     if (notices.length > 0) {
       pi.sendMessage?.({ customType: "maker-route-advisory", content: notices.join("\n"), display: true }, { triggerTurn: false });

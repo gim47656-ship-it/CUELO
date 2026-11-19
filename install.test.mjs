@@ -440,7 +440,7 @@ test("a new profile accepts explicitly selected review and document tool roles",
     const result = createProfileConfig(agentDir, parseArgs(args).roles);
     const config = YAML.parse(fs.readFileSync(result.configPath, "utf8"));
     assert.deepEqual(config.modelRoles, selected);
-    assert.deepEqual(result.missing, ["default", "implSol", "implSonnet", "implOpus", "implDeepSeek", "makerHardUiOpus", "makerHardCodeOpus", "makerHardCodeSonnet"]);
+    assert.deepEqual(result.missing, ["default", "implSol", "implAstra", "implSonnet", "implOpus", "implDeepSeek", "implGemini", "makerHardUiOpus", "makerHardCodeOpus", "makerHardCodeSonnet"]);
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });
   }

@@ -119,6 +119,7 @@ task:
   structured: true
   disabledAgents: [scout, sonic, task, reviewer, security-reviewer]
 eval: { autoBackground: { enabled: true } }
+retry: { fallbackOn: "usage-limit", fallbackRevertPolicy: "never" }
 ```
 
 1~3단계는 사용자 프로필이 아니라 CUELO 폴더 안의 `.runtime-patch-home`을 home으로 써서 실행합니다(CI와 같은 격리 방식). 그래서 빌드는 사용자의 omp 설정을 읽지 않고, Windows 보호 폴더를 건드리다 EPERM으로 실패하지도 않습니다. `--home`은 5·6단계에서 하네스를 복사하고 `config.yml`을 만들 프로필 위치만 정합니다. Bun 설치 캐시만은 평소 위치(`BUN_INSTALL_CACHE_DIR`, 없으면 `~/.bun/install/cache`)를 그대로 씁니다. 캐시가 CUELO 폴더 안에 쌓이면 빌드가 그것까지 훑어서 크게 느려지기 때문입니다. 예전 설치가 폴더 안에 남긴 `.runtime-patch-home/.bun/install/cache`는 `setup`이 지웁니다.
@@ -130,7 +131,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 ```
 
 - `--model`은 core의 `default` 역할만 설정합니다.
-- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며, 여러 번 쓸 수 있습니다. Maker 역할은 `implSol`, `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [도구·검토·판정 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
+- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며 여러 번 쓸 수 있습니다. Maker 역할은 `implAstra`, `implSol`, `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [`implGemini`와 다른 도구 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
 - 역할은 `config.yml`을 새로 만들 때만 기본값과 함께 기록됩니다. 파일이 이미 있으면 절대 고치지 않고, 무시한 역할과 아직 지정되지 않은 역할을 출력합니다.
 - 지정하지 않은 역할은 나중에 CUELO 설정의 Model roles 화면에서 고릅니다. 설치 스크립트는 모델을 추측해서 채우지 않습니다.
 
@@ -139,19 +140,20 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 `omp`만 설치했던 프로필에는 `config.yml`이 이미 있을 수 있습니다. `setup` 출력의 `Model roles not set`은 **사용자에게 남은 작업**이지 자동 설정 성공이 아닙니다. 자신의 `~/.omp/agent/config.yml`을 백업하고, 현재 키를 삭제하지 말고 다음을 대조합니다. 다른 `--home`을 썼다면 그 안의 `.omp/agent/config.yml`을 봅니다.
 
 1. 대화용 `modelRoles.default`를 **설정 > 모델·계정 > 모델 역할**에서 현재 로그인한 제공자의 모델로 정합니다. 기존 설정이 올바르면 유지합니다. 앱에서 프로젝트별 역할로 저장할 수도 있으므로, Main/Maker가 읽을 **global** 설정인지 확인하세요.
-2. Maker 후보는 같은 **설정 > 모델·계정 > 모델 역할** 화면에서 고릅니다. 아래 일곱 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
+2. Maker 후보는 같은 **설정 > 모델·계정 > 모델 역할** 화면에서 고릅니다. 아래 여덟 키는 프로필에 값이 없어도 목록 끝에 `미설정`으로 표시되므로 YAML을 먼저 고칠 필요가 없습니다. 화면을 여는 것만으로는 아무것도 저장되지 않고, 모델을 고른 역할만 선택한 저장 위치(전역 또는 이 프로젝트)의 `modelRoles`에 기록됩니다. 임의 모델을 자동으로 채우지 않습니다. 새 사용자 본인이 로그인·사용 가능 여부, 모델 registry의 지원 추론 단계와 사용 비용을 확인해 `provider/model[:effort]`를 골라야 합니다. 역할을 저장해도 로그인이나 실제 호출 가능 여부를 확인하지는 않습니다. YAML에 직접 적어도 결과는 같습니다.
 
    | `modelRoles` 키 | 담당 후보 | 준비 기준 |
    | --- | --- | --- |
-   | `implSol` | 기존 상태 소유권과 승인된 계약 안의 한정된 설계, 깊은 원인 추적, 범위가 정해진 재작업 | `provider/model[:effort]` 형식으로 지원되는 Sol 모델 selector와 추론 단계를 지정 |
-   | `implSonnet` | 일반 구현과 보통 UI 작업의 기본 추천 | 지원되는 Sonnet 모델과 추론 단계를 지정합니다. |
+   | `implAstra` | 반복 실패 및 큰 재설계 | 지원되는 Astra 모델을 지정합니다. |
+   | `implSol` | 한정된 설계와 실패 재작업, 일반 HARD 구현 | 지원되는 Sol 모델을 지정합니다. |
+   | `implSonnet` | NORMAL 구현과 보통 UI 작업 | 지원되는 Sonnet 모델을 지정합니다. |
    | `implOpus` | 어려운 UI 작업의 기본 추천(NORMAL) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
    | `implDeepSeek` | 명세가 완전히 정해진 반복 작업에서 Main이 명시적으로 선택하는 후보 (자동 추천 안 함) | `provider/model[:effort]` 형식으로 지원되는 DeepSeek 모델을 설정하고, Main이 직접 선택하여 `ROUTING_REASON`을 기록 |
    | `makerHardUiOpus` | 어려운 UI 작업의 기본 추천(HARD) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
    | `makerHardCodeOpus` | Main이 명시적으로 선택하는 HARD 코드 후보 | `provider/model[:effort]` 형식으로 지원되는 Opus 모델을 설정하고 선택 이유를 기록 |
-   | `makerHardCodeSonnet` | 방향이 정해진 구현과 보통 UI 작업의 기본 추천(HARD) | 지원되는 Sonnet 모델과 추론 단계를 지정합니다. |
+   | `makerHardCodeSonnet` | 보통 UI의 기본 추천(HARD) 또는 명시 선택 HARD 코드 | 지원되는 Sonnet 모델을 지정합니다. |
 
-   일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 일곱 자리를 대신 채우지 않습니다. 하네스의 격리 task/번들 에이전트 대체/요청 예산도 기존 프로필에는 자동 주입되지 않습니다. 새 프로필 기본값이 필요하면 위의 YAML 예시의 `task`·`autolearn`·`memory`·`mnemopi` 키를 **기존 값과 비교하여 필요한 키만** 병합하세요. 특히 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
+   일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 자리를 대신 채우지 않습니다. 기존 프로필에는 위 YAML 기본값이 자동 주입되지 않습니다. 필요한 키만 기존 설정과 비교해 병합하세요. 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 기본 경로는 [TypeSafe API 키](https://console.typesafe.ai/)를 발급받아 `typesafe/jev-1.14.0`을 직접 지정하는 것이고, 그 키가 없으면 요청은 OpenRouter의 `typesafe/jev-1.14`로 넘어갑니다. OpenRouter를 쓰려면 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **설정 > 모델·계정 > OpenRouter > API Key**에 입력합니다. 어느 쪽이든 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
 
    ```yaml
@@ -175,6 +177,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | `crossReviewOpenAI` | 코드 교차검토의 OpenAI 계열 필수 검토자 | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
 | `crossReviewAnthropic` | 코드 교차검토의 Anthropic 계열 필수 검토자. 슬롭 검사에서는 작성자 계열과 관계없이 판정합니다. | `anthropic` 제공자의 모델을 고릅니다. |
 | `crossReviewAdvisory` | 코드 교차검토의 보조 검토자. 슬롭 검사에서는 판정에 영향을 주지 않는 추가 의견을 냅니다. | 어느 제공자의 텍스트 모델이든 고를 수 있으며, 비워 두면 보조 호출이 없습니다. 코드 교차검토와 슬롭 검사의 자문 처리 방식은 [하네스 문서](harness.md)를 따릅니다. |
+| `implGemini` | HIKARI 호출 및 명시적 계획 사전 점검 | Maker 후보가 아니며 자동 지정하지 않습니다. |
 | `preflightAnthropic` | `implGemini`와 함께 수행하는 계획 자문. 필수 `crossReviewAnthropic`과 별도로 설정합니다. | 공개 설치에서는 사용자가 지원되는 텍스트 모델을 직접 고릅니다. 자동으로 모델을 채우지 않습니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
@@ -200,7 +203,7 @@ node install.mjs harness-update
 
 설치 기록은 이 기능이 적용된 `setup`과 컨테이너 기동에서 남습니다. 그 전에 설치한 프로필에서 배포본과 같은 파일은 `identical`, 다른 파일은 `untracked`로 나옵니다. `untracked` 파일은 배포본과 직접 대조해 사용자 수정은 보존하면서 반영하세요. 반영한 뒤 CUELO와 `omp`를 다시 시작하고 새 세션에서 역할 목록과 실제 선택 모델을 확인하세요. 설치 성공이나 기존 세션의 표시만으로 전환 완료를 판단하지 마세요.
 
-`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꾸고 실제 사용할 Sonnet 모델 selector와 지원 추론 단계를 지정하세요(0.6.1에서 바뀐 이름이며 옛 키를 별칭으로 읽지 않습니다). `implSol`은 한정된 설계, 깊은 원인 추적과 실패 재작업 자리(`NORMAL_SOL`, `HARD_CODE_SOL`)로 유지합니다. 예전 `implSol61` 키는 더 읽지 않으니 지워도 됩니다. 일반 구현과 보통 UI는 `implSonnet`에 지정합니다. 하루 사용 몫을 이유로 UI 담당을 바꾸지 않으며, 역할 설정은 `harness-update`가 덮어쓰지 않습니다.
+`makerHardCodeSol`을 쓰던 설정은 `makerHardCodeSonnet`으로 바꿉니다(0.6.1부터 옛 키를 별칭으로 읽지 않습니다). `implSol`은 한정된 설계와 재작업 및 일반 HARD 구현(`NORMAL_SOL`, `HARD_BOUNDED_SOL`, `HARD_CODE_SOL`), `implSonnet`은 NORMAL 구현과 보통 UI, `implAstra`는 반복 실패와 큰 재설계에 씁니다. `implSol61`은 더 이상 읽지 않습니다. `harness-update`는 역할 설정을 덮어쓰지 않습니다.
 
 
 ### 다른 프로필에 설치(`--home`)

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { settingsLike } from "./core-test-settings";
-import { decideAutoEffort, parseAutoEffortConfig } from "../agent/extensions/lib/auto-effort-policy";
+import { decideAutoEffort, parseAutoEffortConfig, type MakerEffortRange } from "../agent/extensions/lib/auto-effort-policy";
 
 const core = process.env.OMP_CORE_PATCH_TARGET;
 assert.ok(core, "an isolated OMP_CORE_PATCH_TARGET is required");
@@ -31,15 +31,17 @@ const model = (efforts = ["low", "medium", "high", "xhigh", "max"]) => ({
   provider: "fixture", id: "routing", reasoning: true,
   thinking: { mode: "effort", efforts, defaultLevel: "medium" },
 });
-const fixture = (options: { branch?: unknown[]; ceiling?: string; efforts?: string[]; max?: string; child?: boolean } = {}) => {
+const fixture = (options: { branch?: unknown[]; ceiling?: string; efforts?: string[]; max?: string; child?: boolean; id?: string; makerEffort?: MakerEffortRange } = {}) => {
   const entries: Array<Record<string, unknown>> = [];
+  const settings = settingsLike({ get: (key: string) => key === "providers.autoThinkingMinEffort" ? "low" : key === "providers.autoThinkingMaxEffort" ? options.max : undefined });
+  if (options.makerEffort) Reflect.set(settings, Symbol.for("cuelo.makerEffort"), options.makerEffort);
   const control = new ModelControls({
     agent: { setThinkingLevel() {}, setDisableReasoning() {}, metadataForProvider: () => undefined },
-    settings: settingsLike({ get: (key: string) => key === "providers.autoThinkingMinEffort" ? "low" : key === "providers.autoThinkingMaxEffort" ? options.max : undefined }),
+    settings,
     modelRegistry: {}, providerSessionState: new Map(),
     sessionManager: { getSessionId: () => "routing", getLeafId: () => null, getBranch: () => options.branch ?? [],
       appendModelUsage() {}, appendThinkingLevelChange() {}, appendCustomEntry: (_: string, data: Record<string, unknown>) => entries.push(data) },
-    model: () => model(options.efforts), sessionId: () => "routing", promptGeneration: () => 1,
+    model: () => ({ ...model(options.efforts), id: options.id ?? "routing" }), sessionId: () => "routing", promptGeneration: () => 1,
     magicKeywordEnabled: () => true, clearInheritedProviderPromptCacheKey() {}, emit() {},
   }, { thinkingLevel: "auto", thinkingLevelCeiling: options.ceiling });
   return { control, entries, turn: (text = "substantive request", extra = {}) => control.applyAutoThinkingLevel(text, 1, undefined, { child: options.child, ...extra }) };
@@ -93,6 +95,88 @@ try {
     assert.equal(promoted.control.thinkingLevel, "max", "promoted high steps directly to max");
     Reflect.set(globalThis, policyKey, () => ({ ceiling: "high", escalateTools: 1 }));
     const cap = fixture(); await cap.turn(); tool(cap.control); assert.equal(cap.control.thinkingLevel, "high", "policy high cap blocks xhigh");
+  });
+  await check("routed Maker starts at its floor, reaches successive milestones, and stays in range", async () => {
+    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    probabilities = undefined; choice = "xhigh";
+    const hard = fixture({ id: "gpt-6.2-sol", makerEffort: { start: "medium", max: "xhigh" } });
+    const bounded = fixture({ id: "gpt-6.2-sol", makerEffort: { start: "high", max: "xhigh" } });
+    const astra = fixture({ id: "gpt-6.2-astra", makerEffort: { start: "high", max: "xhigh" } });
+    const starting = requests.length;
+    await Promise.all([hard.turn("initial ultrathink request"), bounded.turn(), astra.turn()]);
+    assert.equal(requests.length, starting, "the first routed request starts at the row floor without classification");
+    assert.deepEqual([hard.control.thinkingLevel, bounded.control.thinkingLevel, astra.control.thinkingLevel], ["medium", "high", "high"]);
+    for (let n = 1; n <= 300; n++) {
+      tool(hard.control);
+      if (n === 99 || n === 100 || n === 199 || n === 200 || n === 300) {
+        assert.equal(hard.control.thinkingLevel, n < 100 ? "medium" : n < 200 ? "high" : "xhigh", `Maker tools=${n}`);
+        console.log(`  Sol HARD tools=${n}: ${hard.control.thinkingLevel}`);
+      }
+      if (n === 100) await hard.turn("parent delivery", { agentOrigin: true });
+    }
+    assert.equal(bounded.control.thinkingLevel, "high", "another Sol Maker has independent counters and range");
+    choice = "low";
+    await hard.turn("a substantive new request from the human");
+    await bounded.turn("a substantive new request from the human");
+    assert.deepEqual([hard.control.thinkingLevel, bounded.control.thinkingLevel], ["medium", "high"]);
+    assert.deepEqual(hard.entries.filter(e => e.path === "escalate").map(e => e.counters), [{ tools: 100, errors: 0 }, { tools: 200, errors: 0 }]);
+    for (let n = 1; n <= 30; n++) {
+      tool(hard.control, true);
+      if (n === 14 || n === 15 || n === 29 || n === 30) {
+        assert.equal(hard.control.thinkingLevel, n < 15 ? "medium" : n < 30 ? "high" : "xhigh", `Maker errors=${n}`);
+      }
+    }
+    for (let n = 0; n < 100; n++) tool(astra.control);
+    assert.equal(astra.control.thinkingLevel, "xhigh", "Astra Maker ignores Main's high cap");
+    const main = fixture({ id: "gpt-6.2-astra" });
+    choice = "medium"; await main.turn();
+    for (let n = 1; n <= 160; n++) {
+      tool(main.control);
+      if (n === 79 || n === 80 || n === 160) {
+        assert.equal(main.control.thinkingLevel, n < 80 ? "medium" : "high", `Main tools=${n}`);
+        console.log(`  Astra Main tools=${n}: ${main.control.thinkingLevel}`);
+      }
+    }
+    await main.turn(); for (let n = 0; n < 4; n++) tool(main.control, true);
+    assert.equal(main.control.thinkingLevel, "high");
+  });
+  await check("cold Maker continuation restores effort and tool milestones; new human prompts still classify", async () => {
+    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    const branch = [
+      { type: "message", message: { role: "user", content: "original routed task" } },
+      { type: "message", message: { role: "assistant", content: "working" } },
+      ...Array.from({ length: 199 }, () => ({ type: "custom", customType: "tool_execution_start" })),
+      { type: "thinking_level_change", thinkingLevel: "high", configured: "auto" },
+    ];
+    const makerEffort = { start: "medium", max: "xhigh" } as const;
+    const resumed = fixture({ branch, makerEffort });
+    const before = requests.length;
+    await resumed.turn("parent delivery", { agentOrigin: true });
+    assert.equal(resumed.control.thinkingLevel, "high");
+    assert.equal(requests.length, before);
+    tool(resumed.control);
+    assert.equal(resumed.control.thinkingLevel, "xhigh");
+    assert.deepEqual(resumed.entries.at(-1)?.counters, { tools: 200, errors: 0 });
+    const human = fixture({ branch, makerEffort });
+    choice = "low";
+    await human.turn("human changed the requirements");
+    assert.equal(requests.length, before + 1);
+    assert.equal(human.control.thinkingLevel, "medium");
+  });
+  await check("only configured xhigh-equivalent models with no xhigh may reach max", async () => {
+    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    const makerEffort = { start: "high", max: "xhigh" } as const;
+    const efforts = ["low", "high", "max"];
+    const deepseek = fixture({ id: "deepseek-ai/deepseek-v4.1-flash-1017", efforts, makerEffort });
+    const unlisted = fixture({ id: "unlisted-model", efforts, makerEffort });
+    await Promise.all([deepseek.turn(), unlisted.turn()]);
+    for (let n = 0; n < 100; n++) { tool(deepseek.control); tool(unlisted.control); }
+    assert.equal(deepseek.control.thinkingLevel, "max");
+    assert.equal(unlisted.control.thinkingLevel, "high");
+    console.log("  Declared sparse ladder after 100 tools: DeepSeek max (xhigh equivalent); unlisted high");
   });
   await check("3 recent visible exchange is bounded and excluded from solutionSpace and steering", async () => {
     Reflect.deleteProperty(globalThis, policyKey); choice = "medium"; probabilities = undefined;

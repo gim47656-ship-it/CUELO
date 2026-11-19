@@ -382,6 +382,8 @@ export interface ModelChangeEntry extends SessionEntryBase {
   type: "model_change";
   provider: string;
   modelId: string;
+  /** Optional in the SDK's `model_change` entry; the reader in lib/rpc-manager.ts treats a missing role as unset. */
+  role?: string;
 }
 
 export interface CompactionEntry extends SessionEntryBase {

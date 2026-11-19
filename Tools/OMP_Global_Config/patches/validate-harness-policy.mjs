@@ -1280,8 +1280,8 @@ if (policy !== null) {
     "Maker의 기본 추론은 auto여야 한다.",
   );
   check(
-    valueAt(policy, "roles.maker.effortLevels") === "child-auto-within-high-to-xhigh-declared-levels-only-low-medium-and-max-are-never-auto-picked",
-    "Maker 추론은 모델이 선언한 단계 중 high~xhigh 안의 child auto여야 한다(low·medium·max는 auto가 고르지 않는다).",
+    valueAt(policy, "roles.maker.effortLevels") === "per-profile-child-auto-start-and-ceiling-within-model-supported-levels",
+    "Maker 추론은 프로필의 시작/최대 강도와 모델이 선언한 단계를 따라야 한다.",
   );
 
   const routing = isPlainObject(policy.routing) ? policy.routing : {};
@@ -1664,7 +1664,7 @@ if (policy !== null) {
       `${path}에 prepared 참조 소비 식별자가 없다: ${missing.join(", ")}(정본이 가리키는 소비 경로가 사라졌다).`,
     );
   }
-  // Maker 후보 표. 후보마다 등급만 정한다. 강도는 child auto가 그 모델의 단계 안에서 고르므로 profile에 강도 구간을 두지 않는다.
+  // Each Maker profile must resolve to a configured slot and carry its Auto range.
   {
     const profiles = valueAt(policy, "routing.modelSelection.profiles");
     const grades = Object.keys(valueAt(policy, "routing.modelSelection.criteria") ?? {});
@@ -1672,10 +1672,12 @@ if (policy !== null) {
     for (const [profile, entry] of Object.entries(isPlainObject(profiles) ? profiles : {})) {
       const where = `routing.modelSelection.profiles.${profile}`;
       check(
-        isPlainObject(entry) && Object.keys(entry).sort().join(",") === "modelConfigPath,workClass",
-        `${where}는 modelConfigPath·workClass만 가져야 한다(옛 allowedEfforts·minimumEffort는 hook이 읽지 않는다).`,
+        isPlainObject(entry) && Object.keys(entry).sort().join(",") === "maxEffort,modelConfigPath,startEffort,workClass",
+        `${where}는 modelConfigPath, workClass, startEffort와 maxEffort를 가져야 한다.`,
       );
       check(grades.includes(entry?.workClass), `${where}.workClass는 modelSelection.criteria의 등급(${grades.join(", ")}) 중 하나여야 한다.`);
+      check(["medium", "high"].includes(entry?.startEffort) && entry?.maxEffort === "xhigh",
+        `${where}는 medium 또는 high에서 시작하고 xhigh를 최대 강도로 써야 한다.`);
     }
   }
 

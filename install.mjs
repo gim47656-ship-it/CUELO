@@ -32,9 +32,11 @@ const require = createRequire(path.join(ROOT, "package.json"));
  */
 export const HARNESS_ROLES = [
   "implSol",
+  "implAstra",
   "implSonnet",
   "implOpus",
   "implDeepSeek",
+  "implGemini",
   "makerHardUiOpus",
   "makerHardCodeOpus",
   "makerHardCodeSonnet",

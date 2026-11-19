@@ -42,7 +42,7 @@ CUELO가 자동 생성 표시를 남긴 `wt/s-*` 및 `wt/issue-*` worktree는 �
 
 worktree에서 열린 세션은 메인 checkout과 동일한 프로젝트 기억을 사용합니다. 패치된 내장 코어가 worktree의 `.git` 파일을 읽어 메인 checkout의 동일한 폴더에 있는 기억 은행을 선택하므로, worktree마다 별도의 은행이 생기지 않아 한쪽에서 남긴 교훈을 다른 쪽에서 회상할 수 있고 다른 PC로 내보낼 때도 worktree에서 작성된 기억이 함께 포함됩니다.
 
-작업 중 커밋은 해당 worktree에서 진행하고, `main`에 합치는 작업은 하네스의 `git_integrate` 도구를 사용합니다. 최신 `main` 위에 rebase하고 검사를 통과하면 fast-forward로 게시하며, 충돌이 나면 작업을 멈추고 세션이 직접 충돌을 해결해 이어갑니다. 게시에 성공하면 세션 branch의 원격 사본과 로컬 branch를 지워 GitHub Desktop 같은 branch 목록에 끝난 세션 branch가 남지 않게 합니다. worktree 폴더와 작업 파일은 그대로 두고 HEAD만 게시한 커밋에 떼어 두며, 같은 세션이 다시 작업하면 `git_finalize`와 `git_integrate`가 같은 이름의 branch를 다시 만들어 이어 갑니다. main checkout이 같은 대상 branch에 있으면 뒤처진 만큼 fast-forward로 따라오게 합니다. main checkout의 커밋하지 않은 수정이 게시한 커밋과 충돌하거나 main checkout이 다른 branch에 있으면 건드리지 않고 그 이유를 결과에 남깁니다. 자세한 동작은 [OMP 하네스](./harness.md) 문서의 Git 마감 도구 절을 참고하세요.
+작업 중 커밋은 해당 worktree에서 진행하고, `main`에 합치는 작업은 하네스의 `git_integrate` 도구를 사용합니다. 최신 `main` 위에 rebase하고 검사를 통과하면 fast-forward로 게시하며, 충돌이 나면 작업을 멈추고 세션이 직접 충돌을 해결해 이어갑니다. 게시에 성공하면 세션 branch의 원격 사본과 로컬 branch를 지워 GitHub Desktop 같은 branch 목록에 끝난 세션 branch가 남지 않게 합니다. worktree 폴더와 작업 파일은 그대로 두고 HEAD만 게시한 커밋에 떼어 두며, 같은 세션이 다시 작업하면 `git_finalize`와 `git_integrate`가 같은 이름의 branch를 다시 만들어 이어 갑니다. main checkout이 같은 대상 branch에 있고 뒤처지기만 했다면 fast-forward로 따라오게 하며, 게시한 커밋과 겹치는 커밋하지 않은 수정은 충돌이 없을 때 3-way 병합으로 보존하고 결과에 `merged uncommitted edits in ...`로 남깁니다. main checkout이 다른 branch나 분리된 HEAD에 있거나, 이력이 갈라졌거나, 커밋하지 않은 수정이 게시한 커밋과 충돌하거나 로컬의 새 파일·삭제와 겹치면 main checkout을 건드리지 않고 그 이유를 결과의 `Main checkout:` 줄에 남깁니다. 자세한 동작은 [OMP 하네스](./harness.md) 문서의 Git 마감 도구 절을 참고하세요.
 
 ## 문제 해결
 

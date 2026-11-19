@@ -493,31 +493,42 @@ export function invalidateSessionPathCache(sessionId: string): void {
   }
 }
 
+/** Current SDK files start with a padded `title` slot; the `session` header is the first other line. */
 export function readSessionHeader(filePath: string): SessionHeader | null {
   const fd = openSync(filePath, "r");
   try {
-    const chunks: Buffer[] = [];
     const maxHeaderBytes = 64 * 1024;
-    let position = 0;
-    let foundNewline = false;
+    const buffer = Buffer.allocUnsafe(maxHeaderBytes);
+    let length = 0;
+    let lineStart = 0;
 
-    while (position < maxHeaderBytes && !foundNewline) {
-      const buffer = Buffer.allocUnsafe(Math.min(4096, maxHeaderBytes - position));
-      const bytesRead = readSync(fd, buffer, 0, buffer.length, position);
+    while (length < maxHeaderBytes) {
+      const bytesRead = readSync(fd, buffer, length, maxHeaderBytes - length, length);
       if (bytesRead === 0) break;
-      const data = buffer.subarray(0, bytesRead);
-      const newlineIndex = data.indexOf(0x0a);
-      chunks.push(newlineIndex === -1 ? data : data.subarray(0, newlineIndex));
-      position += bytesRead;
-      foundNewline = newlineIndex !== -1;
+      length += bytesRead;
+      let newlineIndex = buffer.indexOf(0x0a, lineStart);
+      while (newlineIndex !== -1 && newlineIndex < length) {
+        const line = buffer.toString("utf8", lineStart, newlineIndex).trimEnd();
+        lineStart = newlineIndex + 1;
+        if (!line) return null;
+        let entry: unknown;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          return null;
+        }
+        if (!entry || typeof entry !== "object" || !("type" in entry)) return null;
+        if (entry.type !== "title") return entry.type === "session" ? (entry as SessionHeader) : null;
+        newlineIndex = buffer.indexOf(0x0a, lineStart);
+      }
     }
 
-    if (!foundNewline && position >= maxHeaderBytes) return null;
-    const firstLine = Buffer.concat(chunks).toString("utf8").trimEnd();
-    if (!firstLine) return null;
+    if (length >= maxHeaderBytes) return null;
+    const lastLine = buffer.toString("utf8", lineStart, length).trimEnd();
+    if (!lastLine) return null;
     try {
-      const header = JSON.parse(firstLine) as SessionHeader;
-      return header.type === "session" ? header : null;
+      const header: unknown = JSON.parse(lastLine);
+      return header && typeof header === "object" && "type" in header && header.type === "session" ? (header as SessionHeader) : null;
     } catch {
       return null;
     }

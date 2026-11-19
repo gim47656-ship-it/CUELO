@@ -549,8 +549,8 @@ describe("jev-runtime pre-dispatch", () => {
       },
     });
     const prepared = await harness.prepare(GUARDED_TASK, "Ledger");
-    expect(prepared.details.routes[0]!.profile).toBe("NORMAL_DEEPSEEK");
-    const input = taskCall("call-ledger", GUARDED_TASK, { name: "Ledger", model: "test/deepseek:auto" });
+    expect(prepared.details.routes[0]!.profile).toBe("NORMAL_SONNET");
+    const input = taskCall("call-ledger", GUARDED_TASK, { name: "Ledger", model: "test/local:auto" });
     expect(await harness.emit("tool_call", input)).toBeUndefined();
     await harness.emit("tool_result", {
       ...input,
@@ -599,8 +599,8 @@ describe("jev-runtime pre-dispatch", () => {
     expect(records).toMatchObject([
       {
         type: "dispatch", name: "Ledger", workClass: "NORMAL", focus: null,
-        recommendedProfile: "NORMAL_DEEPSEEK", recommendedModel: "test/deepseek", recommendedEffort: "auto",
-        chosenModel: "test/deepseek", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
+        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "auto",
+        chosenModel: "test/local", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
       { type: "outcome", status: "completed", durationSec: 61, ...identity },

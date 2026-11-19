@@ -11,12 +11,12 @@ globs: ["Tools/OMP_Global_Config/**"]
 - `agent/agents/maker.md`는 `agent/sop/` 조각에서 `patches/build-agents.mjs`가 생성한다.
 - 위임 정의는 `maker` 하나이며 `_writer.md`와 `_common.md`를 합친다.
 - `thinking-level`은 SOP에 쓰지 않는다. 생성된 정의의 기본 추론은 `auto`, 기본 모델은 `model:"@implSonnet"`이다. 이 모델 기본값은 `maker_route`의 발주별 추천과 별개다.
-  발주 때 Main이 고른 `tasks[].model`의 `:auto` selector가 child auto를 켜고, 실제 단계는 child가 모델이 선언한 단계 중 high~xhigh 안에서만 고른다.
+  발주 때 Main이 고른 `tasks[].model`의 `:auto` selector가 child auto를 켜고, 선택된 프로필이 시작 강도와 상한을 정한다.
   모델·fallback은 `modelRoles`, 모델 분류·추론은 `routing.modelSelection`·`routing.effortSelection`이 정한다.
 - frontmatter 도구는 `read, bash, edit, write, grep, glob, skim, draft, lsp, eval,
   generate_image, ast_grep, ast_edit, debug, todo, web_search, windows_build, windows_control, ego_browser, checkpoint, cross_review, slop_check`다
-  (`cross_review`·`slop_check`는 review만 되고 resolve는 Main 전용이다). core 18.3.0에는 `hub`가
-  없고(목록에 남겨도 조용히 버려진다) `wait`는 top-level 전용이라 Maker(depth 1)에 넣어도 생기지 않으므로 둘 다 적지 않는다.
+  (`cross_review`와 `slop_check`는 review만 되고 resolve는 Main 전용이다). 고정한 core 18.22.2에도 `hub`는 없다.
+  `wait`는 top-level 전용이라 Maker(depth 1)의 frontmatter에 둘 다 넣지 않는다.
   restricted session에서 `checkpoint`를 명시하면 core `createTools`가 `rewind`를 안전 쌍으로
   자동 추가하므로 frontmatter에는 `rewind`를 중복하지 않지만 실제 runtime에는 둘 다 노출된다.
 - `ast_grep`·`ast_edit`은 구조 검색·편집, `debug`는 runtime state·breakpoint, `web_search`는 최신

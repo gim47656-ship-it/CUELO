@@ -22,7 +22,7 @@
       "definition": "agent/agents/maker.md",
       "dispatchBy": "agent-maker-with-per-item-model-selector-with-the-auto-suffix-without-coarse-task-effort",
       "effortConfigPath": "task.enableEffort",
-      "effortLevels": "child-auto-within-high-to-xhigh-declared-levels-only-low-medium-and-max-are-never-auto-picked"
+      "effortLevels": "per-profile-child-auto-start-and-ceiling-within-model-supported-levels"
     },
     "childExceptions": {
       "phone-operator": {
@@ -685,11 +685,11 @@
       "concurrencyIsSeparate": true
     },
     "effortSelection": {
-      "owner": "user-decision-2026-10-08-the-dispatched-maker-child-auto-classifier-chooses-the-level-main-chooses-only-the-candidate-model-and-never-a-concrete-maker-effort",
+      "owner": "user-decision-2026-11-19-main-selects-model-the-maker-profile-sets-start-and-max-and-child-auto-adjusts-within-them",
       "mechanism": "tasks-item-model-is-normalized-to-the-matching-candidate-selector-with-auto-suffix-and-coarse-effort-is-dropped-with-a-non-blocking-notice-only-non-candidate-models-are-rejected",
-      "range": "user-decision-2026-11-08-maker-auto-high-to-xhigh-only-declared-levels-ordinary-high-reasoning-heavy-xhigh-no-low-medium-max-core-child-overlay-unsupported-range-keeps-own-result-main-medium-to-xhigh-from-providers-config",
-      "modelBase": "user-decisions-2026-11-10-and-2026-11-11-model-tier-overrides-settings-floor-in-main-and-child-config.yml-autoEffort-lists-are-canonical-floorMedium-medium-floorHigh-high-capHigh-never-auto-above-high-ultrathink-still-reaches-model-top-xhighAsMax-maps-xhigh-to-max-only-when-max-declared-and-xhigh-absent-declared-levels-only-unlisted-models-use-range-auxiliary-explicit-high-is-separate-notices-and-non-solutionSpace-input-at-most-config-autoEffort-holdMaxChars-default-20-skip-classifier-and-hold-level-user-decision-2026-11-17-extends-capHigh-list",
-      "decidedAt": "user-approved-2026-11-17-first-child-solutionSpace-classified-later-structural-agent-messages-hold-level-human-prompts-still-classified-upper-tail-raiseAt-selection-argmax-without-probabilities-main-only-prior-exchange-400chars-per-part-no-context-for-solutionSpace-or-raiseOnly-one-supported-load-raise-per-turn-within-ceilings-no-ultrathink-main-reset-on-human-child-on-first-turn-holdPrefixes-only-observed-coordination-tags",
+      "range": "routed-maker-start-is-its-minimum-and-max-is-its-ceiling-using-declared-effort-levels-main-keeps-existing-floors-and-ceilings",
+      "modelBase": "main-config.yml-autoEffort-lists-are-canonical-floorMedium-medium-floorHigh-high-capHigh-never-auto-above-high-ultrathink-still-reaches-model-top-xhighAsMax-maps-xhigh-to-max-only-when-max-declared-and-xhigh-absent",
+      "decidedAt": "maker-first-request-starts-at-profile-floor-later-agent-messages-hold-human-prompts-still-classified-maker-load-raises-on-successive-100-tool-or-15-error-milestones-main-keeps-one-raise-per-human-turn-at-80-tools-or-4-errors",
       "gradingInput": "solutionSpace-states-given-approach-versus-open-multiple-designs-or-unknown-causes-settled-local-details-are-given-constraints-never-model-grade-effort-sibling-coordination-or-work-volume-as-difficulty-lever",
       "riskIsOrthogonal": "main-intervention-follows-code-nature-integration-risk-and-evidence-never-model-grade-or-effort",
       "failure": "classifier-failure-or-timeout-keeps-the-child-s-last-classified-level-or-the-provisional-level-before-the-first-resolution-and-the-harness-never-substitutes-a-concrete-effort",
@@ -763,17 +763,18 @@
       },
       "defaultMakerModelConfigPath": "modelRoles.implSonnet",
       "profiles": {
-        "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL" },
-        "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL" },
-        "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD" },
-        "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD" },
-        "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
-        "HARD_UI_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD" },
-        "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL" },
-        "HARD_CODE_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "HARD" },
-        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL" },
-        "HARD_CODE_TERRA": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" },
-        "HARD_CODE_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD" }
+        "HARD_ASTRA": { "modelConfigPath": "modelRoles.implAstra", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "NORMAL_SONNET": { "modelConfigPath": "modelRoles.implSonnet", "workClass": "NORMAL", "startEffort": "high", "maxEffort": "xhigh" },
+        "NORMAL_OPUS": { "modelConfigPath": "modelRoles.implOpus", "workClass": "NORMAL", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_UI_OPUS": { "modelConfigPath": "modelRoles.makerHardUiOpus", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_CODE_OPUS": { "modelConfigPath": "modelRoles.makerHardCodeOpus", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_CODE_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_UI_SONNET": { "modelConfigPath": "modelRoles.makerHardCodeSonnet", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "NORMAL_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "NORMAL", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_CODE_DEEPSEEK": { "modelConfigPath": "modelRoles.implDeepSeek", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" },
+        "NORMAL_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "NORMAL", "startEffort": "high", "maxEffort": "xhigh" },
+        "HARD_CODE_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD", "startEffort": "medium", "maxEffort": "xhigh" },
+        "HARD_BOUNDED_SOL": { "modelConfigPath": "modelRoles.implSol", "workClass": "HARD", "startEffort": "high", "maxEffort": "xhigh" }
       },
       "criteria": {
         "NORMAL": "goal-preserved-behavior-and-checks-are-clear-and-an-existing-specification-or-reusable-pattern-settles-the-approach-or-bounded-causal-diagnosis-or-implementation-choice-remains-within-existing-contracts-and-local-evidence-can-resolve-it-bounded-discovery-caller-lookup-implementation-validation-and-local-repair-are-allowed-without-main-pre-solving-every-line-a-slice-that-local-discovery-fix-and-verification-close-with-existing-solutions-is-NORMAL-and-unknown-cause-or-several-candidate-bugs-alone-is-normal",

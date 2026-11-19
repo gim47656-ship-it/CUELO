@@ -1,5 +1,7 @@
 export type AutoEffortFloor = "low" | "medium" | "high" | "xhigh";
 
+export type MakerEffortRange = { start: "medium" | "high"; max: "xhigh" };
+
 export interface AutoEffortInput {
   provider: string;
   modelId: string;
@@ -10,6 +12,7 @@ export interface AutoEffortInput {
   raiseOnly: boolean;
   current?: string;
   child?: boolean;
+  makerEffort?: MakerEffortRange;
   agentOrigin?: boolean;
 }
 
@@ -87,8 +90,9 @@ export function decideAutoEffort(input: AutoEffortInput, config: AutoEffortConfi
     const escaped = pattern.split("*").map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join(".*");
     return new RegExp(`^${escaped}$`, "isu").test(selector);
   };
-  const floor = config.tiers.find(tier => tier.models.some(matches))?.floor;
-  const ceiling = config.capHigh?.some(matches) ? "high" : undefined;
+  const range = input.child ? input.makerEffort : undefined;
+  const floor = range?.start ?? config.tiers.find(tier => tier.models.some(matches))?.floor;
+  const ceiling = range?.max ?? (config.capHigh?.some(matches) ? "high" : undefined);
   const xhighAsMax = config.xhighAsMax?.some(matches) === true;
   const promoteMax = xhighAsMax && input.supportedEfforts.includes("max") && !input.supportedEfforts.includes("xhigh");
   const fromSolution = input.added === undefined && Boolean(input.solutionSpace?.trim());
@@ -97,7 +101,7 @@ export function decideAutoEffort(input: AutoEffortInput, config: AutoEffortConfi
   const floorIndex = floor === undefined ? 0 : Math.min(FLOORS.indexOf(floor), ceilingIndex);
   const onlyOneLevel = (floor !== undefined || ceiling !== undefined) && input.supportedEfforts.filter(level =>
     (FLOORS.includes(level) && FLOORS.indexOf(level) >= floorIndex && FLOORS.indexOf(level) <= ceilingIndex) ||
-    (promoteMax && level === "max" && ceiling === undefined)).length === 1;
+    (promoteMax && level === "max" && (ceiling === undefined || ceiling === "xhigh"))).length === 1;
   const holdSource = input.agentOrigin ? "agent" : !fromSolution && config.holdPrefixes?.some(prefix => evidence.startsWith(prefix)) ? "prefix" :
     !fromSolution && config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ? "notice" : undefined;
   const hold = holdSource !== undefined || onlyOneLevel || config.noticePrefixes.some(prefix => evidence.startsWith(prefix)) ||
@@ -108,7 +112,7 @@ export function decideAutoEffort(input: AutoEffortInput, config: AutoEffortConfi
     ...(xhighAsMax ? { xhighAsMax: true } : {}),
     ...(config.raiseAt === undefined ? {} : { raiseAt: config.raiseAt }),
     ...(input.child
-      ? { escalateTools: config.escalateChildTools ?? 0, escalateErrors: config.escalateChildErrors ?? 15 }
-      : { escalateTools: config.escalateMainTools ?? 40, escalateErrors: config.escalateMainErrors ?? 4 }),
+      ? { escalateTools: config.escalateChildTools ?? 100, escalateErrors: config.escalateChildErrors ?? 15 }
+      : { escalateTools: config.escalateMainTools ?? 80, escalateErrors: config.escalateMainErrors ?? 4 }),
   };
 }

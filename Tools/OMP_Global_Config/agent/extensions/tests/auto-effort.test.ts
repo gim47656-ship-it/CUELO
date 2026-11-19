@@ -10,6 +10,7 @@ const input = (overrides: Partial<AutoEffortInput> = {}): AutoEffortInput => ({
   request: "A substantive request with enough evidence for classification", raiseOnly: false, ...overrides,
 });
 const defaults = parseAutoEffortConfig(undefined);
+const mainLoad = { escalateTools: 80, escalateErrors: 4 };
 const tiers: AutoEffortConfig = { ...defaults, tiers: [
   { floor: "medium", models: ["synthetic/base", "other/*"] },
   { floor: "high", models: ["*/*", "synthetic/base"] },
@@ -32,14 +33,14 @@ describe("model base floors", () => {
     ["synthetic", "base", "medium"], ["SYNTHETIC", "BASE", "medium"],
     ["other", "anything/else", "medium"], ["synthetic", "base-extra", "high"],
   ])("%s/%s selects %s in tier order", (provider, modelId, floor) => {
-    expect(decideAutoEffort(input({ provider, modelId }), tiers)).toEqual({ ...{ floor }, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ provider, modelId }), tiers)).toEqual({ floor, ...mainLoad });
   });
   test("whole selector and literal regex characters, with no-match fallback", () => {
     const config = { ...defaults, tiers: [{ floor: "high" as const, models: ["synthetic/model.+", "prefix/*end"] }] };
-    expect(decideAutoEffort(input({ modelId: "model.+" }), config)).toEqual({ ...{ floor: "high" }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ modelId: "modelZZ" }), config)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ provider: "prefix", modelId: "end" }), config)).toEqual({ ...{ floor: "high" }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ provider: "prefix", modelId: "ending" }), config)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ modelId: "model.+" }), config)).toEqual({ floor: "high", ...mainLoad });
+    expect(decideAutoEffort(input({ modelId: "modelZZ" }), config)).toEqual(mainLoad);
+    expect(decideAutoEffort(input({ provider: "prefix", modelId: "end" }), config)).toEqual({ floor: "high", ...mainLoad });
+    expect(decideAutoEffort(input({ provider: "prefix", modelId: "ending" }), config)).toEqual(mainLoad);
   });
 });
 
@@ -55,22 +56,22 @@ describe("evidence holds", () => {
     expect(decideAutoEffort(input({ request }), defaults).hold === true).toBe(hold);
   });
   test("new text outranks accumulated request and solution space", () => {
-    expect(decideAutoEffort(input({ added: "yes", solutionSpace: "Open-ended substantive assignment" }), defaults)).toEqual({ ...{ hold: true }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ added: "", solutionSpace: "Open-ended substantive assignment" }), defaults)).toEqual({ ...{ hold: true }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ request: "yes", added: "A substantive newly added requirement with evidence" }), defaults)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ added: "yes", solutionSpace: "Open-ended substantive assignment" }), defaults)).toEqual({ hold: true, ...mainLoad });
+    expect(decideAutoEffort(input({ added: "", solutionSpace: "Open-ended substantive assignment" }), defaults)).toEqual({ hold: true, ...mainLoad });
+    expect(decideAutoEffort(input({ request: "yes", added: "A substantive newly added requirement with evidence" }), defaults)).toEqual(mainLoad);
   });
   test("short solution space classifies, but notice solution space holds", () => {
-    expect(decideAutoEffort(input({ request: "yes", solutionSpace: "bounded" }), defaults)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ solutionSpace: "  " }), defaults)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ solutionSpace: "[하네스 통지] long body" }), defaults)).toEqual({ ...{ hold: true }, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ request: "yes", solutionSpace: "bounded" }), defaults)).toEqual(mainLoad);
+    expect(decideAutoEffort(input({ solutionSpace: "  " }), defaults)).toEqual(mainLoad);
+    expect(decideAutoEffort(input({ solutionSpace: "[하네스 통지] long body" }), defaults)).toEqual({ hold: true, ...mainLoad });
   });
   test.each([
     ["low", "high", "max"],
     ["minimal", "low", "medium", "high"],
   ])("one eligible effort in %j skips classification", (...supportedEfforts) => {
     const value = input({ modelId: "sparse", supportedEfforts, solutionSpace: "bounded" });
-    expect(decideAutoEffort(value, tiers)).toEqual({ ...{ floor: "high", hold: true }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(value, defaults)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(value, tiers)).toEqual({ floor: "high", hold: true, ...mainLoad });
+    expect(decideAutoEffort(value, defaults)).toEqual(mainLoad);
   });
 });
 
@@ -83,8 +84,8 @@ describe("flat private config", () => {
     expect(config).toEqual({ holdMaxChars: 0, noticePrefixes: defaults.noticePrefixes, tiers: [
       { floor: "medium", models: ["synthetic/a", "*/base"] }, { floor: "high", models: ["synthetic/*", "other/b"] },
     ] });
-    expect(decideAutoEffort(input({ modelId: "a" }), config)).toEqual({ ...{ floor: "medium" }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ modelId: "other", request: "x" }), config)).toEqual({ ...{ floor: "high" }, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ modelId: "a" }), config)).toEqual({ floor: "medium", ...mainLoad });
+    expect(decideAutoEffort(input({ modelId: "other", request: "x" }), config)).toEqual({ floor: "high", ...mainLoad });
   });
   test.each(["-1", "1.5", "NaN", "9007199254740992", "[]", "true", "\"oops\""])("bad length %s is skipped independently", value => {
     expect(parseAutoEffortConfig(`autoEffort:\n  holdMaxChars: ${value}\n  floorHigh: "synthetic/*"\n`)).toEqual({
@@ -99,19 +100,19 @@ describe("flat private config", () => {
   test("digit-leading selector patterns are strings, not malformed numbers", () => {
     const config = parseAutoEffortConfig('autoEffort:\n  floorHigh: "302synthetic/*, -2synthetic/*, synthetic/*"\n');
     expect(config.tiers).toEqual([{ floor: "high", models: ["302synthetic/*", "-2synthetic/*", "synthetic/*"] }]);
-    expect(decideAutoEffort(input({ provider: "302synthetic" }), config)).toEqual({ ...{ floor: "high" }, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ provider: "302synthetic" }), config)).toEqual({ floor: "high", ...mainLoad });
   });
 });
 
 test("promotion patterns match independently and change sparse rule C", () => {
   const config = parseAutoEffortConfig('autoEffort:\n  floorHigh: "synthetic/*"\n  xhighAsMax: "*promoted"\n');
   const sparse = input({ modelId: "promoted", supportedEfforts: ["low", "high", "max"] });
-  expect(decideAutoEffort(sparse, config)).toEqual({ ...{ floor: "high", xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-  expect(decideAutoEffort({ ...sparse, modelId: "ordinary" }, config)).toEqual({ ...{ floor: "high", hold: true }, escalateTools: 40, escalateErrors: 4 });
-  expect(decideAutoEffort({ ...sparse, provider: "OTHER", modelId: "PROMOTED" }, config)).toEqual({ ...{ xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-  expect(decideAutoEffort({ ...sparse, request: "ok" }, config)).toEqual({ ...{ floor: "high", hold: true, xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-  expect(decideAutoEffort({ ...sparse, supportedEfforts: ["low", "high", "xhigh", "max"] }, config)).toEqual({ ...{ floor: "high", xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-  expect(decideAutoEffort({ ...sparse, supportedEfforts: ["low", "high"] }, config)).toEqual({ ...{ floor: "high", hold: true, xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
+  expect(decideAutoEffort(sparse, config)).toEqual({ floor: "high", xhighAsMax: true, ...mainLoad });
+  expect(decideAutoEffort({ ...sparse, modelId: "ordinary" }, config)).toEqual({ floor: "high", hold: true, ...mainLoad });
+  expect(decideAutoEffort({ ...sparse, provider: "OTHER", modelId: "PROMOTED" }, config)).toEqual({ xhighAsMax: true, ...mainLoad });
+  expect(decideAutoEffort({ ...sparse, request: "ok" }, config)).toEqual({ floor: "high", hold: true, xhighAsMax: true, ...mainLoad });
+  expect(decideAutoEffort({ ...sparse, supportedEfforts: ["low", "high", "xhigh", "max"] }, config)).toEqual({ floor: "high", xhighAsMax: true, ...mainLoad });
+  expect(decideAutoEffort({ ...sparse, supportedEfforts: ["low", "high"] }, config)).toEqual({ floor: "high", hold: true, xhighAsMax: true, ...mainLoad });
 });
 
 test("promotion list survives the core YAML rewrite and ignores malformed fields", () => {
@@ -132,15 +133,15 @@ describe("per-model Auto ceiling", () => {
   });
   test("ceiling matches independently while an unmatched model keeps its floor and range", () => {
     const config = parseAutoEffortConfig('autoEffort:\n  floorMedium: "*claude-*"\n  capHigh: "*claude-opus-*"\n');
-    expect(decideAutoEffort(input({ modelId: "CLAUDE-OPUS-FIXTURE" }), config)).toEqual({ ...{ floor: "medium", ceiling: "high" }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ modelId: "claude-other" }), config)).toEqual({ ...{ floor: "medium" }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input(), config)).toEqual({ ...{}, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input({ modelId: "CLAUDE-OPUS-FIXTURE" }), config)).toEqual({ floor: "medium", ceiling: "high", ...mainLoad });
+    expect(decideAutoEffort(input({ modelId: "claude-other" }), config)).toEqual({ floor: "medium", ...mainLoad });
+    expect(decideAutoEffort(input(), config)).toEqual(mainLoad);
   });
   test("single eligible level counts only the inclusive floor to ceiling range", () => {
     const config = parseAutoEffortConfig('autoEffort:\n  floorHigh: "synthetic/*"\n  capHigh: "synthetic/*"\n  xhighAsMax: "synthetic/*"\n');
-    expect(decideAutoEffort(input(), config)).toEqual({ ...{ floor: "high", ceiling: "high", hold: true, xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input({ supportedEfforts: ["low", "high", "max"] }), config)).toEqual({ ...{ floor: "high", ceiling: "high", hold: true, xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
-    expect(decideAutoEffort(input(), { ...config, tiers: [{ floor: "xhigh", models: ["*"] }] })).toEqual({ ...{ floor: "xhigh", ceiling: "high", hold: true, xhighAsMax: true }, escalateTools: 40, escalateErrors: 4 });
+    expect(decideAutoEffort(input(), config)).toEqual({ floor: "high", ceiling: "high", hold: true, xhighAsMax: true, ...mainLoad });
+    expect(decideAutoEffort(input({ supportedEfforts: ["low", "high", "max"] }), config)).toEqual({ floor: "high", ceiling: "high", hold: true, xhighAsMax: true, ...mainLoad });
+    expect(decideAutoEffort(input(), { ...config, tiers: [{ floor: "xhigh", models: ["*"] }] })).toEqual({ floor: "xhigh", ceiling: "high", hold: true, xhighAsMax: true, ...mainLoad });
   });
 });
 
@@ -154,16 +155,16 @@ test("registered policy matches pure policy across reload, mtime change and miss
   register({} as never);
   register({} as never);
   const policy = Reflect.get(globalThis, key) as (value: AutoEffortInput) => unknown;
-  expect(policy(input())).toEqual({ ...{ floor: "high", ceiling: "high", hold: true }, escalateTools: 40, escalateErrors: 4 });
+  expect(policy(input())).toEqual({ floor: "high", ceiling: "high", hold: true, ...mainLoad });
   for (const value of [input(), input({ request: "hi" }), input({ added: "new evidence longer than two" })]) {
-    expect(policy(value)).toEqual({ ...decideAutoEffort(value, parseAutoEffortConfig(raw)), escalateTools: 40, escalateErrors: 4 });
+    expect(policy(value)).toEqual(decideAutoEffort(value, parseAutoEffortConfig(raw)));
   }
   writeFileSync(path, raw.replace("floorHigh", "floorMedium"));
   const future = new Date(Date.now() + 2000);
   utimesSync(path, future, future);
-  expect(policy(input())).toEqual({ ...{ floor: "medium", ceiling: "high" }, escalateTools: 40, escalateErrors: 4 });
+  expect(policy(input())).toEqual({ floor: "medium", ceiling: "high", ...mainLoad });
   process.env.PI_CODING_AGENT_DIR = join(dir, "missing");
-  expect(policy(input({ request: "hi" }))).toEqual({ ...{ hold: true }, escalateTools: 40, escalateErrors: 4 });
+  expect(policy(input({ request: "hi" }))).toEqual({ hold: true, ...mainLoad });
 });
 
 test("R1-ANT-6 registered wrapper forwards role and origin inputs plus all routing decisions", () => {
@@ -189,14 +190,21 @@ describe("probability and load routing settings", () => {
     for (const request of ["[CUELO 루틴: test] scheduled ordinary prompt", "cloud change report session", "a human typed substantive request"]) {
       expect(decideAutoEffort(input({ request }), config).hold).toBeUndefined();
     }
-    expect(decideAutoEffort(input({ child: true }), defaults)).toEqual({ escalateTools: 0, escalateErrors: 15 });
+    expect(decideAutoEffort(input({ child: true }), defaults)).toEqual({ escalateTools: 100, escalateErrors: 15 });
   });
   test.each(["0", "-0.1", "1.01", "NaN", "Infinity", "true", "[]"])("invalid probability threshold %s keeps the core default", value => {
     expect(parseAutoEffortConfig(`autoEffort:\n  raiseAt: ${value}\n`).raiseAt).toBeUndefined();
   });
   test.each(["-1", "1.5", "NaN", "9007199254740992"])("invalid load threshold %s keeps role defaults", value => {
     const config = parseAutoEffortConfig(`autoEffort:\n  escalateMainTools: ${value}\n  escalateChildErrors: ${value}\n`);
-    expect(decideAutoEffort(input(), config).escalateTools).toBe(40);
+    expect(decideAutoEffort(input(), config).escalateTools).toBe(80);
     expect(decideAutoEffort(input({ child: true }), config).escalateErrors).toBe(15);
   });
+});
+
+test("a routed Maker uses its own bounds without changing Astra Main's high cap", () => {
+  const config = parseAutoEffortConfig('autoEffort:\n  floorMedium: "*gpt-6.2-astra*"\n  capHigh: "*gpt-6.2-astra*"\n');
+  const astra = input({ provider: "openai-codex", modelId: "gpt-6.2-astra", makerEffort: { start: "high", max: "xhigh" } });
+  expect(decideAutoEffort(astra, config)).toEqual({ floor: "medium", ceiling: "high", ...mainLoad });
+  expect(decideAutoEffort({ ...astra, child: true }, config)).toEqual({ floor: "high", ceiling: "xhigh", escalateTools: 100, escalateErrors: 15 });
 });

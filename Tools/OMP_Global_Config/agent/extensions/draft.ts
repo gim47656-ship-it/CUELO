@@ -7,10 +7,9 @@ import { findPdfBackend, renderPdf } from "./draft/pdf";
 import { collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
-// 문서 한 편을 통째로 받는다. 출력 상한은 모델 최대치(Gemini 4 Hydrogen·Argon 모두 65,536토큰)라 우리 상한 때문에 잘리지
-// 않는다. 그래도 모델 최대치에서 잘린 응답(stopReason length)은 반쪽 문서라 저장하지 않고 실패로 돌린다.
-// 최대 출력을 다 쓰는 초안도 끝날 시간을 준다.
-const TIMEOUT_MS = 600_000;
+// Use the provider model's output limit and reject truncated drafts.
+// Each attempt has its own deadline so a slow primary can hand off to the fallback.
+const TIMEOUT_MS = 240_000;
 
 export type Format = "md" | "txt" | "csv" | "xlsx" | "docx" | "pdf";
 const FORMATS: Record<string, Format> = {

@@ -33,7 +33,7 @@ REPLAN_WHEN: <이 조각에서 Main의 가정이 깨졌다고 볼 조건 — 선
   예상 분은 조사, 구현과 검증을 합친 벽시계 시간으로 정직하게 적고 줄 첫머리의 `EXPECTED_MINUTES: <1~1440 정수>`로 쓴다.
   `DONE_WHEN`에는 통과하면 끝인 조건을 적는다. 둘 다 timeout이나 취소 근거가 아니다.
 - 2026-11-13 사용자 결정: 선택 `REPLAN_WHEN`에 계획을 깨뜨릴 가정을 적는다. Maker가 이를 관측하면 추가 편집 전에
-  Main에게 근거를 보내고 Main은 계획을 고쳐 같은 담당자에게 잇게 한다. 반복 실패나 큰 재설계의 반환 조건을 대신하지 않는다.
+  Main에게 근거를 보내고 Main은 계획을 고쳐 같은 담당자에게 잇게 한다. 새 발주의 모델 추천과 별개다.
 - Main이 정할 값은 완료물(`WORK_CLASS`, `PRIMARY_DELIVERABLE`)과 범위(`OWNED_PATHS`)다.
   기본값, lock 상속과 추가 완료물 advisory, enum 보정과 파생 값의 child 전달은 `extensions/command-guard/task-guard.ts`가 정본이다.
   다른 완료물을 명시해도 누적 budget은 유지된다. `USER_REQUEST` 인용은 선택이다.
@@ -56,7 +56,7 @@ REPLAN_WHEN: <이 조각에서 Main의 가정이 깨졌다고 볼 조건 — 선
   표현 차이는 허용되고, 이름이나 의미 필드가 바뀌면 다시 준비한다. `duplicate`·
   `additionalInstruction`이 true이고 **`ownerTarget`이 실재 owner를 가리킬 때만** 그 owner에게
   추가 지시·retarget하고 새 spawn을 금지한다 — 확률만으로 owner를 고르지 않는다. 어느 쪽도
-  아니면 단일 `maker`에 후보 모델 selector를 넘긴다. task hook은 후보의 suffix 누락·concrete 강도를 `:auto`로 보정하고 coarse `effort`는 제거한 뒤 한 줄로 알린다. 후보 밖 모델은 계속 거절한다. 강도는 child auto가 `solutionSpace`와 이후 Main 지시로 고른다. 판정이 가리키는 owner가 실제로
+  아니면 단일 `maker`에 후보 모델 selector를 넘긴다. task hook은 후보의 suffix 누락과 concrete 강도를 `:auto`로 보정하고 coarse `effort`는 제거한 뒤 알린다. 후보 밖 모델은 계속 거절한다. 선택된 프로필의 시작 강도와 상한은 그 Maker에만 적용한다. 판정이 가리키는 owner가 실제로
   없거나 결정론 증거와 모순되면 그 placement 결과를 적용하지 않고 기존 절차로 간다. 실패·timeout·
   credential 없음도 판단 불가로 두고 일반 모델 fallback 없이 기존 절차를 실행한다.
   제안 범위가 적용 Skill이나 사용자 계약과 충돌하는지는 `pre-dispatch.mainOwnedJudgments`에 둔 Main 소유 판단이다.

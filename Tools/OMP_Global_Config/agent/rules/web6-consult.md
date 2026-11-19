@@ -34,7 +34,7 @@ description: When user names 6 Pro/SHION or in a 6PRO session.
 
 호출은 exact `completion(model="web6/gpt-6-pro")`만 쓴다. task child나 Main 모델 전환, raw HTTP,
 clipboard와 수동 붙여넣기로 대체하지 않는다. shim, relay의 세션/대화 신원 확인과 최종 답 수집,
-인증된 loopback 투영은 `mainLane.web6Consult`와 구현(`extensions/consult.ts`, `web6-server.js`)이 정본이다.
+인증된 loopback 투영은 `mainLane.web6Consult`와 구현(`extensions/character-voice.ts`, `Tools/CUELO_Setup/web6/web6-server.js`)이 정본이다.
 도구 멘션이나 게시 지시, 로컬 handleKey를 브라우저 상담 본문에 넣지 않는다.
 권한과 안전 승인은 자동 허용하지 않는다. 중간 답이나 DOM 안정, 임의 대기만으로 완료를 판단하지 않고
 실패 이유를 보존하며 취소되거나 실패한 요청을 자동 재게시하지 않는다.
