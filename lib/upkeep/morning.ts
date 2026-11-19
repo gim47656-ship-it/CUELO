@@ -18,6 +18,7 @@ import { parseMetricOutcomes, releaseVersion, type NightlyMetricOutcome } from "
 import { CHECK_MARKS_FILE, readCheckMarks, setCheckMark, clearCheckMark } from "./checks";
 import { FIX_MARKS_FILE, readFixMarks, setFixMark, fixMarkTimeFrom } from "./fixes";
 import { compareVersions } from "../omp-updates";
+import { type RelayStatus, relaySignature } from "./relay-accounts";
 
 const exec = promisify(execFile);
 
@@ -47,6 +48,8 @@ export interface MorningState {
   releaseVersion?: string;
   /** 그때 알린 클라우드 야간 실행 결과의 `finishedAt`(ISO). 같은 결과를 다시 알리지 않는다. */
   nightlyResultAt?: string;
+  /** 그때 알린 AI Studio 중계기 막힘 요약(`relaySignature`). 막힘이 풀리면 지운다. */
+  relayReported?: string;
   nightlyImport?: { source: string; outcomes: NightlyMetricOutcome[]; settled: string[]; resultAt?: string };
 }
 
@@ -87,6 +90,8 @@ export interface MorningInput {
   now: Date;
   /** 사람이 볼 확인 실패(가져오기 실패 등). 계획을 막지 않고 프롬프트에 싣는다. */
   warnings?: readonly string[];
+  /** 이 PC의 AI Studio 중계기 계정 상태. 중계기가 없거나 로그를 못 읽었으면 null(못 읽은 것은 warnings에 있다). */
+  relay?: RelayStatus | null;
 }
 
 export type MorningSkipReason = "nothing-new" | "no-repo" | "previous-still-running";
@@ -98,6 +103,8 @@ export interface MorningTriggers {
   release: string | null;
   /** 새로 알릴 클라우드 야간 실행 결과. 깨끗하게 끝난 실행은 알리지 않으므로 null이다. */
   nightly: NightlyResult["outcome"] | null;
+  /** 중계기 막힘(인증 요구 계정, 쓸 수 있는 계정 없음)이 지난 보고와 달라졌는지 */
+  relay: boolean;
 }
 
 export type MorningPlan =
@@ -111,6 +118,8 @@ export type MorningPlan =
     releaseVersion: string | null;
     /** 세션이 프롬프트를 받으면 상태에 남길 야간 결과의 `finishedAt`. 알릴 결과가 없으면 null(지난 값 유지). */
     nightlyResultAt: string | null;
+    /** 세션이 프롬프트를 받으면 상태에 남길 중계기 막힘 요약. 중계기 상태를 모르면 undefined(지난 값 유지), 막힘이 없으면 null. */
+    relayReported: string | null | undefined;
     sessionName: string;
     prompt: string;
   };
@@ -134,7 +143,8 @@ export function readMorningState(agentDir: string): MorningState | null {
     || (!parsed.sessionId && parsed.nightlyImport === undefined)
     || (parsed.reportedSha !== undefined && (typeof parsed.reportedSha !== "string" || !SHA_RE.test(parsed.reportedSha)))
     || (parsed.releaseVersion !== undefined && (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion))
-    || (parsed.nightlyResultAt !== undefined && (typeof parsed.nightlyResultAt !== "string" || !Number.isFinite(Date.parse(parsed.nightlyResultAt))))) {
+    || (parsed.nightlyResultAt !== undefined && (typeof parsed.nightlyResultAt !== "string" || !Number.isFinite(Date.parse(parsed.nightlyResultAt))))
+    || (parsed.relayReported !== undefined && (typeof parsed.relayReported !== "string" || !parsed.relayReported))) {
     throw new Error(`${MORNING_STATE_FILE} is not a morning report record`);
   }
   if (parsed.nightlyImport !== undefined && (!parsed.nightlyImport || typeof parsed.nightlyImport !== "object"
@@ -152,6 +162,7 @@ export function readMorningState(agentDir: string): MorningState | null {
     ...(parsed.reportedSha ? { reportedSha: parsed.reportedSha } : {}),
     ...(parsed.releaseVersion ? { releaseVersion: parsed.releaseVersion } : {}),
     ...(parsed.nightlyResultAt ? { nightlyResultAt: parsed.nightlyResultAt } : {}),
+    ...(parsed.relayReported ? { relayReported: parsed.relayReported } : {}),
     ...(parsed.nightlyImport ? { nightlyImport: parsed.nightlyImport } : {}),
   };
 }
@@ -166,13 +177,26 @@ export function morningStateAfterRun(plan: RunPlan, previous: MorningState | nul
   const reportedSha = plan.reportedSha ?? previous?.reportedSha;
   const releaseVersion = plan.releaseVersion ?? previous?.releaseVersion;
   const nightlyResultAt = plan.nightlyResultAt ?? previous?.nightlyResultAt;
+  const relayReported = plan.relayReported === undefined ? previous?.relayReported : plan.relayReported;
   return {
     sessionId, startedAt,
     ...(reportedSha ? { reportedSha } : {}),
     ...(releaseVersion ? { releaseVersion } : {}),
     ...(nightlyResultAt ? { nightlyResultAt } : {}),
+    ...(relayReported ? { relayReported } : {}),
     ...(previous?.nightlyImport ? { nightlyImport: previous.nightlyImport } : {}),
   };
+}
+
+/**
+ * 보고 없이 지나간 동기화에서도 막힘이 풀린 것은 기록에서 지운다. 같은 계정이 다시 막히면 또 알리게 한다. 쓸 수 있는 계정이
+ * 확인됐고 인증 요구가 없을 때만 풀린 것으로 본다(일부만 보인 상태는 풀림이 아니다). 지울 것이 없으면 null.
+ */
+export function morningStateRelayCleared(state: MorningState | null, relay: RelayStatus | null | undefined): MorningState | null {
+  if (!state?.relayReported || !relay || relay.usable === 0 || relaySignature(relay) !== null) return null;
+  const cleared = { ...state };
+  delete cleared.relayReported;
+  return cleared;
 }
 
 /** Import before report guards; the existing morning record retains pending evidence and replay watermarks. */
@@ -280,16 +304,19 @@ export function planMorningRun(input: MorningInput): MorningPlan {
   const nightlyResult = parseNightlyResult(input.nightlyResult);
   const nightly = nightlyResult && REPORTABLE_OUTCOMES.includes(nightlyResult.outcome)
     && nightlyResult.finishedAt !== state?.nightlyResultAt ? nightlyResult : null;
-  if (!cloudCommits.length && !skills.length && !newRelease && !nightly) return { action: "skip", reason: "nothing-new" };
+  const relayNow = input.relay ? relaySignature(input.relay) : undefined;
+  const relay = typeof relayNow === "string" && relayNow !== state?.relayReported;
+  if (!cloudCommits.length && !skills.length && !newRelease && !nightly && !relay) return { action: "skip", reason: "nothing-new" };
   if (!input.repoCwd) return { action: "skip", reason: "no-repo" };
   if ([state?.sessionId, input.acceptedSessionId].some((id) => id && input.runningSessionIds.includes(id))) return { action: "skip", reason: "previous-still-running" };
   return {
     action: "run",
     repoCwd: input.repoCwd,
-    triggers: { cloudCommits: cloudCommits.length, skills: skills.length, release: newRelease, nightly: nightly?.outcome ?? null },
+    triggers: { cloudCommits: cloudCommits.length, skills: skills.length, release: newRelease, nightly: nightly?.outcome ?? null, relay },
     reportedSha: input.originHead,
     releaseVersion: release?.latest ?? null,
     nightlyResultAt: nightly?.finishedAt ?? null,
+    relayReported: relayNow,
     sessionName: `클라우드 변경 보고 ${kstStamp(input.now)}`,
     prompt: buildMorningPrompt({
       base: input.base,
@@ -299,6 +326,8 @@ export function planMorningRun(input: MorningInput): MorningPlan {
       release,
       nightlyResult: nightly,
       warnings: input.warnings ?? [],
+      // 이미 알린 같은 막힘은 다른 계기로 열린 보고에서 되풀이하지 않는다.
+      relay: relay ? input.relay : null,
     }),
   };
 }

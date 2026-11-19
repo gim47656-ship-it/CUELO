@@ -1,6 +1,7 @@
 /** 아침 보고 세션의 첫 메시지(lib/upkeep/morning.ts). 계산은 하지 않고 계획이 모은 사실을 글로만 옮긴다. */
 import type { CloudCommit, MorningBase, ReleaseInfo } from "./morning";
 import type { NightlyResult, NightlyOutcome } from "./nightly-result";
+import { RELAY_VERIFY_URL, RELAY_WINDOW_DAYS, type RelayStatus } from "./relay-accounts";
 
 export interface MorningPromptInput {
   /** 클라우드 커밋을 센 기준. 없으면 최근 며칠만 봤다. */
@@ -12,6 +13,8 @@ export interface MorningPromptInput {
   /** 새로 알릴 클라우드 야간 실행 결과. 없거나 깨끗하게 끝났으면 null. */
   nightlyResult?: NightlyResult | null;
   warnings: readonly string[];
+  /** 이 PC의 AI Studio 중계기 계정 상태. 계획이 막힘이 바뀌어 알릴 때만 넘긴다. */
+  relay?: RelayStatus | null;
 }
 
 /** 결과값을 사용자가 읽을 쉬운 말로. */
@@ -34,7 +37,7 @@ export const MORNING_PREAMBLE = [
   "이 세션은 사람 없이 이 PC의 클라우드 동기화가 열었습니다. 아래 두 가지만 하고 다른 일은 하지 않습니다. `ask`는 쓰지 않습니다(답할 사람이 없습니다).",
   "마지막 답은 보고와 설치 결과를 합쳐 세 줄 이내의 쉬운 한국어입니다. 목록·제목 없이 짧은 문장으로만 쓰고, 커밋 해시와 전문용어는 뺍니다.",
   "",
-  "1. 보고: `git fetch --prune` 뒤 아래 커밋과 작업 기록, 받아 온 스킬을 읽고 클라우드가 무엇을 바꿨는지 씁니다. 사용자에게 생기는 효과를 먼저, 그다음 받아 온 스킬, 사용자가 정해야 할 일이 있으면 그것을 씁니다. 프롬프트에 「클라우드 야간 실행 결과」 절이 있으면 그것도 같은 보고에 넣습니다.",
+  "1. 보고: `git fetch --prune` 뒤 아래 커밋과 작업 기록, 받아 온 스킬을 읽고 클라우드가 무엇을 바꿨는지 씁니다. 사용자에게 생기는 효과를 먼저, 그다음 받아 온 스킬, 사용자가 정해야 할 일이 있으면 그것을 씁니다. 프롬프트에 「클라우드 야간 실행 결과」 절이 있으면 그것도 같은 보고에 넣습니다. 「AI Studio 중계기 계정」 절이 있으면 쓸 수 있는 계정 수와 막힌 계정, 사용자가 할 일을 같은 보고에 넣습니다.",
   "2. 설치: 아래 「릴리스」에 새 버전이 있다고 적혀 있을 때만 합니다. 그 버전의 공개 CI(`gh run list --repo gim47656-ship-it/CUELO`)가 성공했는지 먼저 확인하고, 실패·미확인이면 설치하지 않습니다. 설치는 메인 체크아웃이 아니라 origin에서 받으므로 메인 체크아웃의 브랜치·고친 파일·다른 세션의 작업과 상관없이 진행합니다. 그 버전이 처음 들어간 origin/main 커밋을 `git log origin/main --reverse --format=%H -S'\"version\": \"<버전>\"' -- package.json | head -1`로 찾고, AGENTS.md 「Live deploy」의 이 PC 배포 명령에 그 커밋과 이 세션 자신의 id(`$PI_SESSION_ID`)를 넣어 실행한 뒤 `deploy_verify`로 끝났는지 확인합니다. 서버가 다시 시작되는 동안 이 세션은 멈췄다가 깨어나니 깨어난 뒤 확인을 이어 갑니다. 메인 체크아웃은 `git worktree list`의 첫 줄 경로입니다(이 세션이 자동 워크트리에서 열렸어도 그 경로). 그다음에 그 경로가 `main` 브랜치이고 갈라진 이력이 없을 때만 `git -C <그 경로> pull --ff-only`로 따라가게 합니다. git이 고친 파일과 겹친다며 거절하거나 조건이 맞지 않으면 그 단계만 건너뛰고 파일은 건드리지 않습니다(reset·stash·checkout 금지). 이것은 설치 결과에 영향을 주지 않습니다.",
   "세 줄 가운데 마지막 줄은 설치 결과(설치한 버전, 설치하지 않은 이유, 「설치할 새 버전 없음」, 또는 「새 버전 준비 중, 다음 동기화 때 설치」)입니다.",
 ].join("\n");
@@ -76,6 +79,28 @@ function nightlyBlock(result: NightlyResult): string[] {
   ];
 }
 
+function kst(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? new Date(ms + 9 * 3_600_000).toISOString().slice(5, 16).replace("T", " ") : "시각 미상";
+}
+
+/** 중계기 계정 절. 값은 `parseRelayJournal`이 로그에서 센 것이다. */
+function relayBlock(relay: RelayStatus): string[] {
+  const verify = relay.accounts.filter((a) => a.state === "verify");
+  const cooldown = relay.accounts.filter((a) => a.state === "cooldown");
+  const unseen = relay.total !== null ? relay.total - relay.accounts.length : 0;
+  return [
+    `## AI Studio 중계기 계정 (이 PC의 aistudio2api 로그, 최근 ${RELAY_WINDOW_DAYS}일)`,
+    "",
+    "- Gemini 4 Hydrogen과 Argon을 쓰는 사전 점검, 보조 검토, 문서 초안, OCR이 이 중계기를 거칩니다. 계정이 막히면 이 기능들이 대체 경로로 넘어가거나 실패합니다.",
+    `- 쓸 수 있는 계정: ${relay.usable}/${relay.total ?? relay.accounts.length}`,
+    `- 인증 요구(HTTP 403) ${verify.length}개${verify.length ? `: ${verify.map((a) => `${a.label}${a.since ? ` (${kst(a.since)}부터)` : ""}`).join(", ")}` : ""}`,
+    ...(verify.length ? [`  - 사용자가 그 계정으로 로그인해 ${RELAY_VERIFY_URL} 에서 인증해야 다시 씁니다(Google이 휴대기기 확인을 요구할 수 있습니다). 이 세션은 대신하지 않습니다.`] : []),
+    `- 한도 대기(HTTP 429) ${cooldown.length}개${cooldown.length ? `: ${cooldown.map((a) => `${a.label} (${(a.cooldowns ?? []).map((c) => `${c.model} ${kst(c.until)}까지`).join(", ")})`).join(", ")}` : ""}`,
+    ...(unseen > 0 ? [`- 최근 ${RELAY_WINDOW_DAYS}일 기록 없음 ${unseen}개`] : []),
+  ];
+}
+
 export function buildMorningPrompt(input: MorningPromptInput): string {
   const { release } = input;
   const releaseLine = !release
@@ -106,6 +131,7 @@ export function buildMorningPrompt(input: MorningPromptInput): string {
     "",
     releaseLine,
     ...(input.nightlyResult ? ["", ...nightlyBlock(input.nightlyResult)] : []),
+    ...(input.relay ? ["", ...relayBlock(input.relay)] : []),
     ...(input.warnings.length ? ["", "## 확인하지 못한 것", "", ...input.warnings.map((w) => `- ${w}`)] : []),
   ].join("\n");
 }
