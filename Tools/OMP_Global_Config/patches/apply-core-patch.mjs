@@ -24919,6 +24919,131 @@ for (const { file, extra, anchor } of [
 		{ marker: skip18222, anchor: skip18222, patched: skip18222 }, skip18222);
 }
 
+// Vertex Hydrogen uses Priority PayGo for session and direct SDK calls alike.
+// Carry the RPC status from the actual HTTP rejection, not its display text.
+EDITS.push({
+	file: "../pi-ai/src/providers/google-vertex.ts",
+	marker: 'model.id === "gemini-4-hydrogen"',
+	anchor: `			if (options?.serviceTier === "priority") {
+`,
+	patched: `			const serviceTier = options?.serviceTier ??
+				(model.provider === "google-vertex" && model.id === "gemini-4-hydrogen" ? "priority" : undefined);
+			if (serviceTier === "priority") {
+`,
+}, {
+	file: "../pi-ai/src/types.ts",
+	marker: 'Symbol("vertex-http-resource-exhausted")',
+	anchor: `export interface AssistantMessage {
+`,
+	patched: `/** Live HTTP rejection metadata, deliberately not persisted with the assistant message. */
+export const kVertexHttpResourceExhausted = Symbol("vertex-http-resource-exhausted");
+
+export interface AssistantMessage {
+	[kVertexHttpResourceExhausted]?: true;
+`,
+}, {
+	file: "../pi-ai/src/providers/google-shared.ts",
+	marker: 'import { kVertexHttpResourceExhausted, shouldSendServiceTier } from "../types";',
+	anchor: 'import { shouldSendServiceTier } from "../types";',
+	patched: 'import { kVertexHttpResourceExhausted, shouldSendServiceTier } from "../types";',
+}, {
+	file: "../pi-ai/src/providers/google-shared.ts",
+	marker: 'output[kVertexHttpResourceExhausted] = true;',
+	anchor: `						const errorText = await response.text().catch(() => "");
+						throw new AIError.GoogleApiError(
+`,
+	patched: `						const errorText = await response.text().catch(() => "");
+						if (api === "google-vertex" && model.provider === "google-vertex" && response.status === 429) {
+							try {
+								type Envelope = { error?: { status?: unknown } };
+								const body = JSON.parse(errorText) as Envelope | Envelope[] | null;
+								const envelope = Array.isArray(body) ? (body.length === 1 ? body[0] : undefined) : body;
+								if (envelope?.error?.status === "RESOURCE_EXHAUSTED") {
+									output[kVertexHttpResourceExhausted] = true;
+								}
+							} catch {
+								// Non-JSON failure bodies keep ordinary retry classification.
+							}
+						}
+						throw new AIError.GoogleApiError(
+`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: 'import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";',
+	anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";',
+	patched: `import * as AIError from "@oh-my-pi/pi-ai/error";
+import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: "const vertexRejectedModel =",
+	anchor: `		const rateLimitReason = parseRateLimitReason(errorMessage);
+		// A rate limit is a cap the next attempt on this model re-hits, so
+`,
+	patched: `		// Consult the existing chain before credential waits or same-model backoff.
+		// Only replay an empty rejection from the active Vertex model.
+		let switchedModel = false;
+		const vertexRejectedModel = message[kVertexHttpResourceExhausted] && this.#host.model();
+		if (
+			vertexRejectedModel &&
+			vertexRejectedModel.provider === "google-vertex" &&
+			vertexRejectedModel.id === message.model &&
+			message.stopReason === "error" &&
+			message.content.length === 0 &&
+			options?.allowModelFallback !== false &&
+			!preserveFailedTurn &&
+			retrySettings.modelFallback &&
+			!this.#host.modelFallbackDisabled?.() &&
+			this.#host.modelRegistry.authStorage.sessions.exactLabel(vertexRejectedModel.provider, this.#host.sessionId()) === undefined &&
+			(retrySettings.fallbackOn !== "except-usage-limit" || !AIError.is(id, AIError.Flag.UsageLimit))
+		) {
+			const selector = formatRetryFallbackSelector(vertexRejectedModel, this.#host.thinkingLevel());
+			const key = this.#refusalWalkKey(selector);
+			// Like a refusal, a rejected route should not be revisited in this turn,
+			// even if its cooldown expires while another chain candidate runs.
+			if (!this.#refusalWalkTried.has(key)) {
+				switchedModel = await this.#tryRetryModelFallback(selector, message, { refusalWalk: true });
+				if (switchedModel) {
+					this.#refusalWalkTried.add(key);
+					const retryAfterMs = extractProviderRetryHint(vertexRejectedModel.provider, errorMessage, vertexRejectedModel.baseUrl);
+					this.noteRetryFallbackCooldown(selector, retryAfterMs, errorMessage);
+				}
+			}
+		}
+		const rateLimitReason = parseRateLimitReason(errorMessage);
+		// A rate limit is a cap the next attempt on this model re-hits, so
+`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: "let recordedUsageLimitOutcome = switchedModel ?",
+	anchor: `		let recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
+`,
+	patched: `		let recordedUsageLimitOutcome = switchedModel ? undefined : await this.#usageLimitOutcomes.get(message);
+`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: "if (switchedModel) delayMs = 0;",
+	anchor: `		let switchedCredential = false;
+		let switchedModel = false;
+`,
+	patched: `		let switchedCredential = false;
+		if (switchedModel) delayMs = 0;
+`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: "if (!switchedModel && accountPolicyDenial && currentModel)",
+	anchor: `		if (accountPolicyDenial && currentModel) {
+`,
+	patched: `		if (!switchedModel && accountPolicyDenial && currentModel) {
+`,
+}, {
+	file: "src/session/turn-recovery.ts",
+	marker: "if (!switchedModel && !staleOpenAIResponsesReplayError",
+	anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && !stripDemotedReasoning && currentSelector) {
+`,
+	patched: `		if (!switchedModel && !staleOpenAIResponsesReplayError && !switchedCredential && !stripDemotedReasoning && currentSelector) {
+`,
+});
+
 // Preflight resolves every anchor before writing. Install the guard as part of
 // the OCR wrapper, or upgrade the entire existing wrapper when it is present.
 {
