@@ -1290,6 +1290,7 @@ function GoogleWalletCard({ wallet, setting, onSave, t }: {
     <section className={groupClass} aria-labelledby={headingId} data-credit-wallet="google">
       <div className="flex min-w-0 items-center gap-2">
         <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{walletName}</h3>
+        <BillingLink wallet="google" walletName={walletName} t={t} />
         {!editing ? (
           <ActionButton variant="neutralWeak" size="xsmall" onClick={() => setEditing(true)}>
             {setting ? t("credits.edit") : t("credits.enter")}
@@ -1380,6 +1381,7 @@ function localDate(ms: number): string {
 
 /** 지금 가진 키로는 잔액을 읽는 공식 API가 없다(2026-11-03 확인). 실제 잔액은 각 콘솔의 결제 화면에서만 볼 수 있다. */
 const BILLING_URLS = {
+  google: "https://console.cloud.google.com/billing/credits",
   hive: "https://portal.deploy.com/",
   exa: "https://dashboard.exa.ai/billing",
   typesafe: "https://console.typesafe.ai/billing",

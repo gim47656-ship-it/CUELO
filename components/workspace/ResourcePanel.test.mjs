@@ -673,14 +673,16 @@ test("Anthropic API 카드는 API 키 요청만 보이고 OAuth·미기록 요�
   assert.doesNotMatch(card, /role="progressbar"|크레딧 입력|추정 잔액/, "no balance or credit editor for Anthropic");
 });
 
-test("두 크레딧 카드는 추정과 따로 각 공급자 결제 화면으로 가는 새 탭 링크를 단다", () => {
-  const html = renderCredits({ ...creditSnapshot(), anthropic: anthropicWallet() });
+test("크레딧 카드는 추정과 따로 각 공급자 결제 화면으로 가는 새 탭 링크를 단다", () => {
+  const html = renderCredits({ ...creditSnapshot(), google: googleWallet(), anthropic: anthropicWallet() });
   const link = (wallet) => html.match(new RegExp(`<section[^>]*data-credit-wallet="${wallet}"[\\s\\S]*?<a ([^>]*data-billing-link="${wallet}"[^>]*)>`))?.[1];
   const hive = link("hive");
   const anthropic = link("anthropic");
+  const google = link("google");
+  assert.match(google ?? "", /href="https:\/\/console\.cloud\.google\.com\/billing\/credits"/);
   assert.match(hive ?? "", /href="https:\/\/portal\.deploy\.com\/"/);
   assert.match(anthropic ?? "", /href="https:\/\/platform\.claude\.com\/settings\/billing"/);
-  for (const attrs of [hive, anthropic]) {
+  for (const attrs of [hive, google, anthropic]) {
     assert.match(attrs, /target="_blank"/);
     assert.match(attrs, /rel="noopener noreferrer"/);
   }
