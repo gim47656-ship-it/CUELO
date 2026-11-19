@@ -114,7 +114,7 @@ describe("skim", () => {
     expect(result).toContain("docs/oversize.md: 거대 파일 제외");
   });
 
-  test("Gemini 실패 뒤 DeepSeek에 같은 비밀 제외 prompt를 한 번만 재사용하고 실제 모델·원문 오류를 표시한다", async () => {
+  test("Gemini 실패 뒤 고정 대체(Sonnet)에 같은 비밀 제외 prompt를 한 번만 재사용하고 실제 모델·원문 오류를 표시한다", async () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "guide.md"), "Public fact");
     writeFileSync(join(cwd, ".env.local"), "PRIVATE_MARKER");
@@ -125,10 +125,10 @@ describe("skim", () => {
         if (model === GEMINI) throw new Error("Gemini original 429");
         return reply("Public fact (guide.md:L1)", model);
       });
-    expect(calls.map(({ model }) => model)).toEqual([GEMINI, "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(calls.map(({ model }) => model)).toEqual([GEMINI, "anthropic/claude-sonnet-5-5"]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
-    expect(result.startsWith("model: hive/deepseek-ai/deepseek-v4.1-flash-1017")).toBe(true);
+    expect(result.startsWith("model: anthropic/claude-sonnet-5-5")).toBe(true);
     expect(result).toContain("Gemini 실패: Gemini original 429");
     expect(result).toContain("Public fact (guide.md:L1)");
     expect(result).toContain(".env.local: 비밀 경로 제외");
@@ -141,12 +141,12 @@ describe("skim", () => {
     const result = await skimText({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
       async (_prompt, _ctx, _signal, model) => {
         called.push(model);
-        throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "DeepSeek original 403");
+        throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "Sonnet original 403");
       });
-    expect(called).toEqual([GEMINI, "hive/deepseek-ai/deepseek-v4.1-flash-1017"]);
+    expect(called).toEqual([GEMINI, "anthropic/claude-sonnet-5-5"]);
     expect(result).toContain("model: none");
     expect(result).toContain("Gemini 실패: Gemini original timeout");
-    expect(result).toContain("DeepSeek 실패: DeepSeek original 403");
+    expect(result).toContain("Sonnet 실패: Sonnet original 403");
   });
 
   test("cwd 밖 파일은 호출하지 않고, 모델 오류 원문을 반환한다", async () => {
@@ -180,7 +180,7 @@ describe("skim", () => {
         { headers: { "content-type": "text/event-stream" } });
     } });
     try {
-      const model = { id: "deepseek-ai/deepseek-v4.1-flash-1017", name: "local", api: "openai-completions", provider: "hive",
+      const model = { id: "claude-sonnet-5-5", name: "local", api: "openai-completions", provider: "anthropic",
         baseUrl: `http://127.0.0.1:${server.port}/v1`, reasoning: false, input: ["text"],
         cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 };
       const sessionManager = SessionManager.inMemory(cwd);
@@ -188,16 +188,16 @@ describe("skim", () => {
       const ctx = { cwd, sessionManager, models: { resolve: () => model },
         modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
       // Gemini는 응답 없이 실패한다 → 관측한 usage가 없으므로 기록하지 않는다.
-      const viaDeepSeek: SkimCompletion = (prompt, ctx, attempt, requested) =>
+      const viaFallback: SkimCompletion = (prompt, ctx, attempt, requested) =>
         requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
-      const ok = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
-      const empty = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
-      expect(ok).toContain("model: hive/deepseek-ai/deepseek-v4.1-flash-1017");
-      expect(empty).toContain("DeepSeek 실패: hive/deepseek-ai/deepseek-v4.1-flash-1017가 빈 답을 반환했습니다.");
+      const ok = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
+      const empty = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
+      expect(ok).toContain("model: anthropic/claude-sonnet-5-5");
+      expect(empty).toContain("Sonnet 실패: anthropic/claude-sonnet-5-5가 빈 답을 반환했습니다.");
       const usage = sessionManager.getEntries().filter((entry) => entry.type === "model_usage");
       expect(usage.map((entry) => [entry.purpose, entry.role, entry.provider, entry.model, entry.stopReason])).toEqual([
-        ["skim", undefined, "hive", "deepseek-ai/deepseek-v4.1-flash-1017", "stop"],
-        ["skim", undefined, "hive", "deepseek-ai/deepseek-v4.1-flash-1017", "stop"],
+        ["skim", undefined, "anthropic", "claude-sonnet-5-5", "stop"],
+        ["skim", undefined, "anthropic", "claude-sonnet-5-5", "stop"],
       ]);
       expect(usage.map((entry) => [entry.usage.input, entry.usage.output, entry.usage.cacheRead])).toEqual([[1000, 80, 200], [1000, 80, 200]]);
       expect(usage[0].usage.cost.total).toBeGreaterThan(0);
@@ -222,18 +222,18 @@ describe("skim", () => {
         { headers: { "content-type": "text/event-stream" } });
     } });
     try {
-      const model = { id: "deepseek-ai/deepseek-v4.1-flash-1017", name: "local", api: "openai-completions", provider: "hive",
+      const model = { id: "claude-sonnet-5-5", name: "local", api: "openai-completions", provider: "anthropic",
         baseUrl: `http://127.0.0.1:${server.port}/v1`, reasoning: false, input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 150000 };
       const ctx = { cwd, sessionManager: SessionManager.inMemory(cwd), models: { resolve: () => model },
         modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
-      const viaDeepSeek: SkimCompletion = (prompt, ctx, attempt, requested) =>
+      const viaFallback: SkimCompletion = (prompt, ctx, attempt, requested) =>
         requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
-      const result = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaDeepSeek);
-      expect(result).toContain("model: hive/deepseek-ai/deepseek-v4.1-flash-1017");
+      const result = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
+      expect(result).toContain("model: anthropic/claude-sonnet-5-5");
       expect(result).toContain("긴 답의 앞부분 (guide.md:L1)");
       expect(result).toContain("[출력 상한 8192토큰에서 답이 끊겼습니다.");
-      expect(result).not.toContain("DeepSeek 실패");
+      expect(result).not.toContain("Sonnet 실패");
       expect(JSON.stringify(bodies[0])).toMatch(/"max_(?:completion_)?tokens":8192/);
     } finally {
       server.stop(true);
