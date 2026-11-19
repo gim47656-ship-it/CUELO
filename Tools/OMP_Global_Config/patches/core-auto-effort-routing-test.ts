@@ -26,6 +26,14 @@ ChainJudge.prototype.withCandidate = async function (run: (candidate: unknown, k
 const policyKey = Symbol.for("cuelo.autoThinkingPolicy");
 const originalPolicy = Reflect.get(globalThis, policyKey);
 const config = parseAutoEffortConfig('autoEffort:\n  holdMaxChars: 0\n  escalateMainTools: 2\n  escalateMainErrors: 2\n  escalateChildTools: 0\n  escalateChildErrors: 3\n');
+// The public mirror has no private profile. Use the policy's default
+// escalation thresholds and configure just the ladders exercised below.
+const routedConfig = parseAutoEffortConfig(`autoEffort:
+  floorMedium: "*gpt-6.2-astra*"
+  floorHigh: "*gpt-6.2-sol*, *deepseek-v4.1-flash*"
+  capHigh: "*gpt-6.2-astra*"
+  xhighAsMax: "*deepseek-v4.1-flash*"
+`);
 Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, config));
 const model = (efforts = ["low", "medium", "high", "xhigh", "max"]) => ({
   provider: "fixture", id: "routing", reasoning: true,
@@ -97,8 +105,7 @@ try {
     const cap = fixture(); await cap.turn(); tool(cap.control); assert.equal(cap.control.thinkingLevel, "high", "policy high cap blocks xhigh");
   });
   await check("routed Maker starts at its floor, reaches successive milestones, and stays in range", async () => {
-    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
-    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, routedConfig));
     probabilities = undefined; choice = "xhigh";
     const hard = fixture({ id: "gpt-6.2-sol", makerEffort: { start: "medium", max: "xhigh" } });
     const bounded = fixture({ id: "gpt-6.2-sol", makerEffort: { start: "high", max: "xhigh" } });
@@ -130,7 +137,8 @@ try {
     for (let n = 0; n < 100; n++) tool(astra.control);
     assert.equal(astra.control.thinkingLevel, "xhigh", "Astra Maker ignores Main's high cap");
     const main = fixture({ id: "gpt-6.2-astra" });
-    choice = "medium"; await main.turn();
+    choice = "low"; await main.turn("Classify the first genuine Main request");
+    assert.equal(main.control.thinkingLevel, "medium", "Astra Main retains its floor");
     for (let n = 1; n <= 160; n++) {
       tool(main.control);
       if (n === 79 || n === 80 || n === 160) {
@@ -138,12 +146,14 @@ try {
         console.log(`  Astra Main tools=${n}: ${main.control.thinkingLevel}`);
       }
     }
-    await main.turn(); for (let n = 0; n < 4; n++) tool(main.control, true);
-    assert.equal(main.control.thinkingLevel, "high");
+    await main.turn("Classify a new Main request and reset the counters");
+    for (let n = 1; n <= 4; n++) {
+      tool(main.control, true);
+      assert.equal(main.control.thinkingLevel, n < 4 ? "medium" : "high", `Main errors=${n}`);
+    }
   });
   await check("cold Maker continuation restores effort and tool milestones; new human prompts still classify", async () => {
-    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
-    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, routedConfig));
     const branch = [
       { type: "message", message: { role: "user", content: "original routed task" } },
       { type: "message", message: { role: "assistant", content: "working" } },
@@ -166,8 +176,7 @@ try {
     assert.equal(human.control.thinkingLevel, "medium");
   });
   await check("only configured xhigh-equivalent models with no xhigh may reach max", async () => {
-    const mirror = parseAutoEffortConfig(readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8"));
-    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, mirror));
+    Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, routedConfig));
     const makerEffort = { start: "high", max: "xhigh" } as const;
     const efforts = ["low", "high", "max"];
     const deepseek = fixture({ id: "deepseek-ai/deepseek-v4.1-flash-1017", efforts, makerEffort });

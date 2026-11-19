@@ -23811,6 +23811,8 @@ ${TAIL}`,
 		}
 		policyHold ||= firstRouted || options?.agentOrigin === true;`);
 	});
+	revise(policy, text => swap(text, "child: this.#autoLoad.child, makerEffort, agentOrigin:",
+		"child: this.#autoLoad.child, ...(makerEffort === undefined ? {} : { makerEffort }), agentOrigin:"));
 	revise(at("\t#autoLoad = { started: false,"), text => {
 		text = swap(text, "started: false, child: false, tools:", "started: false, child: false, repeat: false, tools:");
 		text = swap(text, "!load.started || load.escalated || load.ultrathink", "!load.started || (!load.repeat && load.escalated) || load.ultrathink");

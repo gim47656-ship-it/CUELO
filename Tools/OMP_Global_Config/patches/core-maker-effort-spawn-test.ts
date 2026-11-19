@@ -1,6 +1,6 @@
 // OMP_CORE_PATCH_TARGET=<isolated-patched-core> bun run patches/core-maker-effort-spawn-test.ts
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentSession as Session, CreateAgentSessionResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -35,14 +35,10 @@ const { getBundledModel } = await import(`${packages}/pi-catalog/src/models.ts`)
 const { buildTransformedCodexRequestBody } = await import(`${packages}/pi-ai/src/providers/openai-codex-responses.ts`);
 const policyKey = Symbol.for("cuelo.autoThinkingPolicy");
 const rangeKey = Symbol.for("cuelo.makerEffort");
-const configSource = readFileSync(new URL("../agent/config.yml", import.meta.url), "utf8");
-const effortConfig = parseAutoEffortConfig(configSource);
-const mirror = Bun.YAML.parse(configSource) as { task: { agentServiceTierOverrides: Record<string, unknown> } };
-// The controller test covers the production thresholds; use four to cross a
-// milestone with actual executor events split over a park and a cold revival.
-Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, {
-  ...effortConfig, escalateChildTools: 4,
-}));
+// The controller test covers the production thresholds. Use four here to
+// cross a milestone with actual executor events split over a cold revival.
+const effortConfig = parseAutoEffortConfig("autoEffort:\n  escalateChildTools: 4\n");
+Reflect.set(globalThis, policyKey, (input: Parameters<typeof decideAutoEffort>[0]) => decideAutoEffort(input, effortConfig));
 const customData = (entries: readonly FileEntry[], type: string) =>
   entries.findLast((entry): entry is CustomEntry => entry.type === "custom" && entry.customType === type)?.data;
 
@@ -86,7 +82,7 @@ writeFileSync(join(profile, "models.yml"), `providers:\n  openai:\n    baseUrl: 
 const settings = Settings.isolated({
   defaultThinkingLevel: "auto", modelRoles: { implSonnet: `openai/${SOL}:auto` },
   "async.enabled": false, "task.batch": true, "task.structured": false, "task.maxEffort": "xhigh",
-  "task.agentServiceTierOverrides": mirror.task.agentServiceTierOverrides,
+  "task.agentServiceTierOverrides": { maker: { openai: "priority" } },
   "task.isolation.enabled": false, "launch.enabled": false,
 });
 const task = {
