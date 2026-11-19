@@ -1,5 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { PUT } from "./route";
+
+let previousRoots: typeof globalThis.__ompAllowedRootsCache;
+beforeEach(() => {
+  previousRoots = globalThis.__ompAllowedRootsCache;
+  globalThis.__ompAllowedRootsCache = { roots: new Set([process.cwd()]), expiresAt: Infinity };
+});
+afterEach(() => { globalThis.__ompAllowedRootsCache = previousRoots; });
 
 function put(body: unknown): Request {
   return new Request("http://127.0.0.1:30141/api/model-roles", {
