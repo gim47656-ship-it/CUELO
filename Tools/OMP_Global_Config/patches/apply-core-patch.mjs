@@ -14095,14 +14095,6 @@ function holdsOAuthSeat(row: AuthRow): boolean {
 	const activeModelPattern = session.getActiveModelString?.() ?? session.getModelString?.();`,
 	},
 	{
-		file: "src/utils/image-question.ts",
-		marker: "// Only operational OCR failures",
-		anchor: "\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);",
-		patched: String.raw`			// Only operational OCR failures may forward an image to an explicit alternate provider.
-			if (session.settings.getModelRole("ocrFallback") && !/^(?:No API key available for |Vertex AI requires Application Default Credentials\. |Image question timed out after |Google API error \((?:408|429|5\d\d)\):|upstream (?:429|5\d\d)\b|(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN):|fetch failed$|Failed to fetch$)/i.test(reason)) throw error;
-` + "\t\t\tfailures.push(`${attempt.model.provider}/${attempt.model.id} failed (${reason.slice(0, 200)})`);",
-	},
-	{
 		file: "src/tools/read.ts",
 		marker: "import { askImageQuestion, OCR_QUESTION_MARK, resolveImageQuestionModel }",
 		anchor: "import { askImageQuestion, resolveImageQuestionModel } from \"../utils/image-question\";",
@@ -24925,6 +24917,18 @@ for (const { file, extra, anchor } of [
 	const skip18222 = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&yje(c))continue';
 	alternate(one(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"')),
 		{ marker: skip18222, anchor: skip18222, patched: skip18222 }, skip18222);
+}
+
+// Preflight resolves every anchor before writing. Install the guard as part of
+// the OCR wrapper, or upgrade the entire existing wrapper when it is present.
+{
+	const wrapper = EDITS.find(e => e.file === "src/utils/image-question.ts" && e.marker === "async function askImageQuestionOnce(");
+	const before = "\t\t\tfailures.push(";
+	wrapper.legacyPatched = wrapper.patched;
+	wrapper.marker = "// Only operational OCR failures";
+	wrapper.patched = wrapper.patched.replace(before, String.raw`			// Only operational OCR failures may forward an image to an explicit alternate provider.
+			if (session.settings.getModelRole("ocrFallback") && !/^(?:No API key available for |Vertex AI requires Application Default Credentials\. |Image question timed out after |Google API error \((?:408|429|5\d\d)\):|upstream (?:429|5\d\d)\b|(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN):|fetch failed$|Failed to fetch$)/i.test(reason)) throw error;
+` + before);
 }
 
 /**
