@@ -20,9 +20,10 @@ function harness(branch: unknown[] = [], kind: "main" | "sub" = "main", now?: ()
     emit("input", { source, text });
   // 실행 중인 Main: 안내는 다음 도구 경계(도구 결과)에서 aside로 실린다(lib/quiet-delivery).
   const boundary = () => emit("tool_result", { toolName: "read", isError: false });
-  const calls = (names: string[]) => {
-    for (const toolName of names) {
-      emit("tool_call", { toolName });
+  const calls = (names: Array<string | [string, Record<string, unknown>]>) => {
+    for (const call of names) {
+      const [toolName, input] = typeof call === "string" ? [call, {}] : call;
+      emit("tool_call", { toolName, input });
       emit("tool_result", { toolName, isError: false });
     }
   };
@@ -40,35 +41,88 @@ function harness(branch: unknown[] = [], kind: "main" | "sub" = "main", now?: ()
 }
 
 describe("todo nudge", () => {
-  test("사용자 직접 입력마다 다섯 번째 비-todo 도구에서 한 번만 aside 안내한다", () => {
+  test("six read-only calls do not trigger a reminder", () => {
     const h = harness();
-    h.input("단일 파일을 읽어줘");
-    h.calls(["read", "bash"]);
+    h.input();
+    h.calls(["read", "grep", "find", "skim", "ast_grep", ["lsp", { action: "definition" }]]);
     expect(h.sent).toHaveLength(0);
-    h.calls(["read", "edit", "bash"]);
+  });
+
+  test("only the fifth non-read call triggers a reminder on each direct input", () => {
+    const h = harness();
+    h.input();
+    h.calls(["read", "glob", "web_search", ["lsp", { action: "references" }]]);
+    h.calls(["bash", "edit", "eval", ["lsp", { action: "code_actions", apply: true }]]);
+    expect(h.sent).toHaveLength(0);
+    h.calls([["lsp", { action: "rename" }]]);
+    expect(h.sent).toHaveLength(1);
+    h.calls(["write"]);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]).toMatchObject({ customType: "todo-nudge", display: false, attribution: "agent" });
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
     h.input("새 작업을 조사하고 수정하고 검증해줘", "rpc");
-    // 2026-10-28 표본: 넷 이하로 끝나는 짧은 조회에는 알리지 않는다.
-    h.calls(["read", "bash", "read", "grep"]);
+    h.calls(["bash", "write", "bash", "eval"]);
     expect(h.sent).toHaveLength(1);
     h.calls(["edit"]);
     expect(h.sent).toHaveLength(2);
   });
 
+  test("a core mid-run nudge suppresses the fifth-call reminder until the next direct input", () => {
+    const h = harness();
+    const working = ["bash", "edit", "eval", "write", "bash"];
+    h.input();
+    h.notice("mid-run-todo-nudge");
+    h.calls(working);
+    expect(h.sent).toHaveLength(0);
+    h.input();
+    h.calls(working);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("a fifth-call reminder held for wait is dropped after a newer input", () => {
+    const h = harness();
+    h.input();
+    h.emit("tool_call", { toolName: "wait" });
+    h.calls(["bash", "edit", "eval", "write"]);
+    expect(h.sent).toHaveLength(0);
+    h.input();
+    h.emit("tool_result", { toolName: "wait", isError: false });
+    expect(h.sent).toHaveLength(0);
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("the fifth call is the only opportunity, even when an active list is later completed", () => {
+    const h = harness();
+    h.input();
+    h.todoState("in_progress");
+    h.calls(["bash", "edit", "eval"]);
+    h.todoState("completed");
+    h.calls(["write"]);
+    expect(h.sent).toHaveLength(0);
+    h.calls(["bash"]);
+    expect(h.sent).toHaveLength(1);
+
+    h.input();
+    h.todoState("in_progress");
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.todoState("completed");
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("그 요청에서 todo 를 먼저 쓰면 안내하지 않는다", () => {
     const h = harness();
     h.input();
-    h.calls(["read", "todo", "bash", "read", "edit", "bash"]);
+    h.calls(["read", "todo", "bash", "edit", "eval", "write", "bash"]);
     expect(h.sent).toHaveLength(0);
   });
 
   test("사용자 직접 입력이 없는 세션(child)과 확장 입력에는 안내가 없다", () => {
     const h = harness();
-    h.calls(["read", "bash", "read", "edit", "bash"]);
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
     h.input("세 단계 작업", "extension");
-    h.calls(["read", "bash", "read", "edit", "bash"]);
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
     expect(h.sent).toHaveLength(0);
   });
 
@@ -80,14 +134,14 @@ describe("todo nudge", () => {
       details: { phases: [{ tasks: [{ content: "work", status: "in_progress" }] }] },
     });
     h.input();
-    h.calls(["read", "bash", "read", "edit", "bash"]);
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
     expect(h.sent).toHaveLength(0);
     h.emit("tool_result", {
       toolName: "todo", isError: false,
       details: { phases: [{ tasks: [{ content: "work", status: "completed" }] }] },
     });
     h.input();
-    h.calls(["read", "bash", "read", "edit", "bash"]);
+    h.calls(["bash", "edit", "eval", "write", "bash"]);
     expect(h.sent).toHaveLength(1);
   });
 });

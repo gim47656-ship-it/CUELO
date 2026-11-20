@@ -209,14 +209,14 @@ function fileHash(file) {
  */
 export function readHarnessManifest(agentDir) {
   const file = path.join(agentDir, HARNESS_MANIFEST);
-  if (!fs.existsSync(file)) return { cuelo: null, files: {} };
+  if (!fs.existsSync(file)) return { cuelo: null, files: Object.create(null) };
   let parsed;
   try {
     parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (error) {
     throw new Error(`${file} is not readable (${error.message}). Delete it to treat every harness file as untracked.`);
   }
-  const files = {};
+  const files = Object.create(null);
   for (const [rel, hash] of Object.entries(parsed?.files ?? {})) files[rel] = typeof hash === "string" && SHA256.test(hash) ? hash : null;
   return { cuelo: typeof parsed?.cuelo === "string" ? parsed.cuelo : null, files };
 }
@@ -242,9 +242,11 @@ export function recordHarnessInstall(agentDir, report, version) {
   } catch (error) {
     return { skipped: error.message };
   }
-  const files = {};
+  const files = Object.create(null);
   for (const rel of report.kept) files[rel] = previous[rel] ?? null;
   for (const rel of report.created) files[rel] = fileHash(path.join(agentDir, ...rel.split("/")));
+  // A file the distribution dropped keeps its record, so a setup re-run does not forget it before harness-update retires it.
+  for (const [rel, hash] of Object.entries(previous)) if (hash !== null && !Object.hasOwn(files, rel) && isPlainProfilePath(rel)) files[rel] = hash;
   writeHarnessManifest(agentDir, files, version);
   return { skipped: null };
 }
@@ -265,6 +267,54 @@ function isProfilePathSafe(agentDir, rel) {
     if (!stat.isDirectory()) return false;
   }
   return true;
+}
+
+/** Creates a file that must not exist yet with the final permission bits set before any byte is written; a partial file this call made is removed again. */
+function writeNewFile(file, bytes, mode) {
+  const fd = fs.openSync(file, "wx", mode);
+  try {
+    fs.fchmodSync(fd, mode);
+    fs.writeFileSync(fd, bytes);
+  } catch (error) {
+    fs.closeSync(fd);
+    fs.rmSync(file, { force: true });
+    throw error;
+  }
+  fs.closeSync(fd);
+}
+
+/** A record path is only acted on when it is a plain relative path inside the profile that is not CUELO's own bookkeeping. */
+function isPlainProfilePath(rel) {
+  const parts = rel.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === ".." || /[\\\0]/.test(part)) || /^[A-Za-z]:/.test(parts[0])) return false;
+  return rel !== HARNESS_MANIFEST && parts[0] !== HARNESS_BACKUP_DIR;
+}
+
+/**
+ * Files CUELO installed (a recorded hash) that the distribution no longer ships, with what to do about each:
+ *   retired        still the bytes we installed: backed up and removed
+ *   user-modified  differs from the bytes we installed: left in place
+ *   untracked      not a plain file, or behind a link: left in place
+ *   gone           already absent: only the record goes
+ *   guarded        the distribution looks empty, so nothing is judged retired and the record stays
+ * A file with no record, or a null one (it was there before CUELO), is never listed.
+ */
+function findRetired(agentDir, manifest, distributed) {
+  // Compared without case: on a case-insensitive profile a differently spelled distributed name is the same file.
+  const shipped = new Set([...distributed].map((rel) => rel.toLowerCase()));
+  const candidates = Object.entries(manifest.files)
+    .filter(([rel, hash]) => hash !== null && !shipped.has(rel.toLowerCase()) && isPlainProfilePath(rel))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const empty = distributed.size === 0;
+  const retired = candidates.map(([rel, recorded]) => {
+    if (empty) return { path: rel, status: "guarded", recorded };
+    if (!isProfilePathSafe(agentDir, rel)) return { path: rel, status: "untracked", recorded };
+    const stat = fs.lstatSync(path.join(agentDir, ...rel.split("/")), { throwIfNoEntry: false });
+    if (!stat) return { path: rel, status: "gone", recorded };
+    if (!stat.isFile()) return { path: rel, status: "untracked", recorded };
+    return { path: rel, status: fileHash(path.join(agentDir, ...rel.split("/"))) === recorded ? "retired" : "user-modified", recorded };
+  });
+  return { retired, retiredSkipped: empty && candidates.length > 0 ? "the distribution lists no harness files, so nothing was judged retired" : null };
 }
 
 const HARNESS_STATES = ["identical", "missing", "update-available", "user-modified", "untracked"];
@@ -296,7 +346,8 @@ export function diffHarness(sourceDir, agentDir, entries) {
     return { path: rel, status, distHash, profileHash, recorded };
   });
   const counts = Object.fromEntries(HARNESS_STATES.map((state) => [state, files.filter((file) => file.status === state).length]));
-  return { installedVersion: manifest.cuelo, manifest, files, counts };
+  const { retired, retiredSkipped } = findRetired(agentDir, manifest, new Set(files.map((file) => file.path)));
+  return { installedVersion: manifest.cuelo, manifest, files, counts, retired, retiredSkipped };
 }
 
 /**
@@ -308,6 +359,8 @@ export function diffHarness(sourceDir, agentDir, entries) {
  * appeared meanwhile. A file that fails its re-check is reported as user-modified / untracked instead.
  * A throw part-way (disk full, a permission) puts back every file this run wrote before it rethrows, and the
  * record is left as it was, so the profile never ends up half old and half new with a record matching neither.
+ * Files CUELO installed that the distribution no longer ships (`retired`) are removed the same way: only while their
+ * bytes still hash to the recorded installed hash, after a backup, and never when the distribution lists nothing.
  */
 export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = false, now = new Date() } = {}) {
   const diff = diffHarness(sourceDir, agentDir, entries);
@@ -317,6 +370,12 @@ export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = 
     untracked: planned("untracked").map((file) => file.path),
     "backup-unsafe": [],
   };
+  const retiredBy = (...statuses) => diff.retired.filter((file) => statuses.includes(file.status));
+  skipped["user-modified"].push(...retiredBy("user-modified").map((file) => file.path));
+  skipped.untracked.push(...retiredBy("untracked").map((file) => file.path));
+  // Records of retired files that stay in the profile are kept; a removed or already absent file's record goes.
+  const keepRecord = new Set(retiredBy("user-modified", "untracked", "guarded").map((file) => file.path));
+  const removed = [];
   const backupStamp = now.toISOString().replace(/[:.]/g, "-");
   let backupDir = null;
   const updated = [];
@@ -324,9 +383,48 @@ export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = 
   if (dryRun) {
     updated.push(...planned("update-available").map((file) => file.path));
     added.push(...planned("missing").map((file) => file.path));
+    for (const file of retiredBy("retired")) {
+      const backup = path.join(agentDir, HARNESS_BACKUP_DIR, backupStamp, ...file.path.split("/"));
+      if (isProfilePathSafe(agentDir, `${HARNESS_BACKUP_DIR}/${backupStamp}/${file.path}`) && !fs.lstatSync(backup, { throwIfNoEntry: false })) removed.push(file.path);
+      else skipped["backup-unsafe"].push(file.path);
+    }
   } else {
     const undo = [];
     try {
+      for (const file of retiredBy("retired")) {
+        const target = path.join(agentDir, ...file.path.split("/"));
+        const safe = isProfilePathSafe(agentDir, file.path);
+        const stat = safe ? fs.lstatSync(target, { throwIfNoEntry: false }) : null;
+        if (safe && !stat) continue;
+        const current = stat?.isFile() ? fs.readFileSync(target) : null;
+        if (current === null) {
+          skipped.untracked.push(file.path);
+          keepRecord.add(file.path);
+        } else if (hashBytes(current) !== file.recorded) {
+          skipped["user-modified"].push(file.path);
+          keepRecord.add(file.path);
+        } else if (!isProfilePathSafe(agentDir, `${HARNESS_BACKUP_DIR}/${backupStamp}/${file.path}`)) {
+          skipped["backup-unsafe"].push(file.path);
+          keepRecord.add(file.path);
+        } else {
+          backupDir ??= path.join(agentDir, HARNESS_BACKUP_DIR, backupStamp);
+          const backup = path.join(backupDir, ...file.path.split("/"));
+          fs.mkdirSync(path.dirname(backup), { recursive: true });
+          writeNewFile(backup, current, stat.mode & 0o7777);
+          // Same re-check as an overwrite: the file is deleted only if, right now, it is still a plain file in a safe
+          // folder holding exactly the bytes that were backed up. Only a finished removal can be rolled back.
+          const now = isProfilePathSafe(agentDir, file.path) ? fs.lstatSync(target, { throwIfNoEntry: false }) : undefined;
+          const latest = now?.isFile() ? fs.readFileSync(target) : null;
+          if (latest === null || !latest.equals(current)) {
+            skipped["user-modified"].push(file.path);
+            keepRecord.add(file.path);
+          } else {
+            fs.rmSync(target);
+            undo.push({ rel: file.path, target, backup, done: false, removed: true, bytes: current, mode: now.mode & 0o7777 });
+            removed.push(file.path);
+          }
+        }
+      }
       for (const file of planned("update-available")) {
         const target = path.join(agentDir, ...file.path.split("/"));
         let current = null;
@@ -369,19 +467,28 @@ export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = 
       // Records follow what is on disk now: written files and identical tracked files carry the distributed
       // hash, every other file keeps the record it had.
       const written = new Set([...updated, ...added]);
-      const files = {};
+      const files = Object.create(null);
       for (const file of diff.files) {
         const tracked = file.status === "identical" && file.recorded !== null;
         files[file.path] = written.has(file.path) || tracked ? file.distHash : file.recorded;
       }
+      for (const file of diff.retired) if (keepRecord.has(file.path)) files[file.path] = file.recorded;
       writeHarnessManifest(agentDir, files, version);
     } catch (error) {
       // Only bytes this run wrote are undone, in a regular unlinked profile file: exactly the distributed bytes for a
       // finished copy, or a cut-short start of them for the copy that failed. A file the user changed or replaced
       // meanwhile is left and named in the error.
       const left = [];
-      for (const { rel, target, backup, done } of undo.reverse()) {
+      for (const { rel, target, backup, done, removed: wasRemoved, bytes: removedBytes, mode } of undo.reverse()) {
         try {
+          // A removed file comes back, from the bytes that were removed, only if nothing took its place meanwhile.
+          if (wasRemoved) {
+            const safeNow = isProfilePathSafe(agentDir, rel);
+            const present = safeNow ? fs.lstatSync(target, { throwIfNoEntry: false }) : undefined;
+            if (safeNow && !present) writeNewFile(target, removedBytes, mode);
+            else left.push(rel);
+            continue;
+          }
           const safe = isProfilePathSafe(agentDir, rel);
           const stat = safe ? fs.lstatSync(target, { throwIfNoEntry: false }) : undefined;
           // Gone meanwhile: an addition needs nothing; an overwritten file the user removed stays removed.
@@ -404,7 +511,7 @@ export function updateHarness(sourceDir, agentDir, entries, version, { dryRun = 
       throw error;
     }
   }
-  return { dryRun, updated, added, skipped, backupDir, identical: diff.counts.identical };
+  return { dryRun, updated, added, removed, skipped, backupDir, retiredSkipped: diff.retiredSkipped, identical: diff.counts.identical };
 }
 
 function packageInfo() {
@@ -430,7 +537,9 @@ function harnessDiff(options) {
   const diff = diffHarness(sourceDir, agentDir, entries);
   if (options.json) {
     const files = diff.files.map(({ path: file, status }) => ({ path: file, status }));
-    console.log(JSON.stringify({ agentDir, cuelo: packageInfo().version, installedVersion: diff.installedVersion, counts: diff.counts, files }, null, 2));
+    const retired = diff.retired.map(({ path: file, status }) => ({ path: file, status }));
+    const counts = { ...diff.counts, retired: retired.filter((file) => file.status === "retired").length };
+    console.log(JSON.stringify({ agentDir, cuelo: packageInfo().version, installedVersion: diff.installedVersion, counts, files, retired, retiredSkipped: diff.retiredSkipped }, null, 2));
     return;
   }
   const by = (state) => diff.files.filter((file) => file.status === state).map((file) => file.path);
@@ -439,6 +548,9 @@ function harnessDiff(options) {
   printList("missing: not in the profile; `harness-update` adds it", by("missing"));
   printList("user-modified: differs from what was installed; never changed automatically", by("user-modified"));
   printList("untracked: exists with no install record; never changed automatically", by("untracked"));
+  printList("retired: installed by CUELO, no longer distributed, unmodified; `harness-update` backs it up and removes it", diff.retired.filter((file) => file.status === "retired").map((file) => file.path));
+  printList("retired and user-modified: no longer distributed, but differs from what was installed; never removed automatically", diff.retired.filter((file) => file.status === "user-modified").map((file) => file.path));
+  if (diff.retiredSkipped) console.log(`Retired files not checked: ${diff.retiredSkipped}.`);
   console.log(`${diff.counts.identical} files identical to the distribution.`);
 }
 
@@ -453,11 +565,13 @@ function harnessUpdate(options) {
   const prefix = result.dryRun ? "Would be " : "";
   printList(`${prefix}updated`, result.updated);
   printList(`${prefix}added`, result.added);
+  printList(`${prefix}removed (installed by CUELO, no longer distributed)`, result.removed);
+  if (result.retiredSkipped) console.log(`Retired files not removed: ${result.retiredSkipped}.`);
   printList("Left as it is, user-modified", result.skipped["user-modified"]);
   printList("Left as it is, untracked", result.skipped.untracked);
   printList("Left as it is, the backup folder inside the profile is a link or not a folder", result.skipped["backup-unsafe"]);
-  if (result.updated.length + result.added.length === 0) console.log("Nothing to update.");
-  if (result.backupDir) console.log(`Previous versions of the updated files were saved under ${result.backupDir}.`);
+  if (result.updated.length + result.added.length + result.removed.length === 0) console.log("Nothing to update.");
+  if (result.backupDir) console.log(`Previous versions of the updated and removed files were saved under ${result.backupDir}.`);
   if (result.dryRun) console.log("Dry run: no file was changed.");
 }
 

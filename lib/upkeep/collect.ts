@@ -12,7 +12,7 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import {
   CACHE_WRITE_FLOOR, CI_STALE_MS, COMPLAINT_COUNT_FLOOR, COMPLAINT_MAX_CHARS, COST_CRITERION, COST_FLOOR_USD, COST_TOP, COUNT_FLOOR, EARLY_EXIT_REPORT_COUNT, GENERIC_CRITERION,
-  FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
+  FIX_OBSERVE_MS, MIN_SAMPLE, OVERDUE_PROBLEM, OVERDUE_WATCH, SLOW_GAP_MS, SLOW_GAP_P90_FLOOR_MS, STALE_WORKTREE_MS, TRANSLATION_CACHE_BASELINE, TRANSLATION_CACHE_BEFORE, compare, perTurns, worst,
   INCIDENT_FLOOR, MODEL_COST_FLOOR_USD, NUDGE_WATCH_PER_100, NUDGE_PROBLEM_PER_100,
   REWRITE_WATCH_SHARE, REWRITE_PROBLEM_SHARE, REWRITE_WATCH_USD, REWRITE_PROBLEM_USD, criterionIdForMetric,
 } from "./criteria";
@@ -317,9 +317,11 @@ export function bottleneckSection(scan: ScanResult, maker: { exits: UpkeepMetric
   const slowGaps = perTurnMetric("slow-gaps", `${SLOW_GAP_MS / 1000}초 넘는 대기`, scan, (w) => w.gaps.filter((g) => g > SLOW_GAP_MS).length);
   const p90 = (values: number[]) => (values.length ? [...values].sort((x, y) => x - y)[Math.ceil(values.length * 0.9) - 1] : null);
   const seconds = (ms: number | null) => (ms === null ? "기록 없음" : ms < 1000 ? `${Math.round(ms)}ms` : `${Math.round(ms / 1000)}초`);
-  slowGaps.criterion = `${slowGaps.criterion}. 도구 결과 뒤 다음 요청까지 걸린 시간의 p90도 같은 기준으로 보고 더 나쁜 쪽을 따릅니다`;
+  slowGaps.criterion = `${slowGaps.criterion}. 도구 결과 뒤 다음 요청까지 걸린 시간의 p90도 같은 기준으로 보고 더 나쁜 쪽을 따릅니다(두 기간 중 큰 p90이 ${SLOW_GAP_P90_FLOOR_MS / 1000}초 이상일 때만)`;
   slowGaps.note = `${slowGaps.note}. 도구 결과 뒤 다음 요청까지 p90 ${seconds(p90(a.gaps))} / ${seconds(p90(b.gaps))}.`;
-  adoptWorse(slowGaps, compare(p90(a.gaps), p90(b.gaps), a.gaps.length, b.gaps.length), "p90");
+  if (Math.max(p90(a.gaps) ?? 0, p90(b.gaps) ?? 0) >= SLOW_GAP_P90_FLOOR_MS) {
+    adoptWorse(slowGaps, compare(p90(a.gaps), p90(b.gaps), a.gaps.length, b.gaps.length), "p90");
+  }
 
   return section("bottleneck", "작업 병목", [
     errorRate,

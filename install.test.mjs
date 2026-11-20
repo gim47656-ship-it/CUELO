@@ -23,6 +23,7 @@ import {
   readHarnessManifest,
   recordHarnessInstall,
   diffHarness,
+  writeHarnessManifest,
   updateHarness,
 } from "./install.mjs";
 
@@ -410,6 +411,204 @@ test("the rollback of a failed harness-update leaves a file the user saved or li
       cleanup();
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  }
+});
+
+// A fixture where `extensions/old.ts` was distributed and installed, then dropped from the distribution.
+function retiredFixture() {
+  const fixture = harnessFixture();
+  const { source, agentDir, entries } = fixture;
+  write(source, "extensions/old.ts", "old v1\n");
+  write(source, "extensions/pre.ts", "dist pre\n");
+  write(source, "rules/mod.md", "mod v1\n");
+  write(agentDir, "extensions/pre.ts", "my pre\n");
+  recordHarnessInstall(agentDir, copyHarness(source, agentDir, entries), "1.0.0");
+  for (const rel of ["extensions/old.ts", "extensions/pre.ts", "rules/mod.md"]) fs.rmSync(path.join(source, rel));
+  write(agentDir, "rules/mod.md", "my mod\n");
+  write(agentDir, "extensions/mine.ts", "mine\n");
+  return fixture;
+}
+
+test("harness-update backs up and removes a retired file it installed and leaves every other file alone", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  try {
+    const exists = (rel) => fs.existsSync(path.join(agentDir, rel));
+    const recordBefore = fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8");
+    assert.deepEqual(diffHarness(source, agentDir, entries).retired.map(({ path: rel, status }) => [rel, status]), [["extensions/old.ts", "retired"], ["rules/mod.md", "user-modified"]]);
+
+    const dry = updateHarness(source, agentDir, entries, "2.0.0", { dryRun: true });
+    assert.deepEqual([dry.removed, dry.backupDir, dry.skipped["user-modified"]], [["extensions/old.ts"], null, ["rules/mod.md"]]);
+    assert.equal(exists("extensions/old.ts"), true);
+    assert.equal(exists(".cuelo-harness-backup"), false);
+    assert.equal(fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8"), recordBefore);
+
+    const report = updateHarness(source, agentDir, entries, "2.0.0");
+    assert.deepEqual([report.removed, report.skipped["user-modified"]], [["extensions/old.ts"], ["rules/mod.md"]]);
+    assert.equal(exists("extensions/old.ts"), false);
+    assert.equal(fs.readFileSync(path.join(report.backupDir, "extensions", "old.ts"), "utf8"), "old v1\n");
+    // Edited, never-recorded (null) and user-made files stay.
+    assert.deepEqual(["rules/mod.md", "extensions/pre.ts", "extensions/mine.ts"].map((rel) => fs.readFileSync(path.join(agentDir, rel), "utf8")), ["my mod\n", "my pre\n", "mine\n"]);
+    const files = readHarnessManifest(agentDir).files;
+    assert.equal("extensions/old.ts" in files, false);
+    assert.equal(typeof files["rules/mod.md"], "string");
+
+    // The edited file is reported again, and nothing else is removed on the next run.
+    const again = updateHarness(source, agentDir, entries, "2.0.0");
+    assert.deepEqual([again.removed, again.skipped["user-modified"], again.backupDir], [[], ["rules/mod.md"], null]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a recorded path that is linked or leads outside the profile is never removed", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  const outside = tempDir("retired-outside");
+  try {
+    write(outside, "victim.txt", "outside\n");
+    write(outside, "old.txt", "outside\n");
+    const hash = crypto.createHash("sha256").update("outside\n").digest("hex");
+    fs.symlinkSync(outside, path.join(agentDir, "link"));
+    const escape = `../${path.basename(outside)}/victim.txt`;
+    writeHarnessManifest(agentDir, { ...readHarnessManifest(agentDir).files, [escape]: hash, "link/old.txt": hash }, "1.0.0");
+    const report = updateHarness(source, agentDir, entries, "2.0.0");
+    assert.deepEqual(report.removed, ["extensions/old.ts"]);
+    assert.equal(fs.readFileSync(path.join(outside, "victim.txt"), "utf8"), "outside\n");
+    assert.equal(fs.readFileSync(path.join(outside, "old.txt"), "utf8"), "outside\n");
+    assert.deepEqual(report.skipped.untracked, ["link/old.txt"]);
+  } finally {
+    cleanup();
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("a failure after a retired file was removed puts it back and keeps the old record", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  const realCopy = fs.copyFileSync;
+  try {
+    write(source, "AGENTS.md", "agents v2\n");
+    fs.chmodSync(path.join(agentDir, "extensions", "old.ts"), 0o750);
+    const recordBefore = fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8");
+    fs.copyFileSync = (from, to, ...rest) => {
+      if (to !== path.join(agentDir, "AGENTS.md")) return realCopy(from, to, ...rest);
+      throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    };
+    assert.throws(() => updateHarness(source, agentDir, entries, "2.0.0"), /EIO/);
+    fs.copyFileSync = realCopy;
+    const oldFile = path.join(agentDir, "extensions", "old.ts");
+    assert.equal(fs.readFileSync(oldFile, "utf8"), "old v1\n");
+    assert.equal(fs.statSync(oldFile).mode & 0o777, 0o750);
+    assert.equal(fs.readdirSync(path.join(agentDir, ".cuelo-harness-backup")).length, 1);
+    assert.equal(fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8"), recordBefore);
+  } finally {
+    fs.copyFileSync = realCopy;
+    cleanup();
+  }
+});
+
+test("a retired file saved while it is being backed up is kept, and its backup keeps the original mode", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  const realOpen = fs.openSync;
+  const realClose = fs.closeSync;
+  try {
+    const oldFile = path.join(agentDir, "extensions", "old.ts");
+    fs.chmodSync(oldFile, 0o700);
+    let backupFd = null;
+    fs.openSync = (file, ...rest) => {
+      const fd = realOpen(file, ...rest);
+      if (String(file).includes(".cuelo-harness-backup") && String(file).endsWith(path.join("extensions", "old.ts"))) backupFd = fd;
+      return fd;
+    };
+    fs.closeSync = (fd) => {
+      realClose(fd);
+      // The user saves the file right after its backup is complete.
+      if (fd === backupFd) fs.writeFileSync(oldFile, "saved meanwhile\n");
+    };
+    const report = updateHarness(source, agentDir, entries, "2.0.0");
+    fs.openSync = realOpen;
+    fs.closeSync = realClose;
+    assert.deepEqual([report.removed, report.skipped["user-modified"].includes("extensions/old.ts")], [[], true]);
+    assert.equal(fs.readFileSync(oldFile, "utf8"), "saved meanwhile\n");
+    assert.equal(typeof readHarnessManifest(agentDir).files["extensions/old.ts"], "string");
+    assert.equal(fs.statSync(path.join(report.backupDir, "extensions", "old.ts")).mode & 0o777, 0o700);
+  } finally {
+    fs.openSync = realOpen;
+    fs.closeSync = realClose;
+    cleanup();
+  }
+});
+
+test("a retired file that was recreated before the rollback is not overwritten and is named in the error", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  const realCopy = fs.copyFileSync;
+  try {
+    write(source, "AGENTS.md", "agents v2\n");
+    fs.copyFileSync = (from, to, ...rest) => {
+      if (to !== path.join(agentDir, "AGENTS.md")) return realCopy(from, to, ...rest);
+      write(agentDir, "extensions/old.ts", "new work\n");
+      throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    };
+    assert.throws(() => updateHarness(source, agentDir, entries, "2.0.0"), /EIO.*not put back: extensions\/old\.ts/);
+    assert.equal(fs.readFileSync(path.join(agentDir, "extensions", "old.ts"), "utf8"), "new work\n");
+  } finally {
+    fs.copyFileSync = realCopy;
+    cleanup();
+  }
+});
+
+test("a case-only rename, a drive-qualified record and a linked backup folder never lead to a removal", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  const outside = tempDir("retired-backup-outside");
+  try {
+    const hash = crypto.createHash("sha256").update("old v1\n").digest("hex");
+    write(agentDir, "C:/old.ts", "old v1\n");
+    fs.rmSync(path.join(source, "extensions", "x.ts"));
+    write(source, "extensions/X.ts", "x v1\n");
+    writeHarnessManifest(agentDir, { ...readHarnessManifest(agentDir).files, "C:/old.ts": hash }, "1.0.0");
+    // x.ts is still shipped under another spelling: it is not retired, whatever the filesystem's case rules.
+    const retired = diffHarness(source, agentDir, entries).retired.map((file) => file.path);
+    assert.deepEqual(retired, ["extensions/old.ts", "rules/mod.md"]);
+
+    fs.symlinkSync(outside, path.join(agentDir, ".cuelo-harness-backup"));
+    const dry = updateHarness(source, agentDir, entries, "2.0.0", { dryRun: true });
+    const live = updateHarness(source, agentDir, entries, "2.0.0");
+    assert.deepEqual([dry.removed, live.removed], [[], []]);
+    assert.deepEqual([dry.skipped["backup-unsafe"], live.skipped["backup-unsafe"]], [["extensions/old.ts"], ["extensions/old.ts"]]);
+    assert.equal(fs.readFileSync(path.join(agentDir, "extensions", "old.ts"), "utf8"), "old v1\n");
+    assert.equal(fs.readFileSync(path.join(agentDir, "C:", "old.ts"), "utf8"), "old v1\n");
+    assert.equal(fs.readdirSync(outside).length, 0);
+  } finally {
+    cleanup();
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("a distribution that lists no files removes nothing, and a missing source folder fails before touching the profile", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  try {
+    const recordBefore = fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8");
+    const report = updateHarness(source, agentDir, [], "2.0.0");
+    assert.deepEqual([report.removed, report.backupDir], [[], null]);
+    assert.match(report.retiredSkipped, /no harness files/);
+    assert.equal(fs.existsSync(path.join(agentDir, "extensions", "old.ts")), true);
+    assert.equal(readHarnessManifest(agentDir).files["extensions/old.ts"] !== undefined, true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, HARNESS_MANIFEST), "utf8")).files["extensions/old.ts"], JSON.parse(recordBefore).files["extensions/old.ts"]);
+
+    fs.rmSync(source, { recursive: true });
+    assert.throws(() => updateHarness(source, agentDir, entries, "2.0.0"), /ENOENT/);
+    assert.equal(fs.existsSync(path.join(agentDir, "extensions", "old.ts")), true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a setup re-run keeps the record of a file the distribution dropped, so harness-update can still retire it", () => {
+  const { source, agentDir, entries, cleanup } = retiredFixture();
+  try {
+    recordHarnessInstall(agentDir, copyHarness(source, agentDir, entries), "2.0.0");
+    assert.equal(typeof readHarnessManifest(agentDir).files["extensions/old.ts"], "string");
+    assert.deepEqual(updateHarness(source, agentDir, entries, "2.0.0").removed, ["extensions/old.ts"]);
+  } finally {
+    cleanup();
   }
 });
 

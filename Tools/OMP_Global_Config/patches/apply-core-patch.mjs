@@ -9010,6 +9010,103 @@ function operationFromNative(op: string): Operation | undefined {
 	},
 	...TODO_DEPENDENCY_EDITS,
 	{
+		file: "src/session/session-manager.ts",
+		marker: "beginCueloTodoNudgeRequest(): void",
+		anchor: "\tgetSessionId(): string {\n\t\treturn this.#sessionId;\n\t}",
+		patched: `	getSessionId(): string {
+		return this.#sessionId;
+	}
+
+	// CUELO: this budget belongs to direct user input, not a prompt cycle or todo mutation.
+	#cueloTodoNudgeRequest?: {
+		sessionId: string;
+		claimed: boolean;
+		fifthReminder?: { content: string; atStop: boolean };
+	};
+
+	beginCueloTodoNudgeRequest(): void {
+		this.#cueloTodoNudgeRequest = { sessionId: this.#sessionId, claimed: false };
+	}
+
+	getCueloTodoNudgeRequest() {
+		const request = this.#cueloTodoNudgeRequest;
+		return request?.sessionId === this.#sessionId ? request : undefined;
+	}`,
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: '// CUELO: core also consumes direct input for the todo reminder budget.',
+		anchor: "\thasHandlers(eventType: string): boolean {\n\t\tfor (const ext of this.extensions) {",
+		patched: `	hasHandlers(eventType: string): boolean {
+		// CUELO: core also consumes direct input for the todo reminder budget.
+		if (eventType === "input") return true;
+		for (const ext of this.extensions) {`,
+	},
+	{
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "this.sessionManager.beginCueloTodoNudgeRequest();",
+		anchor: `	): Promise<InputEventResult> {
+		if (!this.hasHandlers("input")) return {};
+		const ctx = this.createContext();
+		let currentText = text;
+		let currentImages = images;
+
+		for (const ext of this.extensions) {
+			for (const handler of ext.handlers.get("input") ?? []) {
+				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as`,
+		patched: `	): Promise<InputEventResult> {
+		if (source === "interactive" || source === "rpc") this.sessionManager.beginCueloTodoNudgeRequest();
+		let ctx: ExtensionContext | undefined;
+		let currentText = text;
+		let currentImages = images;
+
+		for (const ext of this.extensions) {
+			for (const handler of ext.handlers.get("input") ?? []) {
+				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				ctx ??= this.createContext();
+				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as`,
+	},
+	{
+		file: "src/session/todo-tracker.ts",
+		marker: "if (request?.claimed) return null;",
+		anchor: "\ttakeMidRunNudge(): AgentMessage | null {\n\t\tconst mode = cfgTodoMidRunNudges.get(this.#host.settings);",
+		patched: `	takeMidRunNudge(): AgentMessage | null {
+		const request = this.#host.sessionManager.getCueloTodoNudgeRequest();
+		if (request?.claimed) return null;
+		const mode = cfgTodoMidRunNudges.get(this.#host.settings);`,
+	},
+	{
+		file: "src/session/todo-tracker.ts",
+		marker: "if (request) request.claimed = true;",
+		// Claim only after the existing eligibility checks and prompt rendering succeed.
+		anchor: '\t\treturn {\n\t\t\trole: "custom",\n\t\t\tcustomType: MID_RUN_NUDGE_MESSAGE_TYPE,',
+		patched: `		if (request) request.claimed = true;
+		return {
+			role: "custom",
+			customType: MID_RUN_NUDGE_MESSAGE_TYPE,`,
+	},
+	{
+		file: "src/session/agent-session.ts",
+		marker: "request.fifthReminder = undefined;",
+		anchor: "\t\t\tthunks.push(() => this.#todo.takeMidRunNudge());",
+		patched: `			thunks.push(() => this.#todo.takeMidRunNudge());
+			thunks.push(() => {
+				const request = this.sessionManager.getCueloTodoNudgeRequest();
+				const reminder = request?.fifthReminder;
+				if (!request || !reminder || (boundary === "stop" && !reminder.atStop && !hasDelivery)) return null;
+				request.fifthReminder = undefined;
+				return {
+					role: "custom",
+					customType: "todo-nudge",
+					content: reminder.content,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				};
+			});`,
+	},
+	{
 		// 2026-09-27 edit 거절 조사: 7일 거절 174건 중 68건이 직전 edit 응답의 새 태그를 기준으로 했다. edit 가
 		// 성공하면 새 스냅샷은 응답에 보인 몇 줄만 '본 줄' 로 갖고, 전에 읽은 바뀌지 않은 줄은 잃었다(1~43줄 read →
 		// 5줄 edit → 30줄 edit 거절로 재현). 이전 태그의 본 줄을 두 스냅샷 사이 줄 대응으로 옮겨 새 태그에 더한다.

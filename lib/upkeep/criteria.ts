@@ -38,6 +38,11 @@ export const COMPLAINT_COUNT_FLOOR = 3;
 
 /** 도구 결과 뒤 다음 모델 요청까지 이보다 오래 걸리면 느린 대기로 센다. */
 export const SLOW_GAP_MS = 20_000;
+/**
+ * 「느린 대기」 행의 p90 비교 하한(2026-11-20, 사용자가 비율을 Main에게 맡김): 두 기간 중 큰 p90이 SLOW_GAP_MS의 25%(5초)
+ * 아래면 p90으로는 판정하지 않는다. 11-20 점검판이 원 건수 0 대 0인데 p90 30ms→65ms만으로 「문제」를 냈다.
+ */
+export const SLOW_GAP_P90_FLOOR_MS = SLOW_GAP_MS / 4;
 
 /** HANDOFF 「기본 Maker 관찰」: 한 모델이 partial로 2회 이상 끝나면 보고. */
 export const EARLY_EXIT_REPORT_COUNT = 2;

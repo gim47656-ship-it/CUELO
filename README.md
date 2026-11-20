@@ -376,7 +376,7 @@ bun bin/cuelo.js --reset-password      # 비밀번호 재설정
 
 위 조건을 하나라도 만족하지 못하거나 설치 방식을 알아볼 수 없으면 버튼 대신 수동 명령을 화면에 표시합니다. 서버(또는 개발 서버)를 먼저 멈춘 뒤 `git pull --ff-only && node install.mjs setup`을 실행하세요. `setup`이 실행 중인 서버가 읽는 `.next/` 빌드 폴더를 새로 만들기 때문입니다. `setup`은 `bun install --frozen-lockfile`, SDK 소스 준비, 빌드, 패치와 고지문 적용·검사를 차례로 합니다. 끝나면 `node install.mjs start`로 서버를 다시 켭니다. `--home <dir>`로 시작했다면 `node install.mjs setup --home <dir>`처럼 같은 옵션을 붙이세요.
 
-앱 업데이트와 프로필(하네스) 업데이트는 따로입니다. 앱을 업데이트해도 기존 프로필의 하네스·역할 설정은 덮어쓰지 않습니다. 새 버전의 하네스는 `node install.mjs harness-diff`로 차이를 보고 `node install.mjs harness-update`로 반영합니다. 사용자가 고치지 않은 파일만 백업 후 바꾸고, 고친 파일과 `config.yml`은 그대로 둡니다([기존 프로필의 하네스 갱신](./docs/installation.md#기존-프로필의-하네스-갱신)). 반영 후 CUELO와 `omp`를 다시 시작하세요.
+앱 업데이트와 프로필(하네스) 업데이트는 따로입니다. 앱을 업데이트해도 기존 프로필의 하네스·역할 설정은 덮어쓰지 않습니다. 새 버전의 하네스는 `node install.mjs harness-diff`로 차이를 보고 `node install.mjs harness-update`로 반영합니다. 사용자가 고치지 않은 파일만 백업 후 바꾸고, 새 버전이 더는 배포하지 않는 파일도 CUELO가 설치한 그대로일 때만 백업 후 지웁니다. 고친 파일과 `config.yml`은 그대로 둡니다([기존 프로필의 하네스 갱신](./docs/installation.md#기존-프로필의-하네스-갱신)). 반영 후 CUELO와 `omp`를 다시 시작하세요.
 
 업데이트 대기 화면에서 실패가 확인되더라도 서버가 다시 요청을 받을 수 있고 원래 대화가 확인되면 그 대화로 자동 복귀합니다. 복귀한 화면은 진행 중인 답변이나 이미 끝난 실패 안내를 따라잡으며, 복귀 자체가 명령을 다시 보내지는 않습니다.
 

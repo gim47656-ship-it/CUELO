@@ -197,7 +197,7 @@ node install.mjs harness-update --dry-run
 node install.mjs harness-update
 ```
 
-`harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·별도로 설치한 개인 스킬은 바꾸지 않습니다. 배포 목록에 포함된 기본 스킬은 다른 하네스 파일과 같은 기준으로 갱신합니다. `--dry-run`은 무엇이 바뀔지만 보여 주며, `--json`은 결과를 JSON으로 냅니다.
+`harness-diff`는 프로필의 하네스 파일을 지금 버전의 배포본과 비교해 다섯 가지로 나눕니다. `update-available`은 설치한 뒤 아무도 고치지 않았고 새 버전이 달라진 파일, `missing`은 프로필에 없는 파일, `user-modified`는 설치 뒤 사용자가 고친 파일, `untracked`는 설치 기록이 없는 파일이고, 나머지는 배포본과 같은 파일입니다. 여기에 더해 `retired` 묶음은 CUELO가 설치했지만 새 버전이 더는 배포하지 않는 파일을 보여 줍니다. `harness-update`는 `update-available` 파일을 `.cuelo-harness-backup/<시각>/`에 백업한 뒤 바꾸고 `missing` 파일을 더합니다. `retired` 파일은 설치한 그대로일 때만 같은 백업 폴더에 옮겨 둔 뒤 지우고, 설치 뒤 고쳤다면 그대로 두고 목록으로 알립니다. 설치 기록이 없거나 설치 전부터 있던 파일, 사용자가 직접 만든 확장은 지우지 않습니다. 배포 목록이 비어 있으면 아무것도 지우지 않습니다. `user-modified`·`untracked` 파일과 `config.yml`·`models.yml`·별도로 설치한 개인 스킬은 바꾸지 않습니다. 배포 목록에 포함된 기본 스킬은 다른 하네스 파일과 같은 기준으로 갱신합니다. `--dry-run`은 무엇이 바뀌고 지워질지만 보여 주며, `--json`은 결과를 JSON으로 냅니다.
 
 `harness-update` 실행 중 예외가 발생하면 이번 갱신 과정에서 작성된 파일을 되돌립니다. 그사이 사용자가 고친 파일과 기존 로컬 설정, 추적되지 않는 파일은 강제로 덮어쓰지 않습니다. 되돌리지 못한 파일은 오류에 경로를 남기며, 이전 내용은 백업 위치에서 확인할 수 있습니다.
 
