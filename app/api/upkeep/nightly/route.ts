@@ -1,11 +1,12 @@
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
-import { type AgentSessionWrapper, getRunningRpcSessionIds, reserveWorktreeRemoval, startNewRpcSession } from "@/lib/rpc-manager";
-import { invalidateSessionListCache } from "@/lib/session-reader";
+import { type AgentSessionWrapper, beginGuardedSessionDeletion, getRunningRpcSessionIds, reserveWorktreeRemoval, startNewRpcSession } from "@/lib/rpc-manager";
+import { invalidateSessionListCache, readFirstUserMessage, readSessionHeader, resolveSessionPath } from "@/lib/session-reader";
+import { readLastAssistant } from "@/lib/upkeep/nightly-result";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
-import { type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
+import { NIGHTLY_PREAMBLE, NIGHTLY_PROBLEM_SECTION, type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
 import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox } from "@/lib/upkeep/nightly-inbox";
 import { collectNightlyCoreUpdate, type CoreUpdateLookup } from "@/lib/upkeep/nightly-core";
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
@@ -34,15 +35,24 @@ export async function POST(req: Request) {
     log("rejected: untrusted request");
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
-  const dryRun = new URL(req.url).searchParams.get("dryRun") === "1";
-  if (dryRun) return planAndRun(true);
+  const params = new URL(req.url).searchParams;
+  const recovery = params.get("recoverLocal");
+  if (recovery !== null && (params.get("mode") !== "inbox" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(recovery))) {
+    return NextResponse.json({ error: "Recovery requires inbox mode and the completed local session id" }, { status: 400 });
+  }
+  if (params.get("mode") === "inbox" && (!process.env.CUELO_NIGHTLY_INBOX_DIR || !process.env.CUELO_NIGHTLY_OUTBOX_DIR || !process.env.CUELO_NIGHTLY_REPO)) {
+    log("refused cloud run: configure CUELO_NIGHTLY_INBOX_DIR, CUELO_NIGHTLY_OUTBOX_DIR and CUELO_NIGHTLY_REPO");
+    return NextResponse.json({ error: "Cloud nightly inbox configuration is incomplete" }, { status: 503 });
+  }
+  const dryRun = params.get("dryRun") === "1";
+  if (dryRun) return planAndRun(true, recovery);
   if (globalThis.__cueloNightlyInFlight) {
     log("skipped: in-progress");
     return NextResponse.json({ action: "skipped", reason: "in-progress" });
   }
   globalThis.__cueloNightlyInFlight = true;
   try {
-    return await planAndRun(false);
+    return await planAndRun(false, recovery);
   } finally {
     globalThis.__cueloNightlyInFlight = false;
   }
@@ -65,7 +75,7 @@ function describeSources(sources: readonly NightlySourcePlan[]): string {
   return sources.map((s) => `${s.source}: ${describeJobs(s.jobs) || "nothing"}`).join(" | ");
 }
 
-async function planAndRun(dryRun: boolean) {
+async function planAndRun(dryRun: boolean, recovery: string | null) {
   const agentDir = getAgentDir();
   let plan;
   let state;
@@ -76,18 +86,43 @@ async function planAndRun(dryRun: boolean) {
     const repoOverride = process.env.CUELO_NIGHTLY_REPO || null;
     const inboxDir = process.env.CUELO_NIGHTLY_INBOX_DIR;
     if (inboxDir) {
+      if (recovery !== null) {
+        const today = kstDate(now.toISOString());
+        if (!state || state.date !== today || state.sessionId !== recovery || nightlyStateBranch(state) !== nightlyBranch(today)
+          || getRunningRpcSessionIds().includes(recovery)) {
+          return NextResponse.json({ error: "Not today's completed primary nightly session" }, { status: 409 });
+        }
+        // Legacy local runs preserved older PC watermarks. Check the first assigned job, not a quote inside the evidence.
+        const file = await resolveSessionPath(recovery);
+        const header = file && readSessionHeader(file);
+        const prompt = file && readFirstUserMessage(file);
+        const jobs = "\n\n# 오늘 할 일\n\n";
+        const at = prompt?.indexOf(jobs) ?? -1;
+        const board = prompt?.indexOf("\n\n---\n\nCUELO 보수 전체 점검\n", at + jobs.length) ?? -1;
+        if (!file || !header || header.id !== recovery || header.cwd !== state.worktree || !prompt?.startsWith(NIGHTLY_PREAMBLE)
+          || at < 0 || !prompt.startsWith(NIGHTLY_PROBLEM_SECTION, at + jobs.length)
+          || board < 0 || !prompt.includes("\n- 판정: 문제\n- 판정 기준: ", board)
+          || !prompt.endsWith("6. 점검일이 지난 HANDOFF 항목은 원문에 적힌 조건과 기준으로 판정하고, 결과에 맞게 그 항목을 고쳐 주세요.")
+          || readLastAssistant(file)?.stopReason !== "stop") {
+          return NextResponse.json({ error: "No completed local problem-board run verified" }, { status: 409 });
+        }
+      }
       // 받은편지함 모드(클라우드): 이 기계 자신의 세션 기록과 보수 보고서는 쓰지 않는다.
       const inbox = readNightlyInbox(inboxDir, now);
+      if (recovery && !inbox.bundles.length) return NextResponse.json({ error: "No current inbox sources to recover" }, { status: 409 });
       for (const { file, reason } of inbox.skipped) log(`inbox skipped ${file}: ${reason}`);
       // 저장소 HANDOFF의 「클라우드 점검」 항목은 세션이 고칠 origin/main에서 읽는다. 받아 오지 못하면 HEAD로 돌아간다.
       const handoffs = repoOverride ? await readCloudHandoffs(repoOverride, now) : null;
       for (const warning of handoffs?.warnings ?? []) log(`handoff: ${warning}`);
       if (handoffs) log(`handoff base: ${handoffs.base ? `${handoffs.base.ref} ${handoffs.base.sha}` : "working tree (no commit found)"}`);
+      if (recovery && (!handoffs?.base || handoffs.base.ref !== "origin/main" || handoffs.warnings.some(w => w.startsWith("git fetch origin")))) {
+        return NextResponse.json({ error: "Recovery requires a freshly fetched origin/main" }, { status: 409 });
+      }
       // 지난 야간 브랜치 정리(2026-11-04 사용자 결정): origin/main에 들어간 원격 wt/nightly-* 가운데 보존 기간이 지난 것을 지운다.
       // 아직 도는 세션의 브랜치는 남긴다. 할 일이 없는 날에도 정리한다.
-      if (!dryRun && repoOverride && handoffs?.base?.ref === "origin/main") {
+      if (!dryRun && !recovery && repoOverride && handoffs?.base?.ref === "origin/main") {
         const keep = new Set<string>();
-        if (state && getRunningRpcSessionIds().includes(state.sessionId)) keep.add(nightlyBranch(state.date));
+        if (state && getRunningRpcSessionIds().includes(state.sessionId)) keep.add(nightlyStateBranch(state));
         const pruned = await pruneMergedNightlyBranches(repoOverride, handoffs.base.sha, keep, now);
         for (const warning of pruned.warnings) log(`branch prune: ${warning}`);
         if (pruned.deleted.length) log(`deleted merged ${pruned.deleted.join(", ")}`);
@@ -101,7 +136,7 @@ async function planAndRun(dryRun: boolean) {
       const issues = await collectOpenIssues();
       log(`issues: ${issues.status === "ok" ? `${issues.issues.length} open${issues.partial ? " (partial)" : ""}` : `unavailable (${issues.reason})`}`);
       coreUpdate = await collectNightlyCoreUpdate(repoOverride, handoffs?.base ? [handoffs.base.sha] : [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, coreUpdate);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, coreUpdate, recovery);
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);
@@ -132,11 +167,16 @@ async function planAndRun(dryRun: boolean) {
   let session: AgentSessionWrapper | undefined;
   let accepted = false;
   let sessionId: string | undefined;
+  // Only reserve the old session through acceptance; never delete its session, branch or worktree.
+  const original = recovery ? beginGuardedSessionDeletion(recovery, { onlyWhenIdle: true }) : null;
   try {
     // addWorktree가 새 경로를 allowFileRoot로 열어 두므로 /api/files가 곧바로 읽을 수 있다. 같은 날 이름이 같아 다시
     // 부르면 「Directory already exists」로 실패하므로 한 날에 두 번 열리지 않는다.
     // 받은편지함 모드는 HANDOFF를 읽은 커밋(보통 origin/main)에 브랜치를 둔다. 아무도 당겨 오지 않는 저장소 HEAD는 낡을 수 있다.
-    if (plan.base) log(`${await createNightlyBranch(plan.repoCwd, plan.branch, plan.base.sha)} ${plan.branch} at ${plan.base.ref} ${plan.base.sha}`);
+    if (recovery && (!original?.reserved || kstDate(new Date().toISOString()) !== plan.date)) {
+      return NextResponse.json({ error: "Original session resumed or recovery date changed" }, { status: 409 });
+    }
+    if (plan.base) log(`${await createNightlyBranch(plan.repoCwd, plan.branch, plan.base.sha, !!recovery)} ${plan.branch} at ${plan.base.ref} ${plan.base.sha}`);
     worktree = (await addWorktree(plan.repoCwd, plan.branch)).path;
     const started = await startNewRpcSession(undefined, worktree);
     session = started.session;
@@ -155,5 +195,7 @@ async function planAndRun(dryRun: boolean) {
     log(`failed ${accepted ? "to record an accepted run" : "to start"}${worktree ? ` in ${worktree}` : ""}: ${message}`);
     // 받은 세션은 계속 돌므로 id를 함께 돌려준다. 클라우드 실행 스크립트가 그 세션을 위해 활동 lease를 잡는다.
     return NextResponse.json({ error: message, ...(worktree ? { worktree } : {}), ...(accepted ? { accepted, sessionId } : {}) }, { status: 500 });
+  } finally {
+    original?.release();
   }
 }

@@ -6,7 +6,7 @@
  */
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { writePrivateFileAtomicSync } from "../atomic-file";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { buildFullPrompt, kstDate, kstDateTime } from "./prompt";
@@ -314,6 +314,12 @@ export function candidateLine(candidate: SkillCandidate): string {
 /** 야간 세션의 worktree 브랜치 이름. `date`는 KST 실행 날짜(YYYY-MM-DD)다. */
 export function nightlyBranch(date: string): string {
   return `wt/nightly-${date.replaceAll("-", "")}`;
+}
+
+/** addWorktree assigned this basename; legacy state records do not have a branch field. */
+export function nightlyStateBranch(state: Pick<NightlyState, "date" | "worktree">): string {
+  const primary = nightlyBranch(state.date);
+  return basename(state.worktree) === `${primary.replace("/", "-")}-inbox` ? `${primary}-inbox` : primary;
 }
 
 /** 할 일이 있어도 오늘 열지 않을 이유. 로컬·받은편지함 두 모드가 같은 순서로 본다(할 일 없음 판정 다음). */

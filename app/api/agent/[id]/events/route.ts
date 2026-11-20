@@ -70,7 +70,9 @@ export async function GET(
       };
 
       const coalescer = createMessageUpdateCoalescer(encode);
-      const unsubscribe = session.onEvent((event) => {
+      let replaying = true;
+      let replayedDialog: AgentEvent | undefined;
+      const forward = (event: AgentEvent) => {
         // The entries stream stays open for the selected view after the main stream's idle
         // grace, so it also carries a bare run start that lets that view re-attach.
         const clientEvent = entriesOnly
@@ -79,6 +81,12 @@ export async function GET(
         if (!clientEvent) return;
         if (entriesOnly) {
           encode(clientEvent);
+          return;
+        }
+        // The client has one dialog slot. Replaying an older request first
+        // would replace the newer card and discard edits to it.
+        if (replaying && event.type === "extension_ui_request" && event.method !== "custom") {
+          replayedDialog = event;
           return;
         }
         if (includeTiming) {
@@ -90,11 +98,18 @@ export async function GET(
           return;
         }
         coalescer.push(clientEvent);
-      }, { keepAlive: entriesOnly });
+      };
+      const unsubscribe = session.onEvent(forward, { keepAlive: entriesOnly });
+      replaying = false;
 
-      // Subscribe first, then take the persisted snapshot. The two operations are synchronous:
-      // an append is either already in this snapshot or arrives through the listener above.
-      encode({ type: "connected", sessionId: id });
+      // Take the pending-ID snapshot after subscribing, then replay the latest
+      // dialog. Both operations are synchronous.
+      encode({
+        type: "connected",
+        sessionId: id,
+        ...(!entriesOnly ? { pendingExtensionUiIds: session.getPendingExtensionUiIds() } : {}),
+      });
+      if (replayedDialog) forward({ ...replayedDialog, replayed: true });
       if (entriesOnly) {
         const manager = session.inner.sessionManager;
         const entryId = manager.getLeafId();

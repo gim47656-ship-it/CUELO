@@ -1438,6 +1438,10 @@ export class AgentSessionWrapper {
     };
   }
 
+  getPendingExtensionUiIds(): string[] {
+    return [...this.pendingUiResponses.keys()];
+  }
+
   private listenerHost(): AgentSessionWrapper {
     return this.handedOverTo ? this.handedOverTo.listenerHost() : this;
   }
@@ -1702,6 +1706,7 @@ export class AgentSessionWrapper {
           fastModeActive: this.inner.isFastModeActive(),
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
+          pendingExtensionUiIds: this.getPendingExtensionUiIds(),
           subagents: this.getSubagentSnapshots(),
           // The tracker's own list, not a transcript reading: a todo change the harness makes
           // outside the todo tool carries no tool record and no other event mentions it, so this
@@ -2449,7 +2454,10 @@ export class AgentSessionWrapper {
 
     this.pendingUiRequests.set(id, fullRequest as AgentEvent);
     this.pendingUiResponses.set(id, {
-      resolve: (response) => settle(parseResponse(response)),
+      resolve: (response) => {
+        settle(parseResponse(response));
+        this.emit({ type: "extension_ui_closed", id });
+      },
       cancel: () => settle(defaultValue),
       ...(timeout && timeoutValue
         ? {

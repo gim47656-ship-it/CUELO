@@ -26,7 +26,7 @@ export const MORNING_STATE_FILE = "cuelo-morning-report.json";
 export const FIRST_RUN_WINDOW_DAYS = 3;
 /** 스킬 폴더 이름 규칙(cuelo-cloud-sync.sh의 name_re와 같다). */
 export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/;
-const NIGHTLY_REF_RE = /^origin\/wt\/nightly-(\d{4})(\d{2})(\d{2})$/;
+const NIGHTLY_REF_RE = /^origin\/wt\/nightly-(\d{4})(\d{2})(\d{2})(?:-inbox)?$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const DAY_MS = 86_400_000;
 

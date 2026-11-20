@@ -374,7 +374,12 @@ export async function readCloudHandoffs(repo: string, now: Date): Promise<CloudH
  * 야간 브랜치를 `base` 커밋에 둔다. 없으면 만들고, 이미 있으면(같은 날 시작 실패 뒤 다시 부름) base와 같을 때 그대로 쓰고
  * base의 조상이면 base로 옮긴다(잃을 커밋이 없다). base에 없는 커밋이 있으면 덮지 않고 던진다.
  */
-export async function createNightlyBranch(repo: string, branch: string, base: string): Promise<"created" | "reused" | "moved"> {
+export async function createNightlyBranch(repo: string, branch: string, base: string, freshOnly = false): Promise<"created" | "reused" | "moved"> {
+  if (freshOnly) {
+    if ((await git(repo, ["for-each-ref", "--format=%(refname)", `refs/remotes/origin/${branch}`])).trim()) throw new Error(`Remote recovery branch already exists: ${branch}`);
+    await git(repo, ["branch", branch, base]); // No -f: even a same-SHA local collision is refused.
+    return "created";
+  }
   let current: string;
   try {
     current = (await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`])).trim();
@@ -465,7 +470,7 @@ export async function pruneNightlyWorktrees(
   for (const block of listed.split("\n\n").slice(1)) {
     const path = /^worktree (.+)$/m.exec(block)?.[1];
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (!path || !branch || nightlyBranchStart(branch) === null || keep.has(branch) || branch === today) continue;
+    if (!path || !branch || nightlyBranchStart(branch) === null || keep.has(branch) || branch === today || branch === `${today}-inbox`) continue;
     try {
       await git(repo, ["merge-base", "--is-ancestor", (await git(path, ["rev-parse", "HEAD"])).trim(), base]);
     } catch (error) {
@@ -521,9 +526,9 @@ function cloudHandoffBlock(items: readonly UpkeepDueItem[], base: NightlyBase | 
     "# 저장소 HANDOFF 클라우드 점검",
     "",
     `아래는 이 worktree가 시작한 커밋(${base ? `${base.ref} \`${base.sha.slice(0, 8)}\`` : "저장소 작업 사본"})의 HANDOFF에서 제목에 「${CLOUD_CHECK_MARKER}」이 붙고 점검일이 지난 항목입니다. PC가 보낸 기록이 아니라 이 worktree에 있는 파일이므로 출처 절과 섞지 않습니다. 결정 기록의 phase에는 \`HANDOFF\`와 항목 제목을 적습니다.`,
-    "1. 판정은 항목 원문에 적힌 조건과 기준으로만 내리고, 근거는 클라우드가 직접 확인할 수 있는 것만 씁니다: 이 기계의 로그와 journal(`journalctl`), 이 저장소와 git 기록, 공개 CI 결과, 공개 주소.",
+    "1. 판정은 항목 원문에 적힌 조건과 기준으로만 내립니다. 저장소 기록, 출처와 측정 시점이 맞는 PC 집계나 설치 영수증, 이 기계의 journal(`journalctl`), 공개 CI 결과나 공개 주소에서 그 조건을 확인합니다.",
     "2. 결과에 맞게 이 worktree의 그 항목을 고칩니다. 끝났으면 항목을 정리하고 근거를 작업 기록(doc/history)에 남깁니다. 아직이면 제목의 점검일을 다음 점검일로 바꾸고 본문에 그 이유를 한 줄 적습니다. 본문에 새 날짜만 적으면 제목의 지난 날짜가 그대로 기한으로 남습니다.",
-    `3. 판정에 사용자 결정, 다른 PC, 실제 장비, 로그인이 필요한 화면처럼 클라우드가 확인할 수 없는 것이 필요하면 추측해 판정하지 않습니다. 제목에서 「${CLOUD_CHECK_MARKER}」만 빼고 본문에 그 이유를 한 줄 적은 뒤, 아침 요약에 누가 무엇을 확인해야 하는지 씁니다.`,
+    `3. 원래 조건에 사람의 판단, 장비 조작, 로그인이나 별도 승인이 필요하면 추측해 판정하지 않습니다. 그 조건에는 「${CLOUD_CHECK_MARKER}」를 붙이지 않고 누가 무엇을 확인해야 하는지 남깁니다. PC에서 생긴 기록이라는 이유만으로 넘기지는 않습니다.`,
     `4. 고친 뒤 이 worktree에서 아래 명령이 고친 항목을 더 내지 않는지 확인합니다: \`${CLOUD_CHECK_COMMAND}\``,
     "5. HANDOFF·기록만 바뀌었으면 위 4번대로 버전은 그대로 두고, 5번대로 `git_integrate`로 게시합니다.",
     "6. 아침 요약에 「HANDOFF 점검」 절을 따로 두고, 항목마다 판정(닫음·다음 점검일·사람 확인 필요)과 근거를 한 줄씩 씁니다.",
@@ -778,6 +783,7 @@ export function planInboxRun(
   issues: IssueLookup,
   handoffs: Pick<CloudHandoffs, "items" | "base" | "dreamingLedger"> | null = null,
   coreUpdate: CoreUpdateLookup | null = null,
+  completedLocalSessionId: string | null = null,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   type Active = { bundle: NightlyBundle; candidates: SkillCandidate[]; plan: NightlySourcePlan };
@@ -801,7 +807,9 @@ export function planInboxRun(
   }
   const handoffItems = cloudCheckItems(handoffs?.items ?? []);
   const blocked = nightlyGuard(repoCwd, state, date, runningSessionIds);
-  if (blocked || !repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
+  const recovery = completedLocalSessionId !== null && completedLocalSessionId === state?.sessionId
+    && blocked === "already-ran-today" && !runningSessionIds.includes(completedLocalSessionId) && bundles.length > 0;
+  if ((!recovery && blocked) || !repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };
 
   const sections = [NIGHTLY_PREAMBLE, nightlyAuditRules(date), inboxIntro(outboxDir), INBOX_PRIORITY_RULES, issueBlock(issues)];
   if (coreUpdate) {
@@ -824,6 +832,14 @@ export function planInboxRun(
     sections.push(block.join("\n"));
   }
   const regressionReview = regressionReviewDue(state, date);
+  sections.push([
+    "# 남은 HANDOFF 항목 분류",
+    `\`doc/cuelo-ops-reference.md\`의 「Nightly self-improvement loop」를 따릅니다. 이 worktree의 ${HANDOFF_PATHS.map((path) => `\`${path}\``).join(", ")}에서 남은 행동 절을 읽고, 기한이 지난 행은 표시가 없는 항목까지 이번 야간 세션에서 하나씩 대조합니다.`,
+    `각 행의 출처 PC, 측정 기간과 기준 시각, 원래 닫는 조건을 확인합니다. 이미 게시한 측정 기록과 해당 PC가 보낸 집계나 설치 영수증을 먼저 씁니다. 조건을 채웠으면 이번에 닫고 근거를 작업 기록에 남깁니다. 일부만 확인했다면 확인한 부분과 남은 조건을 나눕니다. 표본이 없거나 발췌가 잘렸으면 미측정입니다. 클라우드에서 다시 판정할 행에는 굵은 제목에 「${CLOUD_CHECK_MARKER}」와 다음 점검일을 적습니다.`,
+    "같은 자료가 거듭 빠져 판정하지 못하면 날짜만 미루지 않습니다. 원래 조건에 꼭 필요한 비식별 집계(예: 설치 뒤 관찰 건수와 그중 재발 건수)만 기존 PC 수집기와 야간 내보내기에 이 worktree에서 직접 구현합니다. 출처별로 격리된 예제로 수집부터 클라우드가 묶음을 읽는 경로까지 검증하고, 값이 없거나 예전 묶음에 필드가 없을 때 0건 또는 성공으로 읽지 않는지도 봅니다. 기존 검토와 게시 절차를 따릅니다.",
+    "집계를 위해 원본 로그, 대화, 계정이나 세션 식별자를 보내거나 권한을 넓히지 않습니다. PC에 직접 접속하거나 배포, 동기화, 오류나 모델 호출을 강제로 일으키지 않습니다. 구현을 마쳐도 관찰한 것은 아닙니다. 다음 정기 동기화로 받은 실제 출처와 측정 시점을 확인한 뒤 판정합니다.",
+    "판정 기준이나 승인 정책은 바꾸지 않습니다. 사용자 결정, 실제 장비 조작이나 별도 승인이 필요한 부분은 표시 없이 남깁니다. 아침 요약에는 행별로 닫은 근거, 부분 확인 또는 미측정 사유, 보강한 집계와 다음 확인 조건을 적습니다.",
+  ].join("\n"));
   if (regressionReview) sections.push(NIGHTLY_REGRESSION_SECTION);
   if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));
   sections.push(IMPROVEMENT_REVIEW_BLOCK, NIGHTLY_PLUGIN_REVIEW, INBOX_SUMMARY_RULES);
@@ -831,7 +847,7 @@ export function planInboxRun(
     action: "run",
     date,
     repoCwd,
-    branch: nightlyBranch(date),
+    branch: nightlyBranch(date) + (recovery ? "-inbox" : ""),
     jobs: {
       problems: active.flatMap(({ bundle }) => bundle.problems.map((p) => `${bundle.source}:${p.id}`)),
       skillCandidates: active.reduce((sum, { candidates }) => sum + candidates.length, 0),

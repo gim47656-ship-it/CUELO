@@ -100,7 +100,7 @@ export const NIGHTLY_BRANCH_RETENTION_DAYS = 7;
  * 아니거나 달력에 없는 날짜(2월 30일 같은)면 null.
  */
 export function nightlyBranchStart(branch: string): number | null {
-  const match = /^(?:origin\/|refs\/heads\/)?wt\/nightly-(\d{4})(\d{2})(\d{2})$/.exec(branch);
+  const match = /^(?:origin\/|refs\/heads\/)?wt\/nightly-(\d{4})(\d{2})(\d{2})(?:-inbox)?$/.exec(branch);
   if (!match) return null;
   const day = `${match[1]}-${match[2]}-${match[3]}`;
   const start = Date.parse(`${day}T00:00:00+09:00`);

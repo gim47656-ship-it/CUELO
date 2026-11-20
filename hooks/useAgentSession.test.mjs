@@ -226,14 +226,34 @@ export const useLayoutEffect = () => {};
   hook = useRenderedSession();
   assert.equal(hook.extensionDialog.id, newRequest.id);
 
-  hook.handleAgentEventRef.current({ ...oldRequest, closed: true });
+  hook.handleAgentEventRef.current({ type: "extension_ui_closed", id: oldRequest.id });
   hook = useRenderedSession();
   assert.equal(hook.extensionDialog.id, newRequest.id);
   assert.equal(hook.extensionResponse, null);
-
-  hook.handleAgentEventRef.current({ ...newRequest, closed: true });
+  hook.handleAgentEventRef.current({ type: "connected", pendingExtensionUiIds: [newRequest.id] });
+  hook.handleAgentEventRef.current({ ...newRequest, replayed: true });
   hook = useRenderedSession();
-  assert.equal(hook.extensionDialog, null);
+  assert.equal(hook.extensionDialog, newRequest, "replaying a pending ID must not reset edited fields");
+
+  const newerResponse = hook.respondToExtensionUi(newRequest, { value: JSON.stringify({ kind: "chat" }) });
+  finishResponses[0]();
+  await response;
+  hook = useRenderedSession();
+  assert.deepEqual(hook.extensionResponse, { id: newRequest.id, status: "sending" });
+
+  const nextRequest = { ...newRequest, id: "ask-during-disconnect", replayed: true };
+  hook.handleAgentEventRef.current({ type: "connected", pendingExtensionUiIds: [newRequest.id, nextRequest.id] });
+  hook.handleAgentEventRef.current(nextRequest);
+  hook = useRenderedSession();
+  assert.equal(hook.extensionDialog, newRequest, "a newer replay must not take over a still-pending card");
+  assert.deepEqual(hook.extensionResponse, { id: newRequest.id, status: "sending" });
+  hook.handleAgentEventRef.current({ type: "extension_ui_closed", id: newRequest.id });
+  hook = useRenderedSession();
+  assert.equal(hook.extensionDialog, nextRequest, "the deferred card appears after the visible request settles");
+  hook.handleAgentEventRef.current({ type: "connected", pendingExtensionUiIds: [] });
+  hook = useRenderedSession();
+  assert.equal(hook.extensionDialog, null, "a reconnect clears a dialog closed while away");
+  assert.equal(hook.extensionResponse, null);
   const customRequest = {
     type: "extension_ui_request",
     id: "custom-dialog",
@@ -309,7 +329,7 @@ export const useLayoutEffect = () => {};
 
 
   for (const finishResponse of finishResponses) finishResponse();
-  await response;
+  await newerResponse;
 });
 
 // 이미지 입력의 전달 상태를 실제 훅으로 렌더한다. fetch·EventSource만 대역이고 provider·서버 호출은 없다.

@@ -10,7 +10,7 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { writePrivateFileAtomicSync } from "../atomic-file";
-import { nightlyBranch, type NightlyState } from "./nightly";
+import { nightlyStateBranch, type NightlyState } from "./nightly";
 import { NIGHTLY_ARTIFACT_BYTES, parseMetricOutcomes, type NightlyMetricOutcome } from "./nightly-outcomes";
 
 const exec = promisify(execFile);
@@ -245,7 +245,7 @@ export async function inspectNightlyResult(input: {
     version: state.sources ? NIGHTLY_RESULT_VERSION : 1,
     date: state.date,
     sessionId: state.sessionId,
-    branch: nightlyBranch(state.date),
+    branch: nightlyStateBranch(state),
     worktree,
     startedAt: state.startedAt,
     finishedAt,

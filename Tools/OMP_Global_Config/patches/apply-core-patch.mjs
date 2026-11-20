@@ -25112,6 +25112,9 @@ import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";`,
 	const advisor = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&xYe(c))continue';
 	const advisorEntry = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
 	rewrite(advisorEntry, advisor, advisor, advisor);
+	// 19.0.1 retains the upstream filter under a new bundled identifier.
+	const advisor1901 = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&CYe(c))continue';
+	rewrite(advisorEntry, advisor1901, advisor1901, advisor1901);
 
 	port(one("src/tools/wait.ts", "runningAgentsOutsideJobs,"), "describeEvictedJob,",
 		mapped("buildJobResult, ", "buildJobResult, describeEvictedJob, "));

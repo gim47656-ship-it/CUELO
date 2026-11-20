@@ -116,6 +116,7 @@ type AgentStateResponse = {
   isHandoffRunning?: boolean;
   /** Tool calls the SDK is executing now (agent.state.pendingToolCalls). A reloaded view registers their progress keys. */
   pendingToolCalls?: string[];
+  pendingExtensionUiIds?: string[];
   extensionStatuses?: ExtensionStatusItem[];
   extensionWidgets?: ExtensionWidgetItem[];
   queuedMessages?: { steering?: string[]; followUp?: string[] } | null;
@@ -663,6 +664,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [noticeState, dispatchNotice] = useReducer(noticeReducer, { visible: [], pending: [] });
   const [sessionStatsOverride, setSessionStatsOverride] = useState<SessionStatsInfo | null>(null);
   const [extensionDialog, setExtensionDialog] = useState<ExtensionUiDialogRequest | null>(null);
+  const extensionDialogIdRef = useRef<string | null>(null);
+  const deferredExtensionDialogRef = useRef<ExtensionUiDialogRequest | null>(null);
   /** Delivery state of the reader's answer to `extensionDialog`. */
   const [extensionResponse, setExtensionResponse] = useState<ExtensionResponseState | null>(null);
   const extensionResponseRef = useRef<ExtensionResponseState | null>(null);
@@ -1218,10 +1221,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       es.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data) as AgentEvent;
+          if (event.type === "connected") settle("connected");
+          if (eventSourceRef.current !== es) return;
           if (event.type === "update_maintenance") {
             window.dispatchEvent(new CustomEvent("ompweb:update-maintenance", { detail: event }));
           }
-          if (event.type === "connected") settle("connected");
           handleAgentEventRef.current?.(event);
         } catch {
           // ignore
@@ -1278,10 +1282,35 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     throw new EventStreamConnectionError(result.status);
   }, [connectEvents]);
 
+  const showExtensionDialog = useCallback((request: ExtensionUiDialogRequest) => {
+    extensionDialogIdRef.current = request.id;
+    setExtensionDialog(request);
+    onAttentionNeeded?.(request);
+  }, [onAttentionNeeded]);
+
+  const clearExtensionDialog = useCallback((id: string) => {
+    if (deferredExtensionDialogRef.current?.id === id) deferredExtensionDialogRef.current = null;
+    if (extensionDialogIdRef.current === id) {
+      const deferred = deferredExtensionDialogRef.current;
+      deferredExtensionDialogRef.current = null;
+      if (deferred) {
+        showExtensionDialog(deferred);
+      } else {
+        extensionDialogIdRef.current = null;
+        setExtensionDialog(null);
+      }
+    }
+    if (extensionResponseRef.current?.id === id) {
+      extensionResponseRef.current = null;
+      setExtensionResponse(null);
+    }
+  }, [showExtensionDialog]);
+
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
     response: { value: string } | { confirmed: boolean } | { cancelled: true },
   ) => {
+    if (extensionDialogIdRef.current !== request.id) return;
     // The agent is waiting on this request, so the surface stays until the
     // server accepts the response. Clearing it first loses the only way to
     // answer when the POST fails.
@@ -1304,12 +1333,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ...response,
       });
     } catch (e) {
+      if (sessionIdRef.current !== sid || extensionDialogIdRef.current !== request.id) return;
       publish({ id: request.id, status: "failed", error: e instanceof Error ? e.message : String(e) });
       return;
     }
-    publish(null);
-    setExtensionDialog((current) => current?.id === request.id ? null : current);
-  }, []);
+    if (sessionIdRef.current === sid) clearExtensionDialog(request.id);
+  }, [clearExtensionDialog]);
 
   const sendExtensionCustomInput = useCallback(async (request: { id: string }, data: string) => {
     const sid = sessionIdRef.current;
@@ -1367,17 +1396,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     updateEntryIds(transcript.entryIds);
   }, [updateMessages, updateEntryIds]);
 
-  const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest) => {
+  const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest, replayed: boolean) => {
     if (request.method !== "custom" && "closed" in request && request.closed) {
-      setExtensionDialog((current) => current?.id === request.id ? null : current);
-      if (extensionResponseRef.current?.id === request.id) {
-        extensionResponseRef.current = null;
-        setExtensionResponse(null);
-      }
+      clearExtensionDialog(request.id);
       return;
     }
 
-    if (isBlockingExtensionUiRequest(request)) onAttentionNeeded?.(request);
+    if (request.method === "custom" && isBlockingExtensionUiRequest(request)) onAttentionNeeded?.(request);
 
     switch (request.method) {
       case "select":
@@ -1386,9 +1411,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "editor":
       case "ask":
       case "form":
-      case "plan_review":
-        setExtensionDialog(request);
+      case "plan_review": {
+        const previousId = extensionDialogIdRef.current;
+        if (previousId === request.id) break;
+        if (previousId !== null && replayed) {
+          deferredExtensionDialogRef.current = request;
+          break;
+        }
+        deferredExtensionDialogRef.current = null;
+        if (previousId !== null) clearExtensionDialog(previousId);
+        showExtensionDialog(request);
         break;
+      }
       case "notify": {
         addNotice({
           id: request.id,
@@ -1430,7 +1464,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
         break;
     }
-  }, [addNotice, onAttentionNeeded, opts.chatInputRef]);
+  }, [addNotice, clearExtensionDialog, onAttentionNeeded, opts.chatInputRef, showExtensionDialog]);
 
   const settleUiStage = useCallback(() => {
     const wasRunning = agentRunningRef.current;
@@ -1527,6 +1561,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
       try {
         const stateToken = todoSeqRef.current;
+        const previousDialogId = extensionDialogIdRef.current;
+        const previousDeferred = deferredExtensionDialogRef.current;
         const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
@@ -1569,6 +1605,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           return;
         }
 
+        // A disconnect can outlast grace. Do not apply a slow poll to
+        // dialog state that changed while the request was in flight.
+        const pending = data.running === false ? [] : state?.pendingExtensionUiIds;
+        if (pending && previousDialogId === extensionDialogIdRef.current
+          && previousDeferred === deferredExtensionDialogRef.current) {
+          if (previousDeferred && !pending.includes(previousDeferred.id)) deferredExtensionDialogRef.current = null;
+          if (previousDialogId !== null && !pending.includes(previousDialogId)) clearExtensionDialog(previousDialogId);
+        }
+        if (extensionDialogIdRef.current !== null) {
+          eventStreamGraceTimerRef.current = setTimeout(() => void checkServerIdle(), EVENT_STREAM_IDLE_GRACE_MS);
+          return;
+        }
 
         eventStreamGraceActiveRef.current = false;
         eventStreamGraceTimerRef.current = null;
@@ -1585,7 +1633,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
 
     eventStreamGraceTimerRef.current = setTimeout(() => void checkServerIdle(), EVENT_STREAM_IDLE_GRACE_MS);
-  }, [applyTodoSnapshot, cancelEventStreamGrace, closeEvents]);
+  }, [applyTodoSnapshot, cancelEventStreamGrace, clearExtensionDialog, closeEvents]);
 
   const finishPromptWithoutStream = useCallback(async (sid: string | null = sessionIdRef.current, runId = promptRunIdRef.current) => {
     // Bail out before loadSession too: a stale finish for a previous run
@@ -1857,6 +1905,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "connected": {
+        const pending = event.pendingExtensionUiIds;
+        const id = extensionDialogIdRef.current;
+        if (Array.isArray(pending)) {
+          const deferred = deferredExtensionDialogRef.current;
+          if (deferred && !pending.includes(deferred.id)) deferredExtensionDialogRef.current = null;
+          if (id !== null && !pending.includes(id)) clearExtensionDialog(id);
+        }
+        break;
+      }
+      case "extension_ui_closed":
+        if (typeof event.id === "string") clearExtensionDialog(event.id);
+        break;
       case "session_snapshot": {
         const merged = mergeSessionSnapshotEvent(
           event,
@@ -2209,10 +2270,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         break;
       case "extension_ui_request":
-        handleExtensionUiRequest(event as ExtensionUiRequest);
+        handleExtensionUiRequest(event as ExtensionUiRequest, event.replayed === true);
         break;
     }
-  }, [addNotice, applyTodoChange, applyTodoSnapshot, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, refreshContextUsage, resetCompletion, scheduleEventStreamClose, settleUiStage, updateEntryIds, updateMessages]);
+  }, [addNotice, applyTodoChange, applyTodoSnapshot, cancelEventStreamGrace, clearExtensionDialog, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, refreshContextUsage, resetCompletion, scheduleEventStreamClose, settleUiStage, updateEntryIds, updateMessages]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (
@@ -3300,6 +3361,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return () => {
       bashRecoveryIdRef.current += 1;
       cancelEventStreamGrace();
+      deferredExtensionDialogRef.current = null;
+      if (extensionDialogIdRef.current !== null) clearExtensionDialog(extensionDialogIdRef.current);
       closeEvents();
       closeSessionSnapshots();
     };
