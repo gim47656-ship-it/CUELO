@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createTurnEndGuard } from "../turn-end-guard";
 import unreapedJobs from "../../cuelo-plugins/unreaped-jobs";
 
@@ -62,8 +63,8 @@ test("SDK plugin loading and single-disable isolation for all four features", as
     const loaded = await loadExtensions(paths, process.cwd());
     expect(loaded.errors).toEqual([]);
     const sent: { customType?: string; content: string }[] = [];
-    const session = { getCwd: () => process.cwd(), getBranch: () => [], getSessionId: () => "toggle-sdk", getSessionFile: () => undefined };
-    const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), session as never, {} as never,
+    const session = SessionManager.inMemory(process.cwd());
+    const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), session, {} as never,
       undefined, undefined, undefined, () => ({ running: [{ id: "bg_sdk", type: "bash", status: "running", startTime: 1 }], recent: [], delivery: [] }) as never);
     runner.onError(error => { throw new Error(error.error); });
     loaded.runtime.sendMessage = (message) => { sent.push(message as { customType?: string; content: string }); };
@@ -71,7 +72,7 @@ test("SDK plugin loading and single-disable isolation for all four features", as
     await runner.emitInput("코드 확인", undefined, "rpc");
     await runner.emitToolCall({ type: "tool_call", toolName: "goal", toolCallId: "goal", input: { token_budget: 100 } });
     const todo = await runner.emitToolCall({ type: "tool_call", toolName: "todo", toolCallId: "todo", input: { op: "init", items: ["確認する"] } });
-    const recovery = await runner.emitToolResult({ type: "tool_result", toolName: "eval", toolCallId: "eval", input: {}, isError: true, content: [{ type: "text", text: "ENOBUFS" }] });
+    const recovery = await runner.emitToolResult({ type: "tool_result", toolName: "eval", toolCallId: "eval", input: {}, isError: true, details: undefined, content: [{ type: "text", text: "ENOBUFS" }] });
     await runner.emitToolResult({ type: "tool_result", toolName: "todo", toolCallId: "progress", input: {}, isError: false,
       content: [], details: { phases: [{ tasks: [{ content: "확인", status: "pending" }] }] } });
     await runner.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "완료했습니다." }] }] } as never);

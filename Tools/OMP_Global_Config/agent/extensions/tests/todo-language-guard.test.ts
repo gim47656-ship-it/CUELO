@@ -4,7 +4,7 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -18,23 +18,22 @@ async function harness() {
   expect(loaded.errors).toEqual([]);
   let phases: TodoPhase[] = [{ name: "작업", tasks: [{ content: "기존 작업", status: "pending" }] }];
   let writes = 0;
-  const entries: SessionEntry[] = [];
-  const session = {
-    getCwd: () => process.cwd(), getSessionId: () => "todo-language-test", getSessionFile: () => undefined,
-    getBranch: () => entries,
+  const manager = SessionManager.inMemory(process.cwd());
+  const todoSession = {
+    getSessionFile: () => manager.getSessionFile(),
     getTodoPhases: () => phases,
     setTodoPhases: (next: TodoPhase[]) => {
       phases = next; writes++;
       // Match the canonical snapshot the host journals after executing TodoTool.
-      entries.push({ type: "custom", customType: "user_todo_edit", data: { phases: next }, id: String(writes), parentId: null, timestamp: new Date().toISOString() });
+      manager.appendCustomEntry("user_todo_edit", { phases: next });
     },
   };
-  const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), session as never, {} as never);
+  const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), manager, {} as never);
   runner.onError(error => { throw new Error(error.error); });
   // TodoTool uses ArkType while the generic wrapper defaults to TypeBox; runtime supports both.
-  const nativeTool = new TodoTool(session as never) as unknown as AgentTool;
+  const nativeTool = new TodoTool(todoSession as never) as unknown as AgentTool;
   const tool = new ExtensionToolWrapper(nativeTool, runner);
-  return { runner, entries, state: () => structuredClone(phases), writes: () => writes,
+  return { runner, manager, state: () => structuredClone(phases), writes: () => writes,
     call: (input: Record<string, unknown>) => tool.execute("todo-test", input) };
 }
 
@@ -223,14 +222,11 @@ test("issue 84: an adverb between the English negation and the verb still prohib
 
 test("restores only real branch todo-language requests after resume", async () => {
   const h = await harness();
-  h.entries.push({ type: "message", id: "user", parentId: null, timestamp: new Date().toISOString(),
-    message: { role: "user", content: "할 일을 일본어로 작성해줘", timestamp: 0 } });
-  h.entries.push({ type: "message", id: "neutral", parentId: "user", timestamp: new Date().toISOString(),
-    message: { role: "user", content: "계속 진행해줘", timestamp: 1 } });
+  h.manager.appendMessage({ role: "user", content: "할 일을 일본어로 작성해줘", timestamp: 0 });
+  h.manager.appendMessage({ role: "user", content: "계속 진행해줘", timestamp: 1 });
   await h.runner.emit({ type: "session_start" });
   expect((await h.call({ op: "init", items: japanese })).isError).toBeUndefined();
-  h.entries.push({ type: "message", id: "agent", parentId: "neutral", timestamp: new Date().toISOString(),
-    message: { role: "user", content: "할 일을 한국어로 작성해줘", attribution: "agent", synthetic: true, timestamp: 2 } });
+  h.manager.appendMessage({ role: "user", content: "할 일을 한국어로 작성해줘", attribution: "agent", synthetic: true, timestamp: 2 });
   await h.runner.emit({ type: "session_start" });
   expect((await h.call({ op: "append", phase: "Tasks", items: ["パッチを確認"] })).isError).toBeUndefined();
 });
