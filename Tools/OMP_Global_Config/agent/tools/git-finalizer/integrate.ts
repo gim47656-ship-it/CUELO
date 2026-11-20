@@ -8,7 +8,7 @@
  * - source manifest(Tools/CUELO_Setup/files/source-integrity.json) 충돌은 합친 추적 내용으로 다시 만들어 자동으로 넘긴다.
  * - 잠금은 fetch와 게시 구간에만 잡는다. rebase·checks 동안 다른 세션의 git_finalize·git_integrate를 막지 않는다.
  */
-import type { CustomTool } from "@oh-my-pi/pi-coding-agent";
+import type { CustomTool, CustomToolContext } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matchBlockedCommand } from "../../extensions/command-guard/matcher";
 import { DELETED_BLOB, ledgerPath, runGate, spawnExec } from "../../extensions/lib/cross-review";
+import { finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import type { ToolApi } from "./index";
 import { isWindowsDrivePath } from "./wsl-git";
@@ -602,10 +603,59 @@ async function ensureCleanTracked(repo: Repo, stage: string): Promise<void> {
   if (dirty) throw new IntegrateFailure(stage, `tracked changes are present:\n${dirty}`);
 }
 
+type ConfiguredChecksOptions = { sessionManager?: CustomToolContext["sessionManager"]; waiver?: string };
+
+async function restoreAfterConfiguredFailure(repo: Repo, state: State, tested: string, untrackedBefore?: string): Promise<string> {
+  if (tested === state.origHead) return `No rebase rollback was needed; the starting commit was ${tested}.`;
+  // This is rollback of our own completed rebase, not a new rebase or remote update.
+  // Finish the rollback even when it was cancellation that stopped the checks.
+  const rollback = { ...repo, signal: undefined };
+  const ref = `refs/cuelo/integrate-failed/${state.branch}/${tested}`;
+  const stage = "finalize-checks rollback";
+  let saved = `Rebased commit: ${tested}.`;
+  try {
+    await gitOk(rollback, stage, ["update-ref", ref, tested]);
+    saved = `Rebased commit ${tested} is saved at ${ref}.`;
+    const branch = (await git(rollback, ["symbolic-ref", "-q", "HEAD"])).stdout.trim();
+    const head = await gitOk(rollback, stage, ["rev-parse", "HEAD"]);
+    if (branch !== `refs/heads/${state.branch}` || head !== tested || await rebaseInProgress(rollback)) {
+      return `${saved} Branch or HEAD changed during the checks; left the worktree unchanged.`;
+    }
+    await ensureCleanTracked(rollback, stage);
+    if (untrackedBefore !== undefined && untrackedBefore !== await gitOk(rollback, stage, ["ls-files", "--others", "--exclude-standard", "-z"])) {
+      return `${saved} The untracked file list changed during the checks; left the worktree unchanged.`;
+    }
+    await gitOk(rollback, stage, ["reset", "--keep", state.origHead]);
+    return `${saved} Restored ${state.branch} to ${state.origHead}; fix the check and start git_integrate again.`;
+  } catch (error) {
+    return `${saved} Could not restore ${state.branch} to ${state.origHead}; no remote refs changed. ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 /** rebase가 끝난 브랜치를 검사하고 잠금 안에서 게시한다. 대상이 그새 움직였으면 다시 rebase한다. */
-async function checkAndPublish(repo: Repo, state: State) {
+async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredChecksOptions) {
   for (;;) {
     const tested = await gitOk(repo, "checks", ["rev-parse", "HEAD"]);
+    let finalizeChecks: FinalizeChecksResult | undefined;
+    let untrackedBefore: string | undefined;
+    try {
+      finalizeChecks = await runFinalizeChecks({
+        root: repo.root, signal: repo.signal, ...configured,
+        files: async () => (await gitOk(repo, "finalize-checks", ["diff", "--name-only", "-z", "--no-renames", state.onto, tested])).split("\0").filter(Boolean),
+        authorize: async () => {
+          await ensureCleanTracked(repo, "finalize-checks");
+          if (tested !== state.origHead) untrackedBefore = await gitOk(repo, "finalize-checks", ["ls-files", "--others", "--exclude-standard", "-z"]);
+        },
+      });
+      if (finalizeChecks && !finalizeChecks.waiver) {
+        if ((await gitOk(repo, "finalize-checks", ["rev-parse", "HEAD"])) !== tested) throw new Error(`the checks moved HEAD from ${tested}`);
+        await ensureCleanTracked(repo, "finalize-checks");
+      }
+    } catch (error) {
+      const recovery = await restoreAfterConfiguredFailure(repo, state, tested, untrackedBefore);
+      await clearState(repo);
+      throw new IntegrateFailure("finalize-checks", `${error instanceof Error ? error.message : String(error)}\nNothing was pushed. ${recovery}`);
+    }
     let ran: { command: string; seconds: number }[];
     try {
       ran = await runChecks(repo, state.checks);
@@ -662,18 +712,20 @@ async function checkAndPublish(repo: Repo, state: State) {
         type: "text" as const,
         text: `Integrated ${state.branch} and pushed ${outcome.pushed} to ${state.remote} ${upstreamRef}.`
           + (state.moves > 0 ? ` The target moved ${state.moves} time(s) before the push; the branch was rebased and checked again.` : "")
-          + ` Session branch: ${branchNote}.` + ` Local branch: ${localNote}.` + ` Main checkout: ${mainNote}.` + syncHint,
+          + ` Session branch: ${branchNote}.` + ` Local branch: ${localNote}.` + ` Main checkout: ${mainNote}.`
+          + (finalizeChecks ? `\n${finalizeChecksNote(finalizeChecks)}` : "") + syncHint,
       }],
       details: {
         ok: true, stage: "complete", commitSha: outcome.pushed, remote: state.remote, upstreamRef, branch: state.branch,
         previousTarget: state.previousTarget, moves: state.moves, checks: ran, branchSync: branchNote, localBranch: localNote, mainCheckout: mainNote,
+        ...(finalizeChecks ? { finalizeChecks } : {}),
         ...(files.length <= 1000 ? { files } : { filesTruncated: true }),
       },
     };
   }
 }
 
-async function start(repo: Repo, params: { target?: string; checks?: string[] }) {
+async function start(repo: Repo, params: { target?: string; checks?: string[] }, configured: ConfiguredChecksOptions) {
   if (await rebaseInProgress(repo)) throw new IntegrateFailure("preflight", "a rebase is already in progress in this worktree; call git_integrate with action continue or abort.");
   let branch = (await git(repo, ["symbolic-ref", "--short", "-q", "HEAD"])).stdout.trim();
   if (!branch) {
@@ -714,10 +766,10 @@ async function start(repo: Repo, params: { target?: string; checks?: string[] })
   } else {
     await saveState(repo, state);
   }
-  return checkAndPublish(repo, state);
+  return checkAndPublish(repo, state, configured);
 }
 
-async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; crossReviewWaiver?: string; slopGateWaiver?: string }) {
+async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; crossReviewWaiver?: string; slopGateWaiver?: string }, configured: ConfiguredChecksOptions) {
   const state = await readState(repo);
   if (!state) throw new IntegrateFailure("preflight", "no git_integrate run is paused in this worktree; call git_integrate with action start.");
   if (!(await rebaseInProgress(repo))) {
@@ -771,7 +823,7 @@ async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; cros
   if (state.pendingManifest) await regenerateManifest(repo);
   const replay = await driveRebase(repo, state, "continue");
   if (!replay.done) return conflictResult(repo, state, replay.conflicts);
-  return checkAndPublish(repo, state);
+  return checkAndPublish(repo, state, configured);
 }
 
 async function abort(repo: Repo) {
@@ -806,7 +858,8 @@ export const integrateTool = (pi: ToolApi): CustomTool<any, any> => ({
   name: "git_integrate",
   label: "Git Integrate",
   description:
-    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, a detached HEAD it cannot re-attach and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. After a successful push it deletes the session branch's own remote copy (wt/<topic>; wt/nightly-* is only updated) when that copy holds nothing beyond this worktree's work; once that copy is gone and the local branch tip is in the pushed commit, it also removes the local branch so finished wt branches leave branch lists (GitHub Desktop), detaching HEAD at the pushed commit and keeping the worktree folder and files (wt/nightly-* and non-wt branches stay). Continuing in that worktree needs no git command: git_finalize and git_integrate re-create the same branch at HEAD first (start returns up-to-date without re-creating it when HEAD has no new commit). On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. crossReviewWaiver: explicit user instruction OR 2026-11-19 provider-limit exception after required Hydrogen also failed or could not be called (decision, reviewId, raw errors). Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself.",
+    "Publish this session's linked-worktree branch (wt/<topic>) to a target branch (default main) by rebasing it onto the fetched target inside this worktree only and fast-forward pushing it. Commit the work on the branch with git_finalize first. action start (default): refuses the main checkout, the target branch, a detached HEAD it cannot re-attach and tracked uncommitted changes; fetches the target under the repository finalizer lock (shared with git_finalize), rebases, runs `checks` (required: shell commands such as typecheck and tests, [] only when none apply), then re-fetches under the lock and pushes without force; if the target moved it rebases and checks again. After a successful push it deletes the session branch's own remote copy (wt/<topic>; wt/nightly-* is only updated) when that copy holds nothing beyond this worktree's work; once that copy is gone and the local branch tip is in the pushed commit, it also removes the local branch so finished wt branches leave branch lists (GitHub Desktop), detaching HEAD at the pushed commit and keeping the worktree folder and files (wt/nightly-* and non-wt branches stay). Continuing in that worktree needs no git command: git_finalize and git_integrate re-create the same branch at HEAD first (start returns up-to-date without re-creating it when HEAD has no new commit). On a conflict the rebase stays paused and the result lists the conflicted paths, the session commit being replayed and the target commits that touched them: edit the files to keep both intents (rewrite HANDOFF.md, doc/README.md and CHANGELOG.md for the combined state), then call action continue, which refuses leftover conflict markers and applies the git_finalize review gates (crossReviewHighRisk, crossReviewWaiver, slopGateWaiver) to the resolved files. crossReviewWaiver: explicit user instruction OR 2026-11-19 provider-limit exception after required Hydrogen also failed or could not be called (decision, reviewId, raw errors). Other tracked files you edit or stage while the rebase is paused become part of that step and are gated too. Tools/CUELO_Setup/files/source-integrity.json conflicts are regenerated from the merged tracked content automatically. action abort restores the branch. Failing checks stop before the push. Never run git rebase, merge or pull yourself."
+    + " Matching .finalize-checks.json checks run before pushing the rebased tree. finalizeChecksWaiver: explicit user instruction only, for this call.",
   parameters: pi.zod.object({
     action: pi.zod.enum(["start", "continue", "abort"]).optional(),
     target: pi.zod.string().optional(),
@@ -814,14 +867,16 @@ export const integrateTool = (pi: ToolApi): CustomTool<any, any> => ({
     crossReviewHighRisk: pi.zod.array(pi.zod.string()).optional(),
     crossReviewWaiver: pi.zod.string().optional(),
     slopGateWaiver: pi.zod.string().optional(),
+    finalizeChecksWaiver: pi.zod.string().optional(),
   }),
 
-  async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+  async execute(_toolCallId, params, onUpdate, ctx, signal) {
     const action = params.action ?? "start";
     const repo = await openRepo(pi.cwd, signal);
     onUpdate?.({ content: [{ type: "text", text: `git_integrate ${action}: ${repo.root}` }], details: { phase: action } });
     if (action === "abort") return abort(repo);
-    if (action === "continue") return resume(repo, params);
-    return start(repo, params);
+    const configured = { sessionManager: ctx?.sessionManager, waiver: params.finalizeChecksWaiver };
+    if (action === "continue") return resume(repo, params, configured);
+    return start(repo, params, configured);
   },
 });

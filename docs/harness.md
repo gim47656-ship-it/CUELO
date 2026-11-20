@@ -814,6 +814,13 @@ mcp:
 
 [`git_finalize`](../Tools/OMP_Global_Config/agent/tools/git-finalizer/)는 Main 전용 도구입니다. 정확한 파일 목록을 대상으로 경로·저장소 경계와 ancestry를 확인하고, 잠금 아래 commit 및 push를 수행합니다. 저장소에 `Tools/CUELO_Setup/files/source-build-helper.js`가 있으면 커밋할 source 파일마다 `source-integrity.json`에 현재 해시로 들어 있는지 확인하고, 지운 source 파일은 목록에서 빠졌는지 봅니다. manifest를 같은 커밋에 넣어도 이 확인은 건너뛰지 않습니다. 맞지 않으면 commit 전에 멈추고 재생성 명령을 알려 줍니다. 목록에 없는 새 파일이면 생성기가 git이 추적하는 파일만 읽으므로 `git add -N <파일>`을 먼저 하라고 안내합니다. Maker에게 Git 마감을 허용하는 도구가 아닙니다. 구현과 PowerShell finalizer는 `agent/tools/git-finalizer/`에 있습니다.
 
+저장소 루트의 `.finalize-checks.json`에 `version: 1`을 설정하여 마감 검사를 사용합니다. `checks` 항목에는 `name`, 저장소 기준 정확한 파일 경로 또는 끝에 `/`가 있는 디렉터리 접두사인 `paths`, 셸 명령이 아닌 argv 배열인 `command`, 선택 사항인 `timeoutSeconds`를 지정합니다. 제한 시간의 기본값은 1,200초입니다. `git_finalize`는 리뷰와 slop 이후 커밋이나 푸시 전에 현재 작업 트리에서 검사를 실행하며, `git_integrate`는 리베이스된 브랜치에서 푸시 전에 검사를 실행합니다. 실패하거나 시간이 초과되면 게시가 중단되고 결과에 출력의 마지막 부분과 전체 로그 경로가 표시됩니다. `finalizeChecksWaiver`는 사용자의 명시적 요청이 있을 때만 사용하며 해당 호출의 결과에 기록합니다.
+
+CUELO 브라우저 세션에서 일치하는 명령을 실행하려면 프로젝트 신뢰 승인이 필요합니다. 신뢰하지 않은 프로젝트의 명령은 실행하지 않습니다. 게시 파일에 맞는 검사가 있으면 사용자가 명시적으로 면제하지 않는 한 게시를 막습니다. 일치하는 검사가 없으면 기존 동작을 유지합니다. 터미널 `omp`는 브라우저의 신뢰 확인 없이 일치하는 명령을 실행합니다.
+
+타임아웃 시 POSIX에서는 검사가 시작한 프로세스 그룹에 `SIGTERM`을 보내고 최대 10초 뒤에도 끝나지 않으면 `SIGKILL`로 종료합니다. 별도 그룹이나 세션으로 분리된 프로세스는 관리하지 않습니다. Windows에서는 검사 명령의 프로세스 트리에 `taskkill /T`를 사용합니다.
+네이티브 프로세스 식별 핸들이 없으면 `PID`를 재사용한 무관한 프로세스를 종료하지 않도록 검사 프로세스가 끝난 뒤에는 `PGID`로 추가 신호를 보내지 않으므로, 같은 그룹에서 `SIGTERM`을 무시한 자식 프로세스는 남을 수 있습니다.
+
 작업 사본이 원격보다 뒤처지기만 했고 이 PC에만 있는 커밋이나 stage된 변경이 없으면, `git_finalize`는 게이트를 검사하기 전에 원격 커밋을 fast-forward로 먼저 받습니다. 다른 세션이 올린 커밋 때문에 커밋이 멈추고 에이전트가 사람에게 받아도 되는지 물어야 했던 일을 없애려는 것입니다. 커밋하지 않은 수정은 그대로 남고, 로컬 수정과 원격 커밋이 같은 파일을 고쳤으면 git의 3-way 병합이 충돌 없이 끝날 때만 합칩니다. 양쪽이 같은 줄을 다르게 고쳤거나, 원격 변경이 로컬에서 새로 만들거나 지운 파일·무시 파일과 겹치거나, 이 PC에만 있는 커밋이 있으면 작업 사본을 건드리지 않고 이유를 알린 뒤 이전처럼 멈춥니다. 겹치는 파일은 손대기 전에 원래 바이트를 임시 폴더에 복사해 두므로, 받다가 실패하면 그 바이트로 되돌리고 병합 결과를 쓰지 못하면 복사 위치를 알려 줍니다. rebase나 merge 커밋은 만들지 않습니다.
 
 WSL에서 Windows 드라이브(`/mnt/c`·`/mnt/v` 등) 위의 저장소를 마감할 때는 같은 finalizer를 Linux `pwsh` 대신 Windows `powershell.exe`로 돌리고, 경로는 `wslpath -w`로 바꿔 넘깁니다. 그래서 commit·push는 Windows Git과 그 자격 증명으로 실행됩니다. Linux Git은 Windows 드라이브의 파일을 하나씩 확인하느라 파일이 많은 저장소에서 수 분이 걸리고, 마감 제한 시간(3분)에 걸려 중단될 수 있기 때문입니다. 다만 Linux Git으로 만든 linked worktree는 `.git` 파일이 Linux 경로(`gitdir: /mnt/...`)를 가리켜 Windows Git이 열지 못하므로, 대상이 그런 worktree 안에 있으면 Linux `pwsh`와 Linux Git으로 마감합니다. WSL 디스크 안의 저장소는 이전처럼 Linux에서 실행합니다. 이 선택은 세션 작업 폴더가 아니라 마감할 파일의 위치로 정합니다. 그래서 작업 폴더가 Windows 드라이브의 사본(`/mnt/f/repo`)이어도 마감할 파일이 WSL 디스크의 다른 저장소(`~/src/repo`)에 있으면 Linux에서 마감합니다. Windows Git은 WSL 디스크의 저장소를 열지 못합니다.

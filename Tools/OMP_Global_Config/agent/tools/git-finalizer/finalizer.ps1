@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Request
+    [string]$Request,
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -235,6 +236,11 @@ try {
         $repoPaths += $repoPath
     }
 
+    if ($PreflightOnly) {
+        [Console]::Out.WriteLine((@{ ok = $true; stage = 'preflight'; repositoryRoot = $repoRoot; repositoryFiles = @($repoPaths) } | ConvertTo-Json -Compress))
+        exit 0
+    }
+
     $stage = 'remote'
     $branch = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')).Output
     if (-not $branch -or $branch -eq 'HEAD') { throw 'Detached HEAD is not supported.' }
@@ -289,6 +295,10 @@ try {
 
     $stage = 'fetch'
     $headSha = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', 'HEAD')).Output
+    if ($payload.finalizeChecksHead -and $payload.finalizeChecksHead -cne $headSha) {
+        $stage = 'finalize-checks'
+        throw 'HEAD changed after running the repository checks. Call git_finalize again.'
+    }
     $upstreamSha = $null
     if ($upstreamExists) {
         [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('fetch', '--no-tags', $remote, $upstreamRef))

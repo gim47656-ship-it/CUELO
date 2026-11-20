@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { isAbsolute, join, relative, resolve, sep } from "path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { discoverSessionExtensionPaths, type Settings } from "@oh-my-pi/pi-coding-agent";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
 import { type ExtensionModule, extensionModuleCapability } from "@oh-my-pi/pi-coding-agent/capability/extension-module";
@@ -169,12 +169,23 @@ function projectSettingsChangeDisabledExtensions(settings: Settings): boolean {
   return effective.size !== nonProject.size || [...effective].some((id) => !nonProject.has(id));
 }
 
+function repositoryRootForChecks(cwd: string): string | undefined {
+  for (let dir = canonicalProjectKey(cwd); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    if (dirname(dir) === dir) return undefined;
+  }
+}
+
+function hasFinalizeChecks(root: string | undefined): boolean {
+  return root !== undefined && existsSync(join(root, ".finalize-checks.json"));
+}
+
 /**
- * Whether `cwd` ships resources omp would import and execute on session start,
- * or settings that change which user-level extensions omp loads.
+ * Whether `cwd` ships executable project resources, or settings that change
+ * which user-level extensions omp loads.
  * `settings` is omp's settings for `cwd` (see {@link projectSettingsExtensionRoots}).
  */
-export function hasTrustRequiringProjectResources(cwd: string, settings: Settings): boolean {
+function hasOtherTrustRequiringResources(cwd: string, settings: Settings): boolean {
   if (!cwd) return false;
   for (const dir of CODE_BEARING_PROJECT_DIRS) {
     if (existsSync(join(cwd, dir))) return true;
@@ -189,14 +200,19 @@ export function hasTrustRequiringProjectResources(cwd: string, settings: Setting
   );
 }
 
-export function getProjectTrustStatus(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
-  const requiresTrust = Boolean(cwd) && hasTrustRequiringProjectResources(cwd, settings);
-  if (!requiresTrust) return { requiresTrust: false, trusted: true };
+export function hasTrustRequiringProjectResources(cwd: string, settings: Settings): boolean {
+  return Boolean(cwd) && (hasOtherTrustRequiringResources(cwd, settings) || hasFinalizeChecks(repositoryRootForChecks(cwd)));
+}
 
-  return {
-    requiresTrust: true,
-    trusted: readTrustedProjects(agentDir)[canonicalProjectKey(cwd)] === true,
-  };
+export function getProjectTrustStatus(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
+  if (!cwd) return { requiresTrust: false, trusted: true };
+  const otherResources = hasOtherTrustRequiringResources(cwd, settings);
+  const root = otherResources ? undefined : repositoryRootForChecks(cwd);
+  if (!otherResources && !hasFinalizeChecks(root)) return { requiresTrust: false, trusted: true };
+  const trusted = readTrustedProjects(agentDir);
+  const local = trusted[canonicalProjectKey(cwd)];
+  // Inherit a checkout approval for its root config only, not for nested extensions or tools.
+  return { requiresTrust: true, trusted: local === true || (local === undefined && root !== undefined && trusted[root] === true) };
 }
 
 /** {@link getProjectTrustStatus} with the same settings a session for `cwd` starts with. */
@@ -224,6 +240,20 @@ export function setProjectTrust(cwd: string, agentDir: string, trusted: boolean)
 /** Every recorded decision, keyed by canonical project path. */
 export function listProjectTrustDecisions(agentDir: string): Record<string, boolean> {
   return readTrustedProjects(agentDir);
+}
+
+/** The installed harness is a separate bundle. The SDK passes the same manager to custom tools. */
+export function bindFinalizeChecksTrust(sessionManager: object, cwd: string, agentDir: string, projectCodeLoaded: boolean): void {
+  const cwdKey = canonicalProjectKey(cwd);
+  const sessionRoot = repositoryRootForChecks(cwdKey);
+  Object.defineProperty(sessionManager, Symbol.for("cuelo.finalizeChecksProjectTrust"), {
+    value: (repositoryRoot: string): boolean => {
+      if (!projectCodeLoaded) return false;
+      const target = canonicalProjectKey(repositoryRoot);
+      const trusted = readTrustedProjects(agentDir);
+      return (target === sessionRoot ? trusted[cwdKey] ?? trusted[target] : trusted[target]) === true;
+    },
+  });
 }
 
 /** True when `candidate` lives inside `root` (or is `root` itself). */

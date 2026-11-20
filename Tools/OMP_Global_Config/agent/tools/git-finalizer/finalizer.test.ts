@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
@@ -56,8 +56,8 @@ function git(cwd: string, args: string[], expectedCode = 0): string {
   return result.stdout;
 }
 
-async function createRepository(): Promise<{ root: string; remote: string; work: string }> {
-  const root = await mkdtemp(join(tmpdir(), "omp-finalizer-test-"));
+async function createRepository(tempParent = tmpdir()): Promise<{ root: string; remote: string; work: string }> {
+  const root = await mkdtemp(join(tempParent, "omp-finalizer-test-"));
   tempRoots.push(root);
   const remote = join(root, "remote.git");
   const work = join(root, "work");
@@ -128,6 +128,7 @@ async function startTool(
   work: string,
   files: string[],
   extra: Record<string, unknown> = {},
+  artifactsDir?: string,
 ): Promise<{ error?: Error; output?: unknown }> {
   const pi = {
     cwd: work,
@@ -136,7 +137,8 @@ async function startTool(
   };
   const tool = factory(pi as never);
   try {
-    return { output: await tool.execute("fixture", { files, message: "manifest case", ...extra }, undefined, {} as never, new AbortController().signal) };
+    const ctx = artifactsDir ? { sessionManager: { getArtifactManager: () => ({ dir: artifactsDir }) } } : {};
+    return { output: await tool.execute("fixture", { files, message: "manifest case", ...extra }, undefined, ctx as never, new AbortController().signal) };
   } catch (error) {
     return { error: error as Error };
   }
@@ -186,6 +188,43 @@ afterEach(async () => {
 });
 
 describe("git finalizer", () => {
+  test("configured publication check refuses false before commit and pushes after true", async () => {
+    const { root, remote, work } = await createRepository(homedir());
+    const head = git(work, ["rev-parse", "HEAD"]);
+    const artifactsDir = join(root, "artifacts");
+    const config = join(work, ".finalize-checks.json");
+    const setCommand = (pass: boolean) => writeFile(config, JSON.stringify({
+      version: 1, checks: [{ name: "fixture", paths: ["a.txt"], command: process.platform === "win32"
+        ? [process.execPath, "-e", `process.exit(${pass ? 0 : 1})`]
+        : [pass ? "true" : "false"] }],
+    }));
+    await writeFile(join(work, "a.txt"), "to publish\n");
+    await writeFile(join(work, "b.txt"), "other session WIP\n");
+    await setCommand(false);
+    const failed = await startTool(work, ["a.txt"], {}, artifactsDir);
+    expect(failed.error?.message).toContain("git_finalize failed at finalize-checks: fixture exited 1");
+    expect(failed.error?.message).toContain("working tree");
+    expect(failed.error?.message).toContain("b.txt");
+    const log = failed.error?.message.match(/^Full log: (.+)$/m)?.[1];
+    expect(log).toBeDefined();
+    expect(await readFile(log!, "utf8")).toBe("");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+
+    await setCommand(true);
+    const passed = await startTool(work, ["a.txt"], {}, artifactsDir);
+    expect(passed.error).toBeUndefined();
+    expect(passed.output).toMatchObject({
+      details: { stage: "complete" },
+      content: [{ text: expect.stringMatching(/fixture ran \(\d+(?:\.\d+)?s\)/) }],
+    });
+    const commit = git(work, ["rev-parse", "HEAD"]);
+    expect(commit).not.toBe(head);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(commit);
+    expect(git(work, ["show", "--format=", "--name-only", "HEAD"])).toBe("a.txt");
+  }, TEST_TIMEOUT_MS);
+
   test("commits only declared files and preserves unrelated dirty files", async () => {
     const { root, remote, work } = await createRepository();
     await writeFile(join(work, "a.txt"), "changed-a\n");
@@ -458,6 +497,16 @@ describe("git finalizer", () => {
 
     // 매니페스트가 cwd 밖(Tools/runtime 아래 세션)이어도 직접 만든 매니페스트는 사용자 지시 없이 들어간다.
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
+    const config = join(work, ".finalize-checks.json");
+    await writeFile(config, JSON.stringify({ version: 1, checks: [{
+      name: "regenerated manifest", paths: [manifest], command: [process.execPath, "-e", "process.exit(7)"],
+    }] }));
+    const refused = await startTool(join(work, "Tools", "runtime"), ["entry.js"], {}, join(root, "artifacts"));
+    expect(refused.error?.message).toContain("git_finalize failed at finalize-checks: regenerated manifest exited 7");
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(sha);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(sha);
+    await rm(config);
+    expect(await readFile(join(work, manifest), "utf8")).toBe(git(work, ["show", `HEAD:${manifest}`]));
     const nested = await startTool(join(work, "Tools", "runtime"), ["entry.js"]);
     expect(nested.error).toBeUndefined();
     const nestedSha = git(work, ["rev-parse", "HEAD"]);

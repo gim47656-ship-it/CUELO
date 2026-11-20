@@ -40,7 +40,7 @@ import { resolveVisibleModels } from "./model-scope";
 import { selectNewSessionModel } from "./new-session-model";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { createSessionRecallTool } from "./session-recall";
-import { canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, isInsideProject, untrustedProjectSessionOptions } from "./project-trust";
+import { bindFinalizeChecksTrust, canonicalProjectKey, discoverCodeWithoutProjectSettingsExtensions, isInsideProject, untrustedProjectSessionOptions } from "./project-trust";
 import { labExtensionEntries, recordLabLoadResults, type LabExtensionEntry } from "./plugin-lab";
 import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
@@ -3075,6 +3075,9 @@ export async function startRpcSession(
         ...(thinkingLevel ? { thinkingLevel } : {}),
         ...(roleThinkingLevel ? { defaultThinkingLevel: roleThinkingLevel } : {}),
       });
+      bindFinalizeChecksTrust(sessionManager, sessionCwd, agentDir, untrusted === undefined);
+      // A browser-runtime tool context without a bound manager is not a plain CLI call.
+      Reflect.set(globalThis, Symbol.for("cuelo.finalizeChecksBrowser"), true);
       const sessionOptions: CreateAgentSessionOptions = {
         cwd: sessionCwd,
         agentDir,

@@ -101,26 +101,8 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # The pristine SDK cannot be imported by typecheck, tests or the build; apply
-      # its core patches to this checkout's own node_modules first.
-      - name: Prepare source SDK
-        run: bun run prepare:source
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Test
-        run: bun run test
-
-      # Sidecars against the real SDK: side chat, subagent archive and usage.
-      - name: Sidecar tests
-        run: bun test ./Tools/CUELO_Setup/files/btw-server.test.mjs ./Tools/CUELO_Setup/files/subagent-server.test.mjs ./Tools/CUELO_Setup/files/usage-server.test.js
+      - name: Prepare source SDK and check app
+        run: node bin/ci-local.mjs app
 
       - name: Build package
         run: bun run build
@@ -221,7 +203,6 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: Tools/OMP_Global_Config
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -236,69 +217,10 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install dependencies
-        working-directory: .
-        run: bun install --frozen-lockfile
-
-      # Extension tests import the repository SDK as well as the patched copy below,
-      # and the pristine SDK cannot be imported (ratchet/prelude.js), so patch it first.
-      - name: Prepare source SDK
-        working-directory: .
-        run: bun run prepare:source
-
-      # A fresh copy of the core version the app pins, patched in RUNNER_TEMP so the
-      # core regression tests target a separately installed copy. Core and extension
-      # tests read it through OMP_CORE_PATCH_TARGET.
-      - name: Prepare patched core
-        run: |
-          version=$(node -p "require('../../package.json').dependencies['@oh-my-pi/pi-coding-agent']")
-          core="$RUNNER_TEMP/core"
-          mkdir -p "$core"
-          echo '{"name":"ci-core","private":true}' > "$core/package.json"
-          (cd "$core" && bun add "@oh-my-pi/pi-coding-agent@$version")
-          export OMP_CORE_PATCH_TARGET="$core/node_modules/@oh-my-pi/pi-coding-agent"
-          node patches/apply-core-patch.mjs
-          echo "OMP_CORE_PATCH_TARGET=$OMP_CORE_PATCH_TARGET" >> "$GITHUB_ENV"
-
-      # Without bash the PTY check skips itself; the PTY itself comes from the
-      # platform native package, and the finalizer tests run pwsh.
-      - name: Check PTY and finalizer prerequisites
-        run: |
-          command -v bash
-          command -v pwsh
-          test -d "$RUNNER_TEMP/core/node_modules/@oh-my-pi/pi-natives-linux-x64" || { echo "pi-natives-linux-x64 is missing"; exit 1; }
-
-      - name: Extension duplicate declarations
-        if: matrix.suite == 'extensions'
-        run: node patches/check-extension-duplicates.mjs
-
-      - name: Extension, guard, finalizer, vm-build and skill-cost tests
-        if: matrix.suite == 'extensions'
-        run: bun test ./agent/extensions/tests ./agent/extensions/command-guard ./agent/tools/git-finalizer ./agent/tools/windows-control ./agent/tools/artifact-search ./agent/tools/vm-build ./skill-cost
-
-      # Every file is its own process with its own temporary HOME/roots, so the files run
-      # side by side (one per CPU); each log is printed whole, in file order, afterwards.
-      - name: Core patch regression tests
-        if: matrix.suite == 'core'
-        run: |
-          tests=(patches/core-*-test.ts patches/apply-core-patch-cli-test.ts)
-          # A worker killed before it writes its exit code makes xargs fail. Keep going so the
-          # loop below still prints every log and names that file as having no exit code.
-          printf '%s\0' "${tests[@]}" | xargs -0 -P "$(nproc)" -I{} bash -c \
-            'name=$(basename "$1"); bun run "$1" >"$RUNNER_TEMP/$name.log" 2>&1; echo $? >"$RUNNER_TEMP/$name.code"' _ {} \
-            || echo "xargs exited $?; checking every file below"
-          failed=()
-          for test in "${tests[@]}"; do
-            name=$(basename "$test")
-            echo "::group::$name"
-            cat "$RUNNER_TEMP/$name.log" 2>/dev/null || echo "(no log)"
-            echo "::endgroup::"
-            code=$(cat "$RUNNER_TEMP/$name.code" 2>/dev/null || echo "no exit code")
-            [ "$code" = 0 ] || failed+=("$name (exit $code)")
-          done
-          # The user-shell PTY check must have run and passed here, not been skipped.
-          grep -q "PASS  사용자 셸 PTY" "$RUNNER_TEMP/core-patch-test.ts.log" || failed+=("user-shell PTY check did not run")
-          [ ${#failed[@]} -eq 0 ] || { echo "Failed: ${failed[*]}"; exit 1; }
+      - name: Prepare source SDK and check harness
+        env:
+          CUELO_CI_CORE_DIR: ${{ runner.temp }}/core
+        run: node bin/ci-local.mjs harness-${{ matrix.suite }}
 
   # The mirror has no agent/config.yml, models.yml, evals/, setup source manifest,
   # setup helpers or WSL deploy tooling.

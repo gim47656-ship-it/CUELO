@@ -2,11 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
+import { finalizeTool } from "./index";
 import { integrateTool, reattachRetiredBranch } from "./integrate";
 
 // 검증 범위: 실제 git(bare 원격 + main clone + linked worktree + 다른 세션 clone)과 실제 pwsh 잠금 보유자로 git_integrate의
@@ -54,8 +55,8 @@ async function commitIn(cwd: string, files: Record<string, string>, message: str
 }
 
 /** bare 원격, 원격 main을 쓰는 main clone(work), 그 linked worktree(wt/x), main에 먼저 올리는 다른 세션 clone(other). */
-async function fixture(base: Record<string, string> = {}, prefix = "omp-integrate-test-"): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), prefix));
+async function fixture(base: Record<string, string> = {}, prefix = "omp-integrate-test-", parent = tmpdir()): Promise<Fixture> {
+  const root = await mkdtemp(join(parent, prefix));
   tempRoots.push(root);
   const remote = join(root, "remote.git");
   const work = join(root, "work");
@@ -92,11 +93,12 @@ const stateFile = (f: Fixture) => join(f.tree, git(f.tree, ["rev-parse", "--git-
 const schemaNode: object = new Proxy(function node() {}, { get: () => schemaNode, apply: () => schemaNode });
 interface Outcome { error?: Error; output?: { content: { text: string }[]; details: Record<string, any> } }
 
-async function integrate(cwd: string, params: Record<string, unknown> = {}): Promise<Outcome> {
+async function integrate(cwd: string, params: Record<string, unknown> = {}, artifactsDir?: string): Promise<Outcome> {
   const pi = { cwd, zod: { object: () => ({}), array: () => schemaNode, string: () => schemaNode, enum: () => schemaNode } };
   const tool = integrateTool(pi as never);
   try {
-    return { output: await tool.execute("fixture", params, undefined, {} as never, new AbortController().signal) };
+    const ctx = artifactsDir ? { sessionManager: { getArtifactManager: () => ({ dir: artifactsDir }) } } : {};
+    return { output: await tool.execute("fixture", params, undefined, ctx as never, new AbortController().signal) };
   } catch (error) {
     return { error: error as Error };
   }
@@ -118,6 +120,67 @@ async function holdLock(repository: string, options: { wait?: number; maxHold?: 
 const settledWithin = async (promise: Promise<unknown>, ms: number) => Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
 
 describe("git_integrate", () => {
+  test("a failed rebased publication check makes no remote change and restores the worktree for a fix and retry", async () => {
+    const f = await fixture({
+      ".finalize-checks.json": JSON.stringify({ version: 1, checks: [{
+        name: "rebased suite", paths: ["b.txt"], command: [process.execPath, "-e",
+          `const fs = require('node:fs'); const a = fs.readFileSync('a.txt', 'utf8').trim(), b = fs.readFileSync('b.txt', 'utf8').trim(); console.log(a + '/' + b); if (a === 'target-a' && b !== 'fixed-b') process.exit(6);`],
+      }] }),
+    }, "omp-integrate-configured-", homedir());
+    const session = await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    git(f.tree, ["push", "-q", "-u", "origin", "wt/x"]);
+    const target = await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
+    const artifacts = join(f.root, "artifacts");
+    const failed = await integrate(f.tree, { checks: [] }, artifacts);
+    expect(failed.error?.message).toContain("git_integrate failed at finalize-checks: rebased suite exited 6");
+    expect(failed.error?.message).toContain("target-a/session-b");
+    expect(failed.error?.message).toContain("Nothing was pushed.");
+    expect(remoteRef(f)).toBe(target);
+    expect(remoteRef(f, "refs/heads/wt/x")).toBe(session);
+
+    expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(session);
+    const ref = failed.error?.message.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
+    expect(ref).toBeDefined();
+    const rebased = git(f.tree, ["rev-parse", ref!]);
+    expect(rebased).not.toBe(session);
+    expect(git(f.tree, ["show", `${rebased}:a.txt`])).toBe("target-a");
+    expect(git(f.tree, ["show", `${rebased}:b.txt`])).toBe("session-b");
+
+    await writeFile(join(f.tree, "b.txt"), "fixed-b\n");
+    const ctx = { sessionManager: { getArtifactManager: () => ({ dir: artifacts }) } };
+    const pi = {
+      cwd: f.tree, zod: { object: () => ({}), array: () => schemaNode, string: () => schemaNode },
+      exec: spawnExec(),
+    };
+    const fixed = await finalizeTool(pi as never).execute("fix", { files: ["b.txt"], message: "fix: suite" }, undefined, ctx as never);
+    expect(fixed.details).toMatchObject({ stage: "complete" });
+    expect(isAncestor(f, session, remoteRef(f, "refs/heads/wt/x"))).toBe(true);
+    const retried = await integrate(f.tree, { checks: [] }, artifacts);
+    expect(retried.error).toBeUndefined();
+    expect(retried.output?.details.finalizeChecks.checks[0]).toMatchObject({ name: "rebased suite", reused: false });
+    expect(remoteFile(f, "b.txt")).toBe("fixed-b");
+  }, TIMEOUT);
+
+  test("refuses rollback if a failing configured check left a tracked change", async () => {
+    const f = await fixture({
+      ".finalize-checks.json": JSON.stringify({ version: 1, checks: [{
+        name: "dirty", paths: ["b.txt"], command: [process.execPath, "-e",
+          `require('node:fs').writeFileSync('a.txt', 'do not overwrite'); process.exit(8);`],
+      }] }),
+    }, "omp-integrate-dirty-", homedir());
+    const session = await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
+    const target = await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
+    const failed = await integrate(f.tree, { checks: [] }, join(f.root, "artifacts"));
+    expect(failed.error?.message).toContain("dirty exited 8");
+    expect(failed.error?.message).toContain("tracked changes are present");
+    const ref = failed.error?.message.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
+    expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(git(f.tree, ["rev-parse", ref!]));
+    expect(git(f.tree, ["rev-parse", "HEAD"])).not.toBe(session);
+    expect(await readFile(join(f.tree, "a.txt"), "utf8")).toBe("do not overwrite");
+    expect(remoteRef(f)).toBe(target);
+    git(f.root, ["--git-dir", f.remote, "show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+  }, TIMEOUT);
+
   test("rebases a clean session branch onto the moved target and fast-forwards it without force", async () => {
     const f = await fixture();
     await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
