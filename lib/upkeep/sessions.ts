@@ -3,6 +3,7 @@
  * 직전 7일(index 1) 두 묶음으로 센다. 라이브 서버의 요청 처리를 막지 않도록 약 8ms마다 이벤트 루프에
  * 양보한다. 읽은 값이 없으면 0이 아니라 호출자가 미측정으로 다룰 수 있게 원 건수를 그대로 넘긴다.
  */
+import { createHash } from "node:crypto";
 import { lstat, open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls/local-root";
@@ -59,6 +60,9 @@ type Entry = {
     credentialId?: unknown;
     toolName?: string;
     isError?: boolean;
+    /** 네이티브 리더가 성공한 read 결과에만 싣는 저장 JSON 값의 UTF-8 바이트 수와 지문(본문 대신) */
+    contentBytes?: number;
+    contentHash?: string;
   };
 };
 
@@ -152,6 +156,8 @@ export type ScanResult = {
   skills: { windows: [Record<string, SkillWindowUsage>, Record<string, SkillWindowUsage>]; sessions: Record<string, SkillSessionUsage[]> };
   /** 14일 안 오류 묶음(`도구: 키`)별 최근 발췌 최대 3개 */
   failureExcerpts: Record<string, FailureExcerpt[]>;
+  /** 최근 7일 모델에 들어간 주입 메시지와 read 결과의 크기, 그중 같은 세션에서 되풀이된 몫(야간 묶음) */
+  contextLoad: ContextLoad;
   /** 14일 안에 실패 뒤 같은 턴에서 같은 도구가 성공한 기록 */
   recoveries: Recovery[];
   /** Included only for the PC export. */
@@ -165,6 +171,36 @@ export interface FailureExcerpt {
   args: string;
   error: string;
   recovery: string | null;
+}
+
+/**
+ * 건수와 크기, 그중 같은 세션에서 직전 압축 뒤 똑같은 내용이 이미 모델에 들어간 반복 몫. 크기 단위는 주입 메시지가 글자(UTF-16),
+ * read 결과가 저장된 JSON 값의 UTF-8 바이트다.
+ */
+export type ContextLoadRow = { count: number; size: number; repeats: number; repeatSize: number };
+
+/**
+ * 컨텍스트 낭비 후보 집계(비식별 건수와 크기만). `injected`는 `custom_message` 종류별, `reads`는 성공한 read 결과다.
+ * read 반복은 같은 세션, 같은 `path` 인자(선택자 포함)에서 직전 압축 뒤 바이트까지 같은 결과를 다시 받은 것이다.
+ */
+export type ContextLoad = { injected: Record<string, ContextLoadRow>; reads: ContextLoadRow };
+
+function emptyLoadRow(): ContextLoadRow {
+  return { count: 0, size: 0, repeats: 0, repeatSize: 0 };
+}
+
+function addLoad(row: ContextLoadRow, size: number, repeat: boolean): void {
+  row.count++;
+  row.size += size;
+  if (repeat) {
+    row.repeats++;
+    row.repeatSize += size;
+  }
+}
+
+/** 주입 종류 이름은 하네스 식별자 모양만 그대로 싣고, 그 밖의 이름은 `other`로 묶는다. */
+export function injectionKind(customType: unknown): string {
+  return typeof customType === "string" && /^[A-Za-z0-9][A-Za-z0-9:._-]{0,47}$/.test(customType) ? customType : "other";
 }
 
 /** 실패 뒤 같은 턴에서 같은 도구가 성공한 기록. `shape`는 성공한 호출의 인자 모양(키 이름·명령 첫 단어·경로 종류)이다. */
@@ -706,7 +742,9 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const pendingArgs = new Map<string, unknown>();
   const failureExcerpts: Record<string, FailureExcerpt[]> = {};
   const recoveries: Recovery[] = [];
-  const finish = (): Pick<ScanResult, "skills" | "failureExcerpts" | "recoveries"> => ({ skills: skillResult(skillAgg, sessionTotals), failureExcerpts, recoveries });
+  // 종류 이름이 `constructor`·`__proto__`여도 상속 값이 아니라 자기 행이 되도록 프로토타입 없는 객체를 쓴다.
+  const contextLoad: ContextLoad = { injected: Object.create(null) as Record<string, ContextLoadRow>, reads: emptyLoadRow() };
+  const finish = (): Pick<ScanResult, "skills" | "failureExcerpts" | "recoveries" | "contextLoad"> => ({ skills: skillResult(skillAgg, sessionTotals), failureExcerpts, recoveries, contextLoad });
 
   // 바이너리가 없으면 디렉터리·파일 오류 경고로 바꾸지 않고 스캔 전체가 그 오류로 실패한다.
   loadUpkeepReader();
@@ -732,6 +770,11 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     let previousTurnSkills: [string, 0 | 1][] = [];
     let awaiting: { tool: string; signature: string; excerpt: FailureExcerpt | null }[] = [];
     let turn = 0;
+    // 이 세션에서 직전 압축 뒤 모델에 이미 들어간 주입 메시지(종류와 내용의 지문)와 read 결과(`path` 인자 → 받은 결과 지문들).
+    // 본문 대신 SHA-256 지문만 쥐어 긴 세션에서도 기억하는 양이 메시지 수에만 비례한다. `readPaths`는 이 파일의 read 호출 id → `path`다.
+    const injectedSeen = new Set<string>();
+    const readSeen = new Map<string, Set<string>>();
+    const readPaths = new Map<string, string>();
     // 이 세션 파일의 shake 원문 파일(경로 → 내용, 못 읽으면 null). 오류 결과가 자리표시일 때만 연다.
     const shakeLogs = new Map<string, string | null>();
     // 캐시 다시 쓰기 판단용 상태. 창 밖·fork 사본 entry도 직전 요청으로는 쓰므로 세기 전에 갱신한다.
@@ -799,6 +842,44 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           openedThisTurn.clear();
           awaiting = [];
           turn++;
+        }
+        // 압축은 그 앞 내용을 요약으로 바꾸므로 다시 들어온 같은 내용은 반복이 아니다. 복사된 entry도 이 세션 문맥으로 기억한다.
+        if (entry.type === "compaction") {
+          injectedSeen.clear();
+          readSeen.clear();
+        }
+        if (entry.type === "custom_message") {
+          const key = createHash("sha256").update(JSON.stringify([entry.customType ?? null, entry.content ?? null])).digest("base64");
+          const repeat = injectedSeen.has(key);
+          injectedSeen.add(key);
+          if (counted && time >= now - 7 * DAY_MS) addLoad((contextLoad.injected[injectionKind(entry.customType)] ??= emptyLoadRow()), textOf(entry.content).length, repeat);
+        }
+        // read 결과는 결과 쪽 `toolName`으로 알아보고 결과 시각으로 기간을 정한다. 경로는 반복 판정에만 쓴다.
+        const lm = entry.type === "message" ? entry.message : undefined;
+        if (lm?.role === "assistant" && Array.isArray(lm.content)) {
+          for (const block of lm.content as ContentBlock[]) {
+            if (block?.type === "toolCall" && block.name === "read" && block.id && typeof block.arguments?.path === "string") readPaths.set(block.id, block.arguments.path);
+          }
+        }
+        // 결과가 오면(성공이든 실패든) 그 호출의 경로는 더 필요 없다. 끝난 호출을 쥐지 않아 기억하는 양이 진행 중 호출 수로 묶인다.
+        const resultId = lm?.role === "toolResult" ? lm.toolCallId : undefined;
+        const resultPath = resultId ? readPaths.get(resultId) : undefined;
+        if (resultId) readPaths.delete(resultId);
+        if (lm?.role === "toolResult" && lm.toolName === "read" && !lm.isError) {
+          // 네이티브 리더는 본문 대신 저장 JSON 값의 바이트 수와 지문을 준다. 줄을 통째로 넘긴 경우(투영 실패)만 본문이 있어
+          // 다시 직렬화한 값으로 잰다(이 경우 바이트 수는 근삿값이고 네이티브 지문과는 맞대지 못한다). 둘 다 없으면 세지 않는다.
+          const raw = typeof lm.contentHash === "string" || lm.content === undefined ? null : JSON.stringify(lm.content);
+          const print = typeof lm.contentHash === "string" ? `h:${lm.contentHash}` : raw === null ? null : `t:${createHash("sha256").update(raw).digest("base64")}`;
+          if (print !== null) {
+            let repeat = false;
+            if (resultPath !== undefined) {
+              let seen = readSeen.get(resultPath);
+              if (!seen) readSeen.set(resultPath, (seen = new Set()));
+              repeat = seen.has(print);
+              seen.add(print);
+            }
+            if (counted && time >= now - 7 * DAY_MS) addLoad(contextLoad.reads, raw === null ? Number(lm.contentBytes) || 0 : Buffer.byteLength(raw), repeat);
+          }
         }
         if (!counted) continue;
         if (cwd) cwdActivity[cwd] = Math.max(cwdActivity[cwd] ?? 0, time);

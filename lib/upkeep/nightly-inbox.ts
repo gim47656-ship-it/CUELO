@@ -20,7 +20,7 @@ import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import { OBSERVED_LIMIT, OBSERVED_MIN_SESSIONS, type SkillCandidate } from "./skill-candidates";
-import { maskSecrets, type FailureExcerpt } from "./sessions";
+import { injectionKind, maskSecrets, type ContextLoadRow, type FailureExcerpt, type ScanResult } from "./sessions";
 import { emptySkillWindow, skillAssociationStatus, type SkillUsageReport, type SkillUsageRow, type SkillWindowUsage, type UnusedSkill } from "./skill-usage";
 import type { UpkeepDueItem, UpkeepReport } from "./types";
 
@@ -42,6 +42,9 @@ const EXCERPT_ERROR_LIMIT = 400;
 const EXCERPT_TOTAL_LIMIT = 24_000;
 const SKILL_ROW_LIMIT = 80;
 const UNUSED_SKILL_LIMIT = 200;
+/** 종류는 하네스와 플러그인이 정하는 이름이라 수십 개다. 이 상한은 비정상적으로 많은 경우의 묶음 크기 방어용이다. */
+const CONTEXT_KIND_LIMIT = 200;
+const CONTEXT_KIND_SHOWN = 10;
 /** 상한으로 자르기 전에 판정까지 읽는 행 수. 주의·문제 행을 먼저 남기려고 그만큼은 다 읽는다. */
 const PARSE_SCAN_LIMIT = 1000;
 
@@ -81,6 +84,36 @@ export interface NightlyBundle {
   failureExcerpts: FailureExcerptGroup[];
   /** Optional v2 field; pre-dreaming PCs can keep sending their existing exports. */
   dreaming?: DreamingEvidence;
+  /** Optional v2 field; bundles without it leave context use unmeasured. */
+  contextLoad?: ContextLoadExport;
+}
+
+/**
+ * 최근 7일 컨텍스트 사용 집계. `turns`는 같은 기간 사용자 요청(최상위 세션), `partial`은 세션 파일 일부를 읽지 못한 경우다.
+ * `injected`는 주입 메시지 종류별로 크기 큰 순 200개까지이고, 그 밖의 종류는 `rest`에 종류 수와 합계로 남는다.
+ */
+export interface ContextLoadExport {
+  turns: number;
+  partial: boolean;
+  injected: (ContextLoadRow & { kind: string })[];
+  rest: ContextLoadRow & { kinds: number };
+  reads: ContextLoadRow;
+}
+
+function addRows(a: ContextLoadRow, b: ContextLoadRow): ContextLoadRow {
+  return { count: a.count + b.count, size: a.size + b.size, repeats: a.repeats + b.repeats, repeatSize: a.repeatSize + b.repeatSize };
+}
+
+/** 세션 디렉터리부터 읽지 못했으면 0건이 아니라 집계 없음(미측정)으로 보낸다. 일부 파일만 못 읽었으면 `partial`로 표시한다. */
+export function exportContextLoad(scan: Pick<ScanResult, "contextLoad" | "windows" | "scannedFiles" | "warnings">): ContextLoadExport | undefined {
+  if (scan.scannedFiles === 0 && scan.warnings.length) return undefined;
+  const sorted = Object.entries(scan.contextLoad.injected)
+    .map(([kind, row]) => ({ kind, ...row }))
+    .sort((a, b) => b.size - a.size || a.kind.localeCompare(b.kind));
+  const others = sorted.slice(CONTEXT_KIND_LIMIT);
+  const rest = { kinds: others.length, ...others.reduce<ContextLoadRow>(addRows, { count: 0, size: 0, repeats: 0, repeatSize: 0 }) };
+  const injected = sorted.slice(0, CONTEXT_KIND_LIMIT).map(({ kind, count, size, repeats, repeatSize }) => ({ kind, count, size, repeats, repeatSize }));
+  return { turns: scan.windows[0].turns, partial: scan.warnings.length > 0, injected, rest, reads: { ...scan.contextLoad.reads } };
 }
 
 /** 파일 이름·프롬프트 절 이름으로 쓸 출처 이름: 소문자·숫자·하이픈만. 쓸 수 있는 글자가 없으면 null. */
@@ -137,6 +170,7 @@ export function buildNightlyExport(input: {
   skillUsage?: SkillUsageReport;
   failureExcerpts?: Record<string, FailureExcerpt[]>;
   dreaming?: DreamingEvidence;
+  contextLoad?: ContextLoadExport;
 }): NightlyBundle {
   const toolFailures = rankToolFailures(input.errorsBySignature);
   // 관찰 후보의 실패 묶음을 먼저 싣는다(순위 20개 밖이거나 직전 7일 실패여도 후보 근거가 빠지지 않게). 같은 묶음은 한 번만.
@@ -154,6 +188,7 @@ export function buildNightlyExport(input: {
     // 행의 세션 목록(경로 포함)은 parseBundle이 다시 만들 때 빠진다.
     skillUsage: input.skillUsage ?? { rows: [], unused: [] },
     dreaming: input.dreaming,
+    contextLoad: input.contextLoad,
     failureExcerpts: [...new Set(signatures)].flatMap((signature) => {
       const excerpts = input.failureExcerpts?.[signature];
       const split = signature.indexOf(": ");
@@ -246,6 +281,46 @@ function parseExcerpts(list: unknown): FailureExcerptGroup[] {
   return groups.flatMap(({ tool, key, excerpts }) => (excerpts.length ? [{ tool, key, excerpts }] : []));
 }
 
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/**
+ * 집계로는 나올 수 없는 조합(반복이 전체보다 많음, 0건인데 크기가 있음, 반복 0건인데 반복 크기가 있음,
+ * 전부 반복인데 반복 크기가 전체 크기와 다름)도 틀린 모양으로 본다.
+ */
+function parseLoadRow(value: unknown): ContextLoadRow | null {
+  const raw = rows([value])[0];
+  if (!raw || ![raw.count, raw.size, raw.repeats, raw.repeatSize].every(isCount)) return null;
+  const row = { count: raw.count as number, size: raw.size as number, repeats: raw.repeats as number, repeatSize: raw.repeatSize as number };
+  const consistent =
+    row.repeats <= row.count &&
+    row.repeatSize <= row.size &&
+    (row.count > 0 || row.size === 0) &&
+    (row.repeats > 0 || row.repeatSize === 0) &&
+    (row.repeats < row.count || row.repeatSize === row.size);
+  return consistent ? row : null;
+}
+
+/** 칸 하나라도 모양이 틀리면 고쳐 읽지 않고 전체를 없는 것(null)으로 읽어 미측정으로 남긴다. */
+function parseContextLoad(value: unknown): ContextLoadExport | null {
+  const raw = rows([value])[0];
+  if (!raw || !isCount(raw.turns) || typeof raw.partial !== "boolean" || !Array.isArray(raw.injected) || raw.injected.length > CONTEXT_KIND_LIMIT) return null;
+  const reads = parseLoadRow(raw.reads);
+  const restRow = parseLoadRow(raw.rest);
+  const restKinds = rows([raw.rest])[0]?.kinds;
+  // 남은 종류마다 적어도 1건이 있다. 종류가 0이면 합계도 0이다. 저장된 JSON 값은 1바이트 이상이라 read는 반복분과 나머지 모두 크기가 건수 이상이다.
+  if (!reads || reads.size - reads.repeatSize < reads.count - reads.repeats || reads.repeatSize < reads.repeats || !restRow || !isCount(restKinds) || restRow.count < restKinds || (restKinds === 0 && restRow.count > 0)) return null;
+  const injected: ContextLoadExport["injected"] = [];
+  const kinds = new Set<string>();
+  for (const item of raw.injected) {
+    const row = parseLoadRow(item);
+    const kind = rows([item])[0]?.kind;
+    if (!row || row.count === 0 || typeof kind !== "string" || injectionKind(kind) !== kind || kinds.has(kind)) return null;
+    kinds.add(kind);
+    injected.push({ kind, ...row });
+  }
+  return { turns: raw.turns, partial: raw.partial, injected, rest: { kinds: restKinds, ...restRow }, reads };
+}
+
 /** 받은 묶음을 믿지 않고 모양을 다시 맞춘다. v1과 v2를 읽는다. 맞지 않으면 null. */
 function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const raw = rows([value])[0];
@@ -255,6 +330,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   if (raw.version === 2 && (!rows([raw.skillUsage]).length || !Array.isArray(raw.failureExcerpts))) return null;
   const generatedAt = new Date(raw.generatedAt);
   const dreaming = raw.version === 2 ? parseDreamingEvidence(raw.dreaming, generatedAt.getTime(), maskSecrets) : null;
+  const contextLoad = raw.version === 2 ? parseContextLoad(raw.contextLoad) : null;
   return {
     version: raw.version,
     source: fileSource,
@@ -274,6 +350,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     skillUsage: parseSkillUsage(raw.skillUsage),
     failureExcerpts: parseExcerpts(raw.failureExcerpts),
     ...(dreaming ? { dreaming } : {}),
+    ...(contextLoad ? { contextLoad } : {}),
   };
 }
 
@@ -674,6 +751,33 @@ function dreamingBlock(bundle: NightlyBundle, ledger: ReadonlySet<string> | null
   return [...lines, `${mark}jsonl`, text, mark].join("\n");
 }
 
+const group = (n: number) => n.toLocaleString("en-US");
+
+function loadLine(label: string, row: ContextLoadRow, turns: number, unit: string): string {
+  const per = turns > 0 ? `, 요청 100건당 ${((row.count * 100) / turns).toFixed(1)}건` : "";
+  return `- ${label}: ${group(row.count)}건${per}, ${group(row.size)}${unit}. 그중 반복 ${group(row.repeats)}건, ${group(row.repeatSize)}${unit}`;
+}
+
+/** 출처의 컨텍스트 사용 집계. 묶음에 없으면 0건으로 보이지 않게 미측정이라고 적는다. */
+function contextLoadBlock(source: string, load: ContextLoadExport | undefined): string {
+  const head = [
+    "## 컨텍스트 사용 집계",
+    "",
+    `\`${source}\`의 최근 7일 세션(하위 세션 포함)에서 모델에 들어간 주입 메시지(종류별, 크기는 글자)와 성공한 read 결과(크기는 저장된 JSON 바이트)입니다. 「반복」은 같은 세션에서 직전 압축 뒤 똑같은 내용이 이미 들어간 것입니다(read는 같은 경로 인자에 같은 결과). 낭비 후보일 뿐이며, 반복이 필요한 안내인지는 따로 판단합니다.`,
+  ];
+  if (!load) return [...head, "- 이 묶음에는 집계가 없습니다(집계를 보내기 전 판, 모양이 틀린 집계, 또는 PC가 세션 기록을 읽지 못함). 미측정으로 둡니다."].join("\n");
+  const hidden = load.injected.slice(CONTEXT_KIND_SHOWN);
+  const hiddenKinds = hidden.length + load.rest.kinds;
+  return [
+    ...head,
+    `- 같은 기간 사용자 요청 ${group(load.turns)}건${load.partial ? ". 세션 파일 일부를 읽지 못해 아래 값은 실제보다 작을 수 있습니다" : ""}`,
+    loadLine("read 결과", load.reads, load.turns, "바이트"),
+    ...load.injected.slice(0, CONTEXT_KIND_SHOWN).map((row) => loadLine(`주입 \`${row.kind}\``, row, load.turns, "자")),
+    ...(hiddenKinds ? [loadLine(`그 밖의 주입 ${group(hiddenKinds)}종 합계`, hidden.reduce<ContextLoadRow>(addRows, load.rest), load.turns, "자")] : []),
+    ...(load.injected.length || hiddenKinds ? [] : ["- 주입 메시지 없음"]),
+  ].join("\n");
+}
+
 function weeklyBlock(source: string, failures: readonly ToolFailure[]): string {
   return [
     "## 주간 성능 점검",
@@ -826,6 +930,7 @@ export function planInboxRun(
     block.push("", dreamingBlock(bundle, dreamingLedger, Date.parse(state?.startedAt ?? ""), now));
     if (plan.jobs.problems.length) block.push("", problemBlock(bundle.problems));
     if (bundle.failureExcerpts.length) block.push("", excerptBlock(bundle.source, bundle.failureExcerpts));
+    block.push("", contextLoadBlock(bundle.source, bundle.contextLoad));
     if (candidates.length) block.push("", skillBlock(bundle.source, candidates, bundle.failureExcerpts));
     if (bundle.skillUsage.rows.length || bundle.skillUsage.unused.length) block.push("", skillHealthBlock(bundle.source, bundle.skillUsage));
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));

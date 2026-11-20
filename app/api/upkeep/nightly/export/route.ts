@@ -3,7 +3,7 @@ import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { collectUpkeep } from "@/lib/upkeep/collect";
-import { buildNightlyExport, nightlySourceName } from "@/lib/upkeep/nightly-inbox";
+import { buildNightlyExport, exportContextLoad, nightlySourceName } from "@/lib/upkeep/nightly-inbox";
 import { scanSessions } from "@/lib/upkeep/sessions";
 import { collectSkillCandidates, observedCandidates } from "@/lib/upkeep/skill-candidates";
 import { buildSkillUsage, installedSkills } from "@/lib/upkeep/skill-usage";
@@ -43,6 +43,7 @@ export async function GET(req: Request) {
       skillUsage: buildSkillUsage(scan.skills.windows, {}, installed.skills, now.getTime(), !scan.warnings.length),
       failureExcerpts: scan.failureExcerpts,
       dreaming: scan.dreaming,
+      contextLoad: exportContextLoad(scan),
     });
     const observed = bundle.skillCandidates.filter((c) => c.kind === "observed").length;
     console.log(`[upkeep/nightly/export] ${bundle.source}: ${bundle.problems.length} problem(s), ${bundle.skillCandidates.length} candidate(s) (${observed} observed), ${bundle.toolFailures.length} failure group(s), ${bundle.skillUsage.rows.length} skill(s) opened`);

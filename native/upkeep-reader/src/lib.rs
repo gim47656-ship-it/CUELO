@@ -19,6 +19,8 @@ use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::fmt;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
@@ -384,7 +386,8 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
     w.field("usage", e.usage);
     w.field("cwd", e.cwd);
     let custom = e.kind.is("custom") || e.kind.is("custom_message");
-    if custom && e.custom_type.is("async-result") {
+    // Every `custom_message` reaches the model, so its text is kept for the context load count (sessions.ts).
+    if e.kind.is("custom_message") || (custom && e.custom_type.is("async-result")) {
         w.field("content", e.content);
     }
     if custom && ["mnemopi-recall", "mnemopi-recall-gated", "system-prompt-digest"].iter().any(|k| e.custom_type.is(k)) {
@@ -411,9 +414,19 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
         mw.field("toolName", m.tool_name);
         mw.field("isError", m.is_error);
         if let Some(content) = m.content.0 {
-            let result_text = m.role.is("toolResult")
-                && (m.is_error.0.is_some_and(|v| !matches!(v.get(), "false" | "null"))
-                    || ["wait", "hub", "git_finalize"].iter().any(|k| m.tool_name.is(k)));
+            let failed = m.is_error.0.is_some_and(|v| !matches!(v.get(), "false" | "null"));
+            let result_text = m.role.is("toolResult") && (failed || ["wait", "hub", "git_finalize"].iter().any(|k| m.tool_name.is(k)));
+            // A successful read result is usually a whole file. The context load count only needs its size and whether the
+            // same session got exactly the same result before, so it gets the UTF-8 byte length of the stored JSON value and
+            // a fingerprint of those bytes (DefaultHasher::new is the same for every call in one process), not the text.
+            if m.role.is("toolResult") && !failed && m.tool_name.is("read") {
+                let mut hasher = DefaultHasher::new();
+                content.get().hash(&mut hasher);
+                mw.key("contentBytes");
+                mw.out.push_str(&content.get().len().to_string());
+                mw.key("contentHash");
+                mw.out.push_str(&format!("\"{:016x}\"", hasher.finish()));
+            }
             if m.role.is("assistant") {
                 mw.key("content");
                 if content.get().starts_with('[') {
