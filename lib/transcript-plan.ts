@@ -70,7 +70,7 @@ function isConversationCustomMessage(message: AgentMessage): boolean {
 }
 
 /**
- * user-input-interpreter 확장이 사용자 메시지 뒤에 붙이는 숨은 영어 통역(display:false).
+ * 2026-11-20에 철거한 user-input-interpreter 확장이 예전 기록의 사용자 메시지 뒤에 붙인 숨은 영어 통역(display:false).
  * 따로 그리지 않고 가장 가까운 앞 사용자 말풍선 아래 접힌 토글로 보인다. 앞에 사용자
  * 메시지가 없는 통역만 예전처럼 작업 로그 상자로 남는다.
  */

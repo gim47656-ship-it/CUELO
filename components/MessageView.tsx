@@ -195,7 +195,7 @@ interface Props {
   writtenFiles?: WrittenFile[];
   /** This answer closes a finished turn; its result row (and 이번 턴) replaces the segment file chips. */
   hasTurnSummary?: boolean;
-  /** Hidden English rendering of this user message (user-input-interpreter); shown collapsed under the bubble. */
+  /** Hidden English rendering of this user message from older transcripts (user-input-interpreter, retired 2026-11-20); shown collapsed under the bubble. */
   inputTranslation?: string;
   /** A failed attempt the core retried within the same turn (`isRecoveredAssistantError`); drawn as a muted line, not an alert. */
   recoveredError?: boolean;
@@ -523,7 +523,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   );
 }
 
-/** 사용자 메시지에 붙은 숨은 영어 통역(user-input-interpreter). 처음엔 접혀 있고 눌러야 펼쳐진다. */
+/** 예전 기록의 사용자 메시지에 붙은 숨은 영어 통역(2026-11-20 철거한 user-input-interpreter). 처음엔 접혀 있고 눌러야 펼쳐진다. */
 function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?: string; onOpenFile?: (filePath: string) => void }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);

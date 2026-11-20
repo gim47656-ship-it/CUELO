@@ -12,7 +12,6 @@ import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settin
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
 import { clearPreparedTaskSession, storePreparedTaskBatch } from "../lib/prepared-task";
 import { bindTaskGuardSession, createTaskGuardState, reserveTaskCall, unbindTaskGuardSession } from "../command-guard/task-guard";
-import { translateInput } from "../user-input-interpreter";
 import { translateReply } from "../korean-reply-guard";
 import { createPreflightCheck } from "../lib/preflight-check";
 
@@ -237,7 +236,7 @@ test("Hydrogen verification challenges cannot reach the configured fallback or t
   });
 });
 
-test("both Hydrogen translation directions use the configured direct role", async () => {
+test("Hydrogen reply translation uses the configured direct role", async () => {
   const primary = "google-vertex/gemini-4-hydrogen";
   behavior.set(primary, "quota");
   await withRoles({
@@ -246,9 +245,26 @@ test("both Hydrogen translation directions use the configured direct role", asyn
   }, async () => {
     const { context } = await mainSession();
     const signal = new AbortController().signal;
-    expect(await translateInput("숫자는 10이다.", context, signal)).toContain("CSV");
     expect(await translateReply("The value is 10.", context, signal)).toContain("CSV");
-    expect(served).toEqual(["gemini-4-hydrogen", "gpt-reviewer", "gemini-4-hydrogen", "gpt-reviewer"]);
+    expect(served).toEqual(["gemini-4-hydrogen", "gpt-reviewer"]);
+  });
+});
+
+test("a non-Hydrogen interpreter goes to interpreterFallback on a usage limit only", async () => {
+  await withRoles({
+    interpreter: "openai-codex/gpt-main",
+    interpreterFallback: "anthropic/claude-reviewer",
+  }, async () => {
+    const { context } = await mainSession();
+    const signal = new AbortController().signal;
+    behavior.set("gpt-main", "quota");
+    expect(await translateReply("The value is 10.", context, signal)).toContain("CSV");
+    expect(served).toEqual(["gpt-main", "claude-reviewer"]);
+
+    served.length = 0;
+    behavior.set("gpt-main", "outage");
+    await expect(translateReply("The value is 10.", context, signal)).rejects.toThrow();
+    expect(served).toEqual(["gpt-main"]);
   });
 });
 

@@ -3,8 +3,8 @@ import { beforeModelAbort, directFallbackModel, isHydrogen, modelRoleSelector, o
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 /**
- * 통역 자리(2026-10-30 사용자 결정): 사용자 한국어 입력의 영어 번역(user-input-interpreter)과 Main의 비한국어 답 번역
- * (korean-reply-guard)이 함께 쓰는 모델 호출. `modelRoles.interpreter`를 쓰고, 그 slot이 없는 설치는 예전처럼 `tiny`를 쓴다.
+ * 통역 자리(2026-10-30 사용자 결정, 2026-11-20 입력 통역 철거): Main의 비한국어 답 번역(korean-reply-guard)이 쓰는
+ * 모델 호출. `modelRoles.interpreter`를 쓰고, 그 slot이 없는 설치는 예전처럼 `tiny`를 쓴다.
  */
 export const INTERPRETER_ROLE = "interpreter";
 
@@ -13,7 +13,8 @@ export const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bea
 
 /**
  * 통역 모델로 한 번 호출해 텍스트 답을 돌려준다. 출력 한도에서 끊기면 끊긴 답과 `truncated`를 함께 준다.
- * Hydrogen uses the one configured interpreterFallback, within the callers' existing total deadlines.
+ * Hydrogen falls back to `interpreterFallback` on operating failures; any other primary falls back to it on a usage
+ * limit (2026-11-20 user decision: Terra, then Haiku), within the callers' existing total deadlines.
  */
 export async function interpret(prompt: string, purpose: string, ctx: ExtensionContext, signal: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   const { completeSimple, isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
@@ -21,7 +22,8 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
   const role = selector ? INTERPRETER_ROLE : "tiny";
   const primary = ctx.models.resolve(`@${role}`);
   const hydrogen = isHydrogen(primary ? `${primary.provider}/${primary.id}` : selector);
-  const fallback = hydrogen ? await directFallbackModel(ctx, "interpreterFallback") : undefined;
+  const configured = await directFallbackModel(ctx, "interpreterFallback");
+  const fallback = configured && !(primary && configured.provider === primary.provider && configured.id === primary.id) ? configured : undefined;
   if (!primary && !fallback) throw new Error(`modelRoles.${role} 모델을 해석하지 못했습니다.`);
   const sessionId = ctx.sessionManager.getSessionId();
   const models = primary ? [primary] : [fallback!];
@@ -29,8 +31,8 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
   for (let index = 0; index < models.length; index++) {
     const model = models[index]!;
     signal.throwIfAborted();
-    // Input has 20 s total; reply translation has 120 s total. Leave half for the alternate.
-    const timeout = primary && index === 0 && fallback ? AbortSignal.timeout(purpose === "user-input-translation" ? 10_000 : 60_000) : undefined;
+    // Reply translation has 120 s total. Leave half for the alternate when Hydrogen may need it.
+    const timeout = hydrogen && primary && index === 0 && fallback ? AbortSignal.timeout(60_000) : undefined;
     const attempt = timeout ? AbortSignal.any([signal, timeout]) : signal;
     let operating: boolean | undefined;
     try {
@@ -63,6 +65,10 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
       if (index === 0 && hydrogen) {
         if (primary && fallback && (operating ?? await operationalFailure(error))) models.push(fallback);
       } else if (index === 0 && primary && isUsageLimitOutcome(undefined, error instanceof Error ? error.message : String(error))) {
+        if (fallback) {
+          models.push(fallback);
+          continue;
+        }
         for (const route of await sameModelRoutes(ctx.cwd, `${primary.provider}/${primary.id}`)) {
           const next = ctx.models.resolve(route);
           if (next) models.push(next);
