@@ -49,6 +49,28 @@ describe("runEgoBrowser script assembly", () => {
     expect(await execute(false, "const task2 = task; void task2;")).toEqual({ finished: [], outcome: "ok" });
   });
 
+  test("a named taskSpace call in the script returns the session's task; a numeric id or options still reach ego", async () => {
+    const opened: unknown[] = [];
+    const session = { page: () => "p1 page", finish: async () => {}, profileId: "user" };
+    const other = { page: () => "other page", profileId: "user" };
+    const fake = async (id: unknown, options?: { profileId?: string }) => {
+      opened.push(id);
+      if (options?.profileId) return { page: () => "profile page", profileId: options.profileId };
+      return typeof id === "number" ? other : session;
+    };
+    const run = (body: string, finish = false) => new Function("taskSpace", `return (async () => { ${buildScript("n", "user", body, finish)} })()`)(fake);
+    expect(await run("const task = await taskSpace('my check'); const page = task.page('p1'); const resumed = await taskSpace(7); return [page, resumed.page()];")).toEqual(["p1 page", "other page"]);
+    expect(opened).toEqual(["n", 7]);
+    expect(await run("return (await taskSpace('check', { profileId: 'verify' })).profileId;")).toBe("verify");
+    expect(await run("const taskSpace = async () => 'own'; return await taskSpace();", true)).toBe("own");
+    expect(await run("const __egoTask = await taskSpace(7); return (await taskSpace('my check')).page();")).toBe("p1 page");
+    opened.length = 0;
+    expect(await run("var taskSpace = async () => 'own var'; var task = 1; var page = 2; return [await taskSpace(), task, page];", true)).toEqual(["own var", 1, 2]);
+    expect(await run("return (await taskSpace('fresh', undefined)).page();", true)).toBe("p1 page");
+    await run("await taskSpace('empty', {}); await taskSpace('unset', { profileId: undefined });", true);
+    expect(opened).toEqual(["n", "n", "n"]);
+  });
+
   test("verify picks the profile by name, resumes an existing space, and never falls back to another profile", async () => {
     // ego의 실제 계약: profileId를 준 taskSpace()는 이미 있는 이름이면 거절한다(0.6.0.16 실측).
     // 프로필 목록은 10-22 집 PC 모양이다: `Profile 2`가 사용자 프로필이고 검증 프로필은 다른 id다.
@@ -264,6 +286,17 @@ describe("native Linux host", () => {
     const kept = linuxSdk();
     expect(await kept.run(buildScript("n", "user", "await task.finish({ keep: ['p1'] });", false, "linux"))).toBe("ok");
     expect(kept.log).toEqual(["use:n", "complete:3:true"]);
+  });
+
+  test("a script that opens its own space by name, as the ego guide shows, runs in the session's space instead of failing or leaving a second space", async () => {
+    // 11-14~11-19 Linux 9세션의 첫 호출 모양 그대로다. 예전에는 머리말의 task와 겹쳐 SyntaxError로 끝났다.
+    const sdk = linuxSdk();
+    const body = "const task = await taskSpace('voice engine verification');\nconst page = task.page('p1');\nconsole.log(task.id, page.kind);";
+    expect(await sdk.run(buildScript("cuelo-s-user", "user", body, true, "linux"))).toBe("ok");
+    expect(sdk.log).toEqual(["use:cuelo-s-user", "3 global page", "complete:3:false"]);
+    const open = linuxSdk();
+    expect(await open.run(buildScript("n", "user", "let task = await taskSpace('x'); void task;", false, "linux"))).toBe("ok");
+    expect(open.log).toEqual(["use:n"]);
   });
 
   test("the Linux global page gets the Windows page.click and page.fill shapes through its locator, without touching a script's own page", async () => {

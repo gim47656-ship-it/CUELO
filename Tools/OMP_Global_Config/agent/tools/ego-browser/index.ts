@@ -111,11 +111,26 @@ const page = task.page("p1");
 `;
 }
 
-/** finish가 true면 스크립트가 던져도 공간을 정리한다. 본문은 블록 안에서 돈다. */
+/**
+ * 본문은 머리말과 다른 블록에서 돈다. 11-14~11-19 Linux 9세션이 ego 가이드 예제대로 첫 호출에
+ * `const task = await taskSpace(...)`·`const page = task.page("p1")`를 써서 머리말과 겹쳐
+ * `SyntaxError: Identifier 'task' has already been declared`로 한 턴씩 버렸다. 블록이면 본문 선언은 가리기만 한다.
+ * 이름(문자열)만 준 `taskSpace`는 이 세션 공간을 돌려준다. 그대로 SDK에 넘기면 세션 정리가 모르는 공간이 남는다.
+ * 숫자 id(사용자가 넘긴 공간 재개 등)나 값이 있는 옵션(profileId 등)이 붙은 호출은 명시한 요청이라 SDK에 그대로 넘긴다.
+ * 본문은 `taskSpace`를 매개변수로 받는 안쪽 함수의 블록에서 돈다. 본문의 `const`·`let`·`var` 선언(`task`, `page`, `taskSpace` 포함)이
+ * 머리말과 겹치지 않고, 대체 함수는 머리말 범위에 묶여 본문 선언에 흔들리지 않는다. 본문의 `return` 값은 그대로 돌려준다.
+ * finish가 true면 스크립트가 던져도 공간을 정리한다.
+ */
 export function buildScript(name: string, profile: EgoProfile, body: string, finish: boolean, host: EgoHost = "windows"): string {
-  const prelude = buildPrelude(name, profile, host);
-  if (!finish) return `${prelude}${body}\n`;
-  return `${prelude}try {\n${body}\n} finally {\n  await task.finish({ keep: [] });\n}\n`;
+  const prelude = `${buildPrelude(name, profile, host)}const __egoTask = task;
+const __egoTaskSpace = typeof taskSpace === "function" ? taskSpace : undefined;
+const __egoNamedTaskSpace = (nameOrId, ...rest) => typeof nameOrId === "string" && rest.every((value) => value === undefined || (typeof value === "object" && value !== null && Object.values(value).every((option) => option === undefined)))
+  ? Promise.resolve(__egoTask)
+  : __egoTaskSpace(nameOrId, ...rest);
+`;
+  const run = `return await (async (taskSpace) => {\n{\n${body}\n}\n})(__egoNamedTaskSpace);`;
+  if (!finish) return `${prelude}${run}\n`;
+  return `${prelude}try {\n${run}\n} finally {\n  await task.finish({ keep: [] });\n}\n`;
 }
 
 /**
