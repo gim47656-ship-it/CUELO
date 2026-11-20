@@ -937,6 +937,7 @@ export function planInboxRun(
     sections.push(block.join("\n"));
   }
   const regressionReview = regressionReviewDue(state, date);
+  const overdueRows = (handoffs?.items ?? []).filter((item) => item.overdue && !handoffItems.includes(item));
   sections.push([
     "# 남은 HANDOFF 항목 분류",
     `\`doc/cuelo-ops-reference.md\`의 「Nightly self-improvement loop」를 따릅니다. 이 worktree의 ${HANDOFF_PATHS.map((path) => `\`${path}\``).join(", ")}에서 남은 행동 절을 읽고, 기한이 지난 행은 표시가 없는 항목까지 이번 야간 세션에서 하나씩 대조합니다.`,
@@ -944,6 +945,11 @@ export function planInboxRun(
     "같은 자료가 거듭 빠져 판정하지 못하면 날짜만 미루지 않습니다. 원래 조건에 꼭 필요한 비식별 집계(예: 설치 뒤 관찰 건수와 그중 재발 건수)만 기존 PC 수집기와 야간 내보내기에 이 worktree에서 직접 구현합니다. 출처별로 격리된 예제로 수집부터 클라우드가 묶음을 읽는 경로까지 검증하고, 값이 없거나 예전 묶음에 필드가 없을 때 0건 또는 성공으로 읽지 않는지도 봅니다. 기존 검토와 게시 절차를 따릅니다.",
     "집계를 위해 원본 로그, 대화, 계정이나 세션 식별자를 보내거나 권한을 넓히지 않습니다. PC에 직접 접속하거나 배포, 동기화, 오류나 모델 호출을 강제로 일으키지 않습니다. 구현을 마쳐도 관찰한 것은 아닙니다. 다음 정기 동기화로 받은 실제 출처와 측정 시점을 확인한 뒤 판정합니다.",
     "판정 기준이나 승인 정책은 바꾸지 않습니다. 사용자 결정, 실제 장비 조작이나 별도 승인이 필요한 부분은 표시 없이 남깁니다. 아침 요약에는 행별로 닫은 근거, 부분 확인 또는 미측정 사유, 보강한 집계와 다음 확인 조건을 적습니다.",
+    ...(overdueRows.length ? [
+      "",
+      `점검일이 지난 행 ${overdueRows.length}개(아래)는 원문과 그 원문이 가리키는 기록을 열어 보고 ① 닫기 ② 굵은 제목의 점검일을 앞날로 옮기고 확인한 것과 남은 조건 한 줄 ③ 날짜를 빼고 「사용자 결정 대기: …」 중 하나로 끝냅니다. 끝날 때 남아 있으면 클라우드가 이 세션을 다시 깨우고, 그래도 남으면 보류로 보고합니다.`,
+      ...overdueRows.map((item) => `- ${item.ref.path} 「${item.ref.title}」`),
+    ] : []),
   ].join("\n"));
   if (regressionReview) sections.push(NIGHTLY_REGRESSION_SECTION);
   if (handoffItems.length) sections.push(cloudHandoffBlock(handoffItems, handoffs?.base ?? null));

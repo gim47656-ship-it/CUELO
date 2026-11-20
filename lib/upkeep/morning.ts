@@ -195,7 +195,9 @@ export function importNightlyOutcomes(input: {
       if (Date.parse(row.checkedAt) > input.now.getTime()) continue;
       const index = outcomes.findIndex((old) => old.metricId === row.metricId);
       if (index >= 0 && Date.parse(outcomes[index].checkedAt) >= Date.parse(row.checkedAt)) continue;
-      const importedRow = row.disposition === "fixed" && (result.outcome !== "clean" || result.leftoverCount > 0 || result.unpushed.length > 0)
+      // 기한 지난 HANDOFF 행만 남긴 보류는 게시한 고침까지 되돌리지 않는다. 고침을 거두는 것은 게시하지 못했거나 실행이 끊긴 경우다.
+      const unpublished = result.outcome === "interrupted" || result.outcome === "failed" || result.leftoverCount > 0 || result.unpushed.length > 0;
+      const importedRow = row.disposition === "fixed" && unpublished
         ? { source: row.source, metricId: row.metricId, checkedAt: row.checkedAt, disposition: "checked" as const, note: row.note, evidence: row.evidence }
         : row;
       // A failed re-review cannot revoke an already published fix still awaiting this PC's install.

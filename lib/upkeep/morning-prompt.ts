@@ -16,7 +16,7 @@ export interface MorningPromptInput {
 
 /** 결과값을 사용자가 읽을 쉬운 말로. */
 export const NIGHTLY_OUTCOME_LABELS: Record<NightlyOutcome, string> = {
-  held: "보류: 게시하지 못한 작업이 클라우드 작업 사본에 남아 있습니다",
+  held: "보류: 게시하지 못한 작업이나 끝내지 않은 일(오류 문구 참고)이 남아 있습니다",
   interrupted: "중단: 서버 재시작으로 세션이 작업 도중 끊겼습니다",
   failed: "실패: 세션이 모델 오류로 끝났습니다",
   clean: "정상: 게시할 것이 없었습니다",

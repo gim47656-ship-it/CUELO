@@ -10,6 +10,7 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { writePrivateFileAtomicSync } from "../atomic-file";
+import { HANDOFF_PATHS, parseHandoff } from "./handoff";
 import { nightlyStateBranch, type NightlyState } from "./nightly";
 import { NIGHTLY_ARTIFACT_BYTES, parseMetricOutcomes, type NightlyMetricOutcome } from "./nightly-outcomes";
 
@@ -65,6 +66,8 @@ export interface NightlyResult {
   /** 세션의 마지막 답(상한까지). 프롬프트에서는 자료로만 다룬다. */
   summary: string;
   error?: string;
+  /** 실행 날짜 기준으로 HEAD에 남은 기한 지난 HANDOFF 행 제목. 실행기의 후속 지시에만 쓰며 PC는 읽지 않는다(`error`에 같은 내용). */
+  overdue?: string[];
   warnings: string[];
 }
 
@@ -194,9 +197,36 @@ export async function inspectNightlyResult(input: {
       unverified = warn(`origin/main을 찾지 못해 게시하지 않은 커밋을 세지 못했습니다(${firstLine(failure)}).`);
     }
   }
+  /**
+   * 받은편지함 실행은 기한 지난 HANDOFF 행을 하나씩 닫거나 옮기라는 지시를 받는다. 실행 날짜(KST) 기준으로 지난 행이 HEAD에
+   * 그대로 남았으면 그 일을 끝내지 않은 것이라 보류다(11-20 실행이 제목만 보고 11개를 넘긴 일). 커밋된 내용을 `git show`로
+   * 읽으므로 작업 사본의 링크나 특수 파일을 따라가지 않는다. 커밋하지 않은 수정은 위에서 이미 보류다.
+   */
+  const overdue: string[] = [];
+  if (state.sources && !error) {
+    const day = new Date(`${state.date}T00:00:00+09:00`);
+    for (const path of HANDOFF_PATHS) {
+      try {
+        // 그 커밋에 파일이 없는 것만 경고다(git 메시지 언어와 상관없이 ls-tree로 가린다). 읽기나 해석이 실패했으면 기한을
+        // 확인하지 못한 것이라 깨끗하다고 하지 않는다.
+        if (!(await git(worktree, ["ls-tree", "--name-only", "HEAD", "--", path])).trim()) {
+          warn(`HEAD에 ${path}이 없어 그 파일의 기한은 보지 않았습니다.`);
+          continue;
+        }
+        const text = await git(worktree, ["show", `HEAD:${path}`]);
+        overdue.push(...parseHandoff(text, path, day).filter((item) => item.overdue).map((item) => item.ref.title));
+      } catch (failure) {
+        unverified ??= warn(`HEAD의 ${path}에서 기한을 확인하지 못했습니다(${firstLine(failure)}).`);
+      }
+    }
+  }
 
   const last = input.sessionFile ? readLastAssistant(input.sessionFile) : null;
-  if (!last) warn("세션 기록에서 마지막 답을 읽지 못했습니다.");
+  if (!last) {
+    const text = warn("세션 기록에서 마지막 답을 읽지 못했습니다.");
+    // 기한 지난 행만 남은 보류는 세션을 다시 깨우고 게시한 고침을 믿는다. 세션이 오류로 끝났는지 모르면 그렇게 하지 않는다.
+    if (overdue.length) unverified ??= text;
+  }
   /**
    * 결과의 끝 시각. 같은 실행을 다시 알려도 같은 값이어야 아침 보고가 그 결과를 두 번 열지 않는다(그 값으로 비교한다).
    * 세션의 마지막 답 시각, 그것이 없으면 더는 쓰이지 않는 세션 파일의 수정 시각을 쓴다. 둘 다 없으면 이 실행의 시작 시각을
@@ -222,10 +252,20 @@ export async function inspectNightlyResult(input: {
       ? "held"
       : error || failedBySession || unverified
         ? "failed"
-        : "clean";
-  const errorText = error
-    ?? (failedBySession ? clip(last?.errorMessage || "세션의 마지막 답이 오류로 끝났습니다.", ERROR_LIMIT) : undefined)
+        : overdue.length > 0
+          ? "held"
+          : "clean";
+  const failureText = error
+    ?? (failedBySession ? last?.errorMessage || "세션의 마지막 답이 오류로 끝났습니다." : undefined)
     ?? unverified;
+  // 남은 행 요약(개수와 「외 N개」)의 자리를 먼저 떼고, 실패 문구는 남은 자리에 맞춰 자른다.
+  // 실패 문구가 짧으면 남는 자리를 요약이 쓰고, 길어도 요약은 한도의 절반을 지킨다.
+  const overdueText = overdue.length
+    ? overdueSummary(overdue, ERROR_LIMIT - (failureText ? Math.min(failureText.length + 3, Math.floor(ERROR_LIMIT / 2)) : 0))
+    : undefined;
+  const errorText = failureText && overdueText
+    ? `${clip(failureText, ERROR_LIMIT - overdueText.length - 3)} / ${overdueText}`
+    : failureText ? clip(failureText, ERROR_LIMIT) : overdueText;
 
   let outcomes: NightlyMetricOutcome[] = [];
   const artifact = join(worktree, ".audit", `nightly-outcomes-${state.date}.json`);
@@ -255,9 +295,35 @@ export async function inspectNightlyResult(input: {
     unpushed,
     summary: clip(last?.text ?? "", SUMMARY_LIMIT),
     ...(errorText ? { error: errorText } : {}),
+    ...(overdue.length ? { overdue } : {}),
     ...(state.sources ? { outcomes } : {}),
     warnings,
   };
+}
+
+/** 남은 기한 지난 행을 한도 안에서 적는다. 다 못 적으면 「외 N개」로 끝내 개수는 잃지 않는다. */
+export function overdueSummary(titles: readonly string[], limit: number): string {
+  const head = `기한 지난 HANDOFF 행 ${titles.length}개를 닫거나 옮기지 않았습니다: `;
+  let text = head;
+  for (const [index, title] of titles.entries()) {
+    const piece = `${index ? " / " : ""}${title}`;
+    const rest = titles.length - index;
+    if (text.length + piece.length + (rest > 1 ? ` 외 ${rest - 1}개`.length : 0) > limit) return `${text}${index ? " " : ""}외 ${rest}개`;
+    text += piece;
+  }
+  return text;
+}
+
+/**
+ * 기한 지난 행만 남기고 끝난 야간 세션에 실행기가 한 번 보내는 후속 지시. 결과를 쓰기 전에 같은 세션을 다시 깨워
+ * 행마다 끝맺게 한다(지시문만으로는 11-20 실행이 제목만 보고 넘겼다).
+ */
+export function overdueFollowUp(titles: readonly string[]): string {
+  return [
+    `이 worktree의 HEAD에 점검일이 지난 HANDOFF 행이 ${titles.length}개 남아 있어 이 실행을 아직 끝난 것으로 보지 않습니다.`,
+    "행마다 원문과 그 원문이 가리키는 기록을 열어 보고 ① 닫기 ② 굵은 제목의 점검일을 앞날로 옮기고 확인한 것과 남은 조건 한 줄 ③ 날짜를 빼고 「사용자 결정 대기: …」 중 하나로 끝낸 뒤, 처음 지시의 검토와 게시 절차로 main에 올리세요. 이번에도 남으면 보류로 보고합니다.",
+    ...titles.map((title) => `- ${title}`),
+  ].join("\n");
 }
 
 /**

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getRunningRpcSessionIds } from "@/lib/rpc-manager";
 import { resolveSessionPath, readSessionHeader } from "@/lib/session-reader";
-import { inspectNightlyResult, writeNightlyResult } from "@/lib/upkeep/nightly-result";
+import { inspectNightlyResult, overdueFollowUp, writeNightlyResult } from "@/lib/upkeep/nightly-result";
 import { readNightlyState } from "@/lib/upkeep/nightly";
 import { kstDate } from "@/lib/upkeep/prompt";
 
@@ -15,7 +15,9 @@ const log = (message: string) => console.log(`[upkeep/nightly/result] ${message}
  * 야간 실행의 끝 상태를 받은편지함 출처마다 결과 파일로 남긴다(lib/upkeep/nightly-result.ts, 2026-11-09 사용자 결정). 클라우드 실행
  * 스크립트 `cuelo-nightly-run.sh`가 세션이 끝난 뒤 본문 `{"sessionId":"…"}`로, cuelo.service 재시작으로 세션이 끊긴 경우에는
  * `{"sessionId":"…","interrupted":true}`로 부른다. 게시까지 못 간 실행(보류, 중단, 오류)을 각 PC의 아침 보고가 알 수 있게 하는
- * 것이 목적이다. `?dryRun=1`은 결과만 돌려주고 파일을 쓰지 않는다.
+ * 것이 목적이다. `?dryRun=1`은 결과만 돌려주고 파일을 쓰지 않는다. 실행기가 첫 보고에 `"followUp":true`를 붙이면, 기한 지난
+ * HANDOFF 행만 남긴 실행은 결과를 쓰지 않고 `{"action":"follow-up","message":…}`를 돌려준다. 실행기는 그 메시지로 같은 세션을
+ * 한 번 다시 깨우고, 끝나면 `followUp` 없이 다시 알린다(그때는 남아 있어도 보류로 쓴다).
  */
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
@@ -23,11 +25,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
   let interrupted = false;
+  let followUp = false;
   let reportedSession: string | null = null;
   if (hasJsonContentType(req)) {
     try {
-      const body = (await req.json()) as { interrupted?: unknown; sessionId?: unknown } | null;
+      const body = (await req.json()) as { interrupted?: unknown; followUp?: unknown; sessionId?: unknown } | null;
       interrupted = body?.interrupted === true;
+      followUp = body?.followUp === true;
       reportedSession = typeof body?.sessionId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(body.sessionId) ? body.sessionId : null;
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -94,6 +98,12 @@ export async function POST(req: Request) {
   if (dryRun) {
     log(`dry run: ${result.outcome} for ${state.sessionId}`);
     return NextResponse.json({ action: "planned", dryRun, result });
+  }
+  // 기한 지난 행만 남은 보류는 첫 보고에서 결과를 쓰지 않고 후속 지시를 돌려준다. 다른 보류(남은 변경, 게시하지 않은 커밋)와
+  // 실패는 바로 쓴다: 세션을 다시 깨운다고 고쳐진다는 근거가 없다.
+  if (followUp && result.outcome === "held" && result.overdue?.length && !result.leftoverCount && !result.unpushed.length) {
+    log(`follow-up: ${result.overdue.length} overdue HANDOFF row(s) left by ${state.sessionId}`);
+    return NextResponse.json({ action: "follow-up", sessionId: state.sessionId, message: overdueFollowUp(result.overdue) });
   }
   const sources = writeNightlyResult(outboxDir, inboxDir, result);
   if (!sources.written.length || sources.failed.length) {
