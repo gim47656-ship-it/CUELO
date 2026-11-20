@@ -3,14 +3,16 @@
  * 직전 7일(index 1) 두 묶음으로 센다. 라이브 서버의 요청 처리를 막지 않도록 약 8ms마다 이벤트 루프에
  * 양보한다. 읽은 값이 없으면 0이 아니라 호출자가 미측정으로 다룰 수 있게 원 건수를 그대로 넘긴다.
  */
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls/local-root";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { dirname, join, relative, sep } from "node:path";
+import { createInterface } from "node:readline";
 import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
+import { DREAMING_WINDOW_MS, DreamingCollector, hasCredentialContext, type DreamingEvidence } from "./dreaming";
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
@@ -35,6 +37,7 @@ type ContentBlock = { type?: string; id?: string; name?: string; text?: string; 
 type Entry = {
   type?: string;
   id?: string;
+  parentId?: string | null;
   timestamp: string;
   customType?: string;
   purpose?: string;
@@ -48,6 +51,7 @@ type Entry = {
     attribution?: string;
     timestamp?: number;
     content?: unknown;
+    stopReason?: string;
     usage?: Usage;
     model?: string;
     provider?: string;
@@ -150,6 +154,8 @@ export type ScanResult = {
   failureExcerpts: Record<string, FailureExcerpt[]>;
   /** 14일 안에 실패 뒤 같은 턴에서 같은 도구가 성공한 기록 */
   recoveries: Recovery[];
+  /** Included only for the PC export. */
+  dreaming?: DreamingEvidence;
   /** 배포 교체 시각을 읽은 업데이트 로그의 시작(`from`, 없으면 null)과 그 로그가 최근 7일 시작을 덮는지. 보고서가 채운다. */
   deployLogs?: { from: number | null; coversRecent: boolean };
 };
@@ -189,6 +195,8 @@ function emptyWindow(): WindowCounts {
  * 이름은 남기고 값만 가린다. 따옴표로 감싼 값은 공백이 있어도 통째로 가린다.
  */
 export function maskSecrets(text: string): string {
+  text = text.replace(/ibssh_[A-Za-z0-9_-]+/gi, "[가림]");
+  if (hasCredentialContext(text)) return "[가림]";
   return sharedMaskSecrets(text).text.replace(
     /\b([\w-]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API[-_]?KEY|PRIVATE[-_]?KEY|ACCESS[-_]?KEY)[\w-]*["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|["'][^\n]*|(?:Bearer\s+)?[^\s"',;]+)/gi,
     "$1[가림]",
@@ -320,16 +328,16 @@ export function normalizeError(tool: string, text: string): string {
     : tool === "skim" ? lines.at(-1) ?? lines[0] : errorLine(tool, lines);
   const exitOnly = EXIT_ONLY_LINE.exec(line.trim());
   if (exitOnly) return `Command exited with code ${exitOnly[1]}`;
-  return maskSecrets(line)
+  return maskSecrets(hasCredentialContext(text) ? "[가림]" : line)
     .replace(/(?:[A-Za-z]:)?\/(?:[^\s:]+\/)*[^\s:]*/g, "<p>")
     .replace(/\b(?:0x)?[a-f\d]{8,}\b/gi, "<h>")
     .replace(/\d+/g, "N")
     .slice(0, 180);
 }
 
-/** 비밀을 가리고 공백을 접어 `limit`자로 자른다. 가리기 전에 넉넉히 잘라 큰 인자(파일 본문 등)를 통째로 훑지 않는다. */
+/** Apply masking before clipping. Withhold oversized tool text instead of masking a truncated prefix. */
 export function clipMasked(text: string, limit: number): string {
-  const masked = maskSecrets(text.slice(0, limit * 4)).replace(/\s+/g, " ").trim();
+  const masked = text.length > 64 * 1024 ? "[가림]" : maskSecrets(text).replace(/\s+/g, " ").trim();
   return masked.length > limit ? `${masked.slice(0, limit)}…` : masked;
 }
 
@@ -438,6 +446,141 @@ function textOf(content: unknown): string {
   return content.map((x: ContentBlock | null) => x?.text ?? "").join("\n");
 }
 
+function dreamingText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((block: ContentBlock | null) => block?.type === "text" && typeof block.text === "string" ? [block.text] : []).join("\n");
+}
+
+// These prompts can quote already-uploaded session evidence. Do not export their turns again.
+const GENERATED_UPKEEP = /^CUELO (?:야간 자율 개선 세션|클라우드 변경 보고 세션|보수 전체 점검|보수 점검:)/;
+const DREAMING_CORRECTION = /^\s*(?:정정(?:[:：\s]|$)|correction[:\s]|I meant\b)|잘못 (?:됐|말|알)|라고 하지 않았|아니라고|\b(?:not what I asked|that(?:'s| is) (?:wrong|incorrect))\b/i;
+
+// The metrics reader projects out stopReason and assistant text. Only export needs raw JSONL.
+const DREAMING_FILE_LIMIT = 96;
+const DREAMING_FILE_BYTES = 4 * 1024 * 1024;
+const DREAMING_SCAN_MS = 12_000;
+
+async function collectDreaming(files: readonly SessionFile[], now: number): Promise<DreamingEvidence | null> {
+  const from = now - DREAMING_WINDOW_MS;
+  // Reuse the inventory upkeep already needs. New content reads have their own limits.
+  const recent = files.filter((file) => file.regular && !file.child && file.size > 0 && file.modified >= from)
+    .sort((a, b) => b.modified - a.modified || a.created - b.created);
+  const collector = new DreamingCollector(from, now, maskSecrets);
+  const deadline = AbortSignal.timeout(DREAMING_SCAN_MS);
+  const endAt = performance.now() + DREAMING_SCAN_MS;
+  const seen = new Set<string>();
+  let partial = recent.length > DREAMING_FILE_LIMIT;
+  for (const file of recent.slice(0, DREAMING_FILE_LIMIT)) {
+    if (deadline.aborted || performance.now() >= endAt) return collector.finish(true);
+    let sessionId = "";
+    const entries = new Map<string, Entry>();
+    let leaf: string | null = null;
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+      const before = await handle.stat();
+      if (!before.isFile() || before.size <= 0 || before.size > DREAMING_FILE_BYTES) {
+        partial = true;
+        continue;
+      }
+      const stream = handle.createReadStream({ end: before.size - 1, signal: deadline, autoClose: false });
+      try {
+        for await (const line of createInterface({ input: stream, crlfDelay: Infinity })) {
+          if (deadline.aborted || performance.now() >= endAt) return collector.finish(true);
+          if (!line.trim()) continue;
+          const entry = JSON.parse(line) as Entry | null;
+          if (entry?.type === "title") continue;
+          if (typeof entry?.type !== "string" || !entry.type || typeof entry.id !== "string" || !entry.id) throw new Error("missing session entry identity");
+          if (entry.type === "session") {
+            if (sessionId || leaf !== null) throw new Error("unexpected session header");
+            sessionId = entry.id;
+            continue;
+          }
+          if (entries.has(entry.id)) throw new Error("duplicate session entry");
+          entries.set(entry.id, entry);
+          leaf = entry.id;
+        }
+        const after = await lstat(file.path);
+        if (!sessionId || !after.isFile() || after.dev !== before.dev || after.ino !== before.ino
+          || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+          partial = true;
+          continue;
+        }
+      } finally {
+        stream.destroy();
+      }
+    } catch {
+      // No reader error or raw text goes into the bundle.
+      partial = true;
+      continue;
+    } finally {
+      await handle?.close().catch(() => { partial = true; });
+    }
+
+    // An incomplete branch could promote abandoned text. Do not use that file.
+    const branch: Entry[] = [];
+    for (let id = leaf; id !== null;) {
+      const entry = entries.get(id);
+      if (!entry || branch.length >= entries.size || (entry.parentId !== null && typeof entry.parentId !== "string")) {
+        partial = true;
+        branch.length = 0;
+        break;
+      }
+      branch.push(entry);
+      id = entry.parentId;
+    }
+    let humanTurn = false;
+    let evidenceTurn = false;
+    const commands = new Map<string, string>();
+    for (const entry of branch.reverse()) {
+      if (deadline.aborted || performance.now() >= endAt) return collector.finish(true);
+      if (isNewInput(entry)) {
+        humanTurn = evidenceTurn = false;
+        commands.clear();
+      }
+      if (entry.type !== "message" || !entry.message) continue;
+      const m = entry.message;
+      const time = Date.parse(entry.timestamp);
+      let kind: "user" | "outcome" | "failed-command";
+      let quote: string;
+      let command: string | undefined;
+      if (m.role === "user") {
+        const human = m.attribution === undefined || m.attribution === "user";
+        quote = human ? dreamingText(m.content) : "";
+        humanTurn = !!quote.trim() && !GENERATED_UPKEEP.test(quote.trimStart());
+        evidenceTurn = humanTurn && (isComplaint(quote) || DREAMING_CORRECTION.test(quote));
+        if (!evidenceTurn) continue;
+        kind = "user";
+      } else if (humanTurn && m.role === "assistant") {
+        if (Array.isArray(m.content)) for (const block of m.content as ContentBlock[]) {
+          if (block?.type === "toolCall" && block.name === "bash" && typeof block.id === "string" && typeof block.arguments?.command === "string") {
+            commands.set(block.id, block.arguments.command);
+          }
+        }
+        if (!evidenceTurn || m.stopReason !== "stop") continue;
+        kind = "outcome";
+        quote = dreamingText(m.content);
+      } else if (humanTurn && m.role === "toolResult" && m.toolName === "bash" && typeof m.toolCallId === "string") {
+        command = commands.get(m.toolCallId);
+        commands.delete(m.toolCallId);
+        if (!command || m.isError !== true) continue;
+        quote = dreamingText(m.content);
+        if (SHAKEN_RESULT.test(quote.trim()) || INTENDED_ERROR.test(quote) || HARNESS_NOTICE.test(quote)
+          || classifyToolError("bash", command, quote) !== "failed") continue;
+        evidenceTurn = true;
+        kind = "failed-command";
+      } else continue;
+      if (!Number.isFinite(time) || time < from || time > now || typeof entry.id !== "string") continue;
+      const key = `${entry.id}:${entry.timestamp}:${kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collector.add({ sessionId, entryId: entry.id, at: entry.timestamp, kind, quote, command });
+    }
+  }
+  return collector.finish(partial);
+}
+
 function addUsage(target: Record<string, UsageTotal>, key: string, usage: Usage, provider: string | undefined) {
   const row = target[key] ??= { cost: 0, input: 0, write: 0, calls: 0, subscription: 0, unknownAuth: 0, missingCost: false, missingCache: false, providers: [] };
   if (provider && !row.providers.includes(provider)) row.providers.push(provider);
@@ -476,8 +619,10 @@ function isChildSession(dir: string, path: string): boolean {
   return relative(dir, path).split(sep).length > 2;
 }
 
-async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
-  const files: { path: string; child: boolean; created: number; modified: number }[] = [];
+type SessionFile = { path: string; child: boolean; created: number; modified: number; size: number; regular: boolean };
+
+async function sessionFiles(dir: string, cutoff: number): Promise<SessionFile[]> {
+  const files: SessionFile[] = [];
   const walk = async (d: string) => {
     for (const entry of await readdir(d, { withFileTypes: true })) {
       const path = join(d, entry.name);
@@ -485,7 +630,7 @@ async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
         if (entry.isDirectory()) await walk(path);
         else if (entry.name.endsWith(".jsonl")) {
           const info = await stat(path);
-          if (info.mtimeMs >= cutoff) files.push({ path, child: isChildSession(dir, path), created: info.birthtimeMs, modified: info.mtimeMs });
+          if (info.mtimeMs >= cutoff) files.push({ path, child: isChildSession(dir, path), created: info.birthtimeMs, modified: info.mtimeMs, size: info.size, regular: entry.isFile() });
         }
       } catch {
         continue;
@@ -496,9 +641,7 @@ async function sessionFiles(dir: string, cutoff: number): Promise<string[]> {
   // 먼저 만들어진 파일부터 읽어야 fork·fixture 사본보다 원본이 중복 제거에서 이긴다. 하위 세션은 최상위 세션을 모두 읽은 뒤에
   // 읽는다: 원본 파일이 통째로 다시 쓰이면 생성 시각이 늦어져, seance 하위 세션이 그 기록을 복사해 둔 사본이 먼저 읽혀
   // 원본의 사용자 요청을 지웠다(11-16 점검에서 최근 7일 요청 52건 누락).
-  return files
-    .sort((a, b) => Number(a.child) - Number(b.child) || a.created - b.created || a.modified - b.modified || a.path.localeCompare(b.path))
-    .map((f) => f.path);
+  return files.sort((a, b) => Number(a.child) - Number(b.child) || a.created - b.created || a.modified - b.modified || a.path.localeCompare(b.path));
 }
 
 /** 세션별 비용을 키마다 모아 상위 세션을 고른다(최근 7일만). */
@@ -526,7 +669,7 @@ class SessionCostTable {
  * `splitAt`은 고침 표시 시각들이다. 최근 7일 사건을 표시마다 전·후 묶음에도 함께 세어, 파일은 표시 수와 관계없이
  * 한 번만 읽는다.
  */
-export async function scanSessions(dir: string, now: number, splitAt: readonly number[] = [], cutovers: readonly DeployCutover[] = []): Promise<ScanResult> {
+export async function scanSessions(dir: string, now: number, splitAt: readonly number[] = [], cutovers: readonly DeployCutover[] = [], includeDreaming = false): Promise<ScanResult> {
   const windows: [WindowCounts, WindowCounts] = [emptyWindow(), emptyWindow()];
   const splits = new Map<number, SplitCounts>();
   for (const at of splitAt) if (!splits.has(at)) splits.set(at, { before: emptyWindow(), after: emptyWindow() });
@@ -567,14 +710,16 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
 
   // 바이너리가 없으면 디렉터리·파일 오류 경고로 바꾸지 않고 스캔 전체가 그 오류로 실패한다.
   loadUpkeepReader();
-  let files: string[];
+  let files: SessionFile[];
   try {
     files = await sessionFiles(dir, now - 14 * DAY_MS);
   } catch {
-    return { windows, recent: splits.get(recentAt)!.after, scannedFiles: 0, warnings: ["세션 디렉터리를 읽지 못했습니다."], evidence, topSessions: {}, makerResults, splits, cwdActivity, ...finish() };
+    warnings.push("세션 디렉터리를 읽지 못했습니다.");
+    return { windows, recent: splits.get(recentAt)!.after, scannedFiles: 0, warnings, evidence, topSessions: {}, makerResults, splits, cwdActivity, ...finish() };
   }
+  const dreaming = includeDreaming ? await collectDreaming(files, now) : null;
 
-  for (const path of files) {
+  for (const { path, child: childSession } of files) {
     await yieldEventLoop();
     let sessionId = "";
     let cwd = "";
@@ -615,7 +760,6 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
       compacted = promptChanged = false;
       return cause ? { cause, cost: Number(usage.cost?.cacheWrite) || 0, deploy } : null;
     };
-    const childSession = isChildSession(dir, path);
     let lastYield = performance.now();
 
     try {
@@ -877,8 +1021,10 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             awaiting = awaiting.filter((a) => a.tool !== call.name);
           }
           if (!failed) continue;
+          // A failed command can echo an unlabeled value from credentials in its own arguments.
+          const safeResult = call.command && maskSecrets(call.command) !== call.command ? "[가림]" : text;
           // 호출이 일어난 기간(고침 표시 전·후 포함)으로 센다(결과가 경계를 넘어 와도 호출 쪽 묶음).
-          const signature = `${call.name}: ${normalizeError(call.name, text)}`;
+          const signature = `${call.name}: ${normalizeError(call.name, safeResult)}`;
           const reject = call.name === "task" || call.name === "maker_route";
           for (const target of call.targets) {
             target.errors++;
@@ -890,7 +1036,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             if (rows.length < EVIDENCE_LIMIT) rows.push(example(signature));
           }
           // 실패 발췌는 14일 전체에서 묶음마다 최근 것만 남긴다(관찰 후보가 직전 7일 실패에서도 나오므로).
-          const excerpt: FailureExcerpt = { args: summarizeArgs(args), error: clipMasked(text, EXCERPT_ERROR), recovery: null };
+          const excerpt: FailureExcerpt = { args: summarizeArgs(args), error: clipMasked(safeResult, EXCERPT_ERROR), recovery: null };
           const rows = (failureExcerpts[signature] ??= []);
           rows.push(excerpt);
           if (rows.length > EXCERPTS_PER_SIGNATURE) rows.shift();
@@ -910,7 +1056,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     .sort((a, b) => Number(a.first) - Number(b.first) || b.cost - a.cost)
     .slice(0, EVIDENCE_LIMIT)
     .map((x) => x.row);
-  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish() };
+  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish(), ...(dreaming ? { dreaming } : {}) };
 }
 
 type SkillSession = { sessionId: string; opens: number; afterCalls: number; afterFailures: number; lastAt: number };

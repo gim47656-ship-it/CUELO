@@ -10,6 +10,7 @@ import { cpSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { NIGHTLY_BRANCH_RETENTION_DAYS, nightlyBranchStart } from "./criteria";
+import { DREAMING_LEDGER_PATH, DREAMING_RULES, dreamingKey, parseDreamingEvidence, parseDreamingLedger, type DreamingEvidence } from "./dreaming";
 import { HANDOFF_PATHS, parseHandoff, readHandoffs } from "./handoff";
 import {
   candidateLine, NIGHTLY_ATTENTION_RULES, NIGHTLY_PREAMBLE, type NightlyBase, type NightlyJobs, type NightlyPlan, type NightlySourcePlan, type NightlyState,
@@ -78,6 +79,8 @@ export interface NightlyBundle {
   /** 스킬 사용(행에 세션 목록은 싣지 않는다) */
   skillUsage: SkillUsageReport;
   failureExcerpts: FailureExcerptGroup[];
+  /** Optional v2 field; pre-dreaming PCs can keep sending their existing exports. */
+  dreaming?: DreamingEvidence;
 }
 
 /** 파일 이름·프롬프트 절 이름으로 쓸 출처 이름: 소문자·숫자·하이픈만. 쓸 수 있는 글자가 없으면 null. */
@@ -133,6 +136,7 @@ export function buildNightlyExport(input: {
   errorsBySignature: Record<string, number>;
   skillUsage?: SkillUsageReport;
   failureExcerpts?: Record<string, FailureExcerpt[]>;
+  dreaming?: DreamingEvidence;
 }): NightlyBundle {
   const toolFailures = rankToolFailures(input.errorsBySignature);
   // 관찰 후보의 실패 묶음을 먼저 싣는다(순위 20개 밖이거나 직전 7일 실패여도 후보 근거가 빠지지 않게). 같은 묶음은 한 번만.
@@ -149,6 +153,7 @@ export function buildNightlyExport(input: {
     toolFailures,
     // 행의 세션 목록(경로 포함)은 parseBundle이 다시 만들 때 빠진다.
     skillUsage: input.skillUsage ?? { rows: [], unused: [] },
+    dreaming: input.dreaming,
     failureExcerpts: [...new Set(signatures)].flatMap((signature) => {
       const excerpts = input.failureExcerpts?.[signature];
       const split = signature.indexOf(": ");
@@ -248,10 +253,12 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   if (typeof raw.generatedAt !== "string" || !Number.isFinite(Date.parse(raw.generatedAt))) return null;
   if (!Array.isArray(raw.problems) || !Array.isArray(raw.skillCandidates) || !Array.isArray(raw.toolFailures)) return null;
   if (raw.version === 2 && (!rows([raw.skillUsage]).length || !Array.isArray(raw.failureExcerpts))) return null;
+  const generatedAt = new Date(raw.generatedAt);
+  const dreaming = raw.version === 2 ? parseDreamingEvidence(raw.dreaming, generatedAt.getTime(), maskSecrets) : null;
   return {
     version: raw.version,
     source: fileSource,
-    generatedAt: new Date(raw.generatedAt).toISOString(),
+    generatedAt: generatedAt.toISOString(),
     problems: rows(raw.problems).flatMap((p) => {
       const id = str(p.id, 120);
       return id ? [{ id, section: str(p.section, 80) ?? "", title: str(p.title, 120) ?? "", summary: str(p.summary, SUMMARY_LIMIT) ?? "" }] : [];
@@ -266,6 +273,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     }).slice(0, FAILURE_LIMIT),
     skillUsage: parseSkillUsage(raw.skillUsage),
     failureExcerpts: parseExcerpts(raw.failureExcerpts),
+    ...(dreaming ? { dreaming } : {}),
   };
 }
 
@@ -305,6 +313,8 @@ export interface CloudHandoffs {
   items: UpkeepDueItem[];
   /** HANDOFF를 읽은 커밋. 커밋을 하나도 찾지 못해 작업 사본을 읽었으면 null. */
   base: NightlyBase | null;
+  /** Same revision as the worktree; null means this night's dreaming edits are unsafe. */
+  dreamingLedger?: ReadonlySet<string> | null;
   warnings: string[];
 }
 
@@ -348,7 +358,16 @@ export async function readCloudHandoffs(repo: string, now: Date): Promise<CloudH
       warnings.push(`${base.ref}의 ${path}을 읽을 수 없습니다.`);
     }
   }
-  return { items, base, warnings };
+  let dreamingLedger: CloudHandoffs["dreamingLedger"] = null;
+  if (base.ref === "origin/main" && !warnings.some((warning) => warning.startsWith("git fetch origin"))) {
+    try {
+      const exists = await git(repo, ["ls-tree", "--full-tree", base.sha, "--", DREAMING_LEDGER_PATH]);
+      dreamingLedger = exists ? parseDreamingLedger(await git(repo, ["show", `${base.sha}:${DREAMING_LEDGER_PATH}`])) : new Set();
+    } catch {
+      warnings.push("origin/main의 야간 드리밍 원장을 읽을 수 없습니다.");
+    }
+  }
+  return { items, base, warnings, dreamingLedger };
 }
 
 /**
@@ -627,6 +646,29 @@ function fence(text: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
+function dreamingBlock(bundle: NightlyBundle, ledger: ReadonlySet<string> | null, previousAt: number, now: Date): string {
+  const lines = ["## 드리밍 근거"];
+  const evidence = bundle.dreaming;
+  if (!evidence) return [...lines, "- 세션 발췌 없음(이전 형식 또는 자료를 가리지 못함). 이 출처는 원문 미확인으로 남깁니다."].join("\n");
+  lines.push(`- 수집 창: ${evidence.from} ~ ${bundle.generatedAt} (UTC).`);
+  if (Number.isFinite(previousAt) && Date.parse(evidence.from) > previousAt) {
+    lines.push("- 지난 야간 실행부터 이 수집 창이 시작되기 전까지의 기록은 확인하지 못했습니다.");
+  }
+  if (now.getTime() - Date.parse(bundle.generatedAt) > 2 * 3_600_000) {
+    lines.push("- 마지막 업로드가 2시간보다 오래됐습니다. 업로드 뒤 기록은 이번 실행에서 확인하지 못했습니다.");
+  }
+  if (evidence.partial) lines.push("- 일부 인용을 잘랐거나 제외했거나 읽지 못했습니다. 아래 목록을 전체 기록으로 보지 않습니다.");
+  if (!ledger) return [...lines, "- 최신 게시 원장을 확인하지 못해 이 자료로 교정하지 않습니다."].join("\n");
+  const rows = evidence.events.flatMap((event) => {
+    const key = dreamingKey(bundle.source, event);
+    return ledger.has(key) ? [] : [JSON.stringify({ key, ...event })];
+  });
+  if (!rows.length) return [...lines, "- 아직 처리하지 않은 발췌가 없습니다."].join("\n");
+  const text = rows.join("\n");
+  const mark = fence(text);
+  return [...lines, `${mark}jsonl`, text, mark].join("\n");
+}
+
 function weeklyBlock(source: string, failures: readonly ToolFailure[]): string {
   return [
     "## 주간 성능 점검",
@@ -644,7 +686,8 @@ export const INBOX_PRIORITY_RULES = [
   "1. 데이터 손실·보안·서비스 중단처럼 급한 신뢰성 결함(출처의 문제 행이든 이슈든).",
   "2. 아래 「공개 저장소 열린 이슈」.",
   "3. 아래 「기존 기능 개선 점검」에서 근거를 찾은 개선.",
-  "4. 정리 작업: 절차서, 스킬 사용 점검, HANDOFF 점검, 주간 실패 정리. 이것만 한 날은 사용자가 체감하는 개선으로 세지 않습니다.",
+  "4. 아래 「야간 드리밍」에서 원문으로 확인한 문서와 기억 교정. 다른 정리만 한 날과 마찬가지로 사용자 체감 개선으로 세지 않습니다.",
+  "5. 그 밖의 정리 작업: 절차서, 스킬 사용 점검, HANDOFF 점검, 주간 실패 정리.",
 ].join("\n");
 
 function issueStatusLine(lookup: IssueLookup): string {
@@ -715,6 +758,7 @@ export const INBOX_SUMMARY_RULES = [
   "5. 새 버전과 CI 통과 여부, 배포는 사용자 승인을 기다린다는 것을 씁니다.",
   "6. 승인이 필요해 보류한 일과 영구 게이트 제안을 씁니다. 오래 열리지 않은 스킬은 「정리 제안」으로 이름만 적습니다(지우지 않음).",
   "7. 고친 것마다 고른 수준(구조·검사·테스트·스킬·문서)과, 더 위 수준을 쓰지 못한 이유를 한 줄씩 씁니다.",
+  "- 「드리밍」: 출처별로 대조한 자료, 게시한 교정과 원문 확인이 남은 항목을 구분합니다. 누락, 잘림, 업로드 지연이 있으면 해당 출처를 적습니다. 문서는 다음 PC 동기화에서 받아 볼 수 있습니다. PC에서 `git pull --ff-only`가 거절되면 파일을 그대로 두고 그 PC의 아침 보고에 건너뛴 이유를 적습니다. 이 세션에서 PC가 실제로 받았다고 보고하지 않습니다.",
   "커밋 해시나 실행 번호는 맨 끝에 덧붙일 수만 있고 첫머리에 두지 않습니다.",
   NIGHTLY_ATTENTION_RULES,
 ].join("\n");
@@ -732,7 +776,7 @@ export function planInboxRun(
   outboxDir: string | null,
   /** 공개 저장소 열린 이슈 조회 결과(`collectOpenIssues`) */
   issues: IssueLookup,
-  handoffs: Pick<CloudHandoffs, "items" | "base"> | null = null,
+  handoffs: Pick<CloudHandoffs, "items" | "base" | "dreamingLedger"> | null = null,
   coreUpdate: CoreUpdateLookup | null = null,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
@@ -764,8 +808,14 @@ export function planInboxRun(
     const block = nightlyCoreUpdateBlock(coreUpdate);
     if (block) sections.push(block);
   }
+  const dreamingLedger = handoffs?.dreamingLedger ?? null;
+  const sources = new Set(bundles.map(({ source }) => source));
+  const missing = Object.keys(state?.sources ?? {}).filter((source) => sanitizeSource(source) === source && !sources.has(source));
+  sections.push(DREAMING_RULES);
+  if (missing.length) sections.push(`이번에 읽을 묶음이 없는 출처: ${missing.join(", ")}. 원문 미확인으로 남깁니다.`);
   for (const { bundle, candidates, plan } of active) {
     const block = [`# ${bundle.source}`, "", `이 PC가 ${kstDateTime(bundle.generatedAt)}에 보낸 기록입니다.`];
+    block.push("", dreamingBlock(bundle, dreamingLedger, Date.parse(state?.startedAt ?? ""), now));
     if (plan.jobs.problems.length) block.push("", problemBlock(bundle.problems));
     if (bundle.failureExcerpts.length) block.push("", excerptBlock(bundle.source, bundle.failureExcerpts));
     if (candidates.length) block.push("", skillBlock(bundle.source, candidates, bundle.failureExcerpts));

@@ -762,6 +762,12 @@ function readUpdateFailure(
 
 const UPDATE_INTERRUPT_ID_PATTERN = /^update-([0-9a-f]{32})$/;
 
+/** 쓰기 차단을 해제하는 결과 영수증은 같은 업데이트의 중단 요청도 닫는다. */
+export function isUpdateInterruptClosed(interruptId: string): boolean {
+  const requestId = UPDATE_INTERRUPT_ID_PATTERN.exec(interruptId)?.[1];
+  return requestId !== undefined && existsSync(resultPath(requestId));
+}
+
 /**
  * 업데이트 drain이 쓴 interrupt id(`update-<requestId>`)의 업데이트가 교체 없이 실패로 끝났는지.
  * 그렇다면 drain에서 세션을 멈춘 서버가 그대로 살아 있으므로, 그 서버가 멈춘 세션을 다시 이어야 한다

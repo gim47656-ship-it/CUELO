@@ -17,12 +17,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UPDATE_FAILED_RESUME_MESSAGE, UPDATE_FAILURE_HEADLINE } from "./harness-notices";
+import { getUpdateMutationBlock } from "./update-maintenance";
 
 const SID = (n: number): string => `a0000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 
 type FakeSession = {
   isAlive: () => boolean;
   isRunning: () => boolean;
+  isSafelyIdle: () => boolean;
   send: (message: unknown) => Promise<void>;
   sendInternalPrompt: (message: string) => Promise<void>;
   inner: { messages: unknown[] };
@@ -41,6 +43,8 @@ const control = {
   alive: new Set<string>(),
   /** child 작업이 시간 안에 끝나지 않는 세션. */
   unsettledChildren: new Set<string>(),
+  backgroundJobs: new Set<string>(),
+  onStop: null as ((sessionId: string) => Promise<void> | void) | null,
   /** 세션별 drain 호출 순서(`abort:<id>`·`stop:<id>`). */
   drainCalls: [] as string[],
   prompts: [] as string[],
@@ -57,6 +61,7 @@ const control = {
   restores: [] as string[],
   failRestore: new Set<string>(),
   gate: null as Promise<void> | null,
+  abortGate: null as Promise<void> | null,
   releaseGate: null as (() => void) | null,
   /** `startRpcSession` 진입 직후 호출된다. 중간 저장 상태를 관측하는 테스트 훅. */
   onStart: null as ((sessionId: string) => void) | null,
@@ -66,10 +71,12 @@ function sessionFor(sessionId: string): FakeSession {
   return {
     isAlive: () => control.alive.has(sessionId),
     isRunning: () => control.runningSessions.has(sessionId),
+    isSafelyIdle: () => !control.runningSessions.has(sessionId) && !control.backgroundJobs.has(sessionId),
     send: async () => {
       control.drainCalls.push(`abort:${sessionId}`);
       if (control.failAbort.has(sessionId)) throw new Error(`abort failed: ${sessionId}`);
       if (control.hangAbort.has(sessionId)) await Promise.withResolvers<void>().promise;
+      if (control.abortGate) await control.abortGate;
     },
     sendInternalPrompt: async (message: string) => {
       control.prompts.push(`${sessionId}:${message.slice(0, 4)}`);
@@ -79,6 +86,8 @@ function sessionFor(sessionId: string): FakeSession {
     restrictTools: control.restricted.get(sessionId),
     stopBackgroundWorkForDrain: async () => {
       control.drainCalls.push(`stop:${sessionId}`);
+      const wait = control.onStop?.(sessionId);
+      if (wait) await wait;
       return !control.unsettledChildren.has(sessionId);
     },
   };
@@ -132,6 +141,13 @@ function seedRequest(id: string, atUtc = new Date().toISOString(), excludeSessio
   }), "utf8");
 }
 
+function seedDrainRequest(id: string, targetSessionIds: string[]): void {
+  seedRequest(id);
+  const path = join(interruptDir(), "request.json");
+  const request = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify({ ...request, reason: "update-drain-timeout", targetSessionIds }));
+}
+
 function gateThis(): { release: () => void } {
   const gate = Promise.withResolvers<void>();
   control.gate = gate.promise;
@@ -169,7 +185,7 @@ function activityConsumed(pid: number): boolean {
 }
 
 /** 업데이트 request·command·drain ack를 update.sh가 쓰는 계약대로 만든다. 결과(result)는 `failUpdate`가 따로 쓴다. */
-function seedUpdate(requestId: string, options: { initiator?: string; aborted: string[] }): void {
+function seedUpdate(requestId: string, options: { initiator?: string; aborted?: string[] } = {}): void {
   const maintenance = join(root, "maintenance", requestId);
   mkdirSync(join(root, "requests"), { recursive: true });
   mkdirSync(maintenance, { recursive: true });
@@ -185,7 +201,7 @@ function seedUpdate(requestId: string, options: { initiator?: string; aborted: s
   writeFileSync(join(maintenance, "command.json"), JSON.stringify({
     schemaVersion: 2, requestId, stageHash: "c".repeat(64), phase: "DRAINING", revision: 1, updatedAtUtc: new Date().toISOString(),
   }), "utf8");
-  writeFileSync(ackPath(`update-${requestId}`), JSON.stringify({
+  if (options.aborted) writeFileSync(ackPath(`update-${requestId}`), JSON.stringify({
     schemaVersion: 1, id: `update-${requestId}`, processId: process.pid, aborted: options.aborted, failed: [], unsettled: [], atUtc: new Date().toISOString(),
   }), "utf8");
 }
@@ -405,6 +421,145 @@ const CASES: Record<string, (mod: typeof import("./update-interrupt")) => Promis
     expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(true);
     expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(false);
     expect(readPendingFile()?.sessionIds).toEqual([SID(13)]);
+  },
+
+  "G1: 감시 전에 끝난 턴은 abort나 재개 없이 남은 child만 정리한다": async (mod) => {
+    const id = `update-${"f".repeat(32)}`;
+    const [settled, stuck, unknown] = [SID(128), SID(129), SID(130)];
+    seedDrainRequest(id, [settled, stuck, unknown]);
+    control.alive.add(settled);
+    control.alive.add(stuck);
+    control.unsettledChildren.add(stuck);
+    expect(await mod.handleInterruptRequest(new Set(), new Set())).toBe(true);
+    expect(control.drainCalls).toEqual([`stop:${settled}`, `stop:${stuck}`]);
+    expect(readPendingFile()?.sessionIds ?? []).toEqual([]);
+    const ack = JSON.parse(readFileSync(ackPath(id), "utf8"));
+    expect(ack.aborted).toEqual([]);
+    expect(ack.settled).toEqual([settled]);
+    expect(ack.unsettled).toEqual([stuck, unknown]);
+  },
+
+  "G1: 감시 때 끝났던 턴이 정리 전에 다시 실행되면 settled로 세지 않는다": async (mod) => {
+    const id = `update-${"f".repeat(32)}`;
+    const [finished, running] = [SID(128), SID(129)];
+    seedDrainRequest(id, [finished, running]);
+    control.alive.add(finished);
+    control.alive.add(running);
+    control.running = [running];
+    const gate = Promise.withResolvers<void>();
+    control.abortGate = gate.promise;
+    const handling = mod.handleInterruptRequest(new Set(), new Set());
+    expect(control.drainCalls).toEqual([`abort:${running}`]);
+
+    control.runningSessions.add(finished);
+    gate.resolve();
+    await handling;
+
+    const ack = JSON.parse(readFileSync(ackPath(id), "utf8"));
+    expect(control.drainCalls).toEqual([`abort:${running}`, `stop:${running}`]);
+    expect(ack.settled ?? []).toEqual([]);
+    expect(ack.unsettled).toEqual([finished]);
+  },
+
+  "G1: 정리 뒤 턴을 끝냈어도 새 background job이 남으면 settled로 세지 않는다": async (mod) => {
+    const id = `update-${"f".repeat(32)}`;
+    const [finished, slow] = [SID(128), SID(129)];
+    seedDrainRequest(id, [finished, slow]);
+    control.alive.add(finished);
+    control.alive.add(slow);
+    const slowStarted = Promise.withResolvers<void>();
+    const slowEnds = Promise.withResolvers<void>();
+    control.onStop = (sessionId) => {
+      if (sessionId !== slow) return;
+      slowStarted.resolve();
+      return slowEnds.promise;
+    };
+    const handling = mod.handleInterruptRequest(new Set(), new Set());
+    await slowStarted.promise;
+
+    control.runningSessions.add(finished);
+    control.backgroundJobs.add(finished);
+    control.runningSessions.delete(finished);
+    slowEnds.resolve();
+    await handling;
+
+    const ack = JSON.parse(readFileSync(ackPath(id), "utf8"));
+    expect(ack.settled).toEqual([slow]);
+    expect(ack.unsettled).toEqual([finished]);
+  },
+
+  "G1: abort 뒤 ack 전에 새 턴이 돌면 그 ID의 정리가 끝나지 않았다": async (mod) => {
+    const id = `update-${"f".repeat(32)}`;
+    const sessionId = SID(128);
+    seedDrainRequest(id, [sessionId]);
+    control.alive.add(sessionId);
+    control.running = [sessionId];
+    const cleanupStarted = Promise.withResolvers<void>();
+    const cleanupEnds = Promise.withResolvers<void>();
+    control.onStop = () => {
+      cleanupStarted.resolve();
+      return cleanupEnds.promise;
+    };
+    const handling = mod.handleInterruptRequest(new Set(), new Set());
+    await cleanupStarted.promise;
+    expect(control.drainCalls).toEqual([`abort:${sessionId}`, `stop:${sessionId}`]);
+
+    control.runningSessions.add(sessionId);
+    cleanupEnds.resolve();
+    await handling;
+
+    const ack = JSON.parse(readFileSync(ackPath(id), "utf8"));
+    expect(ack.aborted).toEqual([sessionId]);
+    expect(ack.unsettled).toEqual([sessionId]);
+  },
+
+  "G2: 잠금 해제 뒤에 처음 읽은 interrupt가 새 작업을 끊지 않는다": async (mod) => {
+    const requestId = "f".repeat(32);
+    const id = `update-${requestId}`;
+    const sessionId = SID(128);
+    seedRequest(id);
+    seedUpdate(requestId);
+    writeFileSync(join(root, "active.json"), JSON.stringify({ schemaVersion: 2, requestId }));
+    expect(getUpdateMutationBlock()?.requestId).toBe(requestId);
+
+    failUpdate(requestId);
+    expect(getUpdateMutationBlock()).toBeNull();
+    control.running = [sessionId];
+    control.alive.add(sessionId);
+    const handled = await mod.handleInterruptRequest(new Set(), new Set());
+
+    expect(control.drainCalls).toEqual([]);
+    expect(handled).toBe(false);
+    expect(readPendingFile()).toBeNull();
+    expect(existsSync(ackPath(id))).toBe(false);
+  },
+
+  "G2: 먼저 보낸 abort가 끝나도 잠금 해제 뒤 같은 세션의 새 child를 멈추지 않는다": async (mod) => {
+    const requestId = "f".repeat(32);
+    const id = `update-${requestId}`;
+    const sessionId = SID(128);
+    const gate = Promise.withResolvers<void>();
+    control.abortGate = gate.promise;
+    seedRequest(id);
+    seedUpdate(requestId);
+    writeFileSync(join(root, "active.json"), JSON.stringify({ schemaVersion: 2, requestId }));
+    expect(getUpdateMutationBlock()?.requestId).toBe(requestId);
+    control.running = [sessionId];
+    control.alive.add(sessionId);
+    const handling = mod.handleInterruptRequest(new Set(), new Set());
+    expect(control.drainCalls).toEqual([`abort:${sessionId}`]);
+
+    failUpdate(requestId);
+    expect(getUpdateMutationBlock()).toBeNull();
+    control.runningSessions.add(sessionId);
+    gate.resolve();
+    await handling;
+
+    expect(control.drainCalls).toEqual([`abort:${sessionId}`]);
+    expect(readPendingFile()?.sessionIds).toEqual([sessionId]);
+    const ack = JSON.parse(readFileSync(ackPath(id), "utf8"));
+    expect(ack.aborted).toEqual([sessionId]);
+    expect(ack.unsettled).toEqual([sessionId]);
   },
 
   "excludeSessionIds와 abort 실패는 ack에 그대로 반영된다": async (mod) => {

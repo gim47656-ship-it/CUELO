@@ -5,7 +5,7 @@
  * - `request.json` {id, reason}: 외부(업데이트 worker의 drain 시간 초과, `restart-ompweb.ps1`)가 쓴다.
  * - 이 프로세스가 처음 보는 id면 돌고 있는 세션 id를 `pending-resume.json`에 합쳐 적고,
  *   각 세션에 `abort`를 보내고 background task child·bash까지 멈춘 뒤 `<id>.ack.json`을 쓴다.
- *   외부는 ack(`unsettled`에 든 세션 제외) 또는 running 0을 보고 진행한다.
+ *   감시 전에 턴이 끝난 요청 대상은 남은 작업만 정리해 `settled`로 적는다.
  * - 다른 프로세스가 쓴 `pending-resume.json`은 새 서버가 읽어 세션마다 재개 prompt를 넣는다.
  *
  * 목록을 abort보다 먼저 적는다. abort 뒤 서버가 바로 죽어도 재개 대상은 남는다.
@@ -37,7 +37,7 @@ import { buildSessionContext, getSessionEntries, resolveSessionPath } from "./se
 import { isRunInterrupted } from "./run-interruption";
 import { restoreReleasedChildren } from "./subagent-revive";
 import type { AgentMessage } from "./types";
-import { getFailedUpdateForInterrupt, markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
+import { getFailedUpdateForInterrupt, isUpdateInterruptClosed, markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
 import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE, UPDATE_FAILED_RESUME_MESSAGE } from "./harness-notices";
 import { notifyUpdateFailureToInitiator, SERVER_FAILURE_CLIENT_ID, wakeInitiatorWithoutReturningTab } from "./update-wake";
 
@@ -168,8 +168,8 @@ function restrictionsKept(restrictTools: Record<string, string[]> | undefined, s
 
 /**
  * 요청을 처리했으면 true. 같은 id는 프로세스당 한 번만 처리한다.
- * `inFlight`는 지금 처리 중인 id다. 완료 표시(`handled`)는 ack 저장까지 끝난 뒤에만 하므로,
- * pending 쓰기 같은 중간 단계가 실패하면 다음 tick이 같은 요청을 다시 처리한다.
+ * `inFlight`는 지금 처리 중인 id다. ack 저장 전 실패하면 다음 tick에 다시 시도하고, 이미 결과가 난
+ * 업데이트는 다시 시도하지 않는다.
  */
 export async function handleInterruptRequest(handled: Set<string>, inFlight: Set<string>, abortWaitMs = ABORT_WAIT_MS): Promise<boolean> {
   const root = interruptsRoot();
@@ -184,6 +184,17 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
     if (!Number.isFinite(requestedAt) || requestedAt < processStartedAt) return false;
     const excluded = new Set(Array.isArray(request?.excludeSessionIds) ? request.excludeSessionIds.map((value) => String(value).toLowerCase()) : []);
     const running = getRunningRpcSessionIds().filter((sessionId) => SESSION_ID_PATTERN.test(sessionId) && !excluded.has(sessionId));
+    // 새 작업을 받아들인 뒤라면 그 수락에 쓰인 결과 영수증이 실행 목록을 읽은 이 시점에도 있다.
+    if (isUpdateInterruptClosed(id)) {
+      handled.add(id);
+      return false;
+    }
+    const runningSet = new Set(running);
+    const isUpdateDrain = request?.reason === "update-drain-timeout";
+    const finishedTargets = isUpdateDrain && Array.isArray(request.targetSessionIds)
+      ? [...new Set(request.targetSessionIds.filter((sessionId): sessionId is string =>
+          typeof sessionId === "string" && SESSION_ID_PATTERN.test(sessionId) && !excluded.has(sessionId) && !runningSet.has(sessionId)))]
+      : [];
     const previous = readPending();
     const merged = [...new Set([...(previous?.sessionIds ?? []), ...running])].sort();
     const carried = (previous?.failures ?? []).filter((failure) => merged.includes(failure.sessionId));
@@ -233,20 +244,45 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
     // 턴 abort는 부모만 멈춘다. background task child와 bash는 계속 돌아 cutover 중에 설치 폴더를
     // 잡는다(2026-09-28). 세션마다 그것까지 멈추고 실제로 끝났는지 본 뒤에 ack를 쓴다. 시간 안에
     // 끝나지 않은 세션은 `unsettled`로 알려 worker가 그 세션을 통과시키지 않게 한다.
-    await Promise.all(running.map(async (sessionId) => {
-      try {
-        const settled = await getRpcSession(sessionId)?.stopBackgroundWorkForDrain(CHILD_SETTLE_MS) ?? true;
-        if (!settled) unsettled.push(sessionId);
-      } catch (error) {
-        unsettled.push(sessionId);
-        failed.push({ sessionId, error: minimalError(error) });
+    const settled: string[] = [];
+    if (isUpdateInterruptClosed(id)) {
+      // abort를 기다리는 사이 쓰기가 풀렸으면 같은 세션에 들어온 새 child를 건드리지 않는다.
+      unsettled.push(...running, ...finishedTargets);
+    } else {
+      await Promise.all([...running, ...finishedTargets].map(async (sessionId) => {
+        const wasRunning = runningSet.has(sessionId);
+        try {
+          const session = getRpcSession(sessionId);
+          if (!wasRunning && (!session || session.isRunning())) {
+            unsettled.push(sessionId);
+          } else if (session && !await session.stopBackgroundWorkForDrain(CHILD_SETTLE_MS)) {
+            unsettled.push(sessionId);
+          } else if (!wasRunning) {
+            settled.push(sessionId);
+          }
+        } catch (error) {
+          unsettled.push(sessionId);
+          failed.push({ sessionId, error: minimalError(error) });
+        }
+      }));
+    }
+    // 다른 세션의 정리를 기다리는 동안 새 턴이 시작됐다 끝났어도 job이 남을 수 있다.
+    if (isUpdateDrain) {
+      for (const sessionId of aborted) {
+        if (!getRpcSession(sessionId)?.isSafelyIdle()) unsettled.push(sessionId);
       }
-    }));
+    }
+    const stillSettled = settled.filter((sessionId) => {
+      if (getRpcSession(sessionId)?.isSafelyIdle()) return true;
+      unsettled.push(sessionId);
+      return false;
+    });
     writeJsonAtomic(join(root, `${id}.ack.json`), {
       schemaVersion: 1,
       id,
       processId: process.pid,
       aborted,
+      ...(stillSettled.length > 0 ? { settled: stillSettled.sort() } : {}),
       failed,
       // abort 상한을 넘긴 세션이 child 정지에서도 남으면 두 번 들어간다.
       unsettled: [...new Set(unsettled)].sort(),

@@ -15,7 +15,7 @@ const DAY_MS = 86_400_000;
 /**
  * 클라우드 야간 개선에 보낼 이 PC의 묶음(JSON v2). `cuelo-cloud-sync.sh`가 2시간마다 받아 클라우드 받은편지함에 올린다.
  * 문제 행·절차 후보(learn 후보와 넘긴 흔적에서 찾은 관찰 후보, 최근 14일)·도구 실패 순위와 발췌(최근 7일)·스킬 사용을
- * 담고 본문은 비밀을 가린다.
+ * 담는다. 세션 대조용 발췌는 비밀을 가린 뒤 별도의 크기 상한을 적용한다.
  */
 export async function GET(req: Request) {
   if (!isApiRequestAllowed(req)) {
@@ -30,7 +30,7 @@ export async function GET(req: Request) {
     const [report, learned, scan, installed] = await Promise.all([
       collectUpkeep(true),
       collectSkillCandidates(sessionsDir, since, now.getTime()),
-      scanSessions(sessionsDir, now.getTime()),
+      scanSessions(sessionsDir, now.getTime(), [], [], true),
       installedSkills(agentDir),
     ]);
     const bundle = buildNightlyExport({
@@ -42,6 +42,7 @@ export async function GET(req: Request) {
       // 세션 기록을 다 읽지 못했으면 열지 않은 스킬을 내보내지 않는다(삭제 제안의 근거가 되지 않게).
       skillUsage: buildSkillUsage(scan.skills.windows, {}, installed.skills, now.getTime(), !scan.warnings.length),
       failureExcerpts: scan.failureExcerpts,
+      dreaming: scan.dreaming,
     });
     const observed = bundle.skillCandidates.filter((c) => c.kind === "observed").length;
     console.log(`[upkeep/nightly/export] ${bundle.source}: ${bundle.problems.length} problem(s), ${bundle.skillCandidates.length} candidate(s) (${observed} observed), ${bundle.toolFailures.length} failure group(s), ${bundle.skillUsage.rows.length} skill(s) opened`);
