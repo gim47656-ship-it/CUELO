@@ -65,6 +65,9 @@ function coreTarget(directory) {
   return join(directory, "node_modules", corePackage);
 }
 
+// 코어는 이 기계용 네이티브 패키지만 받는다. x64로 고정하면 arm64(Oracle)에서는 받은 코어를 매번 없다고 읽었다(11-21 야간).
+const nativePackage = `pi-natives-${process.platform}-${process.arch}`;
+
 export function reusableCore(directory, version) {
   const target = coreTarget(directory);
   const manifest = join(target, "package.json");
@@ -72,7 +75,7 @@ export function reusableCore(directory, version) {
   try {
     return JSON.parse(readFileSync(manifest, "utf8"))?.version === version &&
       statSync(join(target, "src/registry/agent-registry.ts"), { throwIfNoEntry: false })?.isFile() === true &&
-      statSync(join(target, "..", "pi-natives-linux-x64"), { throwIfNoEntry: false })?.isDirectory() === true;
+      statSync(join(target, "..", nativePackage), { throwIfNoEntry: false })?.isDirectory() === true;
   } catch (error) {
     if (error instanceof SyntaxError) return false;
     throw error;
@@ -101,7 +104,7 @@ async function installCore(directory, version, env, signal) {
   // The shared Bun cache may already contain in-place SDK patches from older tools.
   const downloadEnv = { ...env, BUN_INSTALL_CACHE_DIR: join(directory, "..", "bun-download") };
   await run(["bun", "add", "--backend=copyfile", `${corePackage}@${version}`], directory, downloadEnv, signal);
-  if (!reusableCore(directory, version)) throw new Error(`Core ${version} or pi-natives-linux-x64 is missing: ${directory}`);
+  if (!reusableCore(directory, version)) throw new Error(`Core ${version} or ${nativePackage} is missing: ${directory}`);
 }
 
 export function obsoleteCorePins(entries, installedPin) {

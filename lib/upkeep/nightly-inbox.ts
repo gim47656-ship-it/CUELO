@@ -17,6 +17,7 @@ import {
   nightlyAuditRules, nightlyBranch, nightlyGuard, skillScanSince, weeklyReviewDue, regressionReviewDue, NIGHTLY_PLUGIN_REVIEW, NIGHTLY_REGRESSION_SECTION,
 } from "./nightly";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
+import { MODEL_ERROR_DAYS, modelErrorFrom, utcDay, type ModelErrorDay, type ModelErrorExport } from "./model-errors";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import { OBSERVED_LIMIT, OBSERVED_MIN_SESSIONS, type SkillCandidate } from "./skill-candidates";
@@ -86,6 +87,8 @@ export interface NightlyBundle {
   dreaming?: DreamingEvidence;
   /** Optional v2 field; bundles without it leave context use unmeasured. */
   contextLoad?: ContextLoadExport;
+  /** Optional v2 field; bundles without it leave the Codex model error counts unmeasured. */
+  modelErrors?: ModelErrorExport;
 }
 
 /**
@@ -171,6 +174,7 @@ export function buildNightlyExport(input: {
   failureExcerpts?: Record<string, FailureExcerpt[]>;
   dreaming?: DreamingEvidence;
   contextLoad?: ContextLoadExport;
+  modelErrors?: ModelErrorExport;
 }): NightlyBundle {
   const toolFailures = rankToolFailures(input.errorsBySignature);
   // 관찰 후보의 실패 묶음을 먼저 싣는다(순위 20개 밖이거나 직전 7일 실패여도 후보 근거가 빠지지 않게). 같은 묶음은 한 번만.
@@ -189,6 +193,7 @@ export function buildNightlyExport(input: {
     skillUsage: input.skillUsage ?? { rows: [], unused: [] },
     dreaming: input.dreaming,
     contextLoad: input.contextLoad,
+    modelErrors: input.modelErrors,
     failureExcerpts: [...new Set(signatures)].flatMap((signature) => {
       const excerpts = input.failureExcerpts?.[signature];
       const split = signature.indexOf(": ");
@@ -321,6 +326,43 @@ function parseContextLoad(value: unknown): ContextLoadExport | null {
   return { turns: raw.turns, partial: raw.partial, injected, rest: { kinds: restKinds, ...restRow }, reads };
 }
 
+const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const ERROR_FIELDS = ["assistant", "codex", "systemParam", "whitespace", "whitespaceRecovered", "whitespaceUnrecovered", "whitespacePending"] as const;
+const DAY_FIELDS = ["day", ...ERROR_FIELDS].sort().join();
+const AGGREGATE_FIELDS = ["days", "from", "partial", "to"].join();
+/** PC는 집계 시각과 묶음 시각을 같은 `now`로 쓴다. 그보다 늦거나 한 시간 넘게 이른 집계는 다른 때의 것이다. */
+const MODEL_ERRORS_LAG_MS = 3_600_000;
+
+const isoInstant = (value: unknown): number | null => {
+  if (typeof value !== "string") return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value ? time : null;
+};
+
+/**
+ * 날짜별 모델 오류 집계. 키 집합, 기간(묶음 시각에 끝나는 UTC 14일), 날짜 순서, 합계가 PC 집계로 나올 수 없는 모양(Codex가
+ * 전체보다 많음, 오류가 Codex 응답보다 많음, 공백 스트림 결말 합이 오류 수와 다름)이면 고쳐 읽지 않고 전체를 없는 것(null)으로
+ * 읽어 미측정으로 남긴다.
+ */
+function parseModelErrors(value: unknown, generatedAt: number | null): ModelErrorExport | null {
+  const raw = rows([value])[0];
+  if (generatedAt === null || !raw || Object.keys(raw).sort().join() !== AGGREGATE_FIELDS || typeof raw.partial !== "boolean" || !Array.isArray(raw.days)) return null;
+  const from = isoInstant(raw.from), to = isoInstant(raw.to);
+  if (from === null || to === null || to > generatedAt || generatedAt - to > MODEL_ERRORS_LAG_MS || from !== modelErrorFrom(to)) return null;
+  const fromDay = utcDay(from), toDay = utcDay(to);
+  const days: ModelErrorDay[] = [];
+  for (const item of raw.days) {
+    const d = rows([item])[0];
+    if (!d || Object.keys(d).sort().join() !== DAY_FIELDS || typeof d.day !== "string" || !DAY_KEY.test(d.day) || isoInstant(`${d.day}T00:00:00.000Z`) === null) return null;
+    if (d.day < fromDay || d.day > toDay || (days.length > 0 && d.day <= days[days.length - 1]!.day) || !ERROR_FIELDS.every((field) => isCount(d[field]))) return null;
+    const day = { day: d.day, ...Object.fromEntries(ERROR_FIELDS.map((field) => [field, d[field] as number])) } as ModelErrorDay;
+    if (day.codex > day.assistant || day.systemParam > day.codex || day.whitespace > day.codex
+      || day.whitespaceRecovered + day.whitespaceUnrecovered + day.whitespacePending !== day.whitespace) return null;
+    days.push(day);
+  }
+  return { from: raw.from as string, to: raw.to as string, partial: raw.partial, days };
+}
+
 /** 받은 묶음을 믿지 않고 모양을 다시 맞춘다. v1과 v2를 읽는다. 맞지 않으면 null. */
 function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const raw = rows([value])[0];
@@ -331,6 +373,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const generatedAt = new Date(raw.generatedAt);
   const dreaming = raw.version === 2 ? parseDreamingEvidence(raw.dreaming, generatedAt.getTime(), maskSecrets) : null;
   const contextLoad = raw.version === 2 ? parseContextLoad(raw.contextLoad) : null;
+  const modelErrors = raw.version === 2 ? parseModelErrors(raw.modelErrors, isoInstant(raw.generatedAt)) : null;
   return {
     version: raw.version,
     source: fileSource,
@@ -351,6 +394,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     failureExcerpts: parseExcerpts(raw.failureExcerpts),
     ...(dreaming ? { dreaming } : {}),
     ...(contextLoad ? { contextLoad } : {}),
+    ...(modelErrors ? { modelErrors } : {}),
   };
 }
 
@@ -778,6 +822,37 @@ function contextLoadBlock(source: string, load: ContextLoadExport | undefined): 
   ].join("\n");
 }
 
+function modelErrorDayLine(date: string, day: ModelErrorDay | undefined): string {
+  const assistant = `assistant 응답 ${group(day?.assistant ?? 0)}건`;
+  if (!day?.codex) return `  - ${date.slice(5)}: ${assistant}, Codex 응답 없음(관찰 없음)`;
+  const whitespace = day.whitespace
+    ? `${group(day.whitespace)}건(다음 사람 요청 전 복구 ${group(day.whitespaceRecovered)}, 사람 요청이 먼저 옴 ${group(day.whitespaceUnrecovered)}, 결말 없음 ${group(day.whitespacePending)})`
+    : "0건";
+  return `  - ${date.slice(5)}: ${assistant} 중 Codex ${group(day.codex)}건, \`Unsupported parameter: system\` 거절 ${group(day.systemParam)}건, 공백 스트림 오류 ${whitespace}`;
+}
+
+/**
+ * 출처의 날짜별 모델 오류 집계. 묶음에 없으면 0건으로 보이지 않게 미측정이라고 적는다. 설치일 앞뒤를 가를 수 있게 창의
+ * 모든 날짜를 한 줄씩 적고, Codex 응답이 없는 날은 0건이 아니라 관찰 없음으로 적는다.
+ */
+function modelErrorBlock(source: string, errors: ModelErrorExport | undefined): string {
+  const head = [
+    "## 모델 오류 집계",
+    "",
+    `\`${source}\`의 세션(하위 세션 포함)에서 날짜별(UTC)로 센 Codex 모델 오류입니다. HANDOFF의 Codex 말투 주입 항목과 Codex 공백 스트림 복구 항목을 이 PC의 설치 시각과 견줘 판정할 때 씁니다. 건수일 뿐이며 판정은 따로 합니다. 설치한 날은 설치 전 기록이 섞이므로 그다음 날부터 봅니다.`,
+  ];
+  if (!errors) return [...head, "- 이 묶음에는 모델 오류 집계가 없습니다(집계를 보내기 전 판이거나 모양이 틀린 집계). 미측정으로 둡니다."].join("\n");
+  const byDay = new Map(errors.days.map((day) => [day.day, day]));
+  // 해석에서 `from`이 `to`로 끝나는 UTC 14일 첫날임을 확인했으므로 날짜는 정확히 MODEL_ERROR_DAYS개다.
+  const dates = Array.from({ length: MODEL_ERROR_DAYS }, (_, i) => utcDay(Date.parse(errors.from) + i * DAY_MS));
+  return [
+    ...head,
+    `- 기간: ${errors.from.slice(0, 10)} ~ ${errors.to.slice(0, 10)} (UTC, 마지막 날은 ${errors.to.slice(11, 16)}까지)${errors.partial ? ". 세션 기록 일부를 읽지 못해 아래 값은 실제보다 작을 수 있습니다(일부만 측정)" : ""}`,
+    "- 날짜별:",
+    ...dates.map((date) => modelErrorDayLine(date, byDay.get(date))),
+  ].join("\n");
+}
+
 function weeklyBlock(source: string, failures: readonly ToolFailure[]): string {
   return [
     "## 주간 성능 점검",
@@ -931,6 +1006,7 @@ export function planInboxRun(
     if (plan.jobs.problems.length) block.push("", problemBlock(bundle.problems));
     if (bundle.failureExcerpts.length) block.push("", excerptBlock(bundle.source, bundle.failureExcerpts));
     block.push("", contextLoadBlock(bundle.source, bundle.contextLoad));
+    block.push("", modelErrorBlock(bundle.source, bundle.modelErrors));
     if (candidates.length) block.push("", skillBlock(bundle.source, candidates, bundle.failureExcerpts));
     if (bundle.skillUsage.rows.length || bundle.skillUsage.unused.length) block.push("", skillHealthBlock(bundle.source, bundle.skillUsage));
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));

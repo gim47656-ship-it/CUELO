@@ -44,6 +44,7 @@ export async function GET(req: Request) {
       failureExcerpts: scan.failureExcerpts,
       dreaming: scan.dreaming,
       contextLoad: exportContextLoad(scan),
+      modelErrors: scan.modelErrors,
     });
     const observed = bundle.skillCandidates.filter((c) => c.kind === "observed").length;
     console.log(`[upkeep/nightly/export] ${bundle.source}: ${bundle.problems.length} problem(s), ${bundle.skillCandidates.length} candidate(s) (${observed} observed), ${bundle.toolFailures.length} failure group(s), ${bundle.skillUsage.rows.length} skill(s) opened`);

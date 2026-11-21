@@ -14,6 +14,7 @@ import { classifyToolError } from "../run-xray";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { DREAMING_WINDOW_MS, DreamingCollector, hasCredentialContext, type DreamingEvidence } from "./dreaming";
+import { buildModelErrors, collectModelErrorCounts, modelErrorFrom, utcDay, type AssistantDays, type ModelErrorExport } from "./model-errors";
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
@@ -162,6 +163,8 @@ export type ScanResult = {
   recoveries: Recovery[];
   /** Included only for the PC export. */
   dreaming?: DreamingEvidence;
+  /** PC export only: per-day assistant replies and Codex model errors over 14 days (model-errors.ts). */
+  modelErrors?: ModelErrorExport;
   /** 배포 교체 시각을 읽은 업데이트 로그의 시작(`from`, 없으면 null)과 그 로그가 최근 7일 시작을 덮는지. 보고서가 채운다. */
   deployLogs?: { from: number | null; coversRecent: boolean };
 };
@@ -356,11 +359,19 @@ function errorLine(tool: string, lines: string[]): string {
   return (words[0]?.text ?? lines.find((x) => EXIT_ONLY_LINE.test(x.trim())) ?? lines[0] ?? "").trim();
 }
 
+/**
+ * ego_browser 오류의 대표 줄. `[ego-browser:notice]` 업그레이드 안내는 "notice"가 `not`에 걸려 실제 오류 대신 키가
+ * 됐다(사무실 11-20 묶음 21건). 안내 줄과 빈 줄은 앞 공백과 관계없이 후보에서 빼고, 안내뿐이면 첫 줄을 그대로 쓴다.
+ */
+function egoErrorLine(lines: readonly string[]): string {
+  const body = lines.filter((x) => x.trim() && !x.trimStart().startsWith("[ego-browser:notice]"));
+  return body.find((x) => /Error|timed|not|failed/i.test(x)) ?? body[0] ?? lines.find((x) => x.trim()) ?? "";
+}
+
 /** 오류 대표 줄을 묶음 키로 만든다(경로→<p>, 긴 16진수→<h>, 숫자→N). exit만 있는 실패는 종료 코드를 남긴다. */
 export function normalizeError(tool: string, text: string): string {
   const lines = text.split(/\r?\n/);
-  const line = tool === "ego_browser"
-    ? lines.find((x) => /Error|timed|not|failed/i.test(x)) ?? lines[0]
+  const line = tool === "ego_browser" ? egoErrorLine(lines)
     : tool === "skim" ? lines.at(-1) ?? lines[0] : errorLine(tool, lines);
   const exitOnly = EXIT_ONLY_LINE.exec(line.trim());
   if (exitOnly) return `Command exited with code ${exitOnly[1]}`;
@@ -744,6 +755,9 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
   const recoveries: Recovery[] = [];
   // 종류 이름이 `constructor`·`__proto__`여도 상속 값이 아니라 자기 행이 되도록 프로토타입 없는 객체를 쓴다.
   const contextLoad: ContextLoad = { injected: Object.create(null) as Record<string, ContextLoadRow>, reads: emptyLoadRow() };
+  // 모델 오류 집계의 분모: 오늘을 포함한 UTC 14일 안 날짜별 assistant 응답과 그중 Codex 응답(fork 사본 제외, 하위 세션 포함).
+  const assistantDays: AssistantDays = {};
+  const modelFrom = modelErrorFrom(now);
   const finish = (): Pick<ScanResult, "skills" | "failureExcerpts" | "recoveries" | "contextLoad"> => ({ skills: skillResult(skillAgg, sessionTotals), failureExcerpts, recoveries, contextLoad });
 
   // 바이너리가 없으면 디렉터리·파일 오류 경고로 바꾸지 않고 스캔 전체가 그 오류로 실패한다.
@@ -954,6 +968,11 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
 
         if (entry.type !== "message" || !entry.message) continue;
         const m = entry.message;
+        if (m.role === "assistant" && time >= modelFrom) {
+          const day = (assistantDays[utcDay(time)] ??= { assistant: 0, codex: 0 });
+          day.assistant++;
+          if (m.provider === "openai-codex") day.codex++;
+        }
 
         if (m.role === "user" && !childSession && (m.attribution === undefined || m.attribution === "user")) {
           each((w) => w.turns++);
@@ -1137,7 +1156,11 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     .sort((a, b) => Number(a.first) - Number(b.first) || b.cost - a.cost)
     .slice(0, EVIDENCE_LIMIT)
     .map((x) => x.row);
-  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish(), ...(dreaming ? { dreaming } : {}) };
+  // 메트릭 리더가 errorMessage를 넘기지 않아 오류 문구가 든 파일만 원본으로 다시 읽는다. 일부 파일이나 줄을 못 읽었으면 partial이다.
+  const modelErrors = includeDreaming
+    ? await collectModelErrorCounts(files, now).then((counts) => buildModelErrors(now, assistantDays, counts.byDay, counts.partial || warnings.length > 0))
+    : null;
+  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish(), ...(dreaming ? { dreaming } : {}), ...(modelErrors ? { modelErrors } : {}) };
 }
 
 type SkillSession = { sessionId: string; opens: number; afterCalls: number; afterFailures: number; lastAt: number };

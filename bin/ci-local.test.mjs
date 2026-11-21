@@ -51,7 +51,13 @@ test("reuses a complete pristine installation of the exact pinned core", (t) => 
   assert.equal(reusableCore(dir, "19.0.1"), false);
   writeFileSync(join(target, "src/registry/agent-registry.ts"), "");
   assert.equal(reusableCore(dir, "19.0.1"), false);
-  mkdirSync(join(scope, "pi-natives-linux-x64"));
+  // 다른 아키텍처의 네이티브 패키지만 있으면 이 기계에서는 돌 수 없다.
+  const other = process.arch === "x64" ? "arm64" : "x64";
+  const otherDir = join(scope, `pi-natives-${process.platform}-${other}`);
+  mkdirSync(otherDir);
+  assert.equal(reusableCore(dir, "19.0.1"), false);
+  rmSync(otherDir, { recursive: true });
+  mkdirSync(join(scope, `pi-natives-${process.platform}-${process.arch}`));
   assert.equal(reusableCore(dir, "19.0.1"), true);
   assert.equal(reusableCore(dir, "19.0.2"), false);
 });
