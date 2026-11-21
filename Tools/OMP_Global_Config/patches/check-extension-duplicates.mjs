@@ -33,6 +33,7 @@ if (files.length === 0) {
   process.exit(2);
 }
 const tscArgs = [
+  "x",
   "--package=typescript@5.9.3",
   "tsc",
   "--noEmit",
@@ -47,7 +48,8 @@ const tscArgs = [
   "Bundler",
   ...files,
 ];
-const compiler = spawnSync("bunx", tscArgs, {
+// `bun x` instead of `bunx`: a plain Bun install (the cloud server's) ships only the `bun` binary.
+const compiler = spawnSync("bun", tscArgs, {
   cwd: root,
   encoding: "utf8",
   maxBuffer: 8 * 1024 * 1024,

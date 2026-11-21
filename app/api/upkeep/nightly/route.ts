@@ -12,6 +12,7 @@ import { collectNightlyCoreUpdate, type CoreUpdateLookup } from "@/lib/upkeep/ni
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
 import { collectSkillCandidates } from "@/lib/upkeep/skill-candidates";
 import { kstDate } from "@/lib/upkeep/prompt";
+import { inheritCheckoutTrust } from "@/lib/project-trust";
 import { addWorktree } from "@/lib/worktree";
 
 export const dynamic = "force-dynamic";
@@ -178,6 +179,8 @@ async function planAndRun(dryRun: boolean, recovery: string | null) {
     }
     if (plan.base) log(`${await createNightlyBranch(plan.repoCwd, plan.branch, plan.base.sha, !!recovery)} ${plan.branch} at ${plan.base.ref} ${plan.base.sha}`);
     worktree = (await addWorktree(plan.repoCwd, plan.branch)).path;
+    // 매일 새 경로라 신뢰를 따로 받은 적이 없다. 본 checkout이 신뢰돼 있으면 물려줘야 세션이 게시 전 검사를 돌린다.
+    if (inheritCheckoutTrust(plan.repoCwd, worktree, agentDir)) log(`trusted ${worktree} like ${plan.repoCwd}`);
     const started = await startNewRpcSession(undefined, worktree);
     session = started.session;
     sessionId = started.realSessionId;

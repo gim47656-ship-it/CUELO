@@ -237,6 +237,18 @@ export function setProjectTrust(cwd: string, agentDir: string, trusted: boolean)
   writeTrustedProjects(agentDir, decisions);
 }
 
+/**
+ * Give a worktree the server just created from `checkout` that checkout's trust. Only an explicit
+ * approval carries over; nothing is written for an untrusted or undecided checkout. Returns whether it did.
+ */
+export function inheritCheckoutTrust(checkout: string, worktree: string, agentDir: string): boolean {
+  const decisions = readTrustedProjects(agentDir);
+  if (decisions[canonicalProjectKey(checkout)] !== true) return false;
+  decisions[canonicalProjectKey(worktree)] = true;
+  writeTrustedProjects(agentDir, decisions);
+  return true;
+}
+
 /** Every recorded decision, keyed by canonical project path. */
 export function listProjectTrustDecisions(agentDir: string): Record<string, boolean> {
   return readTrustedProjects(agentDir);
