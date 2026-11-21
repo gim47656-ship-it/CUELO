@@ -92,9 +92,9 @@ function findHandoff(items: UpkeepDueItem[], titlePrefix: string) {
 }
 
 /** 비용 상위 세션. 시각은 그 세션이 이 키로 처음·마지막 사용한 때라, 고침 표시와 견주어 화면·프롬프트에 「고침 전」이 붙는다. */
-function sessionRows(rows: SessionCost[] | undefined): UpkeepEvidence[] {
+function sessionRows(rows: SessionCost[] | undefined, label = "세션 비용"): UpkeepEvidence[] {
   return (rows ?? []).map((row) => ({
-    label: `세션 비용 $${row.cost.toFixed(2)}`,
+    label: `${label} $${row.cost.toFixed(2)}`,
     sessionId: row.sessionId,
     sessionPath: row.sessionPath,
     ...(row.lastAt === undefined ? {} : { timestamp: new Date(row.lastAt).toISOString() }),
@@ -481,7 +481,7 @@ function costCandidates(scan: ScanResult, handoffs: UpkeepDueItem[], keyWindows:
   const perTurn = metric("cost-per-turn", "요청당 청구분", "usd", billedPerTurn(a), billedPerTurn(b), "unknown");
   perTurn.status = compare(perTurn.current, perTurn.previous, a.turns, b.turns);
   perTurn.note = `토큰 단가 환산 추정치에서 OAuth(구독) 사용분을 뺀 금액입니다. 구독 포함 추정치는 요청당 ${a.missingCost || !a.turns ? "기록 없음" : usd(a.cost / a.turns)} / ${b.missingCost || !b.turns ? "기록 없음" : usd(b.cost / b.turns)}입니다.`;
-  perTurn.evidence = sessionRows(scan.topSessions.total);
+  perTurn.evidence = sessionRows(scan.topSessions.billed, "세션 청구분");
 
   const rows: CostRow[] = [];
   const add = (id: string, label: string, current: UsageTotal | undefined, previous: UsageTotal | undefined, evidence: SessionCost[] | undefined) => {

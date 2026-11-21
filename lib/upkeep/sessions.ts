@@ -628,6 +628,11 @@ async function collectDreaming(files: readonly SessionFile[], now: number): Prom
   return collector.finish(partial);
 }
 
+/** OAuth(구독) 사용인지: 구독 전용 provider이거나 기록된 인증 종류가 `oauth`면 청구분에서 뺀다. */
+function isSubscription(usage: Usage, provider: string | undefined): boolean {
+  return (provider !== undefined && Object.hasOwn(SUBSCRIPTION_PROVIDERS, provider)) || usage.credentialKind === "oauth";
+}
+
 function addUsage(target: Record<string, UsageTotal>, key: string, usage: Usage, provider: string | undefined) {
   const row = target[key] ??= { cost: 0, input: 0, write: 0, calls: 0, subscription: 0, unknownAuth: 0, missingCost: false, missingCache: false, providers: [] };
   if (provider && !row.providers.includes(provider)) row.providers.push(provider);
@@ -636,7 +641,7 @@ function addUsage(target: Record<string, UsageTotal>, key: string, usage: Usage,
   const cost = Number(usage.cost?.total) || 0;
   row.cost += cost;
   row.calls++;
-  if ((provider && Object.hasOwn(SUBSCRIPTION_PROVIDERS, provider)) || usage.credentialKind === "oauth") row.subscription += cost;
+  if (isSubscription(usage, provider)) row.subscription += cost;
   else if (provider === "anthropic" && usage.credentialKind === undefined) row.unknownAuth += cost;
   row.input += (Number(usage.input) || 0) + (Number(usage.cacheRead) || 0) + (Number(usage.cacheWrite) || 0);
   row.write += Number(usage.cacheWrite) || 0;
@@ -960,7 +965,8 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             w.cost += cost;
           });
           if (index === 0) {
-            costs.add("total", sessionId, path, cost, time);
+            // 요청당 청구분의 근거: 구독 사용을 뺀 금액으로 세션을 고른다(11-21 점검에서 총비용 순 근거가 청구분을 설명하지 못했다).
+            if (cost > 0 && !isSubscription(usage, entry.provider)) costs.add("billed", sessionId, path, cost, time);
             costs.add(`purpose:${purpose}`, sessionId, path, cost, time);
           }
           billed(usage, cost);
@@ -1022,7 +1028,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
               }
             });
             if (index === 0) {
-              costs.add("total", sessionId, path, cost, time);
+              if (cost > 0 && !isSubscription(usage, m.provider)) costs.add("billed", sessionId, path, cost, time);
               costs.add(`model:${key}`, sessionId, path, cost, time);
               if (rewrite) rewriteRows.push({ first: rewrite.cause === "first", cost: rewrite.cost, row: example(`캐시 다시 쓰기 $${rewrite.cost.toFixed(2)} · ${REWRITE_CAUSE_LABELS[rewrite.cause]}${rewrite.deploy ? " · 배포 직후" : ""}`) });
             }
