@@ -327,14 +327,11 @@ export interface CrossReviewFinding {
    * 실패 경로를 한 단계씩 짚었다. needs-run: 재현 방법을 실제로 돌려야만 가려진다. 없는데 probe가 있으면 needs-run으로 읽는다.
    */
   proof?: CrossReviewProofLevel;
-  /** 보조 검토자(modelRoles.crossReviewAdvisory)가 필수 reviewer 뒤 유예 안에 낸 지적만 true(id R<n>-ADV-k). 다른 지적과 똑같이 닫아야 한다. */
+  /** Legacy advisory finding (R<n>-ADV-k). Resolve still has to close it. */
   advisory?: true;
 }
 
-/**
- * 한 라운드의 보조 검토자 결과(2026-11-07 사용자 결정으로 복구). ok만 그 지적이 라운드 findings에 합쳐졌다. late(유예 안에 답이 없어 끊음)·truncated(출력
- * 한도 잘림)·error·unparsable·skipped(미설정·probe 라운드·저자나 필수 reviewer와 같은 모델)는 기록만 하며 passable과 통과에 영향이 없고 다음 라운드로 넘어가지 않는다.
- */
+/** Read-only metadata from rounds recorded before the 2026-11-21 advisory reviewer removal. */
 export interface CrossReviewAdvisoryOutcome {
   status: "ok" | "late" | "truncated" | "error" | "unparsable" | "skipped";
   /** 해석한 provider/id(못 풀면 selector). 미설정으로 건너뛰었으면 없다. */
@@ -381,13 +378,13 @@ export interface CrossReviewVerdict {
 export interface CrossReviewProbeResultMeta { findingId: string; command: string; exitCode: number; outputBytes: number; truncated: boolean }
 
 export interface CrossReviewReviewer {
-  /** reviewer 자리. 새 기록은 openai·anthropic(필수)뿐이다(보조 검토자는 record.advisory). advisory·google은 2026-10-29 전 기록의 자문 자리로 읽기 전용이다. */
+  /** New rounds use openai and anthropic. The other lanes are read-only for historical records. */
   family: "openai" | "anthropic" | "advisory" | "google";
   /** 실제 응답한 모델 provider/id. 호출 전에 실패했으면 slot이 가리킨 selector. */
   model: string;
-  /** 실제로 대체 호출에 사용된 provider/id. 필수 자리(`family`)는 그대로다. */
+  /** Legacy substitute's actual provider/id; the required lane itself did not change. */
   resolvedModel?: string;
-  /** 필수 자리의 공급자 한도 원문. 대체 호출을 못 했으면 그 이유도 남긴다. */
+  /** Legacy provider-limit substitution details. New rounds do not use a substitute. */
   limitSubstitute?: { primaryModel: string; primaryError: string; skippedReason?: string; hydrogenFailure?: { model: string; error: string } };
   /** ok만 통과 후보다. unparsable은 원문(raw)을 남기고 어떤 경우에도 통과할 수 없다. pending은 2026-10-29 전 기록에서 필수 reviewer가 끝났을 때 아직 답하지 않은 자문 자리다. */
   status: "ok" | "unparsable" | "error" | "pending";
@@ -435,9 +432,9 @@ export interface CrossReviewRecord {
   verdicts?: CrossReviewVerdict[];
   /** 2회차 diff의 기준이 되는 검토 시점 내용 사본 위치. */
   snapshotDir: string;
-  /** 필수 reviewer가 모두 ok여야 true. false면 이 체인은 통과할 수 없다. 보조 검토자(advisory)는 이 값을 정하지 않는다. */
+  /** A round can pass only if all required reviewers answered successfully. */
   passable: boolean;
-  /** 2026-11-07 이후 라운드: 보조 검토자 결과. 옛 기록에는 없다. */
+  /** Read-only advisory outcome from the old record format. */
   advisory?: CrossReviewAdvisoryOutcome;
 }
 

@@ -138,7 +138,7 @@ function chainFor(model) {
 
 /**
  * "provider/id" 또는 "provider/id:thinking" 을 나눈다. provider 는 첫 구간이고 나머지가
- * id 다(openrouter/google/x 처럼 id 에 슬래시가 있을 수 있다). thinking 접미사는 레지스트리
+ * id 다(hive/vendor/model 처럼 id 에 슬래시가 있을 수 있다). thinking 접미사는 레지스트리
  * 조회에 방해되므로 떼어내기만 하고 적용하지는 않는다 — 여기서 필요한 건 모델 교체다.
  */
 function parseSelector(selector) {

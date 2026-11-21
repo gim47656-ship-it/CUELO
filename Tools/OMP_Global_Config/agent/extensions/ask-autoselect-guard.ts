@@ -11,10 +11,12 @@ const FALLBACK = /폴백|\bfallback\b|\bfall\s+back\b/i;
 // AI 제공자를 고르는 질문(코드의 DI provider·registry는 제외), 모델 이름(버전 포함) 둘 이상을 놓고 고르는 질문,
 // 같은 계열의 버전 선택, 한 모델로 바꾸거나 쓰자는 질문. 구분이 안 되는 말은 막는 쪽으로 둔다(오차단은 다시 묻기로 끝난다).
 const PROVIDER_CHOICE = /(?:프로바이더|제공자|공급자).{0,16}(?:쓸|고를|고르|선택|정할|사용)|\b(?:which|choose|select)\b.{0,24}\bproviders?\b(?![^.?!]*\b(?:registry|dependency|injection|DI|context|mock)\b)/i;
-const FAMILY = "(?:opus|sonnet|haiku|fable|sol|astra|terra|luna|argon|gemini|deepseek|glm|gpt|claude|codex)";
-const MODEL_NAMES = /\b(?:opus|sonnet|haiku|fable|sol|astra|terra|luna|argon|gemini|deepseek|glm|gpt|claude|codex|openai|anthropic|hive|vertex)(?:[-\s]?\d+(?:\.\d+)*)?\b/gi;
+// Also recognize retired names in proposals to re-enable them; that decision still belongs to the user.
+const FAMILY = "(?:opus|sonnet|haiku|fable|sol|astra|terra|luna|argon|gemini|hikari|aistudio|vertex|antigravity|deepseek|glm|gpt|claude|codex)";
+const MODEL_NAMES = new RegExp(`\\b(?:${FAMILY}|openai|anthropic|hive)(?:[-\\s]?\\d+(?:\\.\\d+)*)?\\b|히카리`, "gi");
 const CHOICE_WORD = /어느|어떤|쓸까|할까|갈까|고를|고르|선택|정할|사용할|진행할|\b(?:which|choose|select|use|or|vs)\b/i;
 const SWITCH_TO_MODEL = new RegExp([
+  "히카리(?:로|를)\\s*(?:바꿀|바꾸|갈|할|진행|돌릴|쓸|사용할)",
   `\\b${FAMILY}\\b\\S*?(?:로|으로|를|을)\\s*(?:바꿀|바꾸|갈|할|진행|돌릴|쓸|사용할)`,
   `\\b(?:switch|change|move|go|revert)\\s+(?:back\\s+)?to\\s+${FAMILY}\\b`,
   `\\buse\\s+${FAMILY}\\b[^.?!]{0,24}\\binstead\\b`,

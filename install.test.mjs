@@ -626,7 +626,7 @@ test("a new profile accepts explicitly selected review and document tool roles",
   const selected = {
     crossReviewOpenAI: "openai/fixture-review",
     crossReviewAnthropic: "anthropic/fixture-review",
-    crossReviewAdvisory: "fixture/advisory-review",
+    preflightOpenAI: "openai/fixture-plan-advice",
     preflightAnthropic: "anthropic/fixture-plan-advice",
     skim: "fixture/reader",
     draft: "fixture/writer",
@@ -639,7 +639,7 @@ test("a new profile accepts explicitly selected review and document tool roles",
     const result = createProfileConfig(agentDir, parseArgs(args).roles);
     const config = YAML.parse(fs.readFileSync(result.configPath, "utf8"));
     assert.deepEqual(config.modelRoles, selected);
-    assert.deepEqual(result.missing, ["default", "implSol", "implAstra", "implSonnet", "implOpus", "implDeepSeek", "implGemini", "makerHardUiOpus", "makerHardCodeOpus", "makerHardCodeSonnet"]);
+    assert.deepEqual(result.missing, ["default", "implSol", "implAstra", "implSonnet", "implOpus", "implDeepSeek", "makerHardUiOpus", "makerHardCodeOpus", "makerHardCodeSonnet"]);
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });
   }

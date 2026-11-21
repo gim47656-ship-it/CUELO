@@ -1318,195 +1318,8 @@ const ANTHROPIC_PRIORITY_SELECTION = `		// CUELO: fresh Anthropic sessions follo
 		}
 		const preflightFailures = new Set<OAuthCandidate>();`;
 
-// 18.20.2: strict Gemini function declarations, including OpenAI-compatible Gemini gateways.
-const GEMINI_TOOL_PROJECTION = `/**
- * CUELO: project wire-only tool parameters to Gemini's function-schema subset.
- * Canonical MCP schemas remain unchanged for execution. Open fields use a
- * permissive string/object hint when Gemini cannot express the original schema.
- */
-export function normalizeSchemaForGeminiTool(value: unknown, mode: "native" | "gateway" = "gateway"): JsonObject {
-	const gateway = mode === "gateway";
-	const active = new Set<object>();
-	const project = (input: unknown): JsonObject => {
-		if (!isJsonObject(input) || active.has(input)) return { type: "string" };
-		active.add(input);
-		try {
-			const result: JsonObject = {};
-			if (typeof input.description === "string") result.description = input.description;
-			const variants = input.anyOf ?? input.oneOf;
-			const projectedVariants = Array.isArray(variants) && variants.length > 0 ? variants.map(project) : undefined;
-			const types = ["object", "array", "string", "number", "integer", "boolean"];
-			const declaredType = typeof input.type === "string" ? input.type.toLowerCase() : undefined;
-			const type = declaredType && types.includes(declaredType) ? declaredType
-				: isJsonObject(input.properties) ? "object"
-				: input.items !== undefined ? "array"
-				: !gateway && Array.isArray(input.required) ? "object"
-				: gateway && projectedVariants?.every(variant => variant.type === "object") ? "object"
-				: projectedVariants ? undefined : "string";
-			// Gemini gateways require anyOf to stand alone; typed sibling constraints
-			// are widened, and untyped unions carry only their projected alternatives.
-			if (!type && projectedVariants) return gateway ? { anyOf: projectedVariants } : { ...result, anyOf: projectedVariants };
-			if (!gateway && projectedVariants) result.anyOf = projectedVariants;
-			if (type) result.type = type;
-			if (input.nullable === true) result.nullable = true;
-			if (type === "object") {
-				const properties: JsonObject = {};
-				if (isJsonObject(input.properties)) {
-					for (const [name, child] of Object.entries(input.properties)) {
-						Object.defineProperty(properties, name, { value: project(child), enumerable: true, configurable: true });
-					}
-				}
-				for (const variant of gateway ? projectedVariants ?? [] : []) {
-					if (!isJsonObject(variant.properties)) continue;
-					for (const [name, child] of Object.entries(variant.properties)) {
-						const merged = Object.hasOwn(properties, name) ? { anyOf: [properties[name], child] } : child;
-						Object.defineProperty(properties, name, { value: merged, enumerable: true, configurable: true });
-					}
-				}
-				result.properties = properties;
-				if (Array.isArray(input.required)) {
-					const required = [...new Set(input.required.filter(name => typeof name === "string" && Object.hasOwn(properties, name)))];
-					if (required.length) result.required = required;
-				}
-			} else if (type === "array") {
-				result.items = project(input.items);
-			}
-			if (type === "string" && Array.isArray(input.enum)) {
-				const values = input.enum.filter(entry => typeof entry === "string" && entry.length > 0);
-				if (values.length === input.enum.length && values.length > 0) result.enum = values;
-			}
-			return result;
-		} finally {
-			active.delete(input);
-		}
-	};
-	let normalized: unknown;
-	try { normalized = normalizeSchemaForGoogle(value); }
-	catch { normalized = value; }
-	const result = project(normalized);
-	if (!gateway && Array.isArray(result.anyOf) &&
-		(!isJsonObject(result.properties) || Object.keys(result.properties).length === 0) &&
-		result.anyOf.every(variant => isJsonObject(variant) && variant.type === "object")) {
-		// Native function roots require object properties, not just an object union.
-		const properties: JsonObject = {};
-		for (const variant of result.anyOf) {
-			if (!isJsonObject(variant) || !isJsonObject(variant.properties)) continue;
-			for (const [name, child] of Object.entries(variant.properties)) {
-				const merged = Object.hasOwn(properties, name) ? mergePropertySchemas(properties[name], child) : child;
-				Object.defineProperty(properties, name, { value: merged, enumerable: true, configurable: true });
-			}
-		}
-		return { type: "object", properties };
-	}
-	// Function arguments must be an object, even for broken scalar/root schemas.
-	return result.type === "object" ? result : { type: "object", properties: {} };
-}
-
-/** CUELO: one malformed declaration never disables the rest of the tool roster. */
-export function prepareGeminiTools(tools: Tool[], mode: "native" | "gateway" = "gateway"): Tool[] {
-	return tools.flatMap(tool => {
-		try {
-			if (!/^[a-zA-Z_][a-zA-Z0-9_.:-]{0,63}$/.test(tool.name)) throw new Error("invalid function name");
-			return [{ ...tool, strict: false, parameters: normalizeSchemaForGeminiTool(toolWireSchema(tool), mode) }];
-		} catch (error) {
-			logger.warn(\`Tool "\${tool.name}" omitted from the Gemini request: \${String(error)}\`);
-			return [];
-		}
-	});
-}
-
-`;
-
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
-	{
-		file: "../pi-ai/src/utils/schema/normalize.ts",
-		requires: "export function normalizeSchemaForGoogle(value: unknown): unknown {",
-		marker: 'import type { Tool } from "../../types"; // CUELO: Gemini tool projection',
-		anchor: 'import * as AIError from "../../error";',
-		patched: 'import * as AIError from "../../error";\nimport type { Tool } from "../../types"; // CUELO: Gemini tool projection\nimport { toolWireSchema } from "./wire";',
-	},
-	{
-		file: "../pi-ai/src/utils/schema/normalize.ts",
-		requires: "export function normalizeSchemaForGoogle(value: unknown): unknown {",
-		marker: 'export function normalizeSchemaForGeminiTool(value: unknown, mode: "native" | "gateway" = "gateway"): JsonObject {',
-		anchor: "export function normalizeSchemaForGoogle(value: unknown): unknown {",
-		patched: GEMINI_TOOL_PROJECTION + "export function normalizeSchemaForGoogle(value: unknown): unknown {",
-	},
-	{
-		file: "../pi-ai/src/providers/google-shared.ts",
-		requires: "const useParameters = model.compat.ccaLegacyParametersSchema;",
-		marker: "normalizeSchemaForGoogle, prepareGeminiTools, toolWireSchema",
-		anchor: "normalizeSchemaForGoogle, toolWireSchema",
-		patched: "normalizeSchemaForGoogle, prepareGeminiTools, toolWireSchema",
-	},
-	{
-		file: "../pi-ai/src/providers/google-shared.ts",
-		requires: "const useParameters = model.compat.ccaLegacyParametersSchema;",
-		marker: "// CUELO: only native Gemini APIs use the strict function projection.",
-		anchor: "\tconst useParameters = model.compat.ccaLegacyParametersSchema;",
-		patched: "\tconst useParameters = model.compat.ccaLegacyParametersSchema;\n\t// CUELO: only native Gemini APIs use the strict function projection.\n\tconst geminiSchema = model.api === \"google-generative-ai\" || model.api === \"google-vertex\";\n\tif (geminiSchema) tools = prepareGeminiTools(tools, \"native\");\n\tif (tools.length === 0) return undefined;",
-	},
-	{
-		file: "../pi-ai/src/providers/google-shared.ts",
-		requires: "const useParameters = model.compat.ccaLegacyParametersSchema;",
-		marker: "parametersJsonSchema: geminiSchema ? toolWireSchema(tool) :",
-		anchor: "parametersJsonSchema: normalizeSchemaForGoogle(toolWireSchema(tool))",
-		patched: "parametersJsonSchema: geminiSchema ? toolWireSchema(tool) : normalizeSchemaForGoogle(toolWireSchema(tool))",
-	},
-	{
-		file: "../pi-ai/src/providers/openai-completions.ts",
-		requires: "function convertTools(",
-		marker: "\tprepareGeminiTools,\n\tsanitizeSchemaForGrammar,",
-		anchor: "\tsanitizeSchemaForGrammar,",
-		patched: "\tprepareGeminiTools,\n\tsanitizeSchemaForGrammar,",
-	},
-	{
-		file: "../pi-ai/src/providers/openai-completions.ts",
-		requires: "function convertTools(",
-		marker: "// CUELO: schema compatibility follows the model lineage, never the gateway provider.",
-		anchor: "\tif (context.tools?.length) {\n\t\tconst builtTools = convertTools(context.tools, initialCompat, toolStrictModeOverride);\n\t\tparams.tools = builtTools.tools;",
-		patched: `	// CUELO: schema compatibility follows the model lineage, never the gateway provider.
-	const gemini = model.identity?.class === "gemini" ||
-		((!model.identity || model.identity.class === "unknown") && model.id.startsWith("gemini-"));
-	if (context.tools?.length) {
-		const tools = gemini ? prepareGeminiTools(context.tools) : context.tools;
-		const builtTools = convertTools(tools, initialCompat, toolStrictModeOverride);
-		params.tools = gemini && builtTools.tools.length === 0 ? undefined : builtTools.tools;`,
-	},
-	{
-		file: "../pi-ai/src/providers/openai-completions.ts",
-		requires: "function convertTools(",
-		marker: "initialCompat.supportsToolChoice && (!gemini || params.tools?.length)",
-		anchor: "if (options?.toolChoice && initialCompat.supportsToolChoice) {",
-		patched: "if (options?.toolChoice && initialCompat.supportsToolChoice && (!gemini || params.tools?.length)) {",
-	},
-	{
-		file: "../pi-ai/src/providers/google-shared.ts",
-		requires: "const useParameters = model.compat.ccaLegacyParametersSchema;",
-		marker: "if (config.tools?.length && options.toolChoice)",
-		anchor: "if (context.tools && context.tools.length > 0 && options.toolChoice)",
-		patched: "if (config.tools?.length && options.toolChoice)",
-	},
-	{
-		file: "../pi-ai/src/providers/google-shared.ts",
-		requires: "const useParameters = model.compat.ccaLegacyParametersSchema;",
-		marker: "// CUELO: an omitted declaration cannot remain a forced tool choice.",
-		anchor: `			// Named-tool routing — \`mode: "ANY"\` plus an explicit allow-list. The
-			// caller is responsible for ensuring the names exist in \`context.tools\`.
-			config.toolConfig = {
-				functionCallingConfig: {
-					mode: "ANY",
-					allowedFunctionNames: [...choice.allowedFunctionNames],
-				},
-			};`,
-		patched: `			// CUELO: an omitted declaration cannot remain a forced tool choice.
-			const allowed = choice.allowedFunctionNames.filter(name =>
-				config.tools?.some(tool => tool.functionDeclarations?.some(declaration => declaration.name === name)));
-			if (allowed.length > 0) config.toolConfig = {
-				functionCallingConfig: { mode: "ANY", allowedFunctionNames: allowed },
-			};`,
-	},
 	// Claude 18.20.0 Cedar grants: next_grant_id is a suggestion, not a redemption restriction.
 	{
 		file: "../pi-ai/src/usage/claude-reset.ts",
@@ -15613,7 +15426,7 @@ const sessionActivityWatches = new WeakMap<AgentSession, SubagentActivityWatch>(
 		anchor: "/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean;",
 		patched: '/** Run in an isolated worktree (flat form; per-item in batch form). */\n    isolated?: boolean | "capture";',
 	},
-	// 2026-10-29 Gemini 도구 스키마 토큰 과대 추정(doc/history/2026/10/29-recall-bottlenecks): Gemini 는 agent.pruneToolDescriptions 로
+	// 2026-10-29 도구 스키마 토큰 과대 추정(doc/history/2026/10/29-recall-bottlenecks): agent.pruneToolDescriptions 는
 	// wire 도구 명세에서 description·examples·중첩 schema description 을 빼고 그 카탈로그를 system prompt 에 싣는다(agent-loop normalizeTools).
 	// 추정기는 그 표지를 보지 않고 description 까지 다시 세어 system prompt 추정과 이중으로 더했다(첫 요청 nonMessage 가 실제 prompt 보다
 	// 10,694~12,683 토큰 큼). pruned 일 때만 wire 와 같은 이름 + description 뺀 schema 를 세고, pruned 가 아니면 계산·캐시 값은 그대로다.
@@ -25036,141 +24849,62 @@ for (const { file, extra, anchor } of [
 		{ marker: skip18222, anchor: skip18222, patched: skip18222 }, skip18222);
 }
 
-// Vertex Hydrogen uses Priority PayGo for session and direct SDK calls alike.
-// Carry the RPC status from the actual HTTP rejection, not its display text.
-EDITS.push({
-	file: "../pi-ai/src/providers/google-vertex.ts",
-	marker: 'model.id === "gemini-4-hydrogen"',
-	anchor: `			if (options?.serviceTier === "priority") {
-`,
-	patched: `			const serviceTier = options?.serviceTier ??
-				(model.provider === "google-vertex" && model.id === "gemini-4-hydrogen" ? "priority" : undefined);
-			if (serviceTier === "priority") {
-`,
-}, {
-	file: "../pi-ai/src/types.ts",
-	marker: 'Symbol("vertex-http-resource-exhausted")',
-	anchor: `export interface AssistantMessage {
-`,
-	patched: `/** Live HTTP rejection metadata, deliberately not persisted with the assistant message. */
-export const kVertexHttpResourceExhausted = Symbol("vertex-http-resource-exhausted");
-
-export interface AssistantMessage {
-	[kVertexHttpResourceExhausted]?: true;
-`,
-}, {
-	file: "../pi-ai/src/providers/google-shared.ts",
-	marker: 'import { kVertexHttpResourceExhausted, shouldSendServiceTier } from "../types";',
-	anchor: 'import { shouldSendServiceTier } from "../types";',
-	patched: 'import { kVertexHttpResourceExhausted, shouldSendServiceTier } from "../types";',
-}, {
-	file: "../pi-ai/src/providers/google-shared.ts",
-	marker: 'output[kVertexHttpResourceExhausted] = true;',
-	anchor: `						const errorText = await response.text().catch(() => "");
-						throw new AIError.GoogleApiError(
-`,
-	patched: `						const errorText = await response.text().catch(() => "");
-						if (api === "google-vertex" && model.provider === "google-vertex" && response.status === 429) {
-							try {
-								type Envelope = { error?: { status?: unknown } };
-								const body = JSON.parse(errorText) as Envelope | Envelope[] | null;
-								const envelope = Array.isArray(body) ? (body.length === 1 ? body[0] : undefined) : body;
-								if (envelope?.error?.status === "RESOURCE_EXHAUSTED") {
-									output[kVertexHttpResourceExhausted] = true;
-								}
-							} catch {
-								// Non-JSON failure bodies keep ordinary retry classification.
-							}
-						}
-						throw new AIError.GoogleApiError(
-`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: 'import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";',
-	anchor: 'import * as AIError from "@oh-my-pi/pi-ai/error";',
-	patched: `import * as AIError from "@oh-my-pi/pi-ai/error";
-import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: "const vertexRejectedModel =",
-	anchor: `		const rateLimitReason = parseRateLimitReason(errorMessage);
-		// A rate limit is a cap the next attempt on this model re-hits, so
-`,
-	patched: `		// Consult the existing chain before credential waits or same-model backoff.
-		// Only replay an empty rejection from the active Vertex model.
-		let switchedModel = false;
-		const vertexRejectedModel = message[kVertexHttpResourceExhausted] && this.#host.model();
-		if (
-			vertexRejectedModel &&
-			vertexRejectedModel.provider === "google-vertex" &&
-			vertexRejectedModel.id === message.model &&
-			message.stopReason === "error" &&
-			message.content.length === 0 &&
-			options?.allowModelFallback !== false &&
-			!preserveFailedTurn &&
-			retrySettings.modelFallback &&
-			!this.#host.modelFallbackDisabled?.() &&
-			this.#host.modelRegistry.authStorage.sessions.exactLabel(vertexRejectedModel.provider, this.#host.sessionId()) === undefined &&
-			(retrySettings.fallbackOn !== "except-usage-limit" || !AIError.is(id, AIError.Flag.UsageLimit))
-		) {
-			const selector = formatRetryFallbackSelector(vertexRejectedModel, this.#host.thinkingLevel());
-			const key = this.#refusalWalkKey(selector);
-			// Like a refusal, a rejected route should not be revisited in this turn,
-			// even if its cooldown expires while another chain candidate runs.
-			if (!this.#refusalWalkTried.has(key)) {
-				switchedModel = await this.#tryRetryModelFallback(selector, message, { refusalWalk: true });
-				if (switchedModel) {
-					this.#refusalWalkTried.add(key);
-					const retryAfterMs = extractProviderRetryHint(vertexRejectedModel.provider, errorMessage, vertexRejectedModel.baseUrl);
-					this.noteRetryFallbackCooldown(selector, retryAfterMs, errorMessage);
-				}
-			}
-		}
-		const rateLimitReason = parseRateLimitReason(errorMessage);
-		// A rate limit is a cap the next attempt on this model re-hits, so
-`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: "let recordedUsageLimitOutcome = switchedModel ?",
-	anchor: `		let recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
-`,
-	patched: `		let recordedUsageLimitOutcome = switchedModel ? undefined : await this.#usageLimitOutcomes.get(message);
-`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: "if (switchedModel) delayMs = 0;",
-	anchor: `		let switchedCredential = false;
-		let switchedModel = false;
-`,
-	patched: `		let switchedCredential = false;
-		if (switchedModel) delayMs = 0;
-`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: "if (!switchedModel && accountPolicyDenial && currentModel)",
-	anchor: `		if (accountPolicyDenial && currentModel) {
-`,
-	patched: `		if (!switchedModel && accountPolicyDenial && currentModel) {
-`,
-}, {
-	file: "src/session/turn-recovery.ts",
-	marker: "if (!switchedModel && !staleOpenAIResponsesReplayError",
-	anchor: `		if (!staleOpenAIResponsesReplayError && !switchedCredential && !stripDemotedReasoning && currentSelector) {
-`,
-	patched: `		if (!switchedModel && !staleOpenAIResponsesReplayError && !switchedCredential && !stripDemotedReasoning && currentSelector) {
-`,
-});
-
-// Preflight resolves every anchor before writing. Install the guard as part of
-// the OCR wrapper, or upgrade the entire existing wrapper when it is present.
+// The retired Vertex switch changed the tail of the retained account pin.
+// Recognize both source shapes without adding the old tail to a fresh core.
 {
-	const wrapper = EDITS.find(e => e.file === "src/utils/image-question.ts" && e.marker === "async function askImageQuestionOnce(");
+	const gate = EDITS.find(e => e.marker === "const allowModelFallback = options?.allowModelFallback !== false && exactAccountLabel === undefined;");
+	const current = gate.alternates.find(e => e.requires === "kUsageLimitRequestProvider");
+	const tail = "if (accountPolicyDenial && currentModel) {";
+	const deployedTail = "if (!switchedModel && accountPolicyDenial && currentModel) {";
+	const withDeployedTail = text => text.replace(tail, deployedTail);
+	gate.alternates.push({
+		...current,
+		marker: withDeployedTail(current.patched),
+		anchor: withDeployedTail(current.anchor),
+		patched: withDeployedTail(current.patched),
+	});
+	current.excludes = [...[current.excludes ?? []].flat(), deployedTail];
+}
+
+{
+	const file = "src/utils/image-question.ts";
+	const wrapper = EDITS.find(e => e.file === file && e.marker === "async function askImageQuestionOnce(");
 	const before = "\t\t\tfailures.push(";
-	wrapper.legacyPatched = wrapper.patched;
-	wrapper.marker = "// Only operational OCR failures";
-	wrapper.patched = wrapper.patched.replace(before, String.raw`			// Only operational OCR failures may forward an image to an explicit alternate provider.
-			if (session.settings.getModelRole("ocrFallback") && !/^(?:No API key available for |Vertex AI requires Application Default Credentials\. |Image question timed out after |Google API error \((?:408|429|5\d\d)\):|upstream (?:429|5\d\d)\b|(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN):|fetch failed$|Failed to fetch$)/i.test(reason)) throw error;
+	const marker = "// Only operational OCR failures";
+	const previous = wrapper.patched;
+	const operationalReason = String.raw`/^(?:No API key available for |Image question timed out after |(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN):|fetch failed$|Failed to fetch$)/i`;
+	const note = `			${marker} may forward an image to an explicit alternate provider.\n`;
+	// Read-only checks accept the deployed guard; explicit apply upgrades it.
+	const oldReason = operationalReason.replace("Image question timed out after |", String.raw`Vertex AI requires Application Default Credentials\. |Image question timed out after |Google API error \((?:408|429|5\d\d)\):|upstream (?:429|5\d\d)\b|`);
+	const oldGuard = `			if (session.settings.getModelRole("ocrFallback") && !${oldReason}.test(reason)) throw error;\n`;
+	wrapper.marker = marker;
+	wrapper.legacyPatched = previous;
+	wrapper.excludes = [...[wrapper.excludes ?? []].flat(), oldGuard];
+	wrapper.patched = previous.replace(before, note + `			const status = error instanceof ToolError ? error.context?.providerStatus : undefined;
+			const operational = typeof status === "number"
+				? status === 408 || status === 429 || status >= 500
+				: ${operationalReason}.test(reason);
+			if (session.settings.getModelRole("ocrFallback") && !operational) throw error;
 ` + before);
+	(wrapper.alternates ??= []).push({
+		file, requires: oldGuard, marker, anchor: wrapper.anchor, patched: wrapper.patched,
+		legacyPatched: previous.replace(before, note + oldGuard + before),
+		allowLegacyCheck: true,
+	});
+
+	const responseError = 'throw new ToolError(response.errorMessage ?? "Image question request failed.");';
+	const statusError = 'throw new ToolError(response.errorMessage ?? "Image question request failed.", { providerStatus: response.errorStatus });';
+	EDITS.push({
+		file: "src/utils/image-question.ts",
+		excludes: oldGuard,
+		marker: statusError,
+		anchor: responseError,
+		patched: statusError,
+		alternates: [{
+			file, requires: oldGuard, marker: statusError, anchor: responseError, patched: statusError,
+			legacyPatched: responseError, allowLegacyCheck: true,
+		}],
+	});
 }
 
 // 19.0.0: preserve 18.22.2 rollback candidates and port only to the new source shapes.
@@ -25278,12 +25012,6 @@ import { kVertexHttpResourceExhausted } from "@oh-my-pi/pi-ai/types";`,
 		alternates: [{ file: "src/tools/eval.ts", marker: "import evalHelpersTopic from ", anchor: "import evalHelpersTopic from ", patched: "import evalHelpersTopic from " }],
 	});
 	retainMarker(evalEntry, "export function evalTemplateContext(", text => text, evalTopics);
-
-	// The pre-existing switch guard must still short-circuit the upstream retry branch.
-	const retry = one("src/session/turn-recovery.ts", "if (!switchedModel && !staleOpenAIResponsesReplayError");
-	const retryAnchor = "\t\tif (\n\t\t\t!staleOpenAIResponsesReplayError &&\n\t\t\t!switchedCredential &&\n\t\t\t!stripDemotedReasoning &&\n\t\t\t!resampleMidStreamRefusal &&\n\t\t\tcurrentSelector\n\t\t) {";
-	const retryPatched = swap(retryAnchor, "!staleOpenAIResponsesReplayError", "!switchedModel &&\n\t\t\t!staleOpenAIResponsesReplayError");
-	rewrite(retry, "#midStreamRefusalResampled = false;", retryAnchor, retryPatched);
 
 	const promptRead = "src/prompts/tools/read.md";
 	const documentTypes = "PDF/DOCX/PPTX/XLSX/EPUB:";
@@ -25782,7 +25510,7 @@ function main() {
 	for (const s of state) console.log(`  ${s.status.padEnd(12)} ${s.file}`);
 
 	if (mode === "check") {
-		const allApplied = state.every(s => s.status === "applied");
+		const allApplied = state.every(s => s.status === "applied" || (s.status === "legacy" && s.allowLegacyCheck));
 		console.log(allApplied ? "APPLIED  전부 적용됨" : "MISSING  적용 필요");
 		process.exitCode = allApplied ? 0 : 1;
 		return;

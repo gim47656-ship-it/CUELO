@@ -53,6 +53,7 @@ test("credentials and backups are hidden, ordinary profile data remains readable
   writeFileSync(join(agent, "models.yml"), 'apiKey: "!read-key"\n');
   const paths = secretPaths(home);
   for (const name of ["mcp.json.bak-1", "agent.db-wal", "agent.db.bak-1", "new-api-key", "models.yml.bak-1"]) expect(paths).toContain(join(agent, name));
+  expect(paths).toContain(join(agent, "aistudio2api-key"));
   expect(paths).not.toContain(join(agent, "config.yml")); expect(paths).not.toContain(join(agent, "models.yml"));
   expect(containsLiteralCredential({ nested: { password: "fixture" } })).toBe(true);
   writeFileSync(join(agent, "models.yml.bak"), "apiKey: fixture\n\t: [");

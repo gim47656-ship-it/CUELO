@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,9 +26,7 @@ import {
   MAX_REFERENCE_FILE_BYTES,
   parseChangedLines,
   parseReviewerOutput,
-  reviewerLanes,
   ReviewerCallError,
-  clearAdvisoryCooldown,
   runGate,
   runResolve,
   readReferenceFile,
@@ -43,7 +41,7 @@ import {
   type GateOutcome,
 } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewLedgerRecord } from "../lib/routing-ledger";
-import { completeReviewer, executeCrossReview } from "../cross-review";
+import { executeCrossReview } from "../cross-review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
@@ -94,27 +92,19 @@ const MARKER_BASE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p
 const PLAIN_BASE = "export const add = (a: number, b: number) => a + b;\n";
 
 describe("계열 매핑", () => {
-  test("anthropic·deepseek 저자는 OpenAI reviewer, openai·그 밖의 provider(google 포함)는 Anthropic reviewer로 가고 자문 자리는 없다", () => {
+  test("Anthropic and DeepSeek authors go to OpenAI; OpenAI and other authors go to Anthropic", () => {
     expect(authorFamily(`${OPUS}:high`)).toBe("anthropic");
     expect(authorFamily(ASTRA)).toBe("openai");
     expect(authorFamily("openai/gpt-5")).toBe("openai");
     expect(authorFamily("b-ai/deepseek-v4.1-flash")).toBe("deepseek");
     expect(authorFamily("hive/deepseek-ai/deepseek-v4.1-flash-1017:auto")).toBe("deepseek");
     expect(authorFamily("deepseek-v4.1-flash")).toBe("deepseek");
-    expect(authorFamily("google-antigravity/gemini-3.8-flash")).toBe("google");
-    expect(authorFamily(`${GEMINI}:auto`)).toBe("google");
-    expect(authorFamily("gemini-4-argon")).toBe("google");
-    expect(authorFamily("openrouter/google/gemini-2.5-pro")).toBe("google");
-    expect(authorFamily("openai/gemini-4-argon")).toBe("google");
-    expect(codeReviewLanes(["openai/gemini-4-argon"], undefined)).toEqual(["anthropic"]);
     expect(codeReviewLanes([OPUS], undefined)).toEqual(["openai"]);
     expect(codeReviewLanes([SONNET], undefined)).toEqual(["openai"]);
     expect(codeReviewLanes([FABLE], undefined)).toEqual(["openai"]);
     expect(codeReviewLanes([ASTRA], undefined)).toEqual(["anthropic"]);
     expect(codeReviewLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["openai"]);
     expect(codeReviewLanes(["hive/deepseek-ai/deepseek-v4.1-flash-1017:auto"], undefined)).toEqual(["openai"]);
-    expect(codeReviewLanes(["google-antigravity/gemini-3.8-flash"], undefined)).toEqual(["anthropic"]);
-    expect(codeReviewLanes([GEMINI], undefined)).toEqual(["anthropic"]);
     // 모르는 provider는 지금처럼 Anthropic reviewer다(계열을 추측해 GPT 검토로 보내지 않는다).
     expect(codeReviewLanes(["unknown-provider/some-model"], undefined)).toEqual(["anthropic"]);
   });
@@ -123,21 +113,9 @@ describe("계열 매핑", () => {
     expect(codeReviewLanes([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
     expect(codeReviewLanes(["main"], OPUS)).toEqual(["openai"]);
     expect(codeReviewLanes(["main", ASTRA], OPUS)).toEqual(["anthropic", "openai"]);
-    expect(codeReviewLanes([OPUS, GEMINI], undefined)).toEqual(["anthropic", "openai"]);
-    expect(codeReviewLanes(["main"], GEMINI)).toEqual(["anthropic"]);
     expect(codeReviewLanes(["main"], DEEPSEEK)).toEqual(["openai"]);
     expect(() => codeReviewLanes(["main"], undefined)).toThrow("current model");
     expect(() => codeReviewLanes([], OPUS)).toThrow("at least one");
-  });
-
-  test("계열 중립 helper(reviewerLanes)는 slop·사전 점검 경로라 DeepSeek 저자도 Anthropic 자리를 유지한다", () => {
-    expect(reviewerLanes(["b-ai/deepseek-v4.1-flash"], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes(["hive/deepseek-ai/deepseek-v4.1-flash-1017"], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes([OPUS], undefined)).toEqual(["openai"]);
-    expect(reviewerLanes([ASTRA], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes([GEMINI], undefined)).toEqual(["anthropic"]);
-    expect(reviewerLanes([OPUS, ASTRA], undefined)).toEqual(["anthropic", "openai"]);
-    expect(reviewerLanes(["main"], DEEPSEEK)).toEqual(["anthropic"]);
   });
 });
 
@@ -408,15 +386,14 @@ describe("runReview", () => {
     expect(records.at(-1)).toMatchObject({ reviewId: all.reviewId, passable: false });
   });
 
-  test("필수 reviewer 한도 뒤 Hydrogen 경로가 없으면 crossReviewWaiver로 넘기라고 안내한다(2026-11-19)", async () => {
+  test("a required provider limit advises waiver but cannot pass", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     const limit = '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} retry-after-ms=31807000';
     const result = await runReview(input(), deps(env, { openai: new Error(limit) }), signal);
     expect(result.passable).toBe(false);
     expect(result.nextStep).toContain("crossReviewWaiver");
-    expect(result.nextStep).toContain("2026-11-19");
-    expect(result.nextStep).toContain("does not supply a Hydrogen route");
+    expect(result.nextStep).toContain("2026-11-21");
     expect(result.nextStep).toContain("rate_limit_error");
     const maker = await runReview(input({ maker: true }), deps(env, { openai: new Error("usage limit reached for this plan") }), signal);
     expect(maker.nextStep).toContain("report this reviewId and the raw errors to Main");
@@ -464,24 +441,32 @@ describe("runReview", () => {
     expect(kept.nextStep).not.toContain("does not cover this review");
   });
 
-  test("보조 검토자 실패는 필수 자리 예외 판정에 들지 않는다(#79)", async () => {
+  test("a provider denial mentioning 429 is not eligible for a waiver", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const limit = "429 rate_limit_error: account rate limit";
-    const withAdvisory = (answers: Partial<Record<Lane, string | Error>>): ReviewDeps => ({
-      ...deps(env, answers),
-      advisory: { model: "google-vertex/gemini-4-argon", complete: async () => { throw new ReviewerCallError(limit, "google-vertex/gemini-4-argon"); } },
-      advisoryGraceMs: 50,
-    });
-    // 필수 자리는 시간 초과뿐이고 보조만 한도로 실패한다: waiver 안내가 생기지 않는다.
-    const timeoutOnly = await runReview(input(), withAdvisory({ openai: new Error("TimeoutError: The operation timed out") }), signal);
-    expect(timeoutOnly.advisory).toMatchObject({ status: "error" });
-    expect(timeoutOnly.nextStep).not.toContain("commit with git_finalize");
-    // 필수 자리가 한도로 실패하면 보조의 한도 실패는 안내를 mixed로 바꾸지 않는다.
-    const requiredLimit = await runReview(input(), withAdvisory({ openai: new Error(limit) }), signal);
-    expect(requiredLimit.passable).toBe(false);
-    expect(requiredLimit.nextStep).toContain("commit with git_finalize");
-    expect(requiredLimit.nextStep).not.toContain("does not cover this review");
+    const result = await runReview(input(), deps(env, { openai: new Error("403 Your account must be verified (429 retry hint)") }), signal);
+    expect(result.passable).toBe(false);
+    expect(result.nextStep).not.toContain("crossReviewWaiver");
+  });
+
+  test.each(["denial", "malformed"] as const)("a later %s in the same required lane prevents a provider-limit waiver", async (failure) => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), "export const x = 1;\n".repeat(Math.ceil(MAX_INPUT_BYTES / 20)));
+    const calls: number[] = [];
+    const d = {
+      ...deps(env, {}),
+      complete: async () => {
+        const part = calls.push(calls.length + 1);
+        if (part === 1) throw new ReviewerCallError("429 rate_limit_error: account rate limit", ASTRA);
+        if (failure === "denial") throw new ReviewerCallError("403 Your account must be verified (429 retry hint)", ASTRA);
+        return { model: ASTRA, text: "Not JSON." };
+      },
+    };
+    const result = await runReview(input(), d, signal);
+    expect(calls).toEqual([1, 2]);
+    expect(result).toMatchObject({ batches: 2, passable: false });
+    expect(result.nextStep).not.toContain("crossReviewWaiver");
+    expect(result.reviewers[0]?.error).toContain(failure === "denial" ? "Your account must be verified" : "expected JSON");
   });
 
   test("해석할 수 없는 긴 답은 결과에는 전부, 원장에는 앞 20 KB만 남긴다", async () => {
@@ -2616,7 +2601,7 @@ describe("보조 자문 제거 뒤의 reviewer 자리", () => {
     const ok = await runReview(input(), deps(env, {}, calls), signal);
     expect(calls.map((call) => call.family)).toEqual(["openai"]);
     expect(ok).toMatchObject({ passable: true, reviewers: [{ family: "openai", model: ASTRA, status: "ok" }] });
-    expect(ok).not.toHaveProperty("advisoryReviewers");
+    expect(ok).not.toHaveProperty("advisory");
     const down = await runReview(input(), deps(env, { openai: new Error("down") }), signal);
     expect(down.passable).toBe(false);
     expect(down.nextStep).toContain("can never pass");
@@ -3188,23 +3173,14 @@ describe("자격 증명 파일 값 전송 차단(#50)", () => {
   });
 });
 
-// 2026-11-08 사용자 정정: 보조 검토자(modelRoles.crossReviewAdvisory)는 다른 모델로 대체하지 않는다. 2026-11-11 사용자 결정 「버택스로 넘겨」: 공급자 한도로
-// 실패했을 때만, 대체 순서(retry.fallbackChains)의 그 모델 키에 적힌 같은 모델의 다른 공급자 경로를 한 번 부른다. 실제 도구 경로(executeCrossReview,
-// reviewDeps, completeReviewer)를 로컬 OpenAI 호환 서버로 돌려 요청이 간 모델을 그대로 센다. 서버는 대체 후보가 될 만한 모델(반대 계열 필수 자리,
-// Vertex 같은 Argon, Antigravity Flash, Terra)도 등록해 두어 요청이 가면 그대로 기록된다.
-describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
-  // 이 묶음의 테스트는 같은 보조 모델로 한도 오류를 반복해 흉내 내므로, 서버 공용 한도 기억을 테스트마다 비운다.
-  beforeEach(() => clearAdvisoryCooldown());
+describe("required reviewer through the real cross_review tool", () => {
   const hits: string[] = [];
   let server: ReturnType<typeof Bun.serve>;
   let modelRoot: string;
   let registry: ModelRegistry;
-  const ARGON_AISTUDIO = "aistudio/gemini-4-argon";
-  const ARGON_VERTEX = "google-vertex/gemini-4-argon";
   type Failure = { status: number; message: string };
   const QUOTA: Failure = { status: 429, message: "You exceeded your current quota. RESOURCE_EXHAUSTED" };
-  /** 공급자별 실패 응답. 적히지 않은 공급자는 깨끗한 답을 낸다. */
-  let failing: Record<string, Failure> = { aistudio: QUOTA };
+  let failing: Record<string, Failure> = {};
 
   beforeAll(async () => {
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -3223,15 +3199,12 @@ describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
       ];
       return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
     } });
-    modelRoot = mkdtempSync(join(tmpdir(), "advisory-quota-"));
+    modelRoot = mkdtempSync(join(tmpdir(), "required-review-"));
     registry = new ModelRegistry(await AuthStorage.create(join(modelRoot, "agent.db")), join(modelRoot, "models.yml"));
     const catalog = (id: string) => ({ id, name: id, reasoning: false, input: ["text"] as ("text" | "image")[], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 });
     const provider = (name: string, ids: string[]) => registry.registerProvider(name, { baseUrl: `http://127.0.0.1:${server.port}/${name}/v1`, apiKey: "local", api: "openai-completions", models: ids.map(catalog) });
     provider("anthropic", ["claude-opus-5-5"]);
     provider("openai-codex", ["gpt-6-astra", "gpt-6.1-terra"]);
-    provider("aistudio", ["gemini-4-argon"]);
-    provider("google-vertex", ["gemini-4-argon"]);
-    provider("google-antigravity", ["gemini-3.8-flash"]);
     provider("hive", ["deepseek-ai/deepseek-v4.1-flash-1017"]);
   });
   afterAll(() => {
@@ -3239,83 +3212,39 @@ describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
     rmSync(modelRoot, { recursive: true, force: true });
   });
 
-  type Round = { reviewId: string; passable: boolean; findings: unknown[]; reviewers: { family: string; status: string }[]; advisory: { status: string; model?: string; reason?: string; findings?: number; limited?: { model: string; error: string } } };
-  /** 실제 도구 경로로 Opus 저자의 한 라운드를 돌리고 resolve 통과까지 본다. chain은 보조 모델 키의 대체 순서다. */
-  async function advisoryRound(options: { chain?: string[]; failing?: Record<string, Failure> } = {}): Promise<{ review: Round; sent: string[] }> {
+  test("a required provider limit reaches the ledger and never calls another reviewer", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     hits.length = 0;
-    failing = options.failing ?? { aistudio: QUOTA };
+    failing = { "openai-codex": QUOTA };
     const saved = { ledger: process.env.OMP_CROSS_REVIEW_LEDGER, dir: process.env.OMP_CROSS_REVIEW_DIR };
     process.env.OMP_CROSS_REVIEW_LEDGER = env.ledger;
     process.env.OMP_CROSS_REVIEW_DIR = env.snapshots;
-    let review: Round | undefined;
     try {
       const settings = Settings.isolated({
-        modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: ARGON_AISTUDIO },
-        ...(options.chain ? { retry: { fallbackChains: { [ARGON_AISTUDIO]: options.chain } } } : {}),
+        modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS },
       });
       await withActiveSettings(settings, async () => {
         const model = registry.find("anthropic", "claude-opus-5-5");
         const ctx = {
           cwd: env.work, agent: { kind: "main" }, model, modelRegistry: registry,
           models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => model),
-          sessionManager: { getSessionId: () => "advisory-quota", getLeafId: () => null },
+          sessionManager: { getSessionId: () => "required-quota", getLeafId: () => null },
         } as never;
-        review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, ctx, signal) as Round;
-        expect(await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions: [] }, ctx, signal)).toMatchObject({ pass: true, open: [] });
+        const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [OPUS] }, ctx, signal) as {
+          reviewId: string; passable: boolean; nextStep: string; reviewers: unknown[];
+        };
+        expect(review).toMatchObject({ passable: false, reviewers: [{ family: "openai", model: ASTRA, status: "error" }] });
+        expect(review.nextStep).toContain("crossReviewWaiver");
+        expect(review).not.toHaveProperty("advisory");
+        expect(hits).toEqual([ASTRA]);
+        expect(await executeCrossReview({ action: "resolve", reviewId: review.reviewId, resolutions: [] }, ctx, signal)).toMatchObject({ pass: false });
       });
     } finally {
       if (saved.ledger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER; else process.env.OMP_CROSS_REVIEW_LEDGER = saved.ledger;
       if (saved.dir === undefined) delete process.env.OMP_CROSS_REVIEW_DIR; else process.env.OMP_CROSS_REVIEW_DIR = saved.dir;
     }
-    return { review: review!, sent: [...hits].sort() };
-  }
-
-  test("대체 순서에 같은 모델의 다른 경로가 없으면 한도 오류는 보조 error 기록으로만 남고 다른 모델로 가는 요청은 없다", async () => {
-    const { review, sent } = await advisoryRound();
-    expect(review.passable).toBe(true);
-    expect(review.findings).toEqual([]);
-    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
-    expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
-    expect(review.advisory.reason).toMatch(/quota|429/i);
-    // 필수 reviewer 한 번과 보조 한 번뿐이다. 같은 Argon의 Vertex 쪽, 반대 계열 필수 자리, Antigravity Flash, Terra로 가는 요청이 있으면 여기에 더 찍힌다.
-    expect(sent).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
-  });
-
-  test("대체 순서에 같은 모델의 Vertex 경로가 있으면 한도 오류 뒤 그 경로만 한 번 더 부르고 다른 모델은 부르지 않는다", async () => {
-    const { review, sent } = await advisoryRound({ chain: [ARGON_VERTEX, "google-antigravity/gemini-3.8-flash"] });
-    expect(review.passable).toBe(true);
-    expect(review.findings).toEqual([]);
-    expect(review.reviewers).toMatchObject([{ family: "openai", status: "ok" }]);
-    expect(review.advisory).toMatchObject({ status: "ok", model: ARGON_VERTEX, findings: 0, limited: { model: ARGON_AISTUDIO } });
-    expect(review.advisory.limited?.error).toMatch(/quota|429/i);
-    // 보조 한 번, 같은 모델의 Vertex 경로 한 번, 필수 reviewer 한 번이다. 대체 순서의 다른 모델(Antigravity Flash)로는 가지 않는다.
-    expect(sent).toEqual([ARGON_AISTUDIO, ARGON_VERTEX, "openai-codex/gpt-6-astra"]);
-  });
-
-  test("한도가 아닌 실패는 Vertex 경로가 적혀 있어도 부르지 않는다", async () => {
-    // 400은 전송 계층이 되풀이하지 않는다(500은 한 번 더 보낸다).
-    const { review, sent } = await advisoryRound({ chain: [ARGON_VERTEX], failing: { aistudio: { status: 400, message: "request body rejected by relay" } } });
-    expect(review.passable).toBe(true);
-    expect(review.advisory).toMatchObject({ status: "error", model: ARGON_AISTUDIO });
-    expect(review.advisory).not.toHaveProperty("limited");
-    expect(sent).toEqual([ARGON_AISTUDIO, "openai-codex/gpt-6-astra"]);
-  });
-
-  test("명시 경로 호출은 보조 자리가 비었거나 경로가 풀리지 않아도 요청한 경로 이름으로 실패하고 요청을 보내지 않는다", async () => {
-    const env = repo();
-    hits.length = 0;
-    const failures: unknown[] = [];
-    for (const modelRoles of [{}, { crossReviewAdvisory: ARGON_AISTUDIO }]) {
-      await withActiveSettings(Settings.isolated({ modelRoles }), async () => {
-        const ctx = { cwd: env.work, models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => undefined), sessionManager: { getSessionId: () => "advisory-route" } } as never;
-        failures.push(await completeReviewer("advisory", "p", ctx, signal, { route: "google-vertex/no-such-model" }).catch((error: unknown) => error));
-      });
-    }
-    expect(failures).toEqual([expect.any(ReviewerCallError), expect.any(ReviewerCallError)]);
-    expect(failures.map((failure) => (failure as ReviewerCallError).model)).toEqual(["google-vertex/no-such-model", "google-vertex/no-such-model"]);
-    expect(hits).toEqual([]);
+    failing = {};
   });
 
   test("DeepSeek 저자는 실제 도구 경로에서도 설정된 OpenAI 슬롯 모델로만 요청이 가고 Opus로는 가지 않는다", async () => {
@@ -3334,12 +3263,12 @@ describe("보조 검토자 한도 오류(실제 도구 경로)", () => {
           sessionManager: { getSessionId: () => "deepseek-route", getLeafId: () => null },
         } as never;
         const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [DEEPSEEK] }, ctx, signal) as {
-          passable: boolean; findings: unknown[]; reviewers: { family: string; model: string; status: string }[]; advisory: { status: string };
+          passable: boolean; findings: unknown[]; reviewers: { family: string; model: string; status: string }[];
         };
         expect(review.passable).toBe(true);
         expect(review.findings).toEqual([]);
         expect(review.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
-        expect(review.advisory).toMatchObject({ status: "skipped" });
+        expect(review).not.toHaveProperty("advisory");
         expect([...hits].sort()).toEqual([ASTRA]);
         expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ authors: [DEEPSEEK], reviewers: [{ family: "openai", model: ASTRA }] }]);
         // 같은 세션 경로에서 GPT 저자는 Opus로 간다(교차 방향이 뒤집히지 않았다).

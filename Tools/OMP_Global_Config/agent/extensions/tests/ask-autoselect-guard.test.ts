@@ -60,14 +60,20 @@ const decisions = [
   "Use GPT-5.6 or GPT-6?",
   "Should we spend $500 on additional compute this month?",
   "리뷰어는 Opus 5.5와 GPT-6 Astra 중 어떤 걸로 진행할까요?",
+  "Luna로 갈까요, Claude로 갈까요?",
   "Gemini로 갈까요, Claude로 갈까요?",
+  "Hikari or Claude?",
+  "Antigravity or Claude?",
+  "Switch back to Vertex?",
+  "Switch to AIStudio?",
+  "히카리로 바꿀까요?",
   "Opus로 바꿀까요?",
   "Should the review use Opus 4.7 or 4.8?",
   "gpt-5.5로 할까 5.6으로 할까?",
   "Switch to Opus for this review?",
   "Should we switch to GPT-5.6?",
-  "Use Gemini instead?",
-  "이번엔 Gemini를 쓸까요?",
+  "Use Terra instead?",
+  "이번엔 Terra를 쓸까요?",
   "Which provider should handle the review?",
   "크레딧 5천원어치 추가 구매할까요?",
 ];
@@ -85,18 +91,18 @@ describe("ask auto-select guard", () => {
     expect(call(ask(text, "omit"))).toBeUndefined();
   });
 
-  test("blocks the measured HIKARI model choice", () => {
-    const input = ask("HIKARI 호출 모델을 어떻게 정할까?", true, { labels: ["implGemini 역할을 따르게", "프록시로 고정"] });
+  test("blocks a character's model choice", () => {
+    const input = ask("YUKI 호출 모델을 어떻게 정할까?", true, { labels: ["Astra로 고정", "Sol로 변경"] });
     expect(harness()(input)?.block).toBe(true);
   });
 
-  test("blocks the measured Gemini web fallback choice", () => {
-    const input = ask("웹검색에 Gemini 3.8 Flash를 어떻게 붙일까?", true, { labels: ["Luna 실패 때만 Gemini로 폴백", "항상 사용"] });
+  test("blocks the web fallback model choice", () => {
+    const input = ask("웹검색에 Luna를 어떻게 붙일까?", true, { labels: ["Exa 실패 때만 Luna로 폴백", "항상 사용"] });
     expect(harness()(input)?.block).toBe(true);
   });
 
   test("blocks English provider fallback choices", () => {
-    const input = ask("How should web search use Gemini?", true, { labels: ["Fall back to Gemini only if Luna fails", "Always"] });
+    const input = ask("How should web search use Luna?", true, { labels: ["Fall back to Luna only if Exa fails", "Always"] });
     expect(harness()(input)?.block).toBe(true);
   });
 

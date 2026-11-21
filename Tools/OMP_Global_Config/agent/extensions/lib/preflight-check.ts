@@ -1,12 +1,7 @@
 // Model calls and session context shared by the explicit check and automatic routing plugins.
 import type { Api, AssistantMessage, Model, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { authorFamily, reviewerLanes, SLOT as REVIEW_SLOT, type Lane } from "./cross-review";
-import { beforeModelAbort, directFallbackModel, isHydrogen, modelRoleSelector, operationalFailure, sameModelRoutes } from "./model-routes";
-
-const PRIMARY_ROLE = "implGemini";
-/** The second, independent participant (2026-11-11 user decision: Fable 5.2 through its own role, not a review slot). */
-const SECONDARY_ROLE = "preflightAnthropic";
+import { beforeModelAbort, sameModelRoutes } from "./model-routes";
 const MAX_PLAN = 24_000;
 const MAX_USER = 6_000;
 const WIDGET = "lab:argon-preflight";
@@ -22,43 +17,27 @@ const SYSTEM = [
   "고칠 게 없으면 「빠진 것 없음」 한 줄만 쓴다.",
 ].join("\n");
 
-/** Why one model call produced no advice. Only the operating kinds may send the check to the counterpart. */
-type Failure = "unresolved" | "provider" | "unusable" | "timeout" | "cancelled" | "secret" | "denied";
-const OPERATING: Partial<Record<Failure, true>> = { unresolved: true, provider: true, unusable: true, timeout: true };
-type Attempt = { ok: true; text: string; model: string } | { ok: false; kind: Failure; why: string; model?: string; usageLimit?: boolean };
-/** One participant's advice, labelled with the exact model that produced it. */
-type Opinion = { text: string; model: string; ms: number; fallback?: { from: string; why: string; sameModel?: boolean; direct?: boolean } };
-/** A participant that gave no advice, and why; a fallback line reports it instead of pretending it reviewed. */
-type LaneFailure = { slot: string; model?: string; why: string };
-type Advice =
-  | { ok: true; opinions: Opinion[]; failures: LaneFailure[]; ms: number }
-  | { ok: false; why: string; failures: LaneFailure[]; ms: number };
-/** One participant either answers or names why it did not; only an operating failure may send the check further. */
-type LaneResult = { opinion: Opinion } | { failure: LaneFailure; operating: boolean };
+type Attempt = { ok: true; text: string; model: string } | { ok: false; why: string; model?: string; usageLimit?: boolean };
+type Opinion = { text: string; model: string; ms: number; fallback?: { from: string; why: string } };
+type Advice = { ok: true; opinion: Opinion } | { ok: false; why: string };
 
-const QUOTA = /\b429\b|quota|usage.?limit|rate.?limit|exhausted|한도/i;
 const SECRET_ANYWHERE = new RegExp(SECRET.source, "gi");
 
 /** A provider error as a short reason; a usage limit is named as such, anything else is clipped and scrubbed of secrets. */
-function providerReason(detail: string, showAsQuota = true): string {
-  return showAsQuota && QUOTA.test(detail) ? "사용량·한도 오류" : `공급자 오류: ${clip(detail.replace(SECRET_ANYWHERE, "[가림]"), 120)}`;
+function providerReason(detail: string, limit = false): string {
+  return limit ? "사용량 한도 오류" : `공급자 오류: ${clip(detail.replace(SECRET_ANYWHERE, "[가림]"), 120)}`;
 }
 
 /** The line that tells Main which model answered instead, and why the first one did not. */
 function fallbackLine(opinion: Opinion): string {
-  return opinion.fallback ? `우선 점검(${opinion.fallback.from})이 실패해(${opinion.fallback.why}) ${opinion.fallback.sameModel ? "같은 모델의 다른 경로" : opinion.fallback.direct ? "역할별 대체 모델" : "반대 계열"} ${opinion.model}로 한 번 대체했다.` : "";
+  return opinion.fallback ? `우선 점검(${opinion.fallback.from})이 실패해(${opinion.fallback.why}) 같은 모델의 다른 경로 ${opinion.model}로 한 번 대체했다.` : "";
 }
 
 const secs = (ms: number) => (ms / 1000).toFixed(1);
 
-/** Every opinion under the model that gave it; a single participant keeps the old one-line heading. */
-function opinionText(opinions: readonly Opinion[]): string {
-  return opinions.map((o, i) => `${opinions.length > 1 ? `${i + 1}. ` : ""}${o.model}(${secs(o.ms)}초)${o.fallback ? `\n${fallbackLine(o)}` : ""}\n${o.text}`).join("\n\n");
-}
-
-/** A participant that gave no advice is named here; it is never counted as having reviewed the plan. */
-function failureText(failures: readonly LaneFailure[]): string {
-  return failures.length ? `참가하지 못한 모델: ${failures.map((f) => `${f.model ?? `modelRoles.${f.slot}`}: ${f.why}`).join("; ")}` : "";
+/** Label the advice with the model that actually answered. */
+function opinionText(opinion: Opinion): string {
+  return `${opinion.model}(${secs(opinion.ms)}초)${opinion.fallback ? `\n${fallbackLine(opinion)}` : ""}\n${opinion.text}`;
 }
 
 function clip(text: string, max: number): string {
@@ -108,7 +87,7 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   let main = true;
   let userTurns: string[] = [];
   let panelSession: object | undefined;
-  /** Provider calls a reset/session change must abort; the explicit tool passes its own caller signal instead. */
+  /** Provider calls to abort when their session or turn ends. */
   const inflight = new Set<AbortController>();
   let lastInputText = "";
   /** Bumped by every new user message and session change: a check started before it never grants a pass or speaks. */
@@ -116,15 +95,14 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   /** Bumped only by a session change: a foreground check that started in the previous session leaves no trace. */
   let session = 0;
 
-  /** Stop both participants' provider calls: the answer is worthless once the turn or session it belonged to is gone. */
+  /** Abort provider work when its turn or session ends. */
   const abortInflight = () => {
     for (const controller of inflight) controller.abort();
     inflight.clear();
   };
 
   const reset = () => {
-    // The session is going away, so an in-flight answer is worthless: abort both participants instead of leaving
-    // their provider calls running to the deadline. Steering is different (see `redirect`).
+    // Session changes abort in-flight work. Steering is handled separately by redirect.
     abortInflight();
     userTurns = []; invalidate(); lastInputText = ""; gen += 1; session += 1;
     if (panelSession) panelHistory.delete(panelSession);
@@ -138,44 +116,19 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
     try { ctx.ui.setWidget(WIDGET, history); } catch { /* panel optional */ }
   };
 
-  /**
-   * The existing opposite-family review role for this Main, resolved through the shared `reviewerLanes`/`SLOT`
-   * mapping `cross_review` already uses: an Anthropic Main asks `crossReviewOpenAI`, and every other author,
-   * including a Hive DeepSeek or Gemini Main, asks `crossReviewAnthropic`, exactly as `reviewerLanes` decides. It
-   * is looked up only after the Gemini call failed. A Main whose model this session cannot identify, or a role this
-   * PC cannot resolve, yields no counterpart instead of a guessed target. `ctx.models.resolve` does not check that
-   * the slot's model belongs to the lane's family (a same-family slot resolves fine), so the resolved target is
-   * compared with the lane here and a mismatch sends nothing, the way `cross_review` refuses a target of the wrong
-   * required family.
-   */
-  function counterpart(ctx: ExtensionContext): { slot: string; model: string } | undefined {
-    const current = ctx.models.current() ?? ctx.model;
-    if (!current) return undefined;
-    let slot: string | undefined;
-    let lane: Lane | undefined;
-    try {
-      [lane] = reviewerLanes([`${current.provider}/${current.id}`], undefined);
-      slot = lane ? REVIEW_SLOT[lane] : undefined;
-    } catch {
-      return undefined;
-    }
-    if (!slot || !lane) return undefined;
-    try {
-      const target = ctx.models.resolve(`@${slot}`);
-      return target && authorFamily(`${target.provider}/${target.id}`) === lane ? { slot, model: `${target.provider}/${target.id}` } : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
   /** A role or exact route call, bounded by the shared deadline and the caller's cancel signal. */
-  async function attempt(ctx: ExtensionContext, slot: string, prompt: string, deadline: number, signal?: AbortSignal, exact = false, hydrogen = false, pinned?: Model<Api> | null): Promise<Attempt> {
-    let target = pinned ?? undefined;
-    if (pinned === undefined) {
-      try { target = ctx.models.resolve(exact ? slot : `@${slot}`); } catch { /* an unreadable role is an unresolved one */ }
-    }
-    if (!target || (exact && `${target.provider}/${target.id}` !== slot)) return { ok: false, kind: "unresolved", why: `${exact ? slot : `modelRoles.${slot}`} 모델을 이 PC에서 해석하지 못했다`, ...(exact ? { model: slot } : {}) };
+  async function attempt(ctx: ExtensionContext, selector: string, prompt: string, deadline: number, signal?: AbortSignal, exact = false): Promise<Attempt> {
+    if (signal?.aborted) return { ok: false, why: "점검이 취소됐다" };
+    if (Date.now() >= deadline) return { ok: false, why: "점검 시간이 끝났다" };
+    let target: Model<Api> | undefined;
+    try { target = ctx.models.resolve(exact ? selector : `@${selector}`); } catch { /* report an unresolved role below */ }
+    if (!target || (exact && `${target.provider}/${target.id}` !== selector)) return { ok: false, why: `${exact ? selector : `modelRoles.${selector}`} 모델을 이 PC에서 해석하지 못했다`, ...(exact ? { model: selector } : {}) };
     const model = `${target.provider}/${target.id}`;
+    if (!exact && (selector === "preflightOpenAI"
+      ? target.provider !== "openai-codex" && target.provider !== "openai"
+      : target.provider !== "anthropic")) {
+      return { ok: false, why: `modelRoles.${selector}에 다른 계열 모델이 지정돼 점검하지 않았다`, model };
+    }
     // The historical `low` where the model registers it; a model that does not (Fable 5.2 starts at medium) gets its
     // lowest registered level instead, so asking it is not a guaranteed unsupported-effort error. No ladder sends none.
     const levels = target.thinking?.efforts ?? [];
@@ -184,8 +137,8 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
     const timeout = AbortSignal.timeout(budget);
     // The call may have been cut by the caller (no second request) or by the deadline; anything else is the provider's.
     const interrupted = (): Attempt | undefined =>
-      signal?.aborted ? { ok: false, kind: "cancelled", why: "점검이 취소됐다", model }
-        : timeout.aborted ? { ok: false, kind: "timeout", why: `${Math.round(budget / 1000)}초 안에 답이 없었다`, model } : undefined;
+      signal?.aborted ? { ok: false, why: "점검이 취소됐다", model }
+        : timeout.aborted ? { ok: false, why: `${Math.round(budget / 1000)}초 안에 답이 없었다`, model } : undefined;
     // The host rewrites runtime SDK imports for installed plugins.
     let classify: typeof isUsageLimitOutcome | undefined;
     let providerCall = false;
@@ -205,125 +158,55 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
         reasoning: reasoning as never,
         signal: callSignal,
       });
-      const response: AssistantMessage = await (hydrogen ? beforeModelAbort(callSignal, complete) : complete());
+      const response: AssistantMessage = await beforeModelAbort(callSignal, complete);
       const text = response.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("").trim();
-      // Secret-looking output is dropped whatever the finish reason: a cut-off or failed answer that carries one must not send the check to another provider either.
-      if (SECRET.test(text)) return { ok: false, kind: "secret", why: "답에 비밀값으로 보이는 내용이 있어 쓰지 않았다", model };
+      // Do not retry an answer containing a secret, even when it stopped with an error.
+      if (SECRET.test(text)) return { ok: false, why: "답에 비밀값으로 보이는 내용이 있어 쓰지 않았다", model };
       const cut = interrupted();
       if (cut) return cut;
       if (response.stopReason === "stop" && text) return { ok: true, text, model };
       if (response.stopReason === "error") {
-        const kind = hydrogen && !(await operationalFailure(response)) ? "denied" : "provider";
-        return { ok: false, kind, why: providerReason(response.errorMessage ?? "", kind !== "denied"), model, usageLimit: isUsageLimitOutcome(response.errorStatus, response.errorMessage) };
+        const usageLimit = isUsageLimitOutcome(response.errorStatus, response.errorMessage);
+        return { ok: false, why: providerReason(response.errorMessage ?? "", usageLimit), model, usageLimit };
       }
-      return { ok: false, kind: hydrogen ? "denied" : "unusable", why: `응답 이상(${response.stopReason === "stop" ? "빈 답" : response.stopReason}${response.errorMessage ? `: ${providerReason(response.errorMessage)}` : ""})`, model };
+      return { ok: false, why: `응답 이상(${response.stopReason === "stop" ? "빈 답" : response.stopReason}${response.errorMessage ? `: ${providerReason(response.errorMessage)}` : ""})`, model };
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       const cut = interrupted();
       if (cut) return cut;
-      const kind = hydrogen && !(await operationalFailure(e)) ? "denied" : "provider";
-      return { ok: false, kind, usageLimit: providerCall && !!classify?.(undefined, detail), why: providerReason(detail, kind !== "denied"), model };
+      const usageLimit = providerCall && !!classify?.(undefined, detail);
+      return { ok: false, usageLimit, why: providerReason(detail, usageLimit), model };
     }
   }
 
-  /**
-   * One configured participant. A usage limit first tries that model's configured same-model provider routes; every
-   * call shares the deadline and the caller's cancel signal. It never sees the other participant's answer.
-   */
-  async function lane(ctx: ExtensionContext, slot: string, prompt: string, deadline: number, opts: { signal?: AbortSignal; live?: () => boolean }, tried: Set<string>, pinned: Model<Api> | null, hydrogen = false, candidate?: string): Promise<LaneResult> {
-    const t0 = Date.now();
-    const available = candidate && !tried.has(candidate) ? candidate : undefined;
-    // A per-attempt deadline leaves an alternate time to answer inside the original shared deadline.
-    const first = await attempt(ctx, slot, prompt, available ? t0 + Math.floor((deadline - t0) / 2) : deadline, opts.signal, false, hydrogen, pinned);
-    if (first.ok) return { opinion: { text: first.text, model: first.model, ms: Date.now() - t0 } };
-    const failed = (why: string, operating: boolean): LaneResult => ({ failure: { slot, model: first.model, why }, operating });
-    // A cancel or secret result is not an operating failure: it never fans out to another route.
-    if (!OPERATING[first.kind]) return failed(first.why, false);
-    if (hydrogen) {
-      if (!available || tried.has(available) || opts.signal?.aborted || (opts.live && !opts.live()) || Date.now() >= deadline) return failed(first.why, false);
-      tried.add(available);
-      const next = await attempt(ctx, available, prompt, deadline, opts.signal, true);
-      if (next.ok) return { opinion: { text: next.text, model: next.model, ms: Date.now() - t0, fallback: { from: first.model ?? `@${slot}`, why: first.why, direct: true } } };
-      return failed(`${first.why}; 대체(${available}) 실패: ${next.why}`, false);
-    }
-    let why = first.why;
-    if (first.kind === "provider" && first.usageLimit && first.model) {
-      const routes = await sameModelRoutes(ctx.cwd, first.model);
-      for (const route of routes) {
-        // A route is another provider call: it obeys the same cancel, freshness and deadline rules as the first.
-        if (opts.signal?.aborted || (opts.live && !opts.live()) || deadline - Date.now() <= 0) return failed(why, true);
-        if (tried.has(route)) continue;
-        tried.add(route);
-        const next = await attempt(ctx, route, prompt, deadline, opts.signal, true);
-        if (next.ok) return { opinion: { text: next.text, model: next.model, ms: Date.now() - t0, fallback: { from: first.model, why, sameModel: true } } };
-        why += `; 대체(${next.model ?? route}) 실패: ${next.why}`;
-        if (!OPERATING[next.kind]) return failed(why, false);
-      }
-    }
-    return failed(why, true);
-  }
-
-  /**
-   * Asks both configured participants at once on the same prompt under one deadline, and returns their separate
-   * labelled opinions plus the participants that gave none. Only when neither participant gives advice does the
-   * existing opposite-family review role run once, inside the remaining deadline and never on an already-tried model.
-   * Secret-looking input or output never reaches another model, and no answer is sent to another participant.
-   */
+  /** Ask one model; only usage limits permit retrying the same model on configured other routes. */
   async function ask(ctx: ExtensionContext, plan: string, extra: string, timeoutMs: number, opts: { signal?: AbortSignal; live?: () => boolean } = {}): Promise<Advice> {
     const t0 = Date.now();
     const deadline = t0 + timeoutMs;
-    // Screen the whole input before any clipping: a token straddling the budget boundary would otherwise lose the
-    // characters the pattern needs and its visible prefix would reach both participants.
-    if (SECRET.test(`${plan}\n${extra}`)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다", failures: [], ms: 0 };
+    // Screen the whole input before clipping so a secret split by the budget is not sent.
+    if (SECRET.test(`${plan}\n${extra}`)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다" };
     const user = recentTurns(userTurns, MAX_USER);
     const prompt = `# 사용자의 최근 말\n${user || "(기록 없음)"}\n\n${clip(plan, MAX_PLAN)}${extra ? `\n\n${extra}` : ""}`;
-    if (SECRET.test(prompt)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다", failures: [], ms: 0 };
-    const failed = (why: string, failures: LaneFailure[] = []): Advice => ({ ok: false, why, failures, ms: Date.now() - t0 });
-    const tried = new Set<string>();
-    const pinned = [PRIMARY_ROLE, SECONDARY_ROLE].map((slot) => {
-      try {
-        const model = ctx.models.resolve(`@${slot}`);
-        if (model) {
-          tried.add(`${model.provider}/${model.id}`);
-          return model;
-        }
-      } catch { /* an unresolved role is reported by its own lane */ }
-      return null;
+    if (SECRET.test(prompt)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다" };
+    const provider = (ctx.models.current() ?? ctx.model)?.provider;
+    const slot = provider === "anthropic" ? "preflightOpenAI" : "preflightAnthropic";
+    const first = await attempt(ctx, slot, prompt, deadline, opts.signal);
+    const success = (answer: Extract<Attempt, { ok: true }>, fallback?: Opinion["fallback"]): Advice => ({
+      ok: true, opinion: { text: answer.text, model: answer.model, ms: Date.now() - t0, ...(fallback ? { fallback } : {}) },
     });
-    const primary = pinned[0];
-    const hydrogen = isHydrogen(primary ? `${primary.provider}/${primary.id}` : await modelRoleSelector(ctx.cwd, PRIMARY_ROLE));
-    const fallback = hydrogen ? await directFallbackModel(ctx, "preflightGeminiFallback") : undefined;
-    const candidate = fallback ? `${fallback.provider}/${fallback.id}` : undefined;
-    const results = await Promise.all([
-      lane(ctx, PRIMARY_ROLE, prompt, deadline, opts, tried, primary ?? null, hydrogen, candidate),
-      lane(ctx, SECONDARY_ROLE, prompt, deadline, opts, tried, pinned[1] ?? null),
-    ]);
-    const opinions = results.flatMap((r) => ("opinion" in r ? [r.opinion] : []));
-    const failures = results.flatMap((r) => ("failure" in r ? [r.failure] : []));
-    if (opinions.length) return { ok: true, opinions, failures, ms: Date.now() - t0 };
-    const why = failures.length ? failures.map((f) => `${f.model ?? f.slot}: ${f.why}`).join("; ") : "설정된 점검 참가자가 없다";
-    // Neither participant gave advice. A cancel or secret stop must not send the check anywhere else.
-    if (!results.every((r) => "failure" in r && r.operating)) return failed(why, failures);
-    const unavailable = (): Advice | undefined => {
-      if (opts.signal?.aborted) return failed(`${why}; 점검이 취소돼 대체하지 않았다`, failures);
-      if (opts.live && !opts.live()) return failed(`${why}; 점검이 낡아 대체하지 않았다`, failures);
-      if (deadline - Date.now() <= 0) return failed(`${why}; 남은 시간이 없어 대체하지 않았다`, failures);
-    };
-    const stopped = unavailable();
-    if (stopped) return stopped;
-    const alternate = counterpart(ctx);
-    if (!alternate) return failed(`${why}; 반대 계열 교차 검토 역할을 해석하지 못해 대체하지 않았다`, failures);
-    if (tried.has(alternate.model)) return failed(`${why}; 대체(${alternate.model})는 이미 시도해 다시 호출하지 않았다`, failures);
-    const second = await attempt(ctx, alternate.slot, prompt, deadline, opts.signal);
-    if (second.ok) {
-      return {
-        ok: true,
-        opinions: [{ text: second.text, model: second.model, ms: Date.now() - t0, fallback: { from: failures.map((f) => f.model ?? f.slot).join(", "), why } }],
-        failures,
-        ms: Date.now() - t0,
-      };
+    if (first.ok) return success(first);
+    let why = first.why;
+    if (first.usageLimit && first.model) {
+      const routes = await sameModelRoutes(ctx.cwd, first.model);
+      for (const route of routes) {
+        if (opts.signal?.aborted || (opts.live && !opts.live()) || Date.now() >= deadline) break;
+        const next = await attempt(ctx, route, prompt, deadline, opts.signal, true);
+        if (next.ok) return success(next, { from: first.model, why });
+        why += `; 대체(${next.model ?? route}) 실패: ${next.why}`;
+        if (!next.usageLimit) break;
+      }
     }
-    return failed(`${why}; 대체(${second.model ?? alternate.slot}) 실패: ${second.why}`, failures);
+    return { ok: false, why: `${first.model ?? slot}: ${why}` };
   }
 
   pi.on("session_start", (_event, ctx) => { reset(); main = ctx.agent?.kind !== "sub"; seedFromBranch(ctx); });
@@ -331,7 +214,7 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   pi.on("session_shutdown", () => reset());
   // The core runs a blocking tool_call handler inside its own timeout race and never exposes that race's signal here,
   // so a cancelled turn is observed through the settle the core does publish: an interrupt abandons the handler and
-  // ends the run, and `agent_end` then aborts both participants instead of leaving them running to the deadline.
+  // ends the run, and `agent_end` then aborts provider work instead of leaving it running to the deadline.
   pi.on("agent_end", () => { abortInflight(); });
 
   const rememberUser = (text: string) => {
@@ -377,4 +260,4 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   return { ask, note, inflight, get main() { return main; }, get gen() { return gen; }, get session() { return session; } };
 }
 
-export { record, opinionText, failureText, secs };
+export { record, opinionText, secs };

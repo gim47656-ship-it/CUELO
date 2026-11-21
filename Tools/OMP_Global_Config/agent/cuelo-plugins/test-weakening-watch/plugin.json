@@ -1,0 +1,9 @@
+{
+  "id": "test-weakening-watch",
+  "name": "테스트 약화 감지",
+  "description": "Main의 현재 작업 트리에서만 검증문 삭제, 테스트 건너뛰기, 기대값 변경을 찾아 알립니다. 근거: EPISTEME arXiv:2611.06563 (2026-11-04), 에이전트 보상 해킹 전파 연구 arXiv:2610.12822 (2026-10-09).",
+  "createdAt": "2026-11-21T00:00:00+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": []
+}

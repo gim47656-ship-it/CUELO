@@ -1,6 +1,5 @@
 // OCR 전용 이미지 질문 slot 회귀(2026-10-18). `read <image>?ocr=<질문>` 은 modelRoles.ocr 모델이, `?q=<질문>` 은
-// 그대로 modelRoles.vision 모델이 답해야 한다. 질문 종류는 모델 추측이 아니라 쿼리 키로 정한다(좌표 질문이 Gemini 로 새면
-// 크게 틀린다. OCR 질문이 Opus 로 가는 것은 정확도 손해가 없다).
+// 그대로 modelRoles.vision 모델이 답해야 한다. 질문 종류는 모델 추측이 아니라 쿼리 키로 정한다.
 // [선택] ocr slot 이 있으면 ?ocr= 은 그 모델, ?q= 은 vision 모델. thinking 은 각자 selector(:low 등)를 따른다.
 // [폴백] ocr slot 이 없거나 모델이 목록에 없거나 이미지 입력이 안 되면 ?ocr= 도 ?q= 과 같은 순서(@vision → @default → 활성 모델)로 간다.
 // [후보군] retry.fallbackChains.ocr 가 @ocr 다음 순서다. 고른 모델이 실패하면 남은 후보, 마지막으로 vision 모델에 묻고 답 앞에 실패한
@@ -111,22 +110,23 @@ writeFileSync(join(files, "note.txt"), "plain text\n");
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const thinking = { mode: "anthropic-adaptive", efforts: ["low", "medium", "high"], supportsDisplay: true };
-const fakeModel = (provider: string, id: string, input: string[], api = "anthropic-messages") => ({
+const fakeModel = (provider: string, id: string, input: string[], api = "anthropic-messages", modelThinking = thinking) => ({
 	id,
 	name: id,
 	api,
 	provider,
 	baseUrl: "https://example.invalid",
 	reasoning: true,
-	thinking,
+	thinking: modelThinking,
 	input,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 100000,
 	maxTokens: 8000,
 });
 const opus = fakeModel("anthropic", "claude-opus-5-5", ["text", "image"]);
-const gemini = fakeModel("google-antigravity", "gemini-3.8-flash", ["text", "image"], "google-gemini-cli");
-const textOnlyOcr = fakeModel("google-antigravity", "gemini-3.8-flash", ["text"], "google-gemini-cli");
+const terra = fakeModel("openai-codex", "gpt-6.1-terra", ["text", "image"], "openai-codex-responses", { ...thinking, mode: "effort" });
+const textOnlyOcr = { ...terra, input: ["text"] };
+const ocrSelector = `${terra.provider}/${terra.id}`;
 const sonnet = fakeModel("anthropic", "claude-sonnet-5-5", ["text", "image"]);
 // Registry models on openai-completions always carry `compat`; sendsImageInputOnWire reads it.
 const hiveDeepseek = { ...fakeModel("hive", "deepseek-ai/deepseek-v4.1-flash-1017", ["text", "image"], "openai-completions"), compat: {} };
@@ -145,13 +145,14 @@ async function ask(options: {
 	/** provider/id keys whose request fails with a provider error. */
 	fail?: string[];
 	failureMessage?: string;
+	failureStatus?: number;
 	/** provider/id key whose request is cut by the caller's abort (the read tool's own signal). */
 	abortOn?: string;
 }): Promise<{ calls: Call[]; text: string; error?: string }> {
 	const calls: Call[] = [];
 	const settings = Settings.isolated({ modelRoles: options.roles, ...(options.chains ? { retry: { fallbackChains: options.chains } } : {}) });
 	const caller = new AbortController();
-	const models = options.models ?? [opus, gemini];
+	const models = options.models ?? [opus, terra];
 	const modelRegistry = {
 		getAvailable: () => models,
 		getApiKey: async () => "test-key",
@@ -181,7 +182,7 @@ async function ask(options: {
 		}
 		if (options.fail?.includes(key)) {
 			// Real provider errors can carry raw multi-line bodies; the fallback notice must still be one line.
-			return { role: "assistant", content: [], api: "x", provider: model.provider, model: model.id, usage, stopReason: "error", errorMessage: options.failureMessage ?? `upstream 503\n{"from": "${key}"}`, timestamp: Date.now() };
+			return { role: "assistant", content: [], api: "x", provider: model.provider, model: model.id, usage, stopReason: "error", errorMessage: options.failureMessage ?? `upstream 503\n{"from": "${key}"}`, errorStatus: options.failureStatus, timestamp: Date.now() };
 		}
 		return { role: "assistant", content: [{ type: "text", text: `answered by ${key}` }], api: "x", provider: model.provider, model: model.id, usage, stopReason: "stop", timestamp: Date.now() };
 	};
@@ -194,12 +195,12 @@ async function ask(options: {
 	}
 }
 
-const split = { vision: "anthropic/claude-opus-5-5:low", ocr: "google-antigravity/gemini-3.8-flash" };
+const split = { vision: "anthropic/claude-opus-5-5:low", ocr: ocrSelector };
 
 const ocr = await ask({ roles: split, path: "shot.png?ocr=표의 글자를 그대로 옮겨라" });
 check(
-	"?ocr= 은 modelRoles.ocr 모델(gemini-3.8-flash)이 답하고 질문 원문만 모델에 간다",
-	ocr.calls.length === 1 && ocr.calls[0]!.model === "google-antigravity/gemini-3.8-flash" && ocr.calls[0]!.question === "표의 글자를 그대로 옮겨라" && ocr.text === "answered by google-antigravity/gemini-3.8-flash",
+	"?ocr= 은 modelRoles.ocr 모델(gpt-6.1-terra)이 답하고 질문 원문만 모델에 간다",
+	ocr.calls.length === 1 && ocr.calls[0]!.model === ocrSelector && ocr.calls[0]!.question === "표의 글자를 그대로 옮겨라" && ocr.text === `answered by ${ocrSelector}`,
 	JSON.stringify(ocr),
 );
 
@@ -210,7 +211,7 @@ check(
 	JSON.stringify(plain),
 );
 
-const ocrThinking = await ask({ roles: { vision: "anthropic/claude-opus-5-5:low", ocr: "google-antigravity/gemini-3.8-flash:high" }, path: "shot.png?ocr=글자" });
+const ocrThinking = await ask({ roles: { ...split, ocr: `${ocrSelector}:high` }, path: "shot.png?ocr=글자" });
 check("?ocr= 의 thinking 은 @ocr selector(:high)를 따른다", ocrThinking.calls[0]?.reasoning === "high", JSON.stringify(ocrThinking.calls));
 
 const noSlot = await ask({ roles: { vision: "anthropic/claude-opus-5-5:low" }, path: "shot.png?ocr=글자" });
@@ -244,38 +245,41 @@ check(
 	JSON.stringify(forged),
 );
 const forgedOcr = await ask({ roles: split, path: "shot.png?ocr=%00%00x" });
-check("?ocr= 값 안의 NUL 도 제거되어 모델에는 질문 글자만 간다", forgedOcr.calls[0]?.model === "google-antigravity/gemini-3.8-flash" && forgedOcr.calls[0]?.question === "x", JSON.stringify(forgedOcr));
+check("?ocr= 값 안의 NUL 도 제거되어 모델에는 질문 글자만 간다", forgedOcr.calls[0]?.model === ocrSelector && forgedOcr.calls[0]?.question === "x", JSON.stringify(forgedOcr));
 
 // [후보군] 2026-10-21: `retry.fallbackChains.ocr` 는 OCR 후보 순서다. 고른 모델이 실패하면 다음 후보, 마지막으로 vision 모델에 묻는다.
-const all = [opus, gemini, sonnet, hiveDeepseek];
+const all = [opus, terra, sonnet, hiveDeepseek];
 const ocrChain = { ocr: ["anthropic/claude-sonnet-5-5:low", "hive/deepseek-ai/deepseek-v4.1-flash-1017"] };
 const healthy = await ask({ roles: split, chains: ocrChain, models: all, path: "shot.png?ocr=글자" });
-check("후보군이 있어도 ocr 모델이 답하면 한 번만 묻고 안내 줄을 달지 않는다", healthy.calls.length === 1 && healthy.text === "answered by google-antigravity/gemini-3.8-flash", JSON.stringify(healthy));
+check("후보군이 있어도 ocr 모델이 답하면 한 번만 묻고 안내 줄을 달지 않는다", healthy.calls.length === 1 && healthy.text === `answered by ${ocrSelector}`, JSON.stringify(healthy));
 
-const failover = await ask({ roles: split, chains: ocrChain, models: all, fail: ["google-antigravity/gemini-3.8-flash"], path: "shot.png?ocr=글자" });
+const failover = await ask({ roles: split, chains: ocrChain, models: all, fail: [ocrSelector], path: "shot.png?ocr=글자" });
 check(
 	"ocr 모델이 실패하면 후보군 첫 모델이 그 selector thinking(:low)으로 같은 질문에 답하고, 실패한 모델을 답 앞에 밝힌다",
-	failover.calls.map(call => call.model).join(",") === "google-antigravity/gemini-3.8-flash,anthropic/claude-sonnet-5-5" &&
+	failover.calls.map(call => call.model).join(",") === `${ocrSelector},anthropic/claude-sonnet-5-5` &&
 		failover.calls[1]!.reasoning === "low" && failover.calls[1]!.question === "글자" &&
-		/^\[OCR fallback: google-antigravity\/gemini-3\.8-flash failed \(upstream 503[^\n]*answered by anthropic\/claude-sonnet-5-5\]\nanswered by anthropic\/claude-sonnet-5-5$/.test(failover.text),
+		failover.text.startsWith(`[OCR fallback: ${ocrSelector} failed (upstream 503`) &&
+		/^[^\n]*answered by anthropic\/claude-sonnet-5-5\]\nanswered by anthropic\/claude-sonnet-5-5$/.test(failover.text),
 	JSON.stringify(failover),
 );
 
 const explicitRoles = { ...split, ocrFallback: "anthropic/claude-sonnet-5-5:low" };
-const failingPair = ["google-antigravity/gemini-3.8-flash", "anthropic/claude-sonnet-5-5"];
-const noThird = await ask({ roles: explicitRoles, models: all, fail: failingPair, path: "shot.png?ocr=글자" });
+const failingPair = [ocrSelector, "anthropic/claude-sonnet-5-5"];
+const noThird = await ask({ roles: explicitRoles, models: all, fail: failingPair, failureStatus: 503, path: "shot.png?ocr=글자" });
 check("명시한 OCR 대체까지 실패해도 vision에 이미지를 다시 보내지 않는다", !!noThird.error && noThird.calls.map(c => c.model).join() === failingPair.join(), JSON.stringify(noThird));
-const denied = await ask({ roles: explicitRoles, models: all, fail: failingPair, failureMessage: "Google API error (403): verification required", path: "shot.png?ocr=글자" });
-check("접근 거절은 다른 OCR 제공자에게 보내지 않는다", !!denied.error && denied.calls.length === 1, JSON.stringify(denied));
-const limited = await ask({ roles: explicitRoles, models: all, fail: failingPair.slice(0, 1), failureMessage: "Google API error (429): Resource exhausted", path: "shot.png?ocr=글자" });
+for (const failureStatus of [403, undefined]) {
+	const denied = await ask({ roles: explicitRoles, models: all, fail: failingPair, failureMessage: "upstream 429 (request denied)", failureStatus, path: "shot.png?ocr=글자" });
+	check(`접근 거절은 다른 OCR 제공자에게 보내지 않는다 (status=${failureStatus})`, !!denied.error && denied.calls.length === 1, JSON.stringify(denied));
+}
+const limited = await ask({ roles: explicitRoles, models: all, fail: failingPair.slice(0, 1), failureMessage: "ChatGPT rate limit exceeded.", failureStatus: 429, path: "shot.png?ocr=글자" });
 check("한도 오류는 지정한 OCR 대체 한 곳으로 바로 넘긴다", limited.calls.map(c => c.model).join() === failingPair.join() && limited.calls[1]?.reasoning === "low" && limited.text.includes("answered by anthropic/claude-sonnet-5-5"), JSON.stringify(limited));
 const network = await ask({ roles: explicitRoles, models: all, fail: failingPair.slice(0, 1), failureMessage: "ECONNREFUSED: Unable to connect. Is the computer able to access the url?", path: "shot.png?ocr=글자" });
 check("Bun 연결 실패 때도 같은 대체를 사용한다", network.calls.map(c => c.model).join() === failingPair.join() && !network.error, JSON.stringify(network));
 
-const exhausted = await ask({ roles: split, chains: ocrChain, models: all, fail: ["google-antigravity/gemini-3.8-flash", "anthropic/claude-sonnet-5-5", "hive/deepseek-ai/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5-5"], path: "shot.png?ocr=글자" });
+const exhausted = await ask({ roles: split, chains: ocrChain, models: all, fail: [ocrSelector, "anthropic/claude-sonnet-5-5", "hive/deepseek-ai/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5-5"], path: "shot.png?ocr=글자" });
 check(
 	"후보가 모두 실패하면 ocr → 후보군 순서 → vision 모델까지 한 번씩 묻고, 오류가 모든 후보의 실패를 밝힌다",
-	exhausted.calls.map(call => call.model).join(",") === "google-antigravity/gemini-3.8-flash,anthropic/claude-sonnet-5-5,hive/deepseek-ai/deepseek-v4.1-flash-1017,anthropic/claude-opus-5-5" &&
+	exhausted.calls.map(call => call.model).join(",") === `${ocrSelector},anthropic/claude-sonnet-5-5,hive/deepseek-ai/deepseek-v4.1-flash-1017,anthropic/claude-opus-5-5` &&
 		/Every OCR candidate failed/.test(exhausted.error ?? "") && (exhausted.error ?? "").split("upstream 503").length === 5,
 	JSON.stringify(exhausted),
 );
@@ -283,7 +287,7 @@ check(
 const ocrMissing = await ask({ roles: split, chains: ocrChain, models: [opus, sonnet, hiveDeepseek], path: "shot.png?ocr=글자" });
 check("ocr 모델을 쓸 수 없으면 vision 이 아니라 후보군 첫 모델이 먼저 답한다", ocrMissing.calls.length === 1 && ocrMissing.calls[0]!.model === "anthropic/claude-sonnet-5-5", JSON.stringify(ocrMissing));
 
-const callerAbort = await ask({ roles: split, chains: ocrChain, models: all, abortOn: "google-antigravity/gemini-3.8-flash", path: "shot.png?ocr=글자" });
+const callerAbort = await ask({ roles: split, chains: ocrChain, models: all, abortOn: ocrSelector, path: "shot.png?ocr=글자" });
 check("호출자가 끊은 요청은 다음 후보로 넘기지 않는다", callerAbort.calls.length === 1 && callerAbort.error !== undefined, JSON.stringify(callerAbort));
 
 const visionFails = await ask({ roles: split, chains: ocrChain, models: all, fail: ["anthropic/claude-opus-5-5"], path: "shot.png?q=버튼이 잘렸나" });

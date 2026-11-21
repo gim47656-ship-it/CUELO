@@ -1,5 +1,5 @@
 import type { ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
-import { beforeModelAbort, directFallbackModel, isHydrogen, modelRoleSelector, operationalFailure, sameModelRoutes } from "./model-routes";
+import { beforeModelAbort, directFallbackModel, modelRoleSelector, sameModelRoutes } from "./model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 /**
@@ -13,15 +13,13 @@ export const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bea
 
 /**
  * 통역 모델로 한 번 호출해 텍스트 답을 돌려준다. 출력 한도에서 끊기면 끊긴 답과 `truncated`를 함께 준다.
- * Hydrogen falls back to `interpreterFallback` on operating failures; any other primary falls back to it on a usage
- * limit (2026-11-20 user decision: Terra, then Haiku), within the callers' existing total deadlines.
+ * An explicit alternate takes over on a usage limit, within the caller's deadline.
  */
 export async function interpret(prompt: string, purpose: string, ctx: ExtensionContext, signal: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   const { completeSimple, isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
   const selector = await modelRoleSelector(ctx.cwd, INTERPRETER_ROLE);
   const role = selector ? INTERPRETER_ROLE : "tiny";
   const primary = ctx.models.resolve(`@${role}`);
-  const hydrogen = isHydrogen(primary ? `${primary.provider}/${primary.id}` : selector);
   const configured = await directFallbackModel(ctx, "interpreterFallback");
   const fallback = configured && !(primary && configured.provider === primary.provider && configured.id === primary.id) ? configured : undefined;
   if (!primary && !fallback) throw new Error(`modelRoles.${role} 모델을 해석하지 못했습니다.`);
@@ -31,20 +29,15 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
   for (let index = 0; index < models.length; index++) {
     const model = models[index]!;
     signal.throwIfAborted();
-    // Reply translation has 120 s total. Leave half for the alternate when Hydrogen may need it.
-    const timeout = hydrogen && primary && index === 0 && fallback ? AbortSignal.timeout(60_000) : undefined;
-    const attempt = timeout ? AbortSignal.any([signal, timeout]) : signal;
-    let operating: boolean | undefined;
     try {
-      const response = await beforeModelAbort(attempt, async () => {
-        if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal: attempt }))) {
-          operating = true;
+      const response = await beforeModelAbort(signal, async () => {
+        if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) {
           throw new Error(`${model.provider}/${model.id} 모델 자격을 찾지 못했습니다.`);
         }
-        attempt.throwIfAborted();
+        signal.throwIfAborted();
         return completeSimple(model, {
           messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-        }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal: attempt });
+        }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal });
       });
       (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
         purpose, role: model === fallback ? "interpreterFallback" : role, api: model.api, provider: model.provider, model: model.id,
@@ -53,7 +46,6 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
       signal.throwIfAborted();
       const truncated = response.stopReason === "length";
       if (response.stopReason !== "stop" && !truncated) {
-        if (hydrogen) operating = await operationalFailure(response);
         throw new Error(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
       }
       const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
@@ -62,9 +54,7 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
     } catch (error) {
       lastError = error;
       if (signal.aborted) throw error;
-      if (index === 0 && hydrogen) {
-        if (primary && fallback && (operating ?? await operationalFailure(error))) models.push(fallback);
-      } else if (index === 0 && primary && isUsageLimitOutcome(undefined, error instanceof Error ? error.message : String(error))) {
+      if (index === 0 && primary && isUsageLimitOutcome(undefined, error instanceof Error ? error.message : String(error))) {
         if (fallback) {
           models.push(fallback);
           continue;

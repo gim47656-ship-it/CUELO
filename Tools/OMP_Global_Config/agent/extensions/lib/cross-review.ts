@@ -6,7 +6,6 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_LEDGER_PATH,
   readCrossReviewRecords,
-  type CrossReviewAdvisoryOutcome,
   type CrossReviewAdvisoryRecord,
   type CrossReviewFile,
   type CrossReviewFinding,
@@ -23,11 +22,11 @@ import {
   type AnyLedgerRecord,
 } from "./routing-ledger";
 import { SECRET_CONTENT, SECRET_EXTENSION, SECRET_NAME } from "../skim";
-import { beforeModelAbort, isHydrogen, operationalFailure } from "./model-routes";
+import { beforeModelAbort, operationalFailure } from "./model-routes";
 
 /**
  * 계열 교차검증. Anthropic·DeepSeek 모델이 쓴 코드는 OpenAI reviewer(Astra)가, OpenAI 모델이 쓴 코드는 Anthropic reviewer(Opus)가,
- * Google·unknown 저자는 지금처럼 Anthropic reviewer가 보고, 지적이 모두 닫혀야 git_finalize가 커밋한다
+ * 그 밖의 저자는 Anthropic reviewer가 보고, 지적이 모두 닫혀야 git_finalize가 커밋한다
  * (사용자 결정 2026-10-11, 범위: trigger 필수 + 10% 표본. 2026-11-08 사용자 결정: DeepSeek 작성분도 GPT 검토).
  *
  * 이 파일은 순수 논리(계열 매핑, marker, 표본, 체인/통과 판정, 게이트 판정)와 git 수집 helper를 담는다. 모델 호출과
@@ -38,12 +37,8 @@ import { beforeModelAbort, isHydrogen, operationalFailure } from "./model-routes
  */
 
 /** 저자 모델의 계열. 필수 reviewer 자리를 정하는 데만 쓴다. */
-export type Family = "openai" | "anthropic" | "google" | "deepseek";
-/**
- * 필수 reviewer 자리. slop_check도 이 자리를 그대로 쓴다.
- * 보조 검토자(modelRoles.crossReviewAdvisory, 2026-11-07 사용자 결정으로 복구)는 자리가 아니다: runReview가 따로 부르고, record.reviewers·passable에
- * 들지 않으며 그 지적만 R<n>-ADV-k로 라운드 지적에 합친다. 2026-10-29 전 원장의 자문 기록(family advisory·google, GGL)은 읽기 전용이다.
- */
+export type Family = "openai" | "anthropic" | "deepseek";
+/** Required reviewer lane. slop_check shares these two lanes. */
 export type Lane = "openai" | "anthropic";
 export type Exec = (command: string, args: string[], options: { cwd: string; stdin?: Buffer }) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
@@ -73,15 +68,6 @@ export const SAMPLE_MODULUS = 10;
 export const REVIEW_TIMEOUT_MS = 600_000;
 export const SLOT: Record<Lane, string> = { openai: "crossReviewOpenAI", anthropic: "crossReviewAnthropic" };
 export const LANE_TAG: Record<Lane, string> = { openai: "OAI", anthropic: "ANT" };
-/** 보조 검토자 slot. 비어 있으면 보조 호출이 없다. */
-export const ADVISORY_SLOT = "crossReviewAdvisory";
-/** 보조 검토자 지적의 id 표지(R<n>-ADV-k). */
-export const ADVISORY_TAG = "ADV";
-/**
- * 필수 reviewer가 모두 끝난 뒤 보조 검토자를 더 기다리는 상한(2026-11-07 사용자 결정 「기다리지 않음」). 넘으면 보조 호출을 끊고 late로 기록만 한다.
- * 근거: 실제 검토 프롬프트 6건 재현에서 Argon은 46.5~360.7 s(중앙 213 s)였다. 늦은 답은 다음 라운드로 넘기지 않는다.
- */
-export const ADVISORY_GRACE_MS = 60_000;
 export const DELETED_BLOB = "deleted";
 /** 원장에 남기는 reviewer 원문 발췌 길이. 전문은 사본 디렉터리의 raw-<계열>.txt에 둔다. */
 const RAW_EXCERPT_CHARS = 20_000;
@@ -90,19 +76,14 @@ const RESULT_EXCERPT_CHARS = 2_000;
 
 // ── 계열 매핑 ────────────────────────────────────────────────────────────────
 
-/**
- * `provider/model[:effort]` 또는 모델 id만 온 selector에서 저자의 계열을 읽는다. Gemini·DeepSeek 모델 id는 어느 provider에 실려 있어도
- * 각각 google·deepseek이고(저장소의 DeepSeek는 `hive`·`b-ai`·`opencode-go` 등 여러 provider로 온다), 모르는 provider는 other다.
- */
+/** Infer the author family from the provider, or from a model ID used across providers (DeepSeek). */
 export function authorFamily(selector: string): Family | "other" {
   const base = selector.trim().toLowerCase().split(":")[0];
   const provider = base.includes("/") ? base.slice(0, base.indexOf("/")) : "";
   const id = base.includes("/") ? base.slice(base.indexOf("/") + 1) : base;
-  if (/(^|\/)gemini/.test(id)) return "google";
   if (/(^|\/)deepseek/.test(id)) return "deepseek";
   if (provider === "anthropic" || (!provider && id.startsWith("claude"))) return "anthropic";
   if (provider === "openai-codex" || provider === "openai" || (!provider && /^(gpt|o\d)/.test(id))) return "openai";
-  if (provider === "google" || provider.startsWith("google-")) return "google";
   return "other";
 }
 
@@ -119,7 +100,7 @@ function authorSelectors(authors: string[], mainModel: string | undefined): stri
 
 /**
  * 코드 교차검증(`cross_review`)의 필수 reviewer 자리(2026-11-08 사용자 결정: DeepSeek가 쓴 코드도 GPT가 검토한다).
- * Anthropic·DeepSeek 저자는 OpenAI 슬롯(crossReviewOpenAI)이, OpenAI와 그 밖의 계열(Google·unknown)은 Anthropic 슬롯이 본다.
+ * Anthropic·DeepSeek 저자는 OpenAI 슬롯(crossReviewOpenAI)이, OpenAI와 그 밖의 계열은 Anthropic 슬롯이 본다.
  * 저자가 두 자리에 걸치면 둘 다 돌린다.
  */
 export function codeReviewLanes(authors: string[], mainModel: string | undefined): Lane[] {
@@ -129,31 +110,6 @@ export function codeReviewLanes(authors: string[], mainModel: string | undefined
     out.add(family === "anthropic" || family === "deepseek" ? "openai" : "anthropic");
   }
   return [...out].sort();
-}
-
-/**
- * 계열 중립적인 "반대 계열" 자리. anthropic은 OpenAI가, openai-codex·openai와 그 밖의 모든 provider(google·DeepSeek 포함)는 Anthropic이 본다.
- * argon-preflight가 쓰는 경로이며 2026-11-08 DeepSeek 코드 검토 경로 추가 전후로 동작이 같다.
- */
-export function reviewerLanes(authors: string[], mainModel: string | undefined): Lane[] {
-  const out = new Set<Lane>();
-  for (const selector of authorSelectors(authors, mainModel)) {
-    out.add(authorFamily(selector) === "anthropic" ? "openai" : "anthropic");
-  }
-  return [...out].sort();
-}
-
-/** selector를 `provider/id`(provider가 없으면 id)로 줄인다. effort 접미사와 대소문자는 버린다. */
-function modelKey(selector: string): { provider: string; id: string } {
-  const base = selector.trim().toLowerCase().split(":")[0]!;
-  return base.includes("/") ? { provider: base.slice(0, base.indexOf("/")), id: base.slice(base.indexOf("/") + 1) } : { provider: "", id: base };
-}
-
-/** 두 selector가 같은 모델인가. provider를 둘 다 적었으면 provider까지 같아야 하고, 한쪽이 id만이면 id로 본다. */
-export function isSameModel(a: string, b: string): boolean {
-  const left = modelKey(a);
-  const right = modelKey(b);
-  return left.id === right.id && (!left.provider || !right.provider || left.provider === right.provider);
 }
 
 /** 이어지는 라운드의 reviewer 자리. 필수 자리는 체인 안에서 바꾸지 않는다. 옛 체인의 자문 자리(advisory·google)는 자리로 이어 부르지 않는다. */
@@ -1552,7 +1508,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
     })(),
     ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}}, fix or refute every finding, close them with cross_review {action:"resolve"}, then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
-    `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required reviewer hit a provider limit and the required Hydrogen substitute also failed or could not be called (quote that decision, the reviewId and the raw errors), and is recorded in the routing ledger.`,
+    `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required review failed only because of provider limits (quote that decision, the reviewId and the raw errors), and is recorded in the routing ledger.`,
   ].join("\n"));
 }
 
@@ -1963,21 +1919,16 @@ export interface ProbeResultInput { findingId: string; command: string; exitCode
 export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[]; maker?: boolean }
 export interface ReviewerCompletion { model: string; text: string }
 export class ReviewerCallError extends Error {
-  /** partial: 모델이 중간까지 낸 답(출력 한도·오류로 끝난 경우). 통과는 못 하지만 원문은 기록한다. stopReason: 모델이 stop이 아닌 이유로 멈췄을 때 그 이유(length면 출력 한도 잘림). */
-  readonly unavailable: boolean;
-  constructor(message: string, readonly model: string, readonly partial?: string, readonly stopReason?: string, options?: ErrorOptions & { unavailable?: boolean }) {
+  /** A partial response is kept as evidence, never treated as a usable review. */
+  constructor(message: string, readonly model: string, readonly partial?: string, options?: ErrorOptions) {
     super(message, options);
-    this.unavailable = options?.unavailable === true;
   }
 }
 
-export async function reviewerOperationalFailure(error: unknown): Promise<boolean> {
-  return error instanceof ReviewerCallError
-    ? error.unavailable || await operationalFailure(error.cause ?? error)
-    : operationalFailure(error);
+async function isReviewerLimit(error: unknown): Promise<boolean> {
+  const message = error instanceof Error ? error.message : String(error);
+  return LIMIT_ERROR.test(message) && await operationalFailure(error instanceof ReviewerCallError ? error.cause ?? error : error);
 }
-/** 보조 검토자를 부르는 한 경로. model은 해석한 provider/id이고 complete는 실패를 ReviewerCallError로 던진다. */
-export interface AdvisoryReviewer { model: string; complete(prompt: string, signal: AbortSignal): Promise<ReviewerCompletion> }
 
 export interface ReviewDeps {
   cwd: string;
@@ -1991,61 +1942,23 @@ export interface ReviewDeps {
   snapshotRoot: string;
   /** reviewer 한 명을 부른다. 실패는 ReviewerCallError(model 포함)로 던진다. */
   complete(lane: Lane, prompt: string, signal: AbortSignal): Promise<ReviewerCompletion>;
-  /** 필수 자리 slot이 가리키는 모델. 보조와 필수 대체 호출에서 같은 모델을 피하는 데 쓴다. */
-  requiredModels?: Partial<Record<Lane, string>>;
-  /**
-   * 보조 검토자(modelRoles.crossReviewAdvisory). slot이 비어 있으면 없고, 그러면 보조 호출이 없다. model은 해석한 provider/id(못 풀면 selector)이며
-   * 저자·필수 reviewer와 같은 모델인지 보는 데와 기록에 쓴다. complete는 실패를 ReviewerCallError로 던진다.
-   * limitRoutes(2026-11-11 사용자 결정 「버택스로 넘겨」)는 complete가 공급자 한도(LIMIT_ERROR)로 실패했을 때만 읽는, 같은 모델의 다른 공급자 경로다(설정
-   * 순서). 저자·필수 reviewer와 같은 모델을 뺀 첫 경로를 같은 취소 신호로 한 번 부른다. 없거나 비면 한도 실패도 기록만 한다.
-   */
-  advisory?: AdvisoryReviewer & { limitRoutes?(): Promise<AdvisoryReviewer[]>; directFallback?: AdvisoryReviewer };
-  requiredHydrogenFallback?: AdvisoryReviewer;
-  /** 필수 reviewer가 끝난 뒤 보조 검토자를 더 기다리는 상한(ms). 테스트가 짧게 준다. 기본 ADVISORY_GRACE_MS. */
-  advisoryGraceMs?: number;
-  /**
-   * 공급자 한도로 실패한 보조 모델의 기억(모델 → 그날 자정까지, 원래 오류). 2026-11-12 사용자 결정 「세개는고쳐줘라」: 사무실 11-11 세션에서
-   * 보조 검토자가 모든 라운드에 429만 냈다. 기본은 서버 전체 공용(globalThis)이라 여러 Maker의 라운드가 같은 기억을 쓴다. 테스트가 따로 준다.
-   */
-  advisoryCooldown?: Map<string, AdvisoryCooldownEntry>;
   /** reviewer 호출 시작·reviewer마다의 끝(답·실패·취소)을 알린다. 결과를 돌려준 뒤에는 부르지 않는다. */
   onProgress?: (progress: ReviewProgress) => void;
   now?: () => Date;
   newId?: () => string;
 }
 
-export interface AdvisoryCooldownEntry { until: number; error: string }
-
-const ADVISORY_COOLDOWN_KEY = "__cueloAdvisoryCooldown";
-function sharedAdvisoryCooldown(): Map<string, AdvisoryCooldownEntry> {
-  const holder = globalThis as unknown as Record<string, Map<string, AdvisoryCooldownEntry> | undefined>;
-  return (holder[ADVISORY_COOLDOWN_KEY] ??= new Map());
-}
-
-/** 서버 공용 한도 기억을 비운다. 실제 도구 경로를 여러 번 도는 테스트가 앞 테스트의 기억을 물려받지 않게 한다. */
-export function clearAdvisoryCooldown(): void {
-  sharedAdvisoryCooldown().clear();
-}
-
-/** 이 시각이 속한 날의 다음 자정(서버 지역 시각). 한도에 걸린 보조 모델은 그때까지 다시 부르지 않는다. */
-function nextLocalMidnight(now: number): number {
-  const day = new Date(now);
-  day.setHours(24, 0, 0, 0);
-  return day.getTime();
-}
-
-export type ReviewerProgressState = "waiting" | "answered" | "failed" | "cancelled" | "late";
+export type ReviewerProgressState = "waiting" | "answered" | "failed" | "cancelled";
 export interface ReviewProgress {
   round: number;
-  /** advisory는 보조 검토자다(기다리지 않는 자리). */
-  reviewers: { family: Lane | "advisory"; state: ReviewerProgressState; elapsedSec?: number }[];
+  reviewers: { family: Lane; state: ReviewerProgressState; elapsedSec?: number }[];
   /** 사람이 읽는 한 줄. 도구 진행 표시가 그대로 보인다. */
   text: string;
 }
 
-function describeProgress(round: number, reviewers: ReviewProgress["reviewers"], graceMs: number): string {
+function describeProgress(round: number, reviewers: ReviewProgress["reviewers"]): string {
   const parts = reviewers.map((reviewer) => {
-    const who = reviewer.family === "advisory" ? `advisory (nonblocking, at most ${graceMs / 1000} s after the required reviewers)` : `${reviewer.family} (required)`;
+    const who = `${reviewer.family} (required)`;
     return reviewer.state === "waiting" ? `${who} waiting` : `${who} ${reviewer.state} after ${reviewer.elapsedSec} s`;
   });
   return `cross_review round ${round}: ${parts.join("; ")}`;
@@ -2054,10 +1967,8 @@ function describeProgress(round: number, reviewers: ReviewProgress["reviewers"],
 export interface ReviewResult {
   reviewId: string;
   round: number;
-  reviewers: (Pick<CrossReviewReviewer, "model" | "status" | "raw" | "rawFile" | "error" | "resolvedModel" | "limitSubstitute"> & { family: Lane; elapsedSec: number; rawChars?: number })[];
-  /** 이 라운드의 보조 검토자 결과. ok면 그 지적(advisory: true, R<n>-ADV-k)이 findings에 합쳐졌고, 그 밖의 상태는 기록만 했다. */
-  advisory: CrossReviewAdvisoryOutcome;
-  /** 2026-10-29 전 자문이 앞 라운드에 늦게 붙은 옛 체인에서만: 그 자문 finding(열린 지적으로 다룬다). 지금의 보조 검토자는 늦은 답을 기록하지 않는다. */
+  reviewers: (Pick<CrossReviewReviewer, "model" | "status" | "raw" | "rawFile" | "error"> & { family: Lane; elapsedSec: number; rawChars?: number })[];
+  /** Late findings from historical ledgers still have to be closed. */
   earlierAdvisoryFindings?: CrossReviewFinding[];
   triggers: string[];
   highRisk: boolean;
@@ -2165,7 +2076,7 @@ interface NextState {
   verdicts: readonly CrossReviewVerdict[];
   /** subagent 세션: resolve를 부를 수 없으므로 보고와, 라운드 소진 뒤에도 남은 일을 끝내는 길을 안내한다. */
   maker: boolean;
-  /** 공급자 한도 때문에 실패한 필수 자리와 Hydrogen 대체 호출의 결과. */
+  /** Required reviewers that failed on provider rate or usage limits. */
   limitFailures: readonly string[];
   /** 실패한 필수 reviewer 가운데 한도 예외가 덮지 않는 자리의 목록. */
   uncoveredFailures: readonly string[];
@@ -2173,7 +2084,7 @@ interface NextState {
 
 /** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
 export const LIMIT_ERROR = /\b429\b|rate[_ -]?limit|usage[_ -]?limit|insufficient_quota|quota exceeded|exceed your account/i;
-const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-19: 「다른세션에서넘어온건데이거할때같이해줘」; replaces 2026-11-09)";
+const LIMIT_WAIVER_DECISION = "the user's standing decision (2026-11-09 provider-limit exception; 2026-11-21: 「보조검토자는 아이에 자리를 폐지해야할것」)";
 
 const RESOLVE_HINT = "call cross_review {action:\"resolve\", reviewId, resolutions:[{id, status:fixed|refuted|limit, evidence}]} covering every finding of the whole chain";
 // 10-30 UpkeepCollector는 non-probe 라운드를 다 쓴 체인에 finding이 남자 Main 전용 resolve 안내만 받고 남은 일을 둔 채 partial로 끝났다.
@@ -2413,17 +2324,15 @@ function writeContextFiles(dir: string, entries: readonly ReferenceEntry[], pref
 
 /**
  * reviewer 한 명의 호출 결과. error가 있으면 실패(text는 부분 답일 수 있다). batches는 나눠 심사한 라운드에서 호출마다의 답이고, text는 그 답을 이어 붙인 원문이다.
- * family advisory는 보조 검토자이며 stopReason은 그 실패가 출력 한도 잘림(length)인지 가르는 데 쓴다.
  */
-interface ReviewerOutcome<F extends Lane | "advisory" = Lane> { family: F; model: string; text: string; elapsedMs: number; error?: string; callError?: unknown; stopReason?: string; batches?: string[]; limitSubstitute?: CrossReviewReviewer["limitSubstitute"] }
+interface ReviewerOutcome { family: Lane; model: string; text: string; elapsedMs: number; error?: string; providerLimit?: true; batches?: string[] }
 
 /**
  * reviewer 결과를 원장 모양으로 읽는다. 답 전문은 사본 디렉터리의 raw-<자리>.txt에 쓰고 원장에는 앞 20 KB 발췌를 남긴다.
- * finding id는 R<round>-<자리 표지>-<번호>이고, 보조 검토자 지적은 R<round>-ADV-<번호>에 advisory: true가 붙는다.
+ * Finding IDs use R<round>-<lane>-<number>.
  */
-function readReviewerOutcome<F extends Lane | "advisory">(item: ReviewerOutcome<F>, round: number, snapshotDir: string): { reviewer: CrossReviewReviewer & { family: F }; findings: CrossReviewFinding[]; rawChars?: number; verdicts?: ParsedVerdict[] } {
-  const tag = item.family === "advisory" ? ADVISORY_TAG : LANE_TAG[item.family as Lane];
-  const marked = item.family === "advisory" ? { advisory: true as const } : {};
+function readReviewerOutcome(item: ReviewerOutcome, round: number, snapshotDir: string): { reviewer: CrossReviewReviewer & { family: Lane }; findings: CrossReviewFinding[]; rawChars?: number; verdicts?: ParsedVerdict[] } {
+  const tag = LANE_TAG[item.family];
   const keepRaw = (): { raw: string; rawFile: string } => {
     const rawFile = join(snapshotDir, `raw-${item.family}.txt`);
     writeFileSync(rawFile, item.text, { mode: 0o600 });
@@ -2438,7 +2347,7 @@ function readReviewerOutcome<F extends Lane | "advisory">(item: ReviewerOutcome<
   if (usable.length !== answers.length) return { reviewer: { family: item.family, model: item.model, status: "unparsable", elapsedMs: item.elapsedMs, ...keepRaw() }, findings: [], rawChars: item.text.length };
   return {
     reviewer: { family: item.family, model: item.model, status: "ok", elapsedMs: item.elapsedMs },
-    findings: usable.flatMap((answer) => answer.findings).map((finding, index) => ({ id: `R${round}-${tag}-${index + 1}`, reviewer: item.model, ...finding, ...marked })),
+    findings: usable.flatMap((answer) => answer.findings).map((finding, index) => ({ id: `R${round}-${tag}-${index + 1}`, reviewer: item.model, ...finding })),
     verdicts: usable.flatMap((answer) => answer.verdicts ?? []),
   };
 }
@@ -2709,82 +2618,32 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }
 
-  // 필수 reviewer는 completeReviewer의 REVIEW_TIMEOUT_MS만 따르고, 모두 끝나야 이 호출이 돌아온다. 보조 검토자는 함께 시작하되 필수가 모두 끝난 뒤
-  // graceMs까지만 더 기다린다(2026-11-07 사용자 결정 「기다리지 않음」). 그때도 답이 없으면 끊고 late로 기록만 하며 다음 라운드로 넘기지 않는다.
-  const graceMs = deps.advisoryGraceMs ?? ADVISORY_GRACE_MS;
-  const advisor = deps.advisory;
-  // Every round's authors count, this round's included (issue #71). A recorded "main" keeps the model it stood for then; only
-  // records written before that field existed fall back to the current session model.
-  const chainAuthors = [...chain.map((item) => [item.authors, item.mainModel ?? deps.mainModel] as const), [input.authors, deps.mainModel] as const]
-    .flatMap(([authors, main]) => authors.map((author) => (author.trim().toLowerCase() === "main" ? main ?? "" : author.trim())))
-    .filter(Boolean);
-  // 저자나 이 라운드의 필수 reviewer와 같은 모델은 보조로 부르지 않는다. 한도 때 넘어가는 같은 모델의 다른 경로에도 같은 기준을 쓴다.
-  const excluded = (model: string): string | undefined =>
-    chainAuthors.some((author) => isSameModel(author, model)) ? `the advisory model ${model} is an author of this chain`
-      : families.some((lane) => { const required = deps.requiredModels?.[lane]; return !!required && isSameModel(required, model); }) ? `the advisory model ${model} is this round's required reviewer`
-      : undefined;
-  const hydrogenAdvisor = isHydrogen(advisor?.model);
-  const directAdvisor = hydrogenAdvisor ? advisor?.directFallback : undefined;
-  const requiredFallback = hydrogenAdvisor ? deps.requiredHydrogenFallback : undefined;
-  const requiredFallbackEligible = families.length === 1 && requiredFallback && !excluded(requiredFallback.model)
-    && !chainAuthors.some((author) => authorFamily(author) === authorFamily(requiredFallback.model)) ? requiredFallback : undefined;
-  let requiredFallbackClaimed = false;
-  const cooldown = deps.advisoryCooldown ?? sharedAdvisoryCooldown();
-  const coolingOf = (model: string): AdvisoryCooldownEntry | undefined => {
-    const entry = cooldown.get(model);
-    if (entry && entry.until > Date.now()) return entry;
-    if (entry) cooldown.delete(model);
-    return undefined;
-  };
-  const rememberLimit = (model: string, error: string) => cooldown.set(model, { until: nextLocalMidnight(Date.now()), error });
-  const cooled = advisor && !probeRound && !excluded(advisor.model) ? coolingOf(advisor.model) : undefined;
-  let cooledRoute: AdvisoryReviewer | undefined;
-  if (advisor && cooled) {
-    if (hydrogenAdvisor) {
-      if (directAdvisor && !excluded(directAdvisor.model) && !coolingOf(directAdvisor.model)) cooledRoute = directAdvisor;
-    } else {
-      try { cooledRoute = (await advisor.limitRoutes?.() ?? []).find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model)); } catch { /* route lookup is optional */ }
-    }
-  }
-  const advisorySkip = !advisor ? `modelRoles.${ADVISORY_SLOT} is not configured`
-    : probeRound ? "probe round: the advisory reviewer is asked on initial and delta rounds only"
-    : excluded(advisor.model) ?? (cooled && !cooledRoute
-      ? `the advisory model ${advisor.model} hit a provider limit earlier today and is not asked again until ${new Date(cooled.until).toTimeString().slice(0, 5)} (local); no eligible alternate is available`
-      : undefined);
-  const progress: ReviewProgress["reviewers"] = [
-    ...families.map((family) => ({ family, state: "waiting" as const })),
-    ...(advisorySkip ? [] : [{ family: "advisory" as const, state: "waiting" as const }]),
-  ];
-  let returned = false;
-  const report = () => { if (!returned) deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress, graceMs) }); };
+  const progress: ReviewProgress["reviewers"] = families.map((family) => ({ family, state: "waiting" }));
+  const report = () => deps.onProgress?.({ round, reviewers: progress.map((item) => ({ ...item })), text: describeProgress(round, progress) });
   report();
   type LaneCompletion = ReviewerCompletion & { batches?: string[] };
-  const askLane = async (call: (prompt: string, attempt: AbortSignal) => Promise<ReviewerCompletion>, attempt: AbortSignal, maySubstitute = false): Promise<LaneCompletion> => {
-    if (prompts.length === 1) return beforeModelAbort(attempt, () => call(prompts[0]!, attempt));
-    let answers: ReviewerCompletion[];
-    if (maySubstitute) {
-      // An operating failure in one batch must not hide a denial from another batch.
-      const results = await Promise.allSettled(prompts.map((prompt) => beforeModelAbort(attempt, () => call(prompt, attempt))));
-      let firstFailure: PromiseRejectedResult | undefined;
-      answers = [];
-      for (const result of results) {
-        if (result.status === "fulfilled") answers.push(result.value);
-        else {
-          if (!(await reviewerOperationalFailure(result.reason))) throw result.reason;
-          firstFailure ??= result;
-        }
-      }
-      if (firstFailure) throw firstFailure.reason;
-    } else {
-      const lane = new AbortController();
-      const stop = () => lane.abort(attempt.reason);
-      if (attempt.aborted) stop(); else attempt.addEventListener("abort", stop, { once: true });
+  const askLane = async (family: Lane): Promise<LaneCompletion> => {
+    if (prompts.length === 1) return beforeModelAbort(signal, () => deps.complete(family, prompts[0]!, signal));
+    const lane = new AbortController();
+    const attempt = AbortSignal.any([signal, lane.signal]);
+    // A limit alone must not cancel a sibling batch that could reveal a denial or another failure.
+    // A non-limit failure makes the waiver inapplicable and can cancel the remaining calls.
+    const results = await Promise.all(prompts.map(async (prompt) => {
       try {
-        answers = await Promise.all(prompts.map((prompt) => beforeModelAbort(lane.signal, () => call(prompt, lane.signal))
-          .catch((error: unknown) => { lane.abort(error); throw error; })));
-      } finally {
-        attempt.removeEventListener("abort", stop);
+        return { answer: await beforeModelAbort(attempt, () => deps.complete(family, prompt, attempt)) } as const;
+      } catch (error) {
+        if (await isReviewerLimit(error)) return { limit: error } as const;
+        lane.abort(error);
+        throw error;
       }
+    }));
+    const answers = results.flatMap((result) => result.answer ? [result.answer] : []);
+    const limited = results.find((result) => "limit" in result);
+    if (limited) {
+      // A malformed sibling answer is a separate reason the required review failed.
+      const malformed = answers.find((answer) => !parseReviewerOutput(answer.text).ok);
+      if (malformed) throw new ReviewerCallError("A required review batch did not return the expected JSON.", malformed.model, malformed.text);
+      throw limited.limit;
     }
     const texts = answers.map((answer) => answer.text);
     return { model: answers[0]!.model, text: texts.map((text, index) => `===== part ${index + 1}/${texts.length} =====\n${text}`).join("\n\n"), batches: texts };
@@ -2795,143 +2654,20 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       progress[index] = { ...progress[index]!, state, elapsedSec: Math.round((Date.now() - started) / 1000) };
       report();
     };
-    const placeholder = `@${SLOT[family]}`;
-    const askRequired = async (call: Parameters<typeof askLane>[0], fallbackModel: string, attempt = signal, maySubstitute = false): Promise<ReviewerOutcome> => {
-      try {
-        const completion = await askLane(call, attempt, maySubstitute);
-        return { family, ...completion, elapsedMs: Date.now() - started };
-      } catch (error) {
-        const called = error instanceof ReviewerCallError ? error : undefined;
-        return { family, model: called?.model ?? fallbackModel, text: called?.partial ?? "", elapsedMs: Date.now() - started, callError: error, error: error instanceof Error ? error.message : String(error) };
-      }
-    };
-    let outcome = await askRequired((prompt, attempt) => deps.complete(family, prompt, attempt), placeholder, signal, hydrogenAdvisor);
-    if (!signal.aborted && outcome.error !== undefined && LIMIT_ERROR.test(outcome.error)
-      && (!hydrogenAdvisor || await reviewerOperationalFailure(outcome.callError)) && !signal.aborted) {
-      const requiredModel = deps.requiredModels?.[family];
-      const primary = { primaryModel: outcome.model === placeholder ? requiredModel ?? placeholder : outcome.model, primaryError: outcome.error };
-      let skippedReason: string | undefined;
-      const candidate = requiredFallbackEligible && !isSameModel(requiredFallbackEligible.model, primary.primaryModel)
-        && !coolingOf(requiredFallbackEligible.model) && !requiredFallbackClaimed ? requiredFallbackEligible : undefined;
-      let hydrogenFailure: { model: string; error: string } | undefined;
-      if (!advisor || !hydrogenAdvisor) skippedReason = `modelRoles.${ADVISORY_SLOT} does not supply a Hydrogen route`;
-      else if (isHydrogen(primary.primaryModel) || isHydrogen(requiredModel)) skippedReason = "the required slot already used Hydrogen";
-      else if (chainAuthors.some(isHydrogen)) skippedReason = "Hydrogen is an author of this chain";
-      else {
-        const cooled = coolingOf(advisor.model);
-        if (cooled && !candidate) skippedReason = `${advisor.model} is in provider-limit cooldown`;
-        if (!cooled) {
-          // This is an independent mandatory call, never the advisory answer.
-          const attempt = candidate ? AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS / 2)]) : signal;
-          outcome = await askRequired(async (prompt, batchSignal) => {
-            const answer = await advisor.complete(prompt, batchSignal);
-            if (!isHydrogen(answer.model) || !isSameModel(advisor.model, answer.model)) {
-              throw new ReviewerCallError(`Hydrogen substitute returned unexpected model ${answer.model}.`, advisor.model);
-            }
-            return answer;
-          }, advisor.model, attempt, !!candidate);
-        }
-        const retry = cooled || (outcome.error !== undefined && await reviewerOperationalFailure(outcome.callError));
-        if (!cooled && retry && !signal.aborted && outcome.error && LIMIT_ERROR.test(outcome.error)) rememberLimit(advisor.model, outcome.error);
-        if (candidate && retry && !signal.aborted && !requiredFallbackClaimed) {
-          requiredFallbackClaimed = true;
-          hydrogenFailure = { model: advisor.model, error: cooled?.error ?? outcome.error! };
-          outcome = await askRequired(candidate.complete, candidate.model, AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS / 2)]));
-        }
-      }
-      outcome.limitSubstitute = { ...primary, ...(skippedReason ? { skippedReason } : {}), ...(hydrogenFailure ? { hydrogenFailure } : {}) };
+    let outcome: ReviewerOutcome;
+    try {
+      const completion = await askLane(family);
+      outcome = { family, ...completion, elapsedMs: Date.now() - started };
+    } catch (error) {
+      const called = error instanceof ReviewerCallError ? error : undefined;
+      outcome = { family, model: called?.model ?? `@${SLOT[family]}`, text: called?.partial ?? "", elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+      if (!signal.aborted && await isReviewerLimit(error)) outcome.providerLimit = true;
     }
     // review가 취소됐으면 취소로 알린다. 600 s 제한 초과는 오류 문구로만 구분된다.
     finish(outcome.error === undefined ? "answered" : signal.aborted ? "cancelled" : "failed");
     return outcome;
   });
-  // 보조 검토자는 자기 취소 신호를 쓴다: 도구 취소를 따르고, 유예가 끝나면 이 호출이 직접 끊는다. 실패는 던지지 않고 결과로 돌려준다.
-  const advisoryCancel = new AbortController();
-  const advisoryPrimaryDeadline = directAdvisor && !excluded(directAdvisor.model) && !coolingOf(directAdvisor.model) ? new AbortController() : undefined;
-  const forwardAbort = () => advisoryCancel.abort();
-  if (signal.aborted) advisoryCancel.abort(); else signal.addEventListener("abort", forwardAbort, { once: true });
-  const advisoryStarted = Date.now();
-  // 지금 부르는 보조 경로와, 한도로 실패해 그 경로로 넘어왔다면 원래 경로의 실패. 유예에서 끊긴 호출(late)도 이 값으로 기록한다.
-  let advisoryAsked = advisor?.model ?? "";
-  let advisoryLimited: CrossReviewAdvisoryOutcome["limited"];
-  let advisoryFallback: CrossReviewAdvisoryOutcome["fallback"];
-  const advisoryRun = advisorySkip || !advisor ? undefined : (async (): Promise<ReviewerOutcome<"advisory">> => {
-    const finish = (state: ReviewerProgressState) => {
-      progress[families.length] = { family: "advisory", state, elapsedSec: Math.round((Date.now() - advisoryStarted) / 1000) };
-      report();
-    };
-    try {
-      let completion: LaneCompletion;
-      // 한도로 실패한 경로는 그날 기억한다. 취소로 끊긴 호출과 한도가 아닌 실패는 기억하지 않는다.
-      const askRoute = async (route: AdvisoryReviewer, attempt = advisoryCancel.signal): Promise<LaneCompletion> => {
-        try {
-          return await askLane((prompt, batchSignal) => route.complete(prompt, batchSignal), attempt, route === advisor && !!directAdvisor);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (!advisoryCancel.signal.aborted && LIMIT_ERROR.test(message) && await reviewerOperationalFailure(error)) rememberLimit(route.model, message);
-          throw error;
-        }
-      };
-      const askAlternate = async (route: AdvisoryReviewer, primaryError: string) => {
-        if (requiredFallbackEligible && isSameModel(requiredFallbackEligible.model, route.model)) {
-          await Promise.all(runs);
-          if (requiredFallbackClaimed) throw new ReviewerCallError(primaryError, advisor.model);
-        }
-        advisoryCancel.signal.throwIfAborted();
-        if (LIMIT_ERROR.test(primaryError)) advisoryLimited = { model: advisor.model, error: primaryError };
-        else advisoryFallback = { model: advisor.model, error: primaryError };
-        advisoryAsked = route.model;
-        return askRoute(route);
-      };
-      if (cooled && cooledRoute) {
-        completion = await askAlternate(cooledRoute, cooled.error);
-      } else try {
-        const attempt = advisoryPrimaryDeadline
-          ? AbortSignal.any([advisoryCancel.signal, advisoryPrimaryDeadline.signal]) : advisoryCancel.signal;
-        completion = await askRoute(advisor, attempt);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (advisoryCancel.signal.aborted) throw error;
-        let routes: AdvisoryReviewer[] = [];
-        if (hydrogenAdvisor) {
-          if (!directAdvisor || !(await reviewerOperationalFailure(error))) throw error;
-          routes = [directAdvisor];
-        } else {
-          if (!LIMIT_ERROR.test(message) || !(await reviewerOperationalFailure(error))) throw error;
-          try { routes = await advisor.limitRoutes?.() ?? []; } catch { /* preserve the original failure */ }
-        }
-        const route = routes.find((candidate) => !excluded(candidate.model) && !coolingOf(candidate.model));
-        if (!route || advisoryCancel.signal.aborted) throw error;
-        completion = await askAlternate(route, message);
-      }
-      finish("answered");
-      return { family: "advisory", model: completion.model, text: completion.text, elapsedMs: Date.now() - advisoryStarted, ...(completion.batches ? { batches: completion.batches } : {}) };
-    } catch (error) {
-      finish(advisoryCancel.signal.aborted ? "cancelled" : "failed");
-      const called = error instanceof ReviewerCallError ? error : undefined;
-      return {
-        family: "advisory", model: called?.model || advisoryAsked, text: called?.partial ?? "", elapsedMs: Date.now() - advisoryStarted,
-        error: error instanceof Error ? error.message : String(error), ...(called?.stopReason ? { stopReason: called.stopReason } : {}),
-      };
-    }
-  })();
   const settled = await Promise.all(runs);
-  let advisoryOutcome: ReviewerOutcome<"advisory"> | undefined;
-  if (advisoryRun) {
-    const grace = Promise.withResolvers<undefined>();
-    // Reserve the second half of the existing post-required grace, not the required reviewers' time.
-    const deadline = advisoryPrimaryDeadline && setTimeout(
-      () => advisoryPrimaryDeadline.abort(new DOMException("Advisory primary deadline expired", "TimeoutError")),
-      Math.max(1, Math.floor(graceMs / 2)),
-    );
-    const timer = setTimeout(() => grace.resolve(undefined), graceMs);
-    advisoryOutcome = await Promise.race([advisoryRun, grace.promise]);
-    clearTimeout(deadline);
-    clearTimeout(timer);
-    // 유예 안에 끝나지 않았으면 끊는다. 끊긴 호출이 나중에 돌려주는 결과는 아무도 읽지 않는다(advisoryRun은 거절하지 않는다).
-    if (!advisoryOutcome) advisoryCancel.abort();
-  }
-  signal.removeEventListener("abort", forwardAbort);
 
   const reviewers: (CrossReviewReviewer & { family: Lane })[] = [];
   const parsedByFamily = new Map<Lane, ParsedVerdict[]>();
@@ -2939,49 +2675,16 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const rawChars: Partial<Record<Lane, number>> = {};
   for (const item of settled) {
     const read = readReviewerOutcome(item, round, snapshotDir);
-    if (item.limitSubstitute) {
-      read.reviewer.limitSubstitute = item.limitSubstitute;
-      if (!item.limitSubstitute.skippedReason) read.reviewer.resolvedModel = item.model;
-    }
     reviewers.push(read.reviewer);
     findings.push(...read.findings);
     if (read.rawChars !== undefined) rawChars[item.family] = read.rawChars;
     if (read.verdicts) parsedByFamily.set(item.family, read.verdicts);
   }
-  // 보조 검토자 결과. 유예 안에 쓸 수 있는 답을 냈으면 그 지적을 이 라운드 지적에 합치고(advisory: true), 그 밖에는 이유와 함께 기록만 한다.
-  // 한도로 같은 모델의 다른 경로에 넘어갔으면 어떤 결과든 원래 경로의 실패(limited)를 함께 남긴다.
-  let advisory: CrossReviewAdvisoryOutcome;
-  const limited = { ...(advisoryLimited ? { limited: advisoryLimited } : {}), ...(advisoryFallback ? { fallback: advisoryFallback } : {}) };
-  if (advisorySkip || !advisoryRun) {
-    advisory = { status: "skipped", ...(advisor ? { model: advisor.model } : {}), reason: advisorySkip ?? "not called" };
-  } else if (!advisoryOutcome) {
-    advisory = { status: "late", model: advisoryAsked, elapsedMs: Date.now() - advisoryStarted, reason: `no answer within ${graceMs / 1000} s after the required reviewer(s) finished; the call was aborted and any later answer is ignored (not carried into later rounds)`, ...limited };
-    progress[families.length] = { family: "advisory", state: "late", elapsedSec: Math.round(advisory.elapsedMs! / 1000) };
-    report();
-  } else {
-    // 보조 답을 읽고 원문 파일로 남기는 단계의 실패(디스크 오류 등)도 라운드를 막지 않고 error로 기록한다.
-    try {
-      const read = readReviewerOutcome(advisoryOutcome, round, snapshotDir);
-      const { model, elapsedMs } = read.reviewer;
-      const rawFile = read.reviewer.rawFile ? { rawFile: read.reviewer.rawFile } : {};
-      if (read.reviewer.status === "ok") {
-        findings.push(...read.findings);
-        advisory = { status: "ok", model, elapsedMs, findings: read.findings.length, ...rawFile, ...limited };
-      } else if (read.reviewer.status === "unparsable") {
-        advisory = { status: "unparsable", model, elapsedMs, reason: "answer is not the expected JSON", ...rawFile, ...limited };
-      } else {
-        advisory = { status: advisoryOutcome.stopReason === "length" ? "truncated" : "error", model, elapsedMs, reason: read.reviewer.error ?? "advisory call failed", ...rawFile, ...limited };
-      }
-    } catch (error) {
-      advisory = { status: "error", model: advisoryOutcome.model, elapsedMs: advisoryOutcome.elapsedMs, reason: `the advisory answer could not be recorded: ${error instanceof Error ? error.message : String(error)}`, ...limited };
-    }
-  }
-  returned = true;
   // 결과를 받은 finding마다 판단을 모은다. finding을 낸 reviewer가 판단을 안 냈거나 모양이 틀리면 unresolved로 채운다(답 전체를 버리지 않는다).
   const verdicts: CrossReviewVerdict[] = [];
   if (probeRound) {
     for (const result of preparedProbes) {
-      // finding을 낸 자리가 이번 라운드에 없으면(2026-10-29 전 자문 finding) 모든 reviewer가 소유자처럼 채운다.
+      // A historical advisory finding has no live owner, so every required reviewer can judge its probe.
       const found = findingLane(result.finding.id);
       const owner = found !== undefined && reviewers.some((reviewer) => reviewer.family === found) ? found : undefined;
       for (const reviewer of reviewers) {
@@ -3000,30 +2703,20 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     ...(previous ? { previousReviewId: previous.reviewId } : {}),
     authors: input.authors, ...(deps.mainModel && input.authors.some((author) => author.trim().toLowerCase() === "main") ? { mainModel: deps.mainModel } : {}),
     highRisk: input.highRisk === true, triggers: [...triggers].sort(),
-    files: reviewedFiles, ...(inputEntries.length > 0 ? { inputs: inputEntries.map(({ path, blob }) => ({ path, blob })) } : {}), skipped, ...(redacted.length > 0 ? { redacted } : {}), reviewers, findings, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), snapshotDir, passable, advisory,
+    files: reviewedFiles, ...(inputEntries.length > 0 ? { inputs: inputEntries.map(({ path, blob }) => ({ path, blob })) } : {}), skipped, ...(redacted.length > 0 ? { redacted } : {}), reviewers, findings, ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), snapshotDir, passable,
   };
   if (!deps.append(record)) throw new Error(`The review ran but could not be recorded in the routing ledger (${reviewId}); it cannot be resolved. Re-run it.`);
   // 2026-10-29 전 자문이 앞 라운드에 늦게 붙은 옛 체인의 자문 finding. 이번 라운드 프롬프트의 앞 지적에도 들어갔고, resolve에서 다른 finding처럼 닫아야 한다.
   const lateEarlier = lateAdvisories(records);
   const earlierAdvisoryFindings = chain.flatMap((item) => lateEarlier.get(item.reviewId)?.findings ?? []);
-  const advisoryIds = findings.filter((finding) => finding.advisory).map((finding) => finding.id);
-  const advisoryNote = advisoryIds.length > 0
-    ? `NOTE: ${advisoryIds.join(", ")} came from the advisory reviewer ${advisory.model} (advisory: true) within the grace period; they are findings of this round and must be fixed or refuted and closed in resolve like any other finding.`
-    : advisory.status !== "ok" && advisory.status !== "skipped"
-      ? `NOTE: the advisory reviewer ${advisory.model} gave no usable answer (${advisory.status}); it is only recorded, does not affect passable, and nothing from it carries over to later rounds.`
-      : undefined;
-  // 한도 예외는 원래 필수 자리가 한도였을 때만 고려한다. 대체 결과가 정상이면 예외가 필요 없다.
+  // Waive only actual provider limits; never turn a failed review into a pass.
   const limitFailures: string[] = [];
   const uncoveredFailures: string[] = [];
   const excerpt = (text: string) => text.length > 300 ? `${text.slice(0, 300)}…` : text;
-  for (const reviewer of reviewers) {
+  for (const [index, reviewer] of reviewers.entries()) {
     if (reviewer.status === "ok") continue;
-    const substitute = reviewer.limitSubstitute;
-    if (substitute && !signal.aborted) {
-      const result = substitute.skippedReason
-        ? `Hydrogen substitute was skipped: ${substitute.skippedReason}`
-        : `required Hydrogen substitute ${reviewer.model} also failed (${reviewer.error ? excerpt(reviewer.error) : reviewer.status})`;
-      limitFailures.push(`Required reviewer ${substitute.primaryModel} hit a provider rate or usage limit (${excerpt(substitute.primaryError)}); ${result}`);
+    if (settled[index]?.providerLimit && !signal.aborted) {
+      limitFailures.push(`Required reviewer ${reviewer.model} hit a provider rate or usage limit (${excerpt(reviewer.error!)})`);
     } else {
       uncoveredFailures.push(`${reviewer.family} (${reviewer.status}${reviewer.error ? `: ${reviewer.error.slice(0, 120)}` : ""})`);
     }
@@ -3033,10 +2726,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       family: reviewer.family, model: reviewer.model, status: reviewer.status, elapsedSec: Math.round(reviewer.elapsedMs / 1000),
       ...(reviewer.raw !== undefined ? { raw: reviewer.raw.slice(0, RESULT_EXCERPT_CHARS), rawChars: rawChars[reviewer.family], rawFile: reviewer.rawFile } : {}),
       ...(reviewer.error ? { error: reviewer.error } : {}),
-      ...(reviewer.limitSubstitute ? { limitSubstitute: reviewer.limitSubstitute } : {}),
-      ...(reviewer.resolvedModel ? { resolvedModel: reviewer.resolvedModel } : {}),
     })),
-    advisory,
     ...(earlierAdvisoryFindings.length > 0 ? { earlierAdvisoryFindings } : {}),
     triggers: record.triggers, highRisk: record.highRisk, findings, skipped, redacted,
     references: references.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })),
@@ -3049,7 +2739,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
       limitFailures,
       uncoveredFailures,
-    }), skippedInputs), ...(advisoryNote ? [advisoryNote] : []), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
+    }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }
 

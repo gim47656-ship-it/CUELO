@@ -37,17 +37,17 @@ function render(props = {}) {
   })));
 }
 
-test("캐릭터가 기본 선택되고 일곱 얼굴·한글 이름·말투·호출 의미가 보인다", () => {
+test("캐릭터가 기본 선택되고 여섯 얼굴과 호출 안내가 보인다", () => {
   const html = render();
   assert.match(html, /class="[^"]*resource-panel/);
   assert.match(html, /role="tablist"/);
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>캐릭터</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>계정 한도</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>모델 통계</);
-  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "HIKARI(히카리)", "SHION(시온)"]) {
+  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "SHION(시온)"]) {
     assert.match(html, new RegExp(alias.replace(/[()]/g, "\\$&")));
   }
-  assert.equal(html.match(/class="account-avatar"/g)?.length, 7);
+  assert.equal(html.match(/class="account-avatar"/g)?.length, 6);
   assert.match(html, /호출·불러·소환/);
   assert.match(html, /SubAgent로 이 대화에 부릅니다/);
   assert.match(html, /미오 불러와/);
@@ -548,7 +548,7 @@ function renderCredits(data) {
   }));
 }
 
-test("API 크레딧은 Hive 카드 하나에 캐릭터 얼굴·범위·추정 잔액을 보여 주고 Google Cloud 칸은 없다", () => {
+test("API 크레딧은 Hive 카드에 캐릭터 얼굴, 범위, 추정 잔액을 보여 준다", () => {
   const html = renderCredits(creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } }));
   assert.match(html, /API 크레딧/);
   assert.match(html, /청구서 금액이 아닙니다\./);
@@ -564,50 +564,6 @@ test("API 크레딧은 Hive 카드 하나에 캐릭터 얼굴·범위·추정 �
   assert.match(hive, />사용 10%</, "the bar fills with spent share, so its caption says used, not remaining");
   assert.doesNotMatch(html, /총액과 시작일을 넣으면/);
   assert.doesNotMatch(html, /만료일/, "the editor has no expiry field");
-});
-
-function googleWallet(extra = {}) {
-  return {
-    wallet: "google", scope: "project", source: "cloud-monitoring", since: "2026-10-24", sinceSource: "start-date",
-    status: "ok", error: null, observedAt: 1, priceSources: [], expiryDate: "2027-01-24", expiryDays: 66, unobserved: null, ledgerNote: null,
-    spentUsd: 4, spentComplete: false, totalUsd: 300, remainingUsd: 296, remainingUpperBound: false, upperBoundRows: true,
-    rows: [
-      { model: "gemini-4-argon", role: "hikari", inputTokens: 1_000_000, outputTokens: 0, otherTokens: 0, costUsd: 4, pricing: "upper-bound", pricingReason: "gross-price", errors429: 0 },
-      { model: "gemini-4-hydrogen", role: null, inputTokens: 0, outputTokens: 500_000, otherTokens: 0, costUsd: null, pricing: "unknown", pricingReason: null, errors429: 3 },
-    ],
-    ...extra,
-  };
-}
-
-test("Vertex 카드는 프로젝트 전체 사용량을 보여 주되 단가를 모르는 모델은 금액 미상이고 고정 쿼터는 공유 할당량으로 안내한다", () => {
-  const data = creditSnapshot({ hiveSetting: { totalUsd: 25, startDate: "2026-10-18" } });
-  data.google = googleWallet();
-  data.settings.google = { totalUsd: 300, startDate: "2026-10-24", expiryDate: "2027-01-24" };
-  const html = renderCredits(data);
-  assert.equal(html.match(/<section[^>]*data-credit-wallet=/g)?.length, 2);
-  const google = cardOf(html, "google");
-  assert.match(google, /Vertex \(Google Cloud\)/);
-  assert.match(google, /프로젝트 전체\(Cloud Monitoring\) · 2026-10-24부터/);
-  assert.match(google, /고정 쿼터는 조회할 수 없습니다\. 프로젝트가 할당량을 나눠 쓰기 때문에/);
-  assert.match(google, /gemini-4-hydrogen/);
-  assert.match(google, /단가 미상/, "no price in the table means no invented amount");
-  assert.match(google, /429 거절 3회/);
-  assert.match(google, /단가를 모르는 모델이 있어 사용액과 잔액을 추정하지 않습니다/);
-  assert.doesNotMatch(google, /role="progressbar"|추정 잔액<|\$296/, "an unpriced model keeps the balance from being shown as if it were exact");
-  assert.match(google, /D-66/);
-  assert.match(google, />크레딧 입력<|>수정</, "the card carries its own edit entry");
-});
-
-test("Vertex 카드는 ADC·모니터링 실패 사유를 밝히고 0% 막대를 그리지 않으며, 옛 사이드카 응답에는 카드를 만들지 않는다", () => {
-  const data = creditSnapshot();
-  data.google = googleWallet({ status: "error", error: "adc_unavailable", rows: [], spentUsd: 0, spentComplete: false, remainingUsd: null });
-  data.settings.google = { totalUsd: 300, startDate: "2026-10-24", expiryDate: "2027-01-24" };
-  const html = renderCredits(data);
-  assert.doesNotMatch(cardOf(html, "google"), /\$0(?:\.00)?</, "a failed read is never shown as zero spend");
-  assert.match(cardOf(html, "google"), /사용량을 읽지 못했습니다: Google 로그인\(ADC\)을 찾지 못했습니다/);
-  assert.doesNotMatch(cardOf(html, "google"), /role="progressbar"/);
-  assert.doesNotMatch(cardOf(html, "google"), /추정 잔액/);
-  assert.doesNotMatch(renderCredits(creditSnapshot()), /Vertex/);
 });
 
 test("크레딧을 넣기 전에는 사용량만 보이고 입력 안내가 나온다; 미상은 하한·상한으로, 조회 실패는 오류로 표시한다", () => {
@@ -674,15 +630,13 @@ test("Anthropic API 카드는 API 키 요청만 보이고 OAuth·미기록 요�
 });
 
 test("크레딧 카드는 추정과 따로 각 공급자 결제 화면으로 가는 새 탭 링크를 단다", () => {
-  const html = renderCredits({ ...creditSnapshot(), google: googleWallet(), anthropic: anthropicWallet() });
+  const html = renderCredits({ ...creditSnapshot(), anthropic: anthropicWallet() });
   const link = (wallet) => html.match(new RegExp(`<section[^>]*data-credit-wallet="${wallet}"[\\s\\S]*?<a ([^>]*data-billing-link="${wallet}"[^>]*)>`))?.[1];
   const hive = link("hive");
   const anthropic = link("anthropic");
-  const google = link("google");
-  assert.match(google ?? "", /href="https:\/\/console\.cloud\.google\.com\/billing\/credits"/);
   assert.match(hive ?? "", /href="https:\/\/portal\.deploy\.com\/"/);
   assert.match(anthropic ?? "", /href="https:\/\/platform\.claude\.com\/settings\/billing"/);
-  for (const attrs of [hive, google, anthropic]) {
+  for (const attrs of [hive, anthropic]) {
     assert.match(attrs, /target="_blank"/);
     assert.match(attrs, /rel="noopener noreferrer"/);
   }

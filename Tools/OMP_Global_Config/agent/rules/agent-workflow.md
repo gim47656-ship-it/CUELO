@@ -61,7 +61,6 @@ Skill은 필요하거나 요청했을 때만, 절차 Skill(`systematic-debugging
 | **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
 | **MITSU(미츠)** | `hive/zai-org/glm-5.3-flash` | 이 모델의 task child | 현재 세션만 전환 |
-| **HIKARI(히카리)** | `modelRoles.implGemini` 선택자(`:level` 제외, 없거나 해석 실패면 `google-vertex/gemini-4-argon`) | 이 모델의 task child | 현재 세션만 전환 |
 | **SHION(시온)** | `web6/gpt-6-pro` | `rule://web6-consult` 상담(child 아님) | 금지 |
 
 RIN과 MIO의 OAuth 계정은 세션 단위 정확한 pin이며 쓸 수 없으면 다른 계정이나 모델로 조용히 대체하지 않는다. `교체`가 실패하면 이전 세션 모델을 유지한다. SHION은 사용자가 명시했을 때만 쓰는 선택적 상담이다. 정본은 `harness-policy.json` `characterRouting`과 `extensions/character-voice.ts`다.

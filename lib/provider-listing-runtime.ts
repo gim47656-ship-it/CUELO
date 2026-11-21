@@ -41,7 +41,7 @@ function availableOAuthLogins(): Map<string, OAuthLoginGroup> {
 /**
  * True when every login the core declares for `id` is OAuth: no `api-key`
  * login, no key result, and no environment credential in its auth policy.
- * Such a provider (openai-codex, google-antigravity, google-gemini-cli) has no
+ * Such a provider (openai-codex) has no
  * API key to paste, even though it has models.
  */
 function declaresOnlyOAuth(id: string, group: OAuthLoginGroup | undefined): boolean {

@@ -260,7 +260,7 @@
 		},
 		"externalThinking": {
 			"label": "외부 Thinking",
-			"description": "사용자에게 표시되지 않는 비공개 스크래치패드이다. 지원되는 GPT, Claude, Gemini의 reasoning을 비활성화한다"
+			"description": "사용자에게 표시되지 않는 비공개 스크래치패드이다. 지원되는 모델의 reasoning을 비활성화한다"
 		},
 		"model.loopGuard.enabled": {
 			"label": "Loop Guard",
@@ -270,17 +270,13 @@
 			"label": "Loop Guard 산문 검사",
 			"description": "thinking 로그 외에 어시스턴트 산문 메시지에도 loop guard를 적용한다"
 		},
-		"model.loopGuard.toolCallReminder": {
-			"label": "Loop Guard 도구 호출 알림",
-			"description": "Gemini reasoning 스트림이 도구를 호출하지 않고 계획 헤더를 연속으로 다수 출력하면 중단하고 도구 호출을 요구하는 알림을 주입한다(Loop Guard 필요)"
-		},
 		"model.toolCallLoopGuard.enabled": {
 			"label": "도구 호출 Loop Guard",
 			"description": "여러 턴에 걸친 동일한 연속 도구 호출을 감지하고 교정용 steer를 주입한다"
 		},
 		"inlineToolDescriptors": {
 			"label": "인라인 도구 디스크립터",
-			"description": "시스템 프롬프트에 전체 도구 디스크립터를 렌더링하고 provider 도구 스키마에서 최상위/중첩 description을 제거해 디스크립터 텍스트를 한 번만 전송한다. Auto는 Gemini 모델에서 이를 활성화하고 그 외에는 비활성화한다"
+			"description": "시스템 프롬프트에 전체 도구 디스크립터를 렌더링하고 provider 도구 스키마에서 description을 제거해 같은 텍스트를 한 번만 전송한다"
 		},
 		"includeModelInPrompt": {
 			"label": "프롬프트에 모델 포함",
@@ -328,11 +324,7 @@
 		},
 		"tier.anthropic": {
 			"label": "서비스 티어 — Anthropic",
-			"description": "Claude 요청의 처리 티어. `priority`는 지원되는 직접 Anthropic 모델에서 fast 모드(`speed: \"fast\"`)를 활성화하며, Bedrock/Vertex Claude 및 OpenRouter 경유에서는 무시된다."
-		},
-		"tier.google": {
-			"label": "서비스 티어 — Google",
-			"description": "Gemini(Google AI Studio + Vertex) 요청 및 OpenRouter를 경유하는 Google 계열 모델의 처리 티어 (none = 생략). 최상위 `serviceTier` 필드로 전송한다."
+			"description": "Claude 요청의 처리 티어. `priority`는 지원되는 직접 Anthropic 모델에서 fast 모드(`speed: \"fast\"`)를 활성화하며, Bedrock 및 OpenRouter 경유에서는 무시된다."
 		},
 		"tier.subagent": {
 			"label": "서비스 티어 — 서브에이전트",
@@ -364,7 +356,7 @@
 		},
 		"retry.fallbackChains": {
 			"label": "재시도 폴백 체인",
-			"description": "모델 역할, 모델 선택자(\"provider/model-id\"), 또는 provider 와일드카드(\"provider/*\")를 순서가 있는 폴백 선택자에 매핑하는 JSON 객체이다. 예: {\"default\":[\"openai/gpt-4o-mini\"],\"google-antigravity/*\":[\"google/*\",\"google-vertex/*\"]}. 모델 지향 키는 역할과 무관하게 해당 모델/provider가 활성일 때마다 적용되며, \"provider/*\" 항목은 실패한 모델의 id를 유지한 채 provider만 교체한다. id 접두사 와일드카드(\"openrouter/google/*\")는 실패한 모델의 순수 id에 접두사를 다시 붙이고(google-antigravity/gemini-x -> openrouter/google/gemini-x), 키로 사용될 때는 해당 접두사 아래의 그 provider id에만 매칭된다."
+			"description": "모델 역할, 모델 선택자 또는 provider 와일드카드별로 순서가 있는 폴백 선택자를 지정한다. 예: {\"default\":[\"openai/gpt-4o-mini\"]}. `provider/*`는 실패한 모델의 id를 유지하고 provider만 교체한다."
 		},
 		"retry.fallbackRevertPolicy": {
 			"label": "폴백 복귀 정책",
@@ -1221,14 +1213,6 @@
 		"providers.webSearchTimeoutSeconds": {
 			"label": "웹 검색 타임아웃",
 			"description": "web_search가 다음 폴백으로 넘어가기 전 각 프로바이더 검색 전송에 적용되는 절대 타임아웃이며 단위는 초이다(최대 300)"
-		},
-		"providers.webSearchGeminiModel": {
-			"label": "Gemini web_search 모델",
-			"description": "Gemini Google Search grounding에 사용할 모델 ID이다. 기본값은 gemini-2.5-flash이다."
-		},
-		"providers.antigravityEndpoint": {
-			"label": "Antigravity 엔드포인트 모드",
-			"description": "google-antigravity 프로바이더의 엔드포인트 라우팅 전략이다(chat, search, image, discovery)"
 		},
 		"providers.imageOrder": {
 			"label": "이미지 프로바이더 순서",

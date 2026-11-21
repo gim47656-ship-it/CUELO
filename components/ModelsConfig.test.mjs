@@ -10,7 +10,7 @@ const {
   setCompatBool,
   updateHeaderRow,
 } = await jiti.import("./models-config-helpers.ts");
-const { ModelsConfig } = await jiti.import("./ModelsConfig.tsx");
+const { ModelsConfig, API_OPTIONS, PROVIDER_ICONS } = await jiti.import("./ModelsConfig.tsx");
 const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
 
 test("disabling the developer role writes an explicit false override", () => {
@@ -58,4 +58,10 @@ test("Save stays disabled while the stored config is still loading", () => {
   const save = html.match(/<button[^>]*>(?:(?!<\/button>)[\s\S])*<span>Save<\/span><\/button>/)?.[0];
   assert.ok(save, "the footer Save button is rendered");
   assert.match(save, /\sdisabled=""/);
+});
+
+test("provider API options and icons list no Google entry", () => {
+  const names = [...API_OPTIONS, ...Object.keys(PROVIDER_ICONS)];
+  assert.ok(names.length > 0);
+  assert.deepEqual(names.filter((name) => /google|gemini|vertex|aistudio/i.test(name)), []);
 });

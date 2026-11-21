@@ -69,20 +69,18 @@ function deps(cwd: string, complete: Complete, extra: Partial<SlopDeps> = {}): S
   return { cwd, ledgerPath: join(cwd, "ledger.jsonl"), complete: withLanguages(complete), mainModel: AUTHOR, head: async () => undefined, ...extra };
 }
 
-describe("Hydrogen advisory and a cross-family verdict through registered slop_check", () => {
-  const HYDROGEN = "aistudio/gemini-4-hydrogen";
+describe("one cross-family judge through registered slop_check", () => {
   const OPUS = "anthropic/claude-opus-5-5";
   const ASTRA = "openai-codex/gpt-6.2-astra";
   const SOL = "openai-codex/gpt-6.2-sol";
-  type Scenario = "both" | "unavailable" | "relay-down" | "error" | "transient" | "burst" | "malformed" | "opus-error" | "opus-finding";
+  type Scenario = "clean" | "opus-error" | "opus-finding";
 
-  async function run(author: string, scenario: Scenario, fallback?: string) {
+  async function run(author: string, scenario: Scenario) {
     const cwd = scratch();
     const ledger = join(cwd, "ledger.jsonl");
-    writeFileSync(join(cwd, "a.md"), scenario === "burst" ? KO_SLOP.repeat(6_000) : KO_SLOP);
+    writeFileSync(join(cwd, "a.md"), KO_SLOP);
     process.env.OMP_SLOP_GATE_LEDGER = ledger;
     const hits: string[] = [];
-    const hydrogenBatches = new Set<string>();
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
       const provider = new URL(request.url).pathname.split("/")[1];
       const body = await request.json() as { model: string; messages: { role: string; content: string | { text?: string }[] }[] };
@@ -92,51 +90,39 @@ describe("Hydrogen advisory and a cross-family verdict through registered slop_c
       const user = body.messages.find((message) => message.role === "user")?.content;
       const prompt = typeof user === "string" ? user : user?.map((part) => part.text ?? "").join("") ?? "";
       const ids = [...prompt.matchAll(/<artifact id="([^"]+)"/g)].map((match) => match[1]!);
-      if ((!identifying && name === OPUS && scenario === "opus-error") || (name === HYDROGEN && scenario === "error")) {
+      if (!identifying && name === OPUS && scenario === "opus-error") {
         return Response.json({ error: { message: "scripted outage", code: 400 } }, { status: 400 });
       }
-      if (name === HYDROGEN && (scenario === "transient" || scenario === "burst")) {
-        hydrogenBatches.add(ids.join(","));
-        return Response.json({ error: { message: "Service Unavailable", code: 503 } }, { status: 503, headers: { "x-should-retry": "false" } });
-      }
       const answer = identifying ? { files: ids.map((id) => ({ id, languages: ["ko"] })) }
-        : name === HYDROGEN || (name === OPUS && scenario === "opus-finding") ? dirty(ids) : clean(ids);
-      const content = name === HYDROGEN && scenario === "malformed" ? "not JSON" : JSON.stringify(answer);
+        : name === OPUS && scenario === "opus-finding" ? dirty(ids) : clean(ids);
+      const content = JSON.stringify(answer);
       const base = { id: "scripted", object: "chat.completion.chunk", created: 0, model: body.model };
       return new Response([
         { ...base, choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }] },
         { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
       ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     } });
-    const relay = scenario === "relay-down" ? Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }) : server;
-    const relayPort = relay.port;
-    if (relay !== server) await relay.stop(true);
     try {
       const registry = new ModelRegistry(await AuthStorage.create(join(cwd, "agent.db")), join(cwd, "models.yml"));
-      for (const selector of new Set([OPUS, ASTRA, ...(fallback ? [fallback] : []), ...(scenario === "unavailable" ? [] : [HYDROGEN])])) {
+      for (const selector of [OPUS, ASTRA]) {
         const [provider, id] = selector.split("/") as [string, string];
-        const port = selector === HYDROGEN ? relayPort : server.port;
-        const host = selector === HYDROGEN && scenario === "both" ? "localhost" : "127.0.0.1";
-        registry.registerProvider(provider, { baseUrl: `http://${host}:${port}/${provider}/v1`, apiKey: "test", api: "openai-completions", models: [
+        registry.registerProvider(provider, { baseUrl: `http://127.0.0.1:${server.port}/${provider}/v1`, apiKey: "test", api: "openai-completions", models: [
           { id, name: id, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
         ] });
       }
-      const settings = Settings.isolated({ modelRoles: {
-        crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS, crossReviewAdvisory: HYDROGEN,
-        ...(fallback ? { slopAdvisoryFallback: fallback } : {}),
-      } });
+      const settings = Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS } });
       return await withActiveSettings(settings, async () => {
         const model = registry.find("anthropic", "claude-opus-5-5");
         const ctx = { cwd, agent: { kind: "main" }, model, modelRegistry: registry,
           models: createExtensionModelQuery(registry, findScopedSettings(cwd), () => model),
-          sessionManager: { getSessionId: () => "slop-hydrogen", getLeafId: () => null } } as never;
+          sessionManager: { getSessionId: () => "slop-smoke", getLeafId: () => null } } as never;
         let tool!: Parameters<ExtensionAPI["registerTool"]>[0];
         slopGate({ zod, registerTool: (value: typeof tool) => { tool = value; }, on: () => {} } as unknown as ExtensionAPI);
         const response = await tool.execute("slop-smoke", { files: ["a.md"], authors: [author] } as never, signal, undefined, ctx);
         const text = response.content[0];
         if (text?.type !== "text") throw new Error("slop_check did not return text");
         const result = JSON.parse(text.text) as ReviewOutcome;
-        return { hits, result, records: readSlopRecords(ledger), cwd, toolError: response.isError ?? false, hydrogenBatches };
+        return { hits, result, records: readSlopRecords(ledger), toolError: response.isError ?? false };
       });
     } finally {
       server.stop(true);
@@ -144,100 +130,22 @@ describe("Hydrogen advisory and a cross-family verdict through registered slop_c
   }
 
   // 2026-11-19 user decision: Opus never judges text an Anthropic model wrote; the OpenAI slot does. Other authors keep Opus.
-  test.each([[OPUS, ASTRA], [SOL, OPUS], [HYDROGEN, OPUS]])("both models answer for author %s, and %s alone judges", async (author, judge) => {
-    const { hits, result, records, toolError } = await run(author, "both");
-    expect(hits[0]).toBe(`language:${judge}`);
-    expect(hits.slice(1).sort()).toEqual([`review:${HYDROGEN}`, `review:${judge}`].sort());
+  test.each([[OPUS, ASTRA], [SOL, OPUS]])("author %s uses only %s for language and review", async (author, judge) => {
+    const { hits, result, records, toolError } = await run(author, "clean");
+    expect(hits).toEqual([`language:${judge}`, `review:${judge}`]);
     expect(toolError).toBe(false);
     expect(result.authors).toEqual([author]);
-    expect(result.files[0]).toMatchObject({ status: "pass", findings: [], advisoryFindings: [{ id: "A-ADV-1", reviewer: "advisory", quoteFound: true }] });
-    expect(result.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: HYDROGEN, status: "ok" }));
-    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(judge);
-    expect(records.find((record) => record.type === "slop-review")).toMatchObject({ model: judge, reviewers: expect.arrayContaining([
-      expect.objectContaining({ model: HYDROGEN, status: "ok" }), expect.objectContaining({ model: judge, status: "ok" }),
-    ]) });
-  });
-
-  test.each(["unavailable", "relay-down", "error", "malformed"] as const)("Hydrogen %s cannot block the Opus verdict", async (scenario) => {
-    const { hits, result, records, toolError } = await run(SOL, scenario);
-    const skipped = scenario === "unavailable" || scenario === "relay-down";
-    expect(hits[0]).toBe(`language:${OPUS}`);
-    expect(hits.slice(1).sort()).toEqual([...(skipped ? [] : [`review:${HYDROGEN}`]), `review:${OPUS}`]);
-    expect(toolError).toBe(false);
     expect(result.files[0]).toMatchObject({ status: "pass", findings: [] });
-    const status = result.reviewers?.find((entry) => entry.family === "advisory");
-    expect(status).toMatchObject({ model: HYDROGEN, status: skipped ? "skipped" : scenario === "malformed" ? "unparsable" : "error" });
-    if (scenario === "relay-down") expect(status?.error).toContain("relay is not listening");
-    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(OPUS);
+    expect(result.reviewers).toMatchObject([{ model: judge, status: "ok" }]);
+    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(judge);
+    expect(records.find((record) => record.type === "slop-review")).toMatchObject({ model: judge, reviewers: [{ model: judge, status: "ok" }] });
   });
-
-  test.each(["transient", "unavailable", "relay-down"] as const)("Hydrogen %s uses the one configured advisory route, without changing the required judge", async (scenario) => {
-    const { hits, result, records } = await run(ASTRA, scenario, SOL);
-    expect(hits.filter((hit) => hit.endsWith(`:${SOL}`))).toEqual([`review:${SOL}`]);
-    expect(result.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: SOL, status: "ok" }));
-    expect(records.find((record) => record.type === "slop-pass")?.model).toBe(OPUS);
-  });
-
-  test("slop advisory never duplicates the current required reviewer", async () => {
-    const { hits, result } = await run(OPUS, "transient", ASTRA);
-    expect(hits.filter((hit) => hit === `review:${ASTRA}`)).toHaveLength(1);
-    expect(result.reviewers?.find((entry) => entry.family === "advisory")).toMatchObject({ model: HYDROGEN, status: "error" });
-  });
-
-  test("queued advisory batches use the direct candidate after Hydrogen's operating failure", async () => {
-    const { hits, hydrogenBatches } = await run(ASTRA, "burst", SOL);
-    const fallbackCalls = hits.filter((hit) => hit === `review:${SOL}`).length;
-    expect(hydrogenBatches.size).toBeGreaterThan(0);
-    expect(hydrogenBatches.size).toBeLessThanOrEqual(MAX_PARALLEL_BATCHES);
-    expect(fallbackCalls).toBeGreaterThan(MAX_PARALLEL_BATCHES);
-    expect(fallbackCalls).toBe(hits.filter((hit) => hit === `review:${OPUS}`).length);
-  });
-
-  test("advisory findings cannot be resolved or replace a failed Opus verdict", async () => {
-    for (const scenario of ["opus-error", "opus-finding"] as const) {
-      const { result, records, cwd, toolError } = await run(SOL, scenario);
-      expect(toolError).toBe(scenario === "opus-error");
-      expect(result.files[0]).toMatchObject({ status: scenario === "opus-error" ? "error" : "findings", advisoryFindings: [{ id: "A-ADV-1" }] });
-      expect(records.some((record) => record.type === "slop-pass")).toBe(false);
-      const resolution = resolveFindings(result.reviewId!, [{ id: "A-ADV-1", status: "refuted", evidence: "This advice cannot close a required finding." }], { ledgerPath: join(cwd, "ledger.jsonl") });
-      expect(resolution).toMatchObject({ passed: [], rejected: [{ id: "A-ADV-1" }] });
-    }
-  });
-
-  test("Hydrogen starts first; a late opinion does not hold up Opus or change the verdict", async () => {
-    const cwd = scratch();
-    writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-    const late = Promise.withResolvers<{ model: string; text: string }>();
-    const started: string[] = [];
-    let advisorySignal: AbortSignal | undefined;
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, async (family, _, _prompt, attempt) => {
-      started.push(family);
-      if (family === "advisory") { advisorySignal = attempt; return late.promise; }
-      expect(advisorySignal?.aborted).toBe(false);
-      return { model: OPUS, text: JSON.stringify(clean(["a1"])) };
-    }, { advisory: async () => ({ model: HYDROGEN }), advisoryTimeoutMs: 30 }), signal);
-    late.resolve({ model: HYDROGEN, text: JSON.stringify(dirty(["a1"])) });
-    expect(started).toEqual(["advisory", "anthropic"]);
-    expect(advisorySignal?.aborted).toBe(true);
-    expect(out.files[0]).toMatchObject({ status: "pass", findings: [] });
-    expect(out.files[0]?.advisoryFindings).toBeUndefined();
-    expect(out.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", model: HYDROGEN, status: "late" }));
-  });
-
-  test("a stalled advisory preflight cannot consume the full opinion budget before Opus starts", async () => {
-    const cwd = scratch();
-    writeFileSync(join(cwd, "a.md"), KO_PLAIN);
-    const stalled = Promise.withResolvers<{ model: string }>();
-    let started = 0;
-    let requiredDelay = Infinity;
-    const out = await reviewFiles(["a.md"], undefined, deps(cwd, async (family) => {
-      expect(family).toBe("anthropic");
-      requiredDelay = performance.now() - started;
-      return { model: OPUS, text: JSON.stringify(clean(["a1"])) };
-    }, { advisory: () => { started = performance.now(); return stalled.promise; }, advisoryTimeoutMs: 1500 }), signal);
-    expect(requiredDelay).toBeLessThan(1250);
-    expect(out.files[0]).toMatchObject({ status: "pass" });
-    expect(out.reviewers).toContainEqual(expect.objectContaining({ family: "advisory", status: "late" }));
+  test.each(["opus-error", "opus-finding"] as const)("the required judge alone controls the pass: %s", async (scenario) => {
+    const { hits, result, records, toolError } = await run(SOL, scenario);
+    expect(hits).toEqual([`language:${OPUS}`, `review:${OPUS}`]);
+    expect(toolError).toBe(scenario === "opus-error");
+    expect(result.files[0]).toMatchObject({ status: scenario === "opus-error" ? "error" : "findings" });
+    expect(records.some((record) => record.type === "slop-pass")).toBe(false);
   });
 });
 

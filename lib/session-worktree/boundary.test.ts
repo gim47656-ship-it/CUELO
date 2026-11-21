@@ -31,7 +31,7 @@ if (!mode) {
       }));
       mock.module("../session-reader", () => ({ invalidateSessionListCache() {}, listAllSessions: async () => [] }));
       mock.module("../file-access", () => ({ allowFileRoot() {}, getAllowedFileRoots: async () => [root], isExistingFilePathAllowed: () => true }));
-      mock.module("../omp-runtime", () => ({ findModelWithRecovery() {}, getOmpRuntime() {} }));
+      mock.module("../omp-runtime", () => ({ findModelWithRecovery() {}, getOmpRuntime() {}, getSettingsForCwd: async () => ({}) }));
       mock.module("../update-maintenance", () => ({ getUpdateMutationBlock: () => null }));
       const { POST } = await import("../../app/api/agent/new/route");
       for (const flag of [true, undefined, false]) {

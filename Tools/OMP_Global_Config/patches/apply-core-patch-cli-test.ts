@@ -143,6 +143,26 @@ const reverted = run(["--revert"]);
 check("--revert 는 복원 완료와 0 으로 끝난다", reverted.code === 0 && reverted.out.includes("복원 완료"), `code=${reverted.code} out=${reverted.out.slice(-2_000)}`);
 check("--revert 는 원본 바이트로 되돌린다", fixtureUnchanged());
 
+// The obsolete provider patch once changed the tail of a retained account-pin body.
+const recovery = join(fixture, "src/session/turn-recovery.ts");
+const pristineRecovery = readFileSync(recovery, "utf8");
+const cleanTail = "if (accountPolicyDenial && currentModel) {";
+const deployedTail = "if (!switchedModel && accountPolicyDenial && currentModel) {";
+if (pristineRecovery.includes("kUsageLimitRequestProvider") && pristineRecovery.includes(cleanTail)) {
+	const result = run([]);
+	if (result.code !== 0) throw new Error(result.out);
+	const cleanApplied = readFileSync(recovery, "utf8");
+	check("fresh apply keeps the account-policy tail clean", cleanApplied.includes(cleanTail) && !cleanApplied.includes(deployedTail));
+	const deployed = cleanApplied.replace(cleanTail, deployedTail);
+	writeFileSync(recovery, deployed);
+	const legacyCheck = run(["--check"]);
+	check("old account-policy tail passes read-only --check", legacyCheck.code === 0 && readFileSync(recovery, "utf8") === deployed, legacyCheck.out.slice(-500));
+	const legacyRevert = run(["--revert"]);
+	check("old account-policy tail reverts the account pin, leaving the original tail", legacyRevert.code === 0 &&
+		readFileSync(recovery, "utf8") === pristineRecovery.replace(cleanTail, deployedTail), legacyRevert.out.slice(-500));
+	writeFileSync(recovery, pristineRecovery);
+}
+
 const notFound = run(["--check"], { env: { ...baseEnv, OMP_CORE_PATCH_TARGET: emptyTarget } });
 check("설치가 없으면 NOTFOUND 와 2 다", notFound.code === 2 && notFound.out.includes("NOTFOUND"), `code=${notFound.code} out=${notFound.out.slice(-200)}`);
 

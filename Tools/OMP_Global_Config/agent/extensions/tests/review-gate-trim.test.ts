@@ -300,18 +300,17 @@ describe("필수 reviewer의 해석할 수 없는 답은 같은 자리에 한 �
     expect(out.failedAttempts).toMatchObject([{ family: "anthropic", status: "unparsable", raw: TRUNCATED, error: expect.stringContaining("invalid JSON") }]);
   });
 
-  test("자문 reviewer와 호출 오류는 다시 묻지 않는다", async () => {
+  test("a required call error is not retried", async () => {
     const cwd = scratch();
     writeFileSync(join(cwd, ".slop-gate.json"), JSON.stringify({ visible: ["a.md"] }));
     writeFileSync(join(cwd, "a.md"), KO);
     const asked: string[] = [];
     const complete: Complete = async (family) => {
       asked.push(family);
-      if (family === "anthropic") throw new ReviewerCallError("Model stopped: length", "fixture/anthropic", TRUNCATED);
-      return { model: `fixture/${family}`, text: "not json" };
+      throw new ReviewerCallError("Model stopped: length", `fixture/${family}`, TRUNCATED);
     };
-    const out = await reviewFiles(["a.md"], undefined, { ...slopDeps(cwd, complete), advisory: async () => ({ model: "fixture/advisory" }) }, signal);
-    expect(asked.sort()).toEqual(["advisory", "anthropic"]);
+    const out = await reviewFiles(["a.md"], undefined, slopDeps(cwd, complete), signal);
+    expect(asked).toEqual(["anthropic"]);
     expect(out.files[0]!.status).toBe("error");
   });
 });

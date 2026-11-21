@@ -20,8 +20,7 @@ function modelFromValue(value: unknown): DiscoveredModel | null {
 
   const rawId = cleanString(value.id) ?? cleanString(value.model) ?? cleanString(value.name);
   if (!rawId) return null;
-  const id = rawId.startsWith("models/") ? rawId.slice("models/".length) : rawId;
-  if (!id) return null;
+  const id = rawId;
   const name = cleanString(value.display_name)
     ?? cleanString(value.displayName)
     ?? (cleanString(value.id) || cleanString(value.model) ? cleanString(value.name) : undefined);
@@ -61,15 +60,11 @@ export function buildModelsListUrl(baseUrl: string, api: string): URL {
   if (!/\/models$/i.test(trimmedPath)) {
     let path = trimmedPath;
     if (api === "anthropic-messages" && !/\/v\d+(?:beta)?$/i.test(path)) path += "/v1";
-    if (api === "google-generative-ai" && !/\/v\d+(?:beta)?$/i.test(path)) path += "/v1beta";
     url.pathname = `${path}/models`.replace(/\/+/g, "/");
   }
 
   if (api === "anthropic-messages" && !url.searchParams.has("limit")) {
     url.searchParams.set("limit", "1000");
-  }
-  if (api === "google-generative-ai" && !url.searchParams.has("pageSize")) {
-    url.searchParams.set("pageSize", "1000");
   }
   return url;
 }

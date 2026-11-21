@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { callModel, skimQuestion, withFallback, DRAFT_FALLBACK, HelperCallError, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
+import { callModel, skimQuestion, withFallback, DRAFT_FALLBACK, ROLE_PRIMARY, HelperCallError, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
 
 const directories: string[] = [];
 const signal = new AbortController().signal;
@@ -15,13 +15,12 @@ function fixture() {
 }
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function context(cwd: string): ExtensionContext { return { cwd } as ExtensionContext; }
-const GEMINI = "google-vertex/gemini-4-argon";
-/** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
-const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
+const TEST_MODEL = "openai-codex/gpt-6.1-terra";
+const reply = (text: string, model: string = TEST_MODEL): HelperAnswer => ({ text, model });
 async function skimText(...args: Parameters<typeof skimQuestion>): Promise<string> { return (await skimQuestion(...args)).text; }
 
 describe("skim", () => {
-  test("Gemini에 허용 파일만 보내고 secret·gitignore 대상은 명시해도 제외한다", async () => {
+  test("주 모델에 허용 파일만 보내고 secret·gitignore 대상은 명시해도 제외한다", async () => {
     const cwd = fixture();
     mkdirSync(join(cwd, "docs"));
     mkdirSync(join(cwd, "private"));
@@ -35,11 +34,11 @@ describe("skim", () => {
     writeFileSync(join(cwd, "docs", "note.md"), ["api", "key"].join("_") + " = \"not-a-real-key\"");
     let prompt = "";
     const answer = await skimText({ paths: ["docs", "docs/ignored.md", "docs/credentials.json", ".env.local", "private"], question: "두 번째 줄은?" },
-      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe(GEMINI); prompt = input; return reply("Second fact (docs/guide.md:L2)"); });
+      context(cwd), signal, async (input, _ctx, _signal, model) => { expect(model).toBe(ROLE_PRIMARY); prompt = input; return reply("Second fact (docs/guide.md:L2)"); });
     expect(prompt).toContain("<file path=\"docs/guide.md\">");
     expect(prompt).toContain("2: Second fact");
     expect(prompt).not.toMatch(/IGNORED_SECRET_MARKER|CREDENTIAL_SECRET_MARKER|ENV_SECRET_MARKER|PRIVATE_SECRET_MARKER|not-a-real-key/);
-    expect(answer.startsWith(`model: ${GEMINI}`)).toBe(true);
+    expect(answer.startsWith(`model: ${TEST_MODEL}`)).toBe(true);
     expect(answer).toContain("Second fact (docs/guide.md:L2)");
     expect(answer).toContain("docs/ignored.md: gitignore로 건너뜀");
     expect(answer).toContain("docs/credentials.json: 비밀 경로 제외");
@@ -114,7 +113,7 @@ describe("skim", () => {
     expect(result).toContain("docs/oversize.md: 거대 파일 제외");
   });
 
-  test("Gemini 실패 뒤 고정 대체(Sonnet)에 같은 비밀 제외 prompt를 한 번만 재사용하고 실제 모델·원문 오류를 표시한다", async () => {
+  test("주 모델 실패 뒤 고정 대체(Sonnet)에 같은 비밀 제외 prompt를 한 번만 재사용하고 실제 모델·원문 오류를 표시한다", async () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "guide.md"), "Public fact");
     writeFileSync(join(cwd, ".env.local"), "PRIVATE_MARKER");
@@ -122,14 +121,14 @@ describe("skim", () => {
     const result = await skimText({ paths: ["guide.md", ".env.local"], question: "근거?" }, context(cwd), signal,
       async (prompt, _ctx, _signal, model) => {
         calls.push({ prompt, model });
-        if (model === GEMINI) throw new Error("Gemini original 429");
+        if (model === ROLE_PRIMARY) throw new Error("primary original 429");
         return reply("Public fact (guide.md:L1)", model);
       });
-    expect(calls.map(({ model }) => model)).toEqual([GEMINI, "anthropic/claude-sonnet-5-5"]);
+    expect(calls.map(({ model }) => model)).toEqual([ROLE_PRIMARY, "anthropic/claude-sonnet-5-5"]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
     expect(result.startsWith("model: anthropic/claude-sonnet-5-5")).toBe(true);
-    expect(result).toContain("Gemini 실패: Gemini original 429");
+    expect(result).toContain("@skim 실패: primary original 429");
     expect(result).toContain("Public fact (guide.md:L1)");
     expect(result).toContain(".env.local: 비밀 경로 제외");
   });
@@ -141,11 +140,11 @@ describe("skim", () => {
     const result = await skimText({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
       async (_prompt, _ctx, _signal, model) => {
         called.push(model);
-        throw new Error(model.startsWith("google-") ? "Gemini original timeout" : "Sonnet original 403");
+        throw new Error(model === ROLE_PRIMARY ? "primary original timeout" : "Sonnet original 403");
       });
-    expect(called).toEqual([GEMINI, "anthropic/claude-sonnet-5-5"]);
+    expect(called).toEqual([ROLE_PRIMARY, "anthropic/claude-sonnet-5-5"]);
     expect(result).toContain("model: none");
-    expect(result).toContain("Gemini 실패: Gemini original timeout");
+    expect(result).toContain("@skim 실패: primary original timeout");
     expect(result).toContain("Sonnet 실패: Sonnet original 403");
   });
 
@@ -185,11 +184,10 @@ describe("skim", () => {
         cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 };
       const sessionManager = SessionManager.inMemory(cwd);
       sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "질문" }], timestamp: Date.now() });
-      const ctx = { cwd, sessionManager, models: { resolve: () => model },
+      const ctx = { cwd, sessionManager, models: { resolve: (selector: string) => selector === "anthropic/claude-sonnet-5-5" ? model : undefined },
         modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
-      // Gemini는 응답 없이 실패한다 → 관측한 usage가 없으므로 기록하지 않는다.
       const viaFallback: SkimCompletion = (prompt, ctx, attempt, requested) =>
-        requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
+        requested === ROLE_PRIMARY ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
       const ok = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
       const empty = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
       expect(ok).toContain("model: anthropic/claude-sonnet-5-5");
@@ -225,10 +223,10 @@ describe("skim", () => {
       const model = { id: "claude-sonnet-5-5", name: "local", api: "openai-completions", provider: "anthropic",
         baseUrl: `http://127.0.0.1:${server.port}/v1`, reasoning: false, input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 150000 };
-      const ctx = { cwd, sessionManager: SessionManager.inMemory(cwd), models: { resolve: () => model },
+      const ctx = { cwd, sessionManager: SessionManager.inMemory(cwd), models: { resolve: (selector: string) => selector === "anthropic/claude-sonnet-5-5" ? model : undefined },
         modelRegistry: { getApiKey: async () => "local", resolver: () => "local" } } as unknown as ExtensionContext;
       const viaFallback: SkimCompletion = (prompt, ctx, attempt, requested) =>
-        requested.startsWith("google-") ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
+        requested === ROLE_PRIMARY ? Promise.reject(new Error("no response")) : callModel(prompt, ctx, attempt, requested);
       const result = await skimText({ paths: ["guide.md"], question: "?" }, ctx, signal, viaFallback);
       expect(result).toContain("model: anthropic/claude-sonnet-5-5");
       expect(result).toContain("긴 답의 앞부분 (guide.md:L1)");
@@ -248,7 +246,7 @@ describe("skim", () => {
     const fail: SkimCompletion = async (_p, _c, _s, model) => { throw new Error(`${model} down`); };
     expect((await run(["guide.md"], "?", fail)).isError).toBe(true);
     expect((await run(["guide.md"], "?", async (_p, _c, _s, model) => {
-      if (model === GEMINI) throw new Error("first down");
+      if (model === ROLE_PRIMARY) throw new Error("first down");
       return reply("ok", model);
     })).isError).toBe(false);
     expect((await run(["guide.md"], " ", fail))).toEqual({ text: "model: none\n질문과 경로를 하나 이상 지정해 주세요.", isError: false });
@@ -263,7 +261,7 @@ describe("skim", () => {
     }, controller.signal);
     expect(cancelled.isError).toBe(false);
     expect(cancelled.text).toContain("model: none");
-    expect(called).toEqual([GEMINI]);
+    expect(called).toEqual([ROLE_PRIMARY]);
   });
 
   test("withFallback: 설정한 대체 대상은 사용자 취소 뒤 부르지 않고, 주 모델과 같은 이름이면 다시 부르지 않으며, 표지를 그대로 받는다", async () => {
@@ -272,30 +270,30 @@ describe("skim", () => {
     const cancelledCalls: string[] = [];
     const cancelled = await withFallback(async (requested) => { cancelledCalls.push(requested); controller.abort(); throw new Error("aborted"); }, controller.signal, target);
     expect(cancelled.status).toBe("cancelled");
-    expect(cancelledCalls).toEqual([GEMINI]);
+    expect(cancelledCalls).toEqual([ROLE_PRIMARY]);
     const sameCalls: string[] = [];
     const same = await withFallback(async (requested) => { sameCalls.push(requested); throw new HelperCallError("down", "x/terra"); }, signal, target);
     expect(same).toMatchObject({ status: "failed" });
     expect(same.failures.at(-1)).toContain("modelRoles.draftFallback 모델과 같아 다시 호출하지 않았습니다");
-    expect(sameCalls).toEqual([GEMINI]);
+    expect(sameCalls).toEqual([ROLE_PRIMARY]);
     const calls: string[] = [];
     const done = await withFallback(async (requested) => {
       calls.push(requested);
-      if (requested === GEMINI) throw new Error("primary down");
+      if (requested === ROLE_PRIMARY) throw new Error("primary down");
       return { model: "x/terra", value: "ok" };
     }, signal, target);
     expect(done).toMatchObject({ status: "done", model: "x/terra", value: "ok" });
-    expect(calls).toEqual([GEMINI, DRAFT_FALLBACK]);
+    expect(calls).toEqual([ROLE_PRIMARY, DRAFT_FALLBACK]);
   });
 
   test("withFallback: 설정한 대체 대상의 실패는 모델을 밝히지 않는 오류도 대체 모델 이름으로 남긴다", async () => {
     const target = { marker: DRAFT_FALLBACK, name: "x/terra", label: "modelRoles.draftFallback" } as const;
     const out = await withFallback(async () => { throw new Error("boom"); }, signal, target);
-    expect(out.failures).toEqual(["Gemini 실패: boom", "x/terra 실패: boom"]);
+    expect(out.failures).toEqual(["@primary 실패: boom", "x/terra 실패: boom"]);
   });
 
   test("core Settings가 별도 skim 슬롯을 그대로 해석한다", () => {
-    const settings = Settings.isolated({ modelRoles: { skim: "google-antigravity/gemini-3.8-flash" } });
-    expect(settings.getModelRole("skim")).toBe("google-antigravity/gemini-3.8-flash");
+    const settings = Settings.isolated({ modelRoles: { skim: TEST_MODEL } });
+    expect(settings.getModelRole("skim")).toBe(TEST_MODEL);
   });
 });

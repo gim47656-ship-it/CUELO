@@ -5,8 +5,8 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
 import { docx, parseCsv, parseWorkbook, xlsx } from "./draft/ooxml";
 import { findPdfBackend, renderPdf } from "./draft/pdf";
-import { beforeModelAbort, isHydrogen, modelRoleSelector } from "./lib/model-routes";
-import { GEMINI as DRAFT_PRIMARY, collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
+import { beforeModelAbort, modelRoleSelector } from "./lib/model-routes";
+import { ROLE_PRIMARY as DRAFT_PRIMARY, collect, completeRole, HelperCallError, resolveDraftFallback, secretFileName, toolResult, withFallback, type HelperAnswer, type HelperModel, type HelperResult } from "./skim";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 skim.ts 안에서 지연 import한다.
 
 // Use the provider model's output limit and reject truncated drafts.
@@ -166,25 +166,24 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
         model = ctx.models?.resolve("@draft");
       } catch (error) {
         // This is the synchronous catalog lookup; credential challenges happen in the model call.
-        resolutionError = new HelperCallError(message(error), selector, { cause: error }, true);
+        resolutionError = new HelperCallError(message(error), selector, { cause: error });
       }
     }
     const primary = model ? `${model.provider}/${model.id}` : selector ?? "@draft";
-    const direct = isHydrogen(primary);
-    const fallback = await resolveDraftFallback(ctx, direct);
+    const fallback = await resolveDraftFallback(ctx);
     const outcome = await withFallback(async (requested) => {
       if (resolutionError && requested === DRAFT_PRIMARY) throw resolutionError;
       const attempt = AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]);
       const answer = await beforeModelAbort(attempt, () => complete
         ? complete(prompt, ctx, attempt, requested)
         : completeRole(prompt, ctx, attempt, requested, { role: "draft", primary: { selector, model } }));
-      if (!answer.text.trim()) throw new HelperCallError(`${answer.model}가 빈 답을 반환했습니다.`, answer.model);
+      if (!answer.text.trim()) throw new HelperCallError(`${answer.model}가 빈 답을 반환했습니다.`, answer.model, { providerFailure: true });
       try {
         return { model: answer.model, value: prepare(target.format, unwrap(answer.text), title) };
       } catch (error) {
         throw new HelperCallError(message(error), answer.model, { cause: error });
       }
-    }, signal, fallback, { ctx, role: "draft", primary, direct });
+    }, signal, fallback, { ctx, role: "draft", primary });
     if (outcome.status !== "done") {
       return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: outcome.status === "failed" };
     }

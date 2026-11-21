@@ -1,8 +1,7 @@
 /**
- * Fallback speech-to-text through ChatGPT's dictation endpoint (`POST {CODEX_BASE_URL}/transcribe`)
- * with the Codex OAuth login CUELO already holds. The endpoint is private and undocumented: it takes a
- * multipart `file` (the upload's extension picks the decoder) and answers `{ text }`. It is used only
- * after the primary transcriber failed, on short MP3 chunks.
+ * Speech-to-text through ChatGPT's dictation endpoint (`POST {CODEX_BASE_URL}/transcribe`)
+ * with the Codex OAuth login CUELO already holds. This private endpoint accepts MP3 chunks as a
+ * multipart `file` and returns `{ text }`.
  *
  * Auth is one credential read from CUELO's shared `authStorage`. There is no `withOAuthAccess`, so a
  * refusal is never retried and never rotated to another account, and no attestation is built. The
@@ -18,7 +17,7 @@ import {
 } from "@oh-my-pi/pi-catalog/wire/codex";
 
 /**
- * Length of each fallback chunk. Chosen from one live request that returned 200 for a 15 s clip; it is
+ * Length of each MP3 chunk. Chosen from one live request that returned 200 for a 15 s clip; it is
  * not a documented limit of the endpoint.
  */
 export const CODEX_CHUNK_SECONDS = 15;

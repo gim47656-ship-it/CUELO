@@ -3,7 +3,6 @@ import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 import {
-  ADVISORY_SLOT,
   authorFamily,
   REVIEW_SYSTEM,
   REVIEW_TIMEOUT_MS,
@@ -21,7 +20,7 @@ import {
   type ReviewProgress,
   type ResolveInput,
 } from "./lib/cross-review";
-import { beforeModelAbort, directFallbackModel, isHydrogen, sameModelRoutes } from "./lib/model-routes";
+import { beforeModelAbort } from "./lib/model-routes";
 import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledger";
 import { onSessionLifecycle } from "./lib/session-identity";
 
@@ -36,32 +35,26 @@ const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: t
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
 /** system and purpose let slop_check reuse the role resolution, call, and usage ledger. */
-/** lane advisory는 보조 검토자(modelRoles.crossReviewAdvisory)이며 provider 계열 검사를 하지 않는다. 필수 자리는 slot 이름의 계열 모델이어야 한다. */
-/** route는 보조 검토자가 공급자 한도로 실패했을 때 같은 모델을 다른 공급자로 부르는 명시 경로(provider/id)다. 해석된 이름이 정확히 같을 때만 부른다. */
 export async function completeReviewer(
-  lane: Lane | "advisory", prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string; slot?: string; route?: string } = {},
+  lane: Lane, prompt: string, ctx: ExtensionContext, signal: AbortSignal, options: { system?: string; purpose?: string } = {},
 ): Promise<{ model: string; text: string; usage: { input: number; output: number; cacheRead: number; cost: number } }> {
-  const slot = options.slot ?? (lane === "advisory" ? ADVISORY_SLOT : SLOT[lane]);
+  const slot = SLOT[lane];
   const [{ findScopedSettings }, { completeSimple }] = await Promise.all([
     import("@oh-my-pi/pi-coding-agent/config/settings"), import("@oh-my-pi/pi-ai"),
   ]);
-  const { route } = options;
   const selector = findScopedSettings(ctx.cwd)?.getModelRole(slot);
-  if (!selector) throw new ReviewerCallError(`modelRoles.${slot} is not configured.`, route ?? `@${slot}`);
-  const model = ctx.models.resolve(route ?? `@${slot}`);
-  if (!model) throw new ReviewerCallError(route ? `Could not resolve ${route}.` : `Could not resolve modelRoles.${slot} (${selector}).`, route ?? selector, undefined, undefined, { unavailable: true });
+  if (!selector) throw new ReviewerCallError(`modelRoles.${slot} is not configured.`, `@${slot}`);
+  const model = ctx.models.resolve(`@${slot}`);
+  if (!model) throw new ReviewerCallError(`Could not resolve modelRoles.${slot} (${selector}).`, selector);
   const name = `${model.provider}/${model.id}`;
-  // 다른 모델로 풀린 명시 경로는 부르지 않고, 풀린 모델이 아니라 요청한 경로 이름으로 실패시킨다.
-  if (route && name !== route) throw new ReviewerCallError(`${route} resolved to ${name}.`, route);
-  // 필수 자리는 slot이 가리키는 모델이 lane의 계열이어야 교차검증이다. 보조 자리는 provider와 무관하다.
-  const ok = lane === "advisory" || (lane === "anthropic" ? model.provider === "anthropic" : Object.hasOwn(OPENAI_PROVIDERS, model.provider));
+  const ok = lane === "anthropic" ? model.provider === "anthropic" : Object.hasOwn(OPENAI_PROVIDERS, model.provider);
   if (!ok) throw new ReviewerCallError(`modelRoles.${slot} resolved to ${name}, which is not a ${lane} model.`, name);
   const sessionId = ctx.sessionManager.getSessionId();
   const attempt = AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS)]);
   let response;
   try {
     response = await beforeModelAbort(attempt, async () => {
-      if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal: attempt }))) throw new ReviewerCallError(`No credentials for ${name}.`, name, undefined, undefined, { unavailable: true });
+      if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal: attempt }))) throw new ReviewerCallError(`No credentials for ${name}.`, name);
       attempt.throwIfAborted();
       return completeSimple(model, {
         systemPrompt: [options.system ?? REVIEW_SYSTEM],
@@ -75,7 +68,7 @@ export async function completeReviewer(
     });
   } catch (error) {
     if (error instanceof ReviewerCallError) throw error;
-    throw new ReviewerCallError(error instanceof Error ? error.message : String(error), name, undefined, undefined, { cause: error });
+    throw new ReviewerCallError(error instanceof Error ? error.message : String(error), name, undefined, { cause: error });
   }
   // 응답이 돌아온 시도는 오류·빈 답도 청구되므로 먼저 장부에 남긴다(skim completeRole과 같다).
   (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
@@ -83,52 +76,13 @@ export async function completeReviewer(
     usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
   }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
   const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
-  // 출력 한도·오류로 끝나도 모델이 낸 부분 답은 원문으로 남긴다(통과는 못 한다). stopReason은 보조 검토자의 잘림(length)을 가르는 데 쓴다.
-  if (response.stopReason !== "stop") throw new ReviewerCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, text || undefined, response.stopReason, { cause: response });
+  // Preserve partial output for diagnosis without treating it as a usable review.
+  if (response.stopReason !== "stop") throw new ReviewerCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, text || undefined, { cause: response });
   if (!text) throw new ReviewerCallError(`${name} returned an empty answer.`, name);
   return { model: name, text, usage: { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cost: response.usage.cost?.total ?? 0 } };
 }
 
-/**
- * 보조 검토자 설정. slot이 비어 있으면 undefined(보조 호출 없음)다. 설정했으면 해석한 provider/id(못 풀면 selector)를 이름으로 쓰고, 해석·자격 문제는
- * 호출이 그 이름으로 실패해 error로 기록된다. requiredModels는 보조가 이 라운드의 필수 reviewer와 같은 모델인지 보는 데 쓴다.
- * limitRoutes는 대체 순서(retry.fallbackChains)의 이 모델 키에 적힌 같은 모델의 다른 공급자만 돌려준다. 적힌 것이 없으면 빈 목록이다.
- */
-async function advisoryDeps(ctx: ExtensionContext): Promise<Pick<ReviewDeps, "advisory" | "requiredModels" | "requiredHydrogenFallback">> {
-  const { findScopedSettings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
-  const named = (slot: string): string | undefined => { const model = ctx.models.resolve(`@${slot}`); return model ? `${model.provider}/${model.id}` : undefined; };
-  const requiredModels: Partial<Record<Lane, string>> = {};
-  for (const lane of ["openai", "anthropic"] as const) { const name = named(SLOT[lane]); if (name) requiredModels[lane] = name; }
-  const selector = findScopedSettings(ctx.cwd)?.getModelRole(ADVISORY_SLOT);
-  if (!selector) return { requiredModels };
-  const primary = named(ADVISORY_SLOT);
-  const hydrogen = isHydrogen(primary ?? selector);
-  const routeFor = async (slot: string) => {
-    const model = await directFallbackModel(ctx, slot);
-    if (!model) return undefined;
-    const route = `${model.provider}/${model.id}`;
-    return { model: route, complete: (prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { route }) };
-  };
-  const [directFallback, requiredHydrogenFallback] = hydrogen
-    ? await Promise.all([routeFor("crossReviewAdvisoryFallback"), routeFor("crossReviewRequiredFallback")]) : [];
-  return {
-    requiredModels,
-    requiredHydrogenFallback,
-    advisory: {
-      model: primary ?? selector,
-      complete: async (prompt, attempt) => {
-        if (!primary) throw new ReviewerCallError(`Could not resolve modelRoles.${ADVISORY_SLOT} (${selector}).`, selector, undefined, undefined, { unavailable: true });
-        return completeReviewer("advisory", prompt, ctx, attempt, { route: primary });
-      },
-      directFallback,
-      limitRoutes: async () => (primary && !hydrogen ? await sameModelRoutes(ctx.cwd, primary) : []).map((route) => ({
-        model: route, complete: (prompt: string, attempt: AbortSignal) => completeReviewer("advisory", prompt, ctx, attempt, { route }),
-      })),
-    },
-  };
-}
-
-async function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): Promise<ReviewDeps> {
+function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): ReviewDeps {
   const path = ledgerPath();
   const ledger = createRoutingLedger(path);
   const current = ctx.models.current() ?? ctx.model;
@@ -139,7 +93,6 @@ async function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): Promise<R
     exec: spawnExec(signal), readAll: () => readCrossReviewRecords(path), append: (record) => ledger.append(record),
     snapshotRoot: snapshotRoot(),
     complete: (family, prompt, attempt) => completeReviewer(family, prompt, ctx, attempt),
-    ...(await advisoryDeps(ctx)),
   };
 }
 

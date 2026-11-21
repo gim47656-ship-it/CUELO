@@ -1,64 +1,8 @@
-import { createConnection } from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { completeReviewer } from "./cross-review";
-import { ADVISORY_SLOT, SLOT, isSameModel, reviewerOperationalFailure, type Lane } from "./lib/cross-review";
-import { directFallbackModel, isHydrogen, modelRoleSelector } from "./lib/model-routes";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
-import { reviewFiles, resolveFindings, type AdvisoryPreparation, type Lang, type SlopDeps } from "./slop-gate/review";
-
-// A registered local provider can outlive its relay. Check the socket before submitting prose
-// so the provider client's retry policy does not turn an absent relay into a long wait.
-function relayListening(url: URL, signal: AbortSignal): Promise<boolean> {
-  const host = url.hostname === "[::1]" ? "::1" : url.hostname;
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const socket = createConnection({ host, port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
-    autoSelectFamily: true, signal });
-  socket.once("error", () => resolve(false));
-  socket.once("close", () => resolve(false));
-  socket.once("connect", () => { socket.destroy(); resolve(true); });
-  return promise;
-}
-
-async function slopAdvisory(ctx: ExtensionContext, signal: AbortSignal, judge: Lane, authors: readonly string[], primaryMs: number): Promise<AdvisoryPreparation> {
-  const selector = await modelRoleSelector(ctx.cwd, ADVISORY_SLOT);
-  if (!selector) return { skipped: "Advisory slot is not configured." };
-  const model = ctx.models.resolve(`@${ADVISORY_SLOT}`);
-  const name = model ? `${model.provider}/${model.id}` : selector;
-  const candidate = isHydrogen(name) ? await directFallbackModel(ctx, "slopAdvisoryFallback") : undefined;
-  const requiredModel = candidate ? ctx.models.resolve(`@${SLOT[judge]}`) : undefined;
-  const candidateName = candidate ? `${candidate.provider}/${candidate.id}` : undefined;
-  const route = candidateName && !authors.some((author) => isSameModel(author, candidateName))
-    && !(requiredModel && isSameModel(`${requiredModel.provider}/${requiredModel.id}`, candidateName)) ? candidateName : undefined;
-  let unavailable = model ? undefined : "Could not resolve the configured advisory model.";
-  if (model?.provider === "aistudio") {
-    const url = new URL(model.baseUrl);
-    const probe = route ? AbortSignal.any([signal, AbortSignal.timeout(350)]) : signal;
-    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && !(await relayListening(url, probe))) {
-      unavailable = "AI Studio relay is not listening.";
-    }
-  }
-  if (!route) return { model: name, skipped: unavailable };
-  const primaryDeadline = AbortSignal.timeout(primaryMs);
-  let primaryAvailable = !unavailable;
-  return {
-    model: unavailable ? route : name,
-    complete: async (_lane, system, prompt, attempt) => {
-      attempt.throwIfAborted();
-      if (primaryAvailable && !primaryDeadline.aborted) {
-        try {
-          const primary = AbortSignal.any([attempt, primaryDeadline]);
-          return await completeReviewer("advisory", prompt, ctx, primary, { system, purpose: "slop-gate", route: name });
-        } catch (error) {
-          if (attempt.aborted || !(await reviewerOperationalFailure(error))) throw error;
-          primaryAvailable = false;
-        }
-      }
-      attempt.throwIfAborted();
-      return completeReviewer("advisory", prompt, ctx, attempt, { system, purpose: "slop-gate", route });
-    },
-  };
-}
+import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
 
 /**
  * 밖에 보이는 산출물 AI 슬롭 게이트의 세션 쪽. (1) `slop_check` 도구: 보이는 산출물만 모델로 심사하고 sha256 통과를 원장에 남긴다.
@@ -110,9 +54,7 @@ export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<Extens
     : open.length > 0 ? "Fix each finding in the file (then run slop_check again on the new content), or, for a false positive, have Main close it with slop_check {action:\"resolve\", reviewId, resolutions:[{id, status:\"refuted\", evidence}]}. A changed file needs a new review."
       : reviewed > 0 ? "Every visible artifact reviewed has a pass for its exact content." : "No visible artifact was reviewed.";
   const note = skipped.length === 0 ? "" : ` ${skipped.length} file(s) are not visible artifacts or are raw data (markdown not declared in .slop-gate.json visible, internal record, code, test, generated, not a visible format, or a csv over 400000 bytes; see reason): they were not read, not sent to a reviewer and have no pass; the slop gate does not apply to them.`;
-  const advisoryNote = outcome.reviewers?.some((reviewer) => reviewer.family === "advisory")
-    ? " advisoryFindings are suggestions only; they do not affect the required review or need resolution." : "";
-  return { text: JSON.stringify({ ...outcome, next: next + note + advisoryNote }, null, 2), isError: errors.length > 0 };
+  return { text: JSON.stringify({ ...outcome, next: next + note }, null, 2), isError: errors.length > 0 };
 }
 
 const list = (pending: readonly PendingArtifact[]) => pending.map((item) => `- ${item.path} (${item.reason})`).join("\n");
@@ -136,7 +78,7 @@ export default function slopGate(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "slop_check", label: "Slop Check", loadMode: "essential", approval: "read",
-    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to reviewer providers. One required judge by author family (Anthropic author → OpenAI slot, else Anthropic slot); advisory findings never block. Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
+    description: "Review visible artifacts, not source/internal files or undeclared Markdown (.slop-gate.json visible adds targets). files + authors; text goes to one judge selected by author family (Anthropic author → OpenAI slot, else Anthropic slot). Only detected Korean/English gets style passes. Re-review changed bytes. Main-only resolve: reviewId + resolutions[{id,status:\"refuted\",evidence}]. Exact-content passes gate publication/turn completion; never bypass errors.",
     parameters: z.object({
       action: z.string().optional().describe("review(default) or resolve"),
       files: z.array(z.string()).optional().describe("cwd or home,/mnt/<drive>; excludes /tmp,~/.omp,~/.cache,node_modules,.git"),
@@ -150,7 +92,6 @@ export default function slopGate(pi: ExtensionAPI): void {
       const result = await executeSlopCheck(params as SlopCheckParams, ctx, {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx),
         complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
-        advisory: (attempt, judge, authors, primaryMs) => slopAdvisory(ctx, attempt, judge, authors, primaryMs),
       }, abort);
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };
     },

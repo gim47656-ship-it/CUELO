@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { AuthStorage, createAgentSession, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
 import draft from "../draft";
 import * as realPdf from "../draft/pdf";
-import skim, { FIXED_FALLBACK_MODEL, GEMINI } from "../skim";
+import skim, { FIXED_FALLBACK_MODEL } from "../skim";
 
 // bun `mock.module`은 이미 import한 모듈의 live export를 바꾼다. 되돌릴 원본은 어떤 mock보다 먼저 값으로 잡아 둔다.
 const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPdf.renderPdf };
@@ -18,6 +18,9 @@ const ORIGINAL_PDF = { findPdfBackend: realPdf.findPdfBackend, renderPdf: realPd
 
 const GLM = "fakeglm/glm-fake";
 const TERRA = "fakeglm/terra-fake";
+const PRIMARY = "test-primary/routed-model";
+const ALTERNATE = "test-alternate/routed-model";
+const DRAFT_ALTERNATE = "test-primary/fallback-model";
 const IMAGE_ONLY = "fakeglm/image-only";
 type Behavior = "ok" | "fail" | "empty" | "garbage" | "quota";
 
@@ -39,7 +42,8 @@ beforeAll(() => {
     requestedRoutes.push(route);
     onRequest?.();
     const mode = behavior[route] ?? behavior[body.model] ?? "ok";
-    if (mode === "fail") return new Response(JSON.stringify({ error: { message: `${body.model} synthetic outage` } }), { status: 400, headers: { "content-type": "application/json" } });
+    // Return terminal SDK errors without automatic HTTP retry so each journal entry reflects one request.
+    if (mode === "fail") return new Response(JSON.stringify({ error: { message: `ECONNREFUSED: ${body.model} synthetic outage` } }), { status: 400, headers: { "content-type": "application/json" } });
     if (mode === "quota") return new Response(JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED You've reached your usage limit retry-after-ms=60000" } }), { status: 400, headers: { "content-type": "application/json" } });
     const base = { id: `fake-${requested.length}`, object: "chat.completion.chunk", created: 0, model: body.model };
     const chunks = [
@@ -84,8 +88,8 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
   const provider = { baseUrl, apiKey: "local", api: "openai-completions" as const };
   registry.registerProvider("fakeparent", { ...provider, models: [spec("parent")] });
   registry.registerProvider("fakeglm", { ...provider, models: [spec("glm-fake"), spec("terra-fake"), spec("image-only", ["image"])] });
-  registry.registerProvider("google-vertex", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/google-vertex/v1`, models: [spec("gemini-4-argon")] });
-  registry.registerProvider("aistudio", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/aistudio/v1`, models: [spec("gemini-4-argon"), spec("gemini-3.8-flash")] });
+  registry.registerProvider("test-alternate", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/test-alternate/v1`, models: [spec("routed-model")] });
+  registry.registerProvider("test-primary", { ...provider, baseUrl: `http://127.0.0.1:${server.port}/test-primary/v1`, models: [spec("routed-model"), spec("fallback-model")] });
   registry.registerProvider("anthropic", { ...provider, models: [spec("claude-sonnet-5-5")] });
   const model = registry.find("fakeparent", "parent")!;
   const getApiKey = registry.getApiKey.bind(registry);
@@ -146,48 +150,45 @@ async function callTool(name: "skim" | "draft", args: Record<string, unknown>, r
 }
 
 describe("helper tool result contract through the SDK", () => {
-  test("draft's real SDK call resolves the explicit Vertex route, saves its answer and attributes usage to it", async () => {
-    const primary = "aistudio/gemini-4-argon";
-    behavior[primary] = "quota";
+  test("draft's real SDK call tries the same model on an explicit alternate route and journals it", async () => {
+    behavior[PRIMARY] = "quota";
     const out = await callTool("draft", { instruction: "Write the visible fact.", output: "result.md" },
-      { draft: primary, draftFallback: "aistudio/gemini-3.8-flash" }, undefined,
-      { chains: { [primary]: [GEMINI, "aistudio/gemini-3.8-flash"] } });
+      { draft: PRIMARY, draftFallback: DRAFT_ALTERNATE }, undefined,
+      { chains: { [PRIMARY]: [ALTERNATE, DRAFT_ALTERNATE] } });
     expect(out.isError).toBe(false);
-    expect(out.text).toStartWith(`model: ${GEMINI}`);
-    expect(out.text).toContain(`${primary} 실패:`);
-    expect(requestedRoutes).toEqual([primary, GEMINI]);
-    expect(out.usage).toEqual([["draft", "draft", "aistudio", "gemini-4-argon"], [undefined, "draft", "google-vertex", "gemini-4-argon"]]);
+    expect(out.text).toStartWith(`model: ${ALTERNATE}`);
+    expect(out.text).toContain(`${PRIMARY} 실패:`);
+    expect(requestedRoutes).toEqual([PRIMARY, ALTERNATE]);
+    expect(out.usage).toEqual([["draft", "draft", "test-primary", "routed-model"], [undefined, "draft", "test-alternate", "routed-model"]]);
   });
 
-  test("real SDK route failure is named exactly and reaches draftFallback without a second Vertex call", async () => {
-    const primary = "aistudio/gemini-4-argon";
-    const fallback = "aistudio/gemini-3.8-flash";
-    behavior[primary] = "quota";
-    behavior[GEMINI] = "fail";
+  test("real SDK route failure is named and reaches draftFallback without retrying the alternate", async () => {
+    behavior[PRIMARY] = "quota";
+    behavior[ALTERNATE] = "fail";
     const out = await callTool("draft", { instruction: "Write the visible fact.", output: "result.md" },
-      { draft: primary, draftFallback: fallback }, undefined, { chains: { [primary]: [GEMINI, fallback] } });
+      { draft: PRIMARY, draftFallback: DRAFT_ALTERNATE }, undefined, { chains: { [PRIMARY]: [ALTERNATE, DRAFT_ALTERNATE] } });
     expect(out.isError).toBe(false);
-    expect(out.text).toStartWith(`model: ${fallback}`);
-    expect(out.text).toContain(`${GEMINI} 실패:`);
-    expect(requestedRoutes).toEqual([primary, GEMINI, fallback]);
+    expect(out.text).toStartWith(`model: ${DRAFT_ALTERNATE}`);
+    expect(out.text).toContain(`${ALTERNATE} 실패:`);
+    expect(requestedRoutes).toEqual([PRIMARY, ALTERNATE, DRAFT_ALTERNATE]);
     expect(out.usage.map((row) => row.slice(1))).toEqual([
-      ["draft", "aistudio", "gemini-4-argon"], ["draft", "google-vertex", "gemini-4-argon"], ["draft", "aistudio", "gemini-3.8-flash"],
+      ["draft", "test-primary", "routed-model"], ["draft", "test-alternate", "routed-model"], ["draft", "test-primary", "fallback-model"],
     ]);
   });
 
-  test("기본 설정: Gemini 슬롯 성공은 정상 toolResult이고 사용량은 그 모델에 귀속된다", async () => {
-    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GEMINI });
+  test("skim journals the resolved role model that answered", async () => {
+    const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: TERRA });
     expect(out.isError).toBe(false);
-    expect(out.text).toContain(`model: ${GEMINI}`);
-    expect(requested).toEqual(["gemini-4-argon"]);
-    expect(out.usage).toEqual([["skim", "skim", "google-vertex", "gemini-4-argon"]]);
+    expect(out.text).toContain(`model: ${TERRA}`);
+    expect(requested).toEqual(["terra-fake"]);
+    expect(out.usage).toEqual([["skim", "skim", "fakeglm", "terra-fake"]]);
   });
 
   test("역할만 바꾼 설정: 해석된 다른 모델이 실제로 불리고 표시·사용량이 그 모델이다", async () => {
     const out = await callTool("skim", { paths: ["guide.md"], question: "?" }, { skim: GLM });
     expect(out.isError).toBe(false);
     expect(out.text).toContain(`model: ${GLM}`);
-    expect(out.text).not.toContain(GEMINI);
+    expect(out.text).not.toContain(TERRA);
     expect(requested).toEqual(["glm-fake"]);
     expect(out.usage).toEqual([["skim", "skim", "fakeglm", "glm-fake"]]);
   });

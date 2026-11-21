@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { transcribeAudioWithGemini } from "@/lib/audio-transcribe";
-import { CODEX_CHUNK_SECONDS, transcribeAudioWithCodex } from "@/lib/codex-transcribe";
+import { transcribeAudioWithCodex } from "@/lib/codex-transcribe";
 import {
   readAudioTranscriptionRequest,
   resolveFfmpegPath,
@@ -44,11 +43,7 @@ export async function GET(req: Request, { params }: Params) {
   }
 }
 
-/**
- * POST {} | { confirmed: true } -> { transcript, parts }; large audio needs confirmed: true. A primary
- * failure the fallback could take over answers 409 with an offer, and nothing goes to the fallback
- * until POST { fallbackToken, approve: true }; { fallbackToken, approve: false } drops the offer.
- */
+/** POST { confirmed: true } -> { transcript, parts }; legacy fallback offers are expired. */
 export async function POST(req: Request, { params }: Params) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -65,8 +60,7 @@ export async function POST(req: Request, { params }: Params) {
     return await withManagedAttachment(id, (attachment) =>
       respondAudioTranscription(attachment, body, {
         resolveFfmpeg: resolveFfmpegPath,
-        transcribe: transcribeAudioWithGemini,
-        fallback: { transcribe: transcribeAudioWithCodex, chunkSeconds: CODEX_CHUNK_SECONDS },
+        transcribe: transcribeAudioWithCodex,
         signal: req.signal,
       }));
   } catch (error) {

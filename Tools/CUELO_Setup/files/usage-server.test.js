@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog, createSampleStore, applyDaySlots } = require('./usage-server');
+const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog, createSampleStore, applyDaySlots, readSdkUsage } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -118,6 +118,45 @@ test('unmatched quota and local credential rows expose distinct non-joining role
         { accountRole: 'control-only', credentialId: 1 },
         { accountRole: 'control-only', credentialId: 2 },
     ]);
+});
+
+test('retired providers are never probed by the SDK or disclosed in quota rows', async () => {
+    const google = 'google-antigravity';
+    const codex = 'openai-codex';
+    const { controls } = fixture(google);
+    const queried = [];
+    const signal = new AbortController().signal;
+    const usage = await readSdkUsage({
+        defaultUsageProviders: [{ id: google }, { id: codex }],
+        storage: {
+            reload: async () => {},
+            credentials: { snapshot: () => ({ credentials: [
+                { provider: google }, { provider: 'devin' }, { provider: 'down' }, { provider: 'unsupported' },
+            ] }) },
+            usage: {
+                providerFor: provider => provider !== 'unsupported',
+                reports: async ({ provider, signal: actual }) => {
+                    assert.equal(actual, signal);
+                    queried.push(provider);
+                    if (provider === 'down') throw new Error('synthetic quota outage');
+                    return [{ provider }];
+                },
+            },
+        },
+    }, signal);
+    assert.deepEqual(queried, [codex, 'devin', 'down']);
+    const visible = await controls.enrich({
+        ...usage,
+        reports: [...usage.reports, { provider: google }],
+        accountsWithoutUsage: [{ provider: google }],
+        disabledCredentials: [{ provider: google }],
+        capacity: { [google]: [], [codex]: [] },
+    });
+    assert.deepEqual(visible.reports.map(row => row.provider), [codex, 'devin']);
+    assert.deepEqual(visible.notes, ['Usage unavailable: down']);
+    assert.deepEqual(visible.accountsWithoutUsage, []);
+    assert.deepEqual(visible.disabledCredentials, []);
+    assert.deepEqual(visible.capacity, { [codex]: [] });
 });
 
 test('credential-attributed quota joins an OAuth row without stored email and never binds a sibling', async () => {
@@ -892,11 +931,11 @@ const CREDIT_NOW = new Date(2026, 9, 26, 10, 30).getTime(); // 로컬 2026-10-26
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
-function creditFixture(t, { now = () => CREDIT_NOW, apiKeyProviders, googleAuth, fetchImpl, authTimeoutMs } = {}) {
+function creditFixture(t, { now = () => CREDIT_NOW, apiKeyProviders } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'credits-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const settingsFile = path.join(dir, 'cuelo-api-credits.json');
-    const service = createCreditsService({ agentDir: () => dir, settingsFile: () => settingsFile, now, apiKeyProviders, googleAuth, fetchImpl, authTimeoutMs });
+    const service = createCreditsService({ agentDir: () => dir, settingsFile: () => settingsFile, now, apiKeyProviders });
     return { dir, settingsFile, service };
 }
 
@@ -935,27 +974,21 @@ test('remaining = total - spent, no total means no remaining', () => {
     assert.equal(mixed.remainingUpperBound, false, 'an upper-bound subtotal plus unknown usage bounds neither side');
 });
 
-test('credit settings validation rejects bad totals and dates; only the Vertex wallet keeps an expiry', () => {
+test('Hive credit settings reject bad totals and dates', () => {
     const today = '2026-10-26';
-    assert.deepEqual(validateCreditSetting('hive', { totalUsd: 20, startDate: '2026-10-18', expiryDate: '2027-01-01' }, today),
+    assert.deepEqual(validateCreditSetting({ totalUsd: 20, startDate: '2026-10-18' }, today),
         { totalUsd: 20, startDate: '2026-10-18' });
-    assert.deepEqual(validateCreditSetting('google', { totalUsd: 300, startDate: '2026-10-24', expiryDate: '2027-01-24' }, today),
-        { totalUsd: 300, startDate: '2026-10-24', expiryDate: '2027-01-24' });
-    assert.deepEqual(validateCreditSetting('google', { totalUsd: 300, startDate: '2026-10-24' }, today),
-        { totalUsd: 300, startDate: '2026-10-24', expiryDate: null });
-    assert.equal(validateCreditSetting('hive', null, today), null);
+    assert.equal(validateCreditSetting(null, today), null);
     const cases = [
-        ['hive', { totalUsd: 0, startDate: '2026-10-01' }, 'invalid_total'],
-        ['hive', { totalUsd: '300', startDate: '2026-10-01' }, 'invalid_total'],
-        ['hive', { totalUsd: Number.NaN, startDate: '2026-10-01' }, 'invalid_total'],
-        ['hive', { totalUsd: 2e6, startDate: '2026-10-01' }, 'invalid_total'],
-        ['hive', { totalUsd: 300, startDate: '2026-02-30' }, 'invalid_start_date'],
-        ['hive', { totalUsd: 300, startDate: '10/01/2026' }, 'invalid_start_date'],
-        ['hive', { totalUsd: 300, startDate: '2026-10-27' }, 'start_date_in_future'],
-        ['google', { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-13-40' }, 'invalid_expiry_date'],
-        ['google', { totalUsd: 300, startDate: '2026-10-10', expiryDate: '2026-10-09' }, 'expiry_before_start'],
+        [{ totalUsd: 0, startDate: '2026-10-01' }, 'invalid_total'],
+        [{ totalUsd: '300', startDate: '2026-10-01' }, 'invalid_total'],
+        [{ totalUsd: Number.NaN, startDate: '2026-10-01' }, 'invalid_total'],
+        [{ totalUsd: 2e6, startDate: '2026-10-01' }, 'invalid_total'],
+        [{ totalUsd: 300, startDate: '2026-02-30' }, 'invalid_start_date'],
+        [{ totalUsd: 300, startDate: '10/01/2026' }, 'invalid_start_date'],
+        [{ totalUsd: 300, startDate: '2026-10-27' }, 'start_date_in_future'],
     ];
-    for (const [wallet, value, code] of cases) assert.throws(() => validateCreditSetting(wallet, value, today), { code });
+    for (const [value, code] of cases) assert.throws(() => validateCreditSetting(value, today), { code });
 });
 
 test('credit settings persist through the sidecar as a private file; bad input and foreign Origin leave it unchanged', async t => {
@@ -984,28 +1017,27 @@ test('credit settings persist through the sidecar as a private file; bad input a
     assert.deepEqual(fs.readdirSync(path.dirname(settingsFile)).filter(name => name.endsWith('.tmp')), []);
 
     const body = await (await fetch(`${base}/credits`)).json();
-    assert.deepEqual(body.settings, { google: null, hive: { totalUsd: 25, startDate: '2026-10-18' } });
-    assert.equal(body.google.wallet, 'google');
-    assert.equal(body.google.status, 'error', 'with no ADC source the Vertex wallet reports why instead of inventing usage');
-    assert.equal(body.google.error, 'core_unavailable');
+    assert.deepEqual(body.settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
+    assert.equal(body.hive.wallet, 'hive');
 
     fs.writeFileSync(settingsFile, '{broken');
     const broken = await (await fetch(`${base}/credits`)).json();
     assert.equal(broken.settingsError, 'settings_unreadable');
     assert.equal(broken.settings.hive, null);
 
-    // Vertex 설정은 저장·읽기되고, Hive를 저장해도 Vertex 항목은 파일에 그대로 남는다.
+    // Retired wallet data stays on disk, but isn't returned or editable.
     const google = { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2026-12-30' };
     fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google, hive: { totalUsd: 25, startDate: '2026-10-18' } }));
     const legacy = await (await fetch(`${base}/credits`)).json();
     assert.equal(legacy.settingsError, null);
-    assert.deepEqual(legacy.settings, { google, hive: { totalUsd: 25, startDate: '2026-10-18' } });
+    assert.deepEqual(legacy.settings, { hive: { totalUsd: 25, startDate: '2026-10-18' } });
+    assert.equal(Object.hasOwn(legacy, 'google'), false);
     response = await post({ wallet: 'hive', value: { totalUsd: 30, startDate: '2026-10-18' } });
     assert.equal(response.status, 200);
     assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')), { version: 1, google, hive: { totalUsd: 30, startDate: '2026-10-18' } });
     response = await post({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-24', expiryDate: '2027-01-24' } });
-    assert.equal(response.status, 200);
-    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).google, { totalUsd: 300, startDate: '2026-10-24', expiryDate: '2027-01-24' });
+    assert.equal(response.status, 400);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).google, google);
 
     // 파일을 읽을 수 없으면(일시적 I/O 실패) 저장이 덮어쓰지 않는다.
     if (process.getuid?.() === 0) return;
@@ -1021,182 +1053,14 @@ test('credit settings persist through the sidecar as a private file; bad input a
     assert.equal(fs.readFileSync(settingsFile, 'utf8'), before);
 });
 
-test('Vertex wallet reads Cloud Monitoring with the ADC token, leaves unpriced models unpriced and counts 429 refusals', async t => {
-    const requests = [];
-    const day = at(2026, 10, 25, 9);
-    const point = (value) => ({ interval: { startTime: new Date(day).toISOString(), endTime: new Date(day + 3_600_000).toISOString() }, value: { int64Value: value } });
-    const fetchImpl = async (url, init) => {
-        requests.push({ url: String(url), init });
-        const params = new URL(url).searchParams;
-        // 시간 단위 창에서만 값을 낸다(분 단위 꼬리 창은 비어 있다).
-        const series = params.get('aggregation.alignmentPeriod') !== '3600s' ? []
-            : params.get('filter').includes('token_count')
-                ? [
-                    { metric: { labels: { model_user_id: 'gemini-4-argon', location: 'global', type: 'input' } }, points: [point('1000000')] },
-                    { metric: { labels: { model_user_id: 'gemini-4-hydrogen', location: 'global', type: 'output' } }, points: [point('500000')] },
-                ]
-                : [{ metric: { labels: { model_user_id: 'gemini-4-hydrogen', response_code: '429' } }, points: [point('3')] }];
-        return { ok: true, status: 200, json: async () => ({ timeSeries: series }) };
-    };
-    const { dir, settingsFile, service } = creditFixture(t, { googleAuth: async () => ({ project: 'proj', token: 'fake-token' }), fetchImpl });
-    const google = { totalUsd: 300, startDate: '2026-10-24', expiryDate: '2027-01-24' };
-    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google }));
-
-    const wallet = (await service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.status, 'ok');
-    assert.deepEqual([wallet.wallet, wallet.scope, wallet.source], ['google', 'project', 'cloud-monitoring']);
-    const argon = wallet.rows.find(row => row.model === 'gemini-4-argon');
-    near(argon.costUsd, 4);
-    assert.equal(argon.pricing, 'upper-bound');
-    const hydrogen = wallet.rows.find(row => row.model === 'gemini-4-hydrogen');
-    assert.equal(hydrogen.costUsd, null, 'a model without a published price in the table is never given an invented one');
-    assert.equal(hydrogen.pricing, 'unknown');
-    assert.deepEqual([hydrogen.outputTokens, hydrogen.errors429], [500000, 3]);
-    assert.equal(wallet.spentComplete, false);
-    assert.equal(wallet.expiryDate, '2027-01-24');
-    assert.ok(requests.length > 0);
-    for (const { url, init } of requests) {
-        assert.ok(url.startsWith('https://monitoring.googleapis.com/v3/projects/proj/timeSeries?'), url);
-        assert.equal(init.method, undefined, 'Monitoring is only ever read with GET');
-        assert.equal(init.headers.Authorization, 'Bearer fake-token');
-        assert.equal(init.headers['x-goog-user-project'], 'proj');
-    }
-    const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'cuelo-api-credits-google-days.json'), 'utf8'));
-    assert.equal(ledger.project, 'proj');
-    assert.equal(ledger.days['2026-10-25']['gemini-4-argon|global|input'], 1_000_000);
-});
-
-test('Vertex wallet states why it cannot read usage and leaves the other wallets alone', async t => {
-    const failures = [
-        [Object.assign(new Error('x'), { code: 'adc_unavailable' }), 'adc_unavailable'],
-        [Object.assign(new Error('x'), { code: 'no_project' }), 'no_project'],
-        [new Error('boom'), 'monitoring_error'],
-    ];
-    for (const [error, code] of failures) {
-        const { service } = creditFixture(t, { googleAuth: async () => { throw error; } });
-        const snapshot = await service.snapshot({ refresh: true });
-        assert.equal(snapshot.google.status, 'error');
-        assert.equal(snapshot.google.error, code);
-        assert.deepEqual(snapshot.google.rows, []);
-        assert.equal(snapshot.google.remainingUsd, null);
-        assert.equal(snapshot.hive.wallet, 'hive');
-    }
-    const denied = creditFixture(t, {
-        googleAuth: async () => ({ project: 'proj', token: 't' }),
-        fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({}) }),
-    });
-    assert.equal((await denied.service.snapshot({ refresh: true })).google.error, 'monitoring_denied');
-});
-
-test('Vertex wallet never overwrites a ledger it cannot trust: other project, unreadable, or an error-bearing 200', async t => {
-    const auth = async () => ({ project: 'proj', token: 't' });
-    const empty = async () => ({ ok: true, status: 200, json: async () => ({}) });
-    const old = { '2026-09-01': { 'gemini-4-argon|global|input': 7 } };
-    const seed = (dir, value) => fs.writeFileSync(path.join(dir, 'cuelo-api-credits-google-days.json'), typeof value === 'string' ? value : JSON.stringify(value));
-    const read = dir => fs.readFileSync(path.join(dir, 'cuelo-api-credits-google-days.json'), 'utf8');
-
-    // 다른 프로젝트의 장부: 계산에서 빼고 그 파일은 그대로 둔다(이 프로젝트는 이번 조회분만 보이고 사유를 알린다).
-    let fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    seed(fixture.dir, { version: 1, project: 'other', days: old });
-    const before = read(fixture.dir);
-    let wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.status, 'ok');
-    assert.equal(wallet.ledgerNote, 'ledger_other_project');
-    assert.equal(read(fixture.dir), before);
-
-    // BOM이 붙은 장부도 읽는다(깨진 것으로 보고 새로 만들지 않는다).
-    fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    seed(fixture.dir, `\uFEFF${JSON.stringify({ version: 1, project: 'proj', days: old })}`);
-    wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.ledgerNote, null);
-    assert.ok('2026-09-01' in JSON.parse(read(fixture.dir)).days, 'the old day survives');
-
-    // 날 하나가 깨졌거나 버전을 모르는 다른 프로젝트 장부도 주인이 보이면 건드리지 않는다.
-    for (const ledger of [
-        { version: 1, project: 'other', days: { ...old, '2026-09-02': { 'gemini-4-argon|global|input': null } } },
-        { version: 2, project: 'other', days: old },
-        { version: 2, project: 'proj', days: old },
-    ]) {
-        fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-        seed(fixture.dir, ledger);
-        const kept = read(fixture.dir);
-        await fixture.service.snapshot({ refresh: true });
-        assert.equal(read(fixture.dir), kept);
-    }
-
-    // 같은 프로젝트의 장부에서 깨진 날만 버리고 나머지는 살린다.
-    fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    seed(fixture.dir, { version: 1, project: 'proj', days: { ...old, '2026-09-02': { 'gemini-4-argon|global|input': -1 } } });
-    wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.ledgerNote, 'ledger_unreadable');
-    const salvaged = JSON.parse(read(fixture.dir)).days;
-    assert.ok('2026-09-01' in salvaged);
-    assert.equal('2026-09-02' in salvaged, false);
-
-    // 장부가 없으면 이 프로젝트 이름으로 새로 만든다.
-    fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    await fixture.service.snapshot({ refresh: true });
-    assert.equal(JSON.parse(read(fixture.dir)).project, 'proj');
-
-    // 읽기 I/O 오류(여기서는 디렉터리): 덮어쓰지 않고 이유를 알린다.
-    fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    fs.mkdirSync(path.join(fixture.dir, 'cuelo-api-credits-google-days.json'));
-    wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.ledgerNote, 'ledger_read_failed');
-    assert.ok(fs.statSync(path.join(fixture.dir, 'cuelo-api-credits-google-days.json')).isDirectory());
-
-    // 문법이 깨진 장부는 되살릴 내용이 없으므로 새로 만든다.
-    fixture = creditFixture(t, { googleAuth: auth, fetchImpl: empty });
-    seed(fixture.dir, '{broken');
-    wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.equal(wallet.ledgerNote, 'ledger_unreadable');
-    assert.equal(JSON.parse(read(fixture.dir)).project, 'proj');
-
-    // 오류가 섞인 200 응답은 사용량 0이 아니라 monitoring_error이고 장부는 그대로다.
-    fixture = creditFixture(t, {
-        googleAuth: auth,
-        fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ executionErrors: [{ code: 14, message: 'unavailable' }] }) }),
-    });
-    seed(fixture.dir, { version: 1, project: 'proj', days: old });
-    const kept = read(fixture.dir);
-    wallet = (await fixture.service.snapshot({ refresh: true })).google;
-    assert.deepEqual([wallet.status, wallet.error, wallet.rows], ['error', 'monitoring_error', []]);
-    assert.equal(read(fixture.dir), kept);
-});
-
-test('Vertex wallet scopes queries to the project, bounds a stalled ADC lookup and rejects non-project identifiers', async t => {
-    const urls = [];
-    const fixture = creditFixture(t, {
-        googleAuth: async () => ({ project: 'proj-a', token: 't' }),
-        fetchImpl: async url => { urls.push(String(url)); return { ok: true, status: 200, json: async () => ({}) }; },
-    });
-    await fixture.service.snapshot({ refresh: true });
-    assert.ok(urls.length > 0);
-    for (const url of urls) assert.match(decodeURIComponent(url), /resource\.labels\.resource_container="proj-a"/);
-
-    // 멈춘 ADC 조회는 Vertex 오류로 끝나고 다른 지갑은 그대로 나온다.
-    const stalled = creditFixture(t, { googleAuth: () => new Promise(() => {}), authTimeoutMs: 20 });
-    const snapshot = await stalled.service.snapshot({ refresh: true });
-    assert.equal(snapshot.google.error, 'adc_unavailable');
-    assert.equal(snapshot.hive.wallet, 'hive');
-
-    // 필터에 들어가는 값이 프로젝트 ID 모양이 아니면 조회하지 않는다.
-    let called = false;
-    const bad = creditFixture(t, {
-        googleAuth: async () => ({ project: 'p" OR metric.type="x', token: 't' }),
-        fetchImpl: async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; },
-    });
-    assert.equal((await bad.service.snapshot({ refresh: true })).google.error, 'no_project');
-    assert.equal(called, false);
-});
-
 test('a settings file with a UTF-8 BOM is read, so saving one wallet keeps the others', async t => {
     const { settingsFile, service } = creditFixture(t);
     fs.writeFileSync(settingsFile, `\uFEFF${JSON.stringify({ version: 1, hive: { totalUsd: 25, startDate: '2026-10-01' } })}`);
-    await service.saveSettings({ wallet: 'google', value: { totalUsd: 300, startDate: '2026-10-24', expiryDate: null } });
+    const balance = { amountUsd: 30, observedAt: CREDIT_NOW };
+    await service.saveSettings({ kind: 'balance', wallet: 'exa', value: balance });
     const saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
     assert.deepEqual(saved.hive, { totalUsd: 25, startDate: '2026-10-01' });
-    assert.equal(saved.google.totalUsd, 300);
+    assert.deepEqual(saved.balances.exa, balance);
 });
 
 test('Hive session scan counts this PC records once across appends and defers a half-written line', async t => {
@@ -1363,9 +1227,9 @@ test('Anthropic usage with no credential records shows no coverage instead of a 
 
 test('dashboard balances: zero is a recorded value; saves keep every other entry, run in order, and failed saves leave the file alone', async t => {
     const { settingsFile, service } = creditFixture(t);
-    const google = { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2027-01-24' };
+    const retired = { totalUsd: 300, startDate: '2026-10-01', expiryDate: '2027-01-24' };
     const hive = { totalUsd: 106, startDate: '2026-10-12' };
-    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, google, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 } } }));
+    fs.writeFileSync(settingsFile, JSON.stringify({ version: 1, retired, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 } } }));
     const server = startServer(0, undefined, undefined, service);
     await once(server, 'listening');
     t.after(() => new Promise(resolve => server.close(resolve)));
@@ -1382,7 +1246,7 @@ test('dashboard balances: zero is a recorded value; saves keep every other entry
     assert.deepEqual([first.status, second.status], [200, 200]);
     assert.deepEqual((await first.json()).balance, { wallet: 'exa', recorded: exa });
     const stored = () => JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assert.deepEqual(stored(), { version: 1, google, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 }, exa, typesafe } },
+    assert.deepEqual(stored(), { version: 1, retired, hive, balances: { openrouter: { amountUsd: 4, observedAt: 1 }, exa, typesafe } },
         'both concurrent saves land and untouched entries stay as they were');
     assert.equal(fs.statSync(settingsFile).mode & 0o777, 0o600);
 
@@ -1403,7 +1267,7 @@ test('dashboard balances: zero is a recorded value; saves keep every other entry
         [{ kind: 'balance', wallet: 'exa', value: { amountUsd: '5', observedAt: CREDIT_NOW } }, 'invalid_balance'],
         [{ kind: 'balance', wallet: 'exa', value: { amountUsd: 5, observedAt: 'yesterday' } }, 'invalid_observed_at'],
         [{ kind: 'balance', wallet: 'exa', value: { amountUsd: 5, observedAt: CREDIT_NOW + 3_600_000 } }, 'observed_at_in_future'],
-        [{ kind: 'balance', wallet: 'google', value: { amountUsd: 5, observedAt: CREDIT_NOW } }, 'invalid_wallet'],
+        [{ kind: 'balance', wallet: 'unknown', value: { amountUsd: 5, observedAt: CREDIT_NOW } }, 'invalid_wallet'],
     ];
     for (const [body, code] of rejected) {
         const response = await post(body);

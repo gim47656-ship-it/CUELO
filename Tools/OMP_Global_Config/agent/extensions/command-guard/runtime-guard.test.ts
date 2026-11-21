@@ -459,7 +459,7 @@ describe("command guard runtime gates", () => {
 
   // core의 agent `#emit`은 steering message_start listener promise를 기다리지 않는다. 그래서 tool_call이 호출 판정을 기다린다.
   test("steering 호출 판정이 끝나기 전 tool_call은 판정을 기다리고, 캐릭터 이야기면 막지 않는다", async () => {
-    const text = "어제 히카리 호출했을 때 왜 실패했어?";
+    const text = "어제 이사나 호출했을 때 왜 실패했어?";
     const judge = gatedIntentJudge();
     const harness = createGuardHarness();
     await harness.emit("message_start", { type: "message_start", message: { role: "user", content: text, steering: true } });
@@ -482,7 +482,7 @@ describe("command guard runtime gates", () => {
       const judge = gatedIntentJudge();
       judge.release("summon-now");
       const harness = createGuardHarness();
-      const text = "히카리 불러서 이 코드 검증시켜";
+      const text = "이사나 불러서 이 코드 검증시켜";
       await harness.emit(event, event === "input"
         ? { type: "input", text, source: "rpc" }
         : { type: "message_start", message: { role: "user", content: text, steering: true } });
@@ -498,7 +498,7 @@ describe("command guard runtime gates", () => {
   test("input 판정 중 새 입력이 오면 늦게 끝난 옛 판정이 새 호출을 지우지 않는다", async () => {
     const old = gatedIntentJudge();
     const harness = createGuardHarness();
-    const first = harness.emit("input", { type: "input", text: "어제 히카리 호출했을 때 왜 실패했어?", source: "rpc" });
+    const first = harness.emit("input", { type: "input", text: "어제 이사나 호출했을 때 왜 실패했어?", source: "rpc" });
     // 다음 입력은 판정기가 없어 정규식 결과(호출)를 그대로 쓴다.
     setCharacterIntentJudgeResolver(async () => { throw new Error("judge unavailable in tests"); });
     await harness.emit("input", { type: "input", text: "린 호출해서 이거 같이 봐줘", source: "rpc" });
@@ -526,8 +526,8 @@ describe("command guard runtime gates", () => {
         return { answers: { intent: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } } as never;
       },
     }));
-    const first = "히카리 불러서 이 코드 검증시켜";
-    const second = "어제 히카리 호출했을 때 왜 실패했어?";
+    const first = "이사나 불러서 이 코드 검증시켜";
+    const second = "어제 이사나 호출했을 때 왜 실패했어?";
     const harness = createGuardHarness();
     await harness.emit("message_start", { type: "message_start", message: { role: "user", content: first, steering: true } });
     let settled = false;
@@ -602,7 +602,7 @@ describe("command guard runtime gates", () => {
 
   test("summon 입력이 인식되지 않아도 exact target과 다른 marker의 task는 막는다", async () => {
     const task =
-      '[character-summon alias="HIKARI" model="google-antigravity/gemini-3.8-flash"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.';
+      '[character-summon alias="YUKI" model="openai-codex/gpt-6.1-terra"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.';
     const harness = createGuardHarness();
     await harness.emit("input", { type: "input", text: "인사 부탁해", source: "rpc" });
     const blocked = await harness.emit("tool_call", {
@@ -612,7 +612,7 @@ describe("command guard runtime gates", () => {
       input: { tasks: [{ agent: "maker", task }] },
     }) as { block?: boolean; reason?: string } | undefined;
     expect(blocked).toMatchObject({ block: true });
-    expect(blocked?.reason).toContain('[character-summon alias="HIKARI(히카리)" model="google-vertex/gemini-4-argon"]');
+    expect(blocked?.reason).toContain('[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]');
   });
 
   describe("character-summon marker는 실제 사용자 summon이 있을 때만 통과한다", () => {

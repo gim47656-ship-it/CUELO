@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { listProjectTrustDecisions } from "../project-trust";
 import { AgentSessionWrapper, getLiveSessionWorktreeUses } from "../rpc-manager";
 import { prepareResumedWorktree, notifySessionWorktreeClosed } from "./runtime";
 import { checkoutIsBusy, selectSessionWorktree, withRepositoryLock } from "./index";
@@ -58,6 +60,21 @@ test("missing auto resume returns to main unless main is busy; parallel resumes 
   const releaseSecond = await prepareResumedWorktree({ getRecordedCwd: () => recorded, setCwdWithoutRelocation: (value) => { second = value; } });
   expect(second).toMatch(/-worktrees\/wt-s-\d{8}-[a-f0-9]{8}$/);
   release?.(); releaseSecond?.();
+});
+test("a worktree picked for a resumed session takes the trusted checkout's approval", async () => {
+  const f = fixture(); globalThis.__ompSessions = new Map();
+  const agentDir = join(f.root, "agent"); mkdirSync(agentDir);
+  writeFileSync(join(agentDir, "cuelo-trusted-projects.json"), JSON.stringify({ [realpathSync(f.main)]: true }));
+  const previousAgentDir = getAgentDir(); setAgentDir(agentDir);
+  const releases: Array<(() => void) | undefined> = [];
+  try {
+    const recorded = `${f.main}-worktrees/wt-issue-7`;
+    let first = "", second = "";
+    releases.push(await prepareResumedWorktree({ getRecordedCwd: () => recorded, setCwdWithoutRelocation: (value) => { first = value; } }));
+    releases.push(await prepareResumedWorktree({ getRecordedCwd: () => recorded, setCwdWithoutRelocation: (value) => { second = value; } }));
+    expect(first).toBe(f.main);
+    expect(listProjectTrustDecisions(agentDir)[realpathSync(second)]).toBe(true);
+  } finally { for (const release of releases) release?.(); setAgentDir(previousAgentDir); }
 });
 test("close notification sweeps a landed tree and leaves live trees alone", async () => {
   const f = fixture(); globalThis.__ompSessions = new Map();

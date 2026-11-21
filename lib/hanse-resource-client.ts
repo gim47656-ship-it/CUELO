@@ -231,29 +231,12 @@ export const ACCOUNT_FACES = [
   // Codex 모델은 계정·모델과 무관하게 YUKI로 표시한다. hive는 API 키 하나를 읽는 custom provider이고
   // (2026-10-18 ISANA가 b-ai에서 옮겨 왔다) 모델마다 얼굴이 다르다 — `model` 이 붙은 MITSU는 그 모델만, provider
   // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다. web6는 `auth: none`이라 credential
-  // 개념이 없다. HIKARI는 Gemini 4 Argon 모델 하나만 맡는다. 표의 `provider`는 기본 선택자일 뿐이고, 같은 모델 id는
-  // 어느 공급자 아래에서든 `MODEL_ID_FACE_ALIASES`로 같은 얼굴을 받는다(Vertex는 Claude 등도 싣기 때문에 provider 전체는
-  // 예약하지 않는다). 반면 Anthropic은 실제 계정이 여럿이므로 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
+  // 개념이 없다. Anthropic은 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
   { alias: "MITSU(미츠)", file: "mitsu.webp", provider: "hive", model: "zai-org/glm-5.3-flash" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
   { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
-  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "google-vertex", model: "gemini-4-argon" },
 ] as const;
-
-/** 공급자와 무관하게 모델 id 하나가 얼굴을 갖는 자리. 값은 얼굴 별칭이다. */
-const MODEL_ID_FACE_ALIASES: Readonly<Record<string, string>> = {
-  "gemini-4-argon": "HIKARI(히카리)",
-};
-
-/**
- * 계정이 여럿인데 순서 풀(RIN/MIO) 대신 기존 자리 하나의 얼굴을 함께 쓰는 provider. 값은 얼굴 별칭이다.
- * 계정마다 이름 뒤에 계정 자리 번호(1부터)를 붙여 가른다. 사무실 모드에서는 그 자리의 대체 캐릭터(HIKARI →
- * HASSABIS) 이름이 그대로 따라간다. 계정이 여럿이라 provider 전체 예약(`providerAccountFace`)은 아니다.
- */
-const SHARED_SEAT_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
-  "google-antigravity": "HIKARI(히카리)",
-};
 
 export interface CharacterRosterEntry {
   seed: number;
@@ -319,15 +302,6 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     voice: "부지런한 배달·통통 튀는 보고·끈질긴 재도전",
     summonExample: "미츠 불러와",
     switchExample: "미츠로 교체해",
-  },
-  {
-    seed: 6,
-    alias: ACCOUNT_FACES[6].alias,
-    provider: "google-vertex",
-    model: "gemini-4-argon",
-    voice: "빠른 관찰·톡 쏘는 한마디·장난스러운 여유",
-    summonExample: "히카리 불러와",
-    switchExample: "히카리로 교체해",
   },
   {
     seed: 5,
@@ -407,10 +381,6 @@ const officeListeners = new Set<() => void>();
 let officeLoad: Promise<void> | null = null;
 /** 적용할 때마다 올라간다. 요청 도중 더 새로운 적용(설정 저장 등)이 있었으면 늦게 온 응답을 버린다. */
 let officeEpoch = 0;
-/** `provider/model` → 사무실 얼굴. 모델이 얼굴을 가르는 자리(HIKARI/Argon)의 대체다. */
-let officeModelFaces: ReadonlyMap<string, AccountFace> = new Map();
-/** 모델 id → 사무실 얼굴. 공급자와 무관하게 모델 id가 얼굴을 갖는 자리(HIKARI/Argon)의 대체다. */
-let officeModelIdFaces: ReadonlyMap<string, AccountFace> = new Map();
 let officeSignature: string | null = null;
 let officeRefreshInstalled = false;
 
@@ -437,7 +407,8 @@ export function applyOfficeCharacters(next: OfficeCharactersState): void {
   // 서버가 이미 거르지만, 기본 자리의 별칭을 쓰는 항목은 여기서도 버려 어떤 기본 자리도 가로채지 못하게 한다.
   // 모델 자리(MITSU)는 사무실 모드가 바꾸지 않는다 — 서버 `OFFICE_SEAT_ALIASES`와 같은 경계다.
   const seats = next.mode === "office"
-    ? next.seats.filter((seat) => !ACCOUNT_FACES.some((face) => face.alias === seat.alias) && seat.seat !== "MITSU(미츠)")
+    ? next.seats.filter((seat) => ACCOUNT_FACES.some((face) => face.alias === seat.seat)
+      && !ACCOUNT_FACES.some((face) => face.alias === seat.alias) && seat.seat !== "MITSU(미츠)")
     : [];
   officeEpoch += 1;
   const signature = JSON.stringify([next.mode, next.rosterAvailable, seats]);
@@ -450,17 +421,8 @@ export function applyOfficeCharacters(next: OfficeCharactersState): void {
   }));
   officeProviderFaces = new Map([...officeBySlot].flatMap(([slot, seat]) => {
     const face = ACCOUNT_FACES[slot];
-    // 모델이 붙은 자리는 provider 전체의 얼굴이 아니라 아래 모델 얼굴 표로 간다.
+    // 모델이 붙은 자리는 provider 전체의 얼굴이 아니다.
     return "provider" in face && !("model" in face) ? [[face.provider, { seed: slot, alias: seat.alias }] as const] : [];
-  }));
-  officeModelFaces = new Map([...officeBySlot].flatMap(([slot, seat]) => {
-    const face = ACCOUNT_FACES[slot];
-    return "model" in face ? [[`${face.provider}/${face.model}`, { seed: slot, alias: seat.alias }] as const] : [];
-  }));
-  officeModelIdFaces = new Map(Object.entries(MODEL_ID_FACE_ALIASES).flatMap(([modelId, alias]) => {
-    const slot = ACCOUNT_FACES.findIndex((face) => face.alias === alias);
-    const seat = officeBySlot.get(slot);
-    return seat ? [[modelId, { seed: slot, alias: seat.alias }] as const] : [];
   }));
   officeRoster = officeBySlot.size === 0
     ? CHARACTER_ROSTER
@@ -569,14 +531,6 @@ const MODEL_FACES: ReadonlyMap<string, AccountFace> = new Map(
   )),
 );
 
-/** 공급자와 무관하게 모델 id가 얼굴을 갖는 자리. 키는 모델 id. */
-const MODEL_ID_FACES: ReadonlyMap<string, AccountFace> = new Map(
-  Object.entries(MODEL_ID_FACE_ALIASES).map(([modelId, alias]) => {
-    const slot = ACCOUNT_FACES.findIndex((face) => face.alias === alias);
-    return [modelId, { seed: slot, alias }] as const;
-  }),
-);
-
 /**
  * 예약 얼굴의 완성된 값. 미리 만들어 두는 이유는 이 값이 `useSyncExternalStore` 의 스냅샷으로
  * 쓰이기 때문이다 — 부를 때마다 새 객체를 주면 스냅샷이 매번 달라져 리렌더가 멈추지 않는다.
@@ -590,13 +544,6 @@ function reservedSlot(provider: string): number {
   return RESERVED_SLOTS.get(provider) ?? -1;
 }
 
-/** provider → 그 계정들이 함께 앉는 자리. */
-const SHARED_SEAT_SLOTS: ReadonlyMap<string, number> = new Map(
-  Object.entries(SHARED_SEAT_PROVIDER_ALIASES).map(([provider, alias]) => (
-    [provider, ACCOUNT_FACES.findIndex((face) => face.alias === alias)] as const
-  )),
-);
-
 /** 자리를 가리키는 값에서 실제 자리로. 배정이 이미 자리를 고르므로 여기서 다시 섞지 않는다. */
 function faceSlot(seed: number): number {
   return seed % ACCOUNT_FACES.length;
@@ -608,8 +555,7 @@ function faceSlot(seed: number): number {
  */
 export function providerModelFace(provider: string, model: string | undefined): AccountFace | null {
   if (model === undefined) return null;
-  const key = `${provider}/${model}`;
-  return officeModelFaces.get(key) ?? officeModelIdFaces.get(model) ?? MODEL_FACES.get(key) ?? MODEL_ID_FACES.get(model) ?? null;
+  return MODEL_FACES.get(`${provider}/${model}`) ?? null;
 }
 
 /**
@@ -665,7 +611,6 @@ export function providerDisplayName(provider: string): string {
   const known: Record<string, string> = {
     "openai-codex": "OpenAI Codex",
     anthropic: "Anthropic",
-    "google-gemini": "Google Gemini",
     "github-copilot": "GitHub Copilot",
     "opencode-go": "OpenCode Go",
     devin: "Devin",
@@ -720,8 +665,6 @@ export function accountIdentities(reports: readonly UsageReport[]): AccountIdent
       taken.add(position);
       seated.set(report.provider, taken);
     }
-    const shared = SHARED_SEAT_SLOTS.get(report.provider) ?? -1;
-    if (shared >= 0) return { seed: shared, alias: `${aliasForSeed(shared)}${position + 1}`, masked, raw };
     const slot = position % POOL_SIZE;
     // 계정이 자산보다 많으면 자리가 돌아 같은 얼굴을 다시 쓴다. 그때만 뒤에 번호를 붙여
     // 이름만은 갈라 둔다.
@@ -903,13 +846,6 @@ async function requestJson<T>(
   }
 }
 
-// 2026-10-30 사용자 결정: Antigravity 계정은 Gemini만 쓰므로 사용량 표시에서 Claude·GPT 공유 창(계정마다 4줄)을 뺀다.
-// 표시용 필터다. 코어의 계정 차단과 서버 쪽 계정 판단(hanse-account-state)은 원래 보고서를 그대로 쓴다.
-function geminiOnlyAntigravity(report: UsageReport): UsageReport {
-  if (report.provider !== "google-antigravity" || !Array.isArray(report.limits)) return report;
-  return { ...report, limits: report.limits.filter((limit) => limit.id.split(":")[1] === "google" || /gemini/i.test(limit.label ?? "")) };
-}
-
 export async function loadUsage(
   options: ResourceRequestOptions<UsageSnapshot> = {},
 ): Promise<ResourceLoadState<UsageSnapshot>> {
@@ -918,7 +854,7 @@ export async function loadUsage(
     if (!data || !Array.isArray(data.reports)) {
       throw new ResourceClientError("사용량 응답 형식이 올바르지 않습니다.", "invalid-response");
     }
-    return { status: "fresh", data: { ...data, reports: data.reports.map(geminiOnlyAntigravity) }, error: null };
+    return { status: "fresh", data, error: null };
   } catch (error) {
     return fallback(options.previous, toClientError(error, false));
   }
@@ -990,7 +926,7 @@ export async function loadApiCredits(
   }
 }
 
-/** 지갑 하나(Vertex 또는 Hive)의 총액·시작일을 저장한다. value가 null이면 지운다. 실패 code는 ResourceClientError.code로 온다. */
+/** Hive의 총액과 시작일을 저장한다. value가 null이면 지운다. */
 export async function saveApiCreditSetting(
   wallet: CreditWalletId,
   value: CreditSettingInput | null,

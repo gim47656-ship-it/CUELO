@@ -16,7 +16,6 @@ export const COMPLETION_AUDIO_ALIASES = [
   "RIN(린)",
   "MITSU(미츠)",
   "SHION(시온)",
-  "HIKARI(히카리)",
 ] as const;
 
 export type CompletionAudioAlias = (typeof COMPLETION_AUDIO_ALIASES)[number];
@@ -29,7 +28,6 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "RIN(린)": "rin",
   "MITSU(미츠)": "mitsu",
   "SHION(시온)": "shion",
-  "HIKARI(히카리)": "hikari",
 };
 
 /** 캐릭터 별칭의 자산 id. 모르는 별칭은 `null`. 통화 음성 매니페스트도 같은 id를 쓴다. */

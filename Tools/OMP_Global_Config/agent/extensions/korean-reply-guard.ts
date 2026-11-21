@@ -65,7 +65,7 @@ export function prose(text: string): string {
     .replace(/https?:\/\/[^\s<>"']+/gi, " ")
     .replace(/[A-Za-z]:[\\/][^\s<>"'`]+/g, " ")
     .replace(/(^|[\s(])(?:~?\/|\.{1,2}\/|[A-Za-z0-9_.-]+\/)[^\s<>"'`]+/g, "$1 ")
-    // 식별자 모양 토큰: snake_case, 점·콜론·괄호·등호 포함, 숫자 포함, camelCase, 전부 대문자(API, HIKARI).
+    // 식별자 모양 토큰: snake_case, 점·콜론·괄호·등호 포함, 숫자 포함, camelCase, 전부 대문자(API, YUKI).
     .replace(/\b[A-Za-z0-9]*(?:[_.:=()[\]{}\\][A-Za-z0-9_.:=()[\]{}\\]*|\d)[A-Za-z0-9_.:=()[\]{}\\]*/g, " ")
     .replace(/\b[a-z]+[A-Z][A-Za-z]*\b|\b[A-Z]{2,}\b|\b[A-Z][a-z]+[A-Z][A-Za-z]*\b/g, " ")
     .replace(/\s+/g, " ").trim();

@@ -18,7 +18,6 @@ import {
 // Color icons (have their own fill colors — no background needed)
 import AnthropicIcon from "@lobehub/icons/es/Anthropic/components/Mono";
 import OpenAIIcon from "@lobehub/icons/es/OpenAI/components/Mono";
-import GoogleColorIcon from "@lobehub/icons/es/Google/components/Color";
 import DeepSeekColorIcon from "@lobehub/icons/es/DeepSeek/components/Color";
 import GroqIcon from "@lobehub/icons/es/Groq/components/Mono";
 import MistralColorIcon from "@lobehub/icons/es/Mistral/components/Color";
@@ -52,12 +51,10 @@ type IconComponent = React.ComponentType<{ size?: number | string; style?: React
 
 // hasColor=true → Color icon (self-colored SVG, no wrapper)
 // hasColor=false → Mono icon (rendered with currentColor, inherits theme text color)
-const PROVIDER_ICONS: Record<string, { Icon: IconComponent; hasColor: boolean }> = {
+export const PROVIDER_ICONS: Record<string, { Icon: IconComponent; hasColor: boolean }> = {
   "anthropic":              { Icon: AnthropicIcon,        hasColor: false },
   "openai":                 { Icon: OpenAIIcon,           hasColor: false },
   "openai-codex":           { Icon: OpenAIIcon,           hasColor: false },
-  "google":                 { Icon: GoogleColorIcon,      hasColor: true },
-  "google-vertex":          { Icon: GoogleColorIcon,      hasColor: true },
   "ant-ling":               { Icon: AntGroupColorIcon,    hasColor: true },
   "deepseek":               { Icon: DeepSeekColorIcon,    hasColor: true },
   "groq":                   { Icon: GroqIcon,             hasColor: false },
@@ -185,7 +182,7 @@ type Selection =
   | { type: "oauth"; providerId: string }
   | { type: "apikey"; providerId: string };
 
-const API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
+export const API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages"] as const;
 
 // ── Form field helpers ────────────────────────────────────────────────────────
 
@@ -297,6 +294,7 @@ function Select({ value, onChange, options, required }: { value: string; onChang
       onChange={onChange}
       options={[
         ...(!required ? [{ value: "", label: `— ${t("i18n.default")} / none —` }] : []),
+        ...(value && !options.includes(value) ? [{ value, label: value }] : []),
         ...options.map((option) => ({ value: option, label: option })),
       ]}
     />

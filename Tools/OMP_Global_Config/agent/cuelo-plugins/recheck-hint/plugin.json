@@ -1,0 +1,9 @@
+{
+  "id": "recheck-hint",
+  "name": "앞 검사 다시 돌리기 안내",
+  "description": "Main 세션에서 통과한 검사 명령(bun test, tsc, node --test 등)이 이후 파일 변경(edit/write 성공, 또는 git 상태가 실제로 바뀐 Maker task) 뒤 다시 실행되지 않은 채 git_finalize를 부르거나 턴을 끝내려 하면, 그 검사 목록(앞선 요청의 것을 먼저, 최대 5개)을 한 번 안내합니다. 근거 연구: arXiv 2611.02207 BOBA(2026-11-01, 코딩 에이전트 10종이 단일 요청은 95% 끝내지만 20개 연쇄 요청은 51%이고 자체 테스트가 실수를 놓치며 자기 검토 정확도는 53%), arXiv 2610.35488 FeatureLoop(2026-10-26, 실패한 단계의 15.4%만 두 번 수정 안에 복구되고 앞 동작이 퇴행함). 명령을 자동으로 실행하거나 막지 않으며, 안내와 재실행 기록을 에이전트 폴더의 cuelo-recheck-hint-events.jsonl에 남깁니다. 실패한 검사와 검사가 아닌 bash 명령은 세지 않습니다.",
+  "createdAt": "2026-11-21T12:00:00+09:00",
+  "enhancements": [],
+  "extension": "index.ts",
+  "tools": []
+}

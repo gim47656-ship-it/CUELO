@@ -4,8 +4,7 @@
 // system·tools·messages에 묶는다. 미패치 core에서는 [0]·[1]·[2]·[4]가 FAIL(RED)이다: catalog가 Opus 5.5의
 // prefixBinding을 빠뜨리고, modelOverrides의 thinking이 규칙이 채운 prefixBinding을 통째로 덮어써서 Sonnet 5.5도
 // 잃는다. 그러면 prefix가 바뀐 요청이 drop_block 없이 나가 신규 계정에서 400이 된다. 패치 core에서는 전부 PASS다.
-// [5]~[7]은 binding controls의 provider 범위다: 18.4.5 upstream은 Vertex의 400(`block_binding: Extra inputs are not
-// permitted`)으로 Sonnet 5.5 규칙을 Claude API·Cloudflare로 좁혔다. Opus 5.5 규칙이 Vertex를 포함하면 [6]·[7]이 FAIL이다.
+// [5]와 [6]은 Claude API 및 Cloudflare의 binding controls 범위를 검증한다.
 // 실제 ModelRegistry·catalog buildModel과 Anthropic 요청 builder를 쓰고, 요청은 loopback mock이 받는다. 네트워크·`~/.omp` 접근 없음.
 // 동적 import 예외: core-bai-retry-test.ts와 같은 이유(지정한 사본만 검증).
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -117,9 +116,7 @@ check(
 	JSON.stringify(opusRequest),
 );
 
-// binding controls의 provider 범위는 그 버전 upstream Sonnet 5.5 규칙과 같다. 18.4.5 upstream은 Vertex가
-// `thinking.adaptive.block_binding`을 400으로 거절해 Sonnet 규칙에서 Vertex를 뺐다. 구워진 models.json 행과 규칙으로
-// 새로 만든 모델(discovery 경로 buildModel)이 같은 답을 내야 하고, Vertex 요청에는 binding controls가 없어야 한다.
+// 구워진 models.json과 discovery에서 사용하는 catalog 규칙의 binding controls를 비교한다.
 const PI_CATALOG = join(CORE, "..", "..", "pi-catalog", "src").replace(/\\/g, "/");
 const { buildModel } = await import(`${PI_CATALOG}/build.ts`);
 const ruleBuilt = (provider: string, baseUrl: string) =>
@@ -149,25 +146,12 @@ check(
 );
 const ruleCloudflare = ruleBuilt("cloudflare-ai-gateway", "https://gateway.ai.cloudflare.com/v1/fixture/fixture/anthropic");
 check(
-	"[6] Opus 5.5 binding controls 범위는 이 버전 Sonnet 5.5 규칙과 provider마다 같다(Claude API·Cloudflare·Vertex)",
-	["anthropic", "cloudflare-ai-gateway", "google-vertex"].every(
+	"[6] Opus 5.5 binding controls 범위는 이 버전 Sonnet 5.5 규칙과 provider마다 같다(Claude API·Cloudflare)",
+	["anthropic", "cloudflare-ai-gateway"].every(
 		provider => ruleBuilt(provider, "https://example.invalid").compat.supportsThinkingBindingControls === sonnetRule(provider).compat.supportsThinkingBindingControls,
 	) && ruleCloudflare.compat.supportsThinkingBindingControls === true,
-	JSON.stringify(["anthropic", "cloudflare-ai-gateway", "google-vertex"].map(provider => [provider, ruleBuilt(provider, "https://example.invalid").compat.supportsThinkingBindingControls, sonnetRule(provider).compat.supportsThinkingBindingControls])),
+	JSON.stringify(["anthropic", "cloudflare-ai-gateway"].map(provider => [provider, ruleBuilt(provider, "https://example.invalid").compat.supportsThinkingBindingControls, sonnetRule(provider).compat.supportsThinkingBindingControls])),
 );
-const bakedVertex = plain.find("google-vertex", "claude-opus-5-5@default");
-const ruleVertex = ruleBuilt("google-vertex", "https://us-east5-aiplatform.googleapis.com");
-for (const [label, model] of [["구워진 행", bakedVertex], ["규칙 생성", ruleVertex]] as const) {
-	const request = model ? await captureRequest(model) : undefined;
-	check(
-		`[7] Vertex Opus 5.5(${label}) 요청에는 block_binding·binding beta가 없다`,
-		model?.compat.supportsThinkingBindingControls !== true &&
-			request !== undefined &&
-			request.thinking?.block_binding === undefined &&
-			!request.beta.split(",").includes(BINDING_BETA),
-		JSON.stringify({ found: model !== undefined, binding: model?.compat.supportsThinkingBindingControls, request }),
-	);
-}
 
 // Windows는 열린 sqlite 핸들이 남아 있으면 임시 폴더 삭제가 EBUSY로 실패한다. 검증 결과와 무관한 정리다.
 try {

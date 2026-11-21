@@ -22,8 +22,6 @@ function buildHeaders(api: string, apiKey: string | undefined, configured: Recor
   if (api === "anthropic-messages") {
     if (!hasHeader(headers, "x-api-key")) headers.set("x-api-key", apiKey);
     if (!hasHeader(headers, "anthropic-version")) headers.set("anthropic-version", "2023-06-01");
-  } else if (api === "google-generative-ai") {
-    if (!hasHeader(headers, "x-goog-api-key")) headers.set("x-goog-api-key", apiKey);
   } else if (!hasHeader(headers, "authorization")) {
     headers.set("Authorization", `Bearer ${apiKey}`);
   }

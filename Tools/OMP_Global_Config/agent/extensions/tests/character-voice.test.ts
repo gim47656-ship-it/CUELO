@@ -18,7 +18,6 @@ if (!existsSync(systemPromptModule)) {
 }
 const { buildSystemPrompt } = await import(systemPromptModule);
 
-import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import characterVoice, {
   anthropicCharacterForAccounts,
   CHARACTER_TARGETS,
@@ -31,8 +30,6 @@ import characterVoice, {
   parseCharacterSummonDirectives,
   renderCharacterSummonRouting,
   parseCharacterSummonMarker,
-  roleModelSelector,
-  malformedSummonMarkerReason,
   renderCharacterVoice,
   rewriteTaskInputForCharacterSummon,
   setCharacterIntentJudgeResolver,
@@ -210,14 +207,8 @@ describe("character voice identity", () => {
     expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
     expect(characterForProvider("opencode-go")).toBeUndefined();
     expect(characterForProvider("web6")).toBe("SHION(시온)");
-    expect(characterForProvider("google-antigravity")).toBeUndefined();
-    expect(characterForProvider("google-antigravity", [], "gemini-3.8-flash")).toBe("HIKARI(히카리)");
-    expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
-    // 모델 id로 거는 얼굴이라 다른 공급자 아래의 같은 모델도 HIKARI다. 모델이 없거나 다른 모델이면 아니다.
-    expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
     expect(characterForProvider("localproxy")).toBeUndefined();
     expect(characterForProvider("localproxy", [], "other-model")).toBeUndefined();
-    expect(characterForProvider("google-vertex", [], "claude-opus-4-6")).toBeUndefined();
   });
 
   test("Anthropic stable storage positions map 0 to RIN and 1 to MIO", () => {
@@ -268,6 +259,20 @@ describe("character voice identity", () => {
     expect(effective.match(/<character-voice alias="YUKI\(유키\)">/gu)).toHaveLength(1);
   });
 
+  test("a retired summon marker in a stored prompt leaves the active default usable", async () => {
+    const harness = createRuntimeHarness();
+    const prompt = '[character-summon alias="HIKARI(히카리)" model="google-vertex/gemini-4-argon"]\nExisting request';
+    const result = await harness.emit("before_agent_start", {
+      type: "before_agent_start",
+      prompt,
+      systemPrompt: ["Existing system text"],
+    }) as { systemPrompt: string[] };
+    const effective = result.systemPrompt.join("\n");
+    expect(effective).toContain("Existing system text");
+    expect(effective).toContain('alias="YUKI(유키)"');
+    expect(effective).not.toContain("HIKARI");
+  });
+
   test("natural-language summon and current-session switch follow action semantics", () => {
     expect(parseCharacterIntent("린 호출해")).toEqual({ kind: "summon", aliases: ["RIN(린)"] });
     expect(parseCharacterIntent("미오 불러와")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
@@ -279,8 +284,8 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("메인을 MIO로 지금 교체해 주세요.")).toEqual({ kind: "switch", alias: "MIO(미오)" });
     expect(parseCharacterIntent("시온 호출해")).toEqual({ kind: "summon", aliases: ["SHION(시온)"] });
     expect(parseCharacterIntent("미오와 린을 교체해")).toBeUndefined();
-    expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
-    expect(parseCharacterIntent("hikari로 교체해")).toEqual({ kind: "switch", alias: "HIKARI(히카리)" });
+    expect(parseCharacterIntent("히카리 불러와")).toBeUndefined();
+    expect(parseCharacterIntent("hikari로 교체해")).toBeUndefined();
     // 이미 일어난 전환을 설명하는 과거·수동형은 명령이 아니다(2026-09-29 오전환 재현 문장 포함).
     expect(parseCharacterIntent("아까 유키로 교체됐었어")).toBeUndefined();
     expect(parseCharacterIntent("유키로 바로교체됬었어..")).toBeUndefined();
@@ -307,74 +312,16 @@ describe("character voice identity", () => {
   });
 
   test("a summon verb followed by a particle is a noun, not a summon command", () => {
-    // 2026-10-26: `히카리호출도 프록시로바꿔임마`(히카리 호출 모델을 프록시로 바꾸라는 설정 요청)가 소환으로 읽혔다.
-    expect(parseCharacterIntent("히카리호출도 프록시로바꿔임마")).toBeUndefined();
-    expect(parseCharacterIntent("히카리 호출은 프록시로 바꿔")).toBeUndefined();
+    expect(parseCharacterIntent("이사나호출도 프록시로 바꿔")).toBeUndefined();
+    expect(parseCharacterIntent("이사나 호출은 프록시로 바꿔")).toBeUndefined();
     expect(parseCharacterIntent("미오 소환이 안 돼")).toBeUndefined();
     expect(parseCharacterIntent("린 호출을 막아줘")).toBeUndefined();
     expect(parseCharacterIntent("시온 호출가")).toBeUndefined();
     // 명령형·청유형 어미는 그대로 소환이다.
-    expect(parseCharacterIntent("히카리 호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
-    expect(parseCharacterIntent("히카리호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
-    expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
+    expect(parseCharacterIntent("이사나 호출해")).toEqual({ kind: "summon", aliases: ["ISANA(이사나)"] });
+    expect(parseCharacterIntent("이사나호출해")).toEqual({ kind: "summon", aliases: ["ISANA(이사나)"] });
     expect(parseCharacterIntent("미오 소환")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
     expect(parseCharacterIntent("린 호출하자")).toEqual({ kind: "summon", aliases: ["RIN(린)"] });
-  });
-
-  describe("HIKARI target follows modelRoles.implGemini", () => {
-    const withRole = <T>(selector: string | undefined, fn: () => T): T =>
-      withActiveSettings(Settings.isolated(selector === undefined ? {} : { modelRoles: { implGemini: selector } }), fn);
-    const markerFor = (model: string) => `[character-summon alias="HIKARI(히카리)" model="${model}"]`;
-
-    test("the role selector wins with any :level suffix stripped", () => {
-      expect(withRole("localproxy/gemini-4-argon:auto", () => characterTarget("HIKARI(히카리)"))).toEqual({
-        model: "localproxy/gemini-4-argon",
-        toolCapable: true,
-      });
-      expect(withRole("localproxy/gemini-4-argon:high", () => characterTarget("HIKARI(히카리)")?.model)).toBe("localproxy/gemini-4-argon");
-      expect(withRole("localproxy/gemini-4-argon", () => characterTarget("HIKARI(히카리)")?.model)).toBe("localproxy/gemini-4-argon");
-      // 모델 id에 들어 있는 콜론은 접미사가 아니다.
-      expect(roleModelSelector("localproxy/vendor/model:free:low")).toBe("localproxy/vendor/model:free");
-    });
-
-    test("an unset or malformed role falls back to the built-in selector", () => {
-      const fallback = CHARACTER_TARGETS["HIKARI(히카리)"].model;
-      expect(withRole(undefined, () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
-      expect(withRole("", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
-      expect(withRole("no-provider-part", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
-      expect(withRole("localproxy/", () => characterTarget("HIKARI(히카리)")?.model)).toBe(fallback);
-      expect(roleModelSelector(undefined)).toBeUndefined();
-    });
-
-    test("the marker writer and validator use the same resolved selector, and other seats are untouched", () => {
-      withRole("localproxy/gemini-4-argon:auto", () => {
-        expect(renderCharacterSummonRouting(["HIKARI(히카리)"])).toContain("localproxy/gemini-4-argon을(를) 호출한다고");
-        expect(rewriteTaskInputForCharacterSummon({ tasks: [{ agent: "maker", task: `${markerFor("localproxy/gemini-4-argon")}\n인사` }] }, ["HIKARI(히카리)"]).ok).toBe(true);
-        // 낡은 marker(이전 선택자)는 단일 호출에서 지금 role의 exact marker로 다시 쓰인다.
-        const restamped = rewriteTaskInputForCharacterSummon({ tasks: [{ agent: "maker", task: `${markerFor("google-vertex/gemini-4-argon")}\n인사` }] }, ["HIKARI(히카리)"]);
-        expect(JSON.stringify(restamped)).toContain("model=\\\"localproxy/gemini-4-argon\\\"");
-        expect(malformedSummonMarkerReason(markerFor("google-vertex/gemini-4-argon"))).toContain(markerFor("localproxy/gemini-4-argon"));
-        expect(parseCharacterSummonMarker(markerFor("localproxy/gemini-4-argon"))).toBe("HIKARI(히카리)");
-        expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBeUndefined();
-        expect(characterTarget("MIO(미오)")).toEqual({ ...CHARACTER_TARGETS["MIO(미오)"], oauthPosition: 1 });
-      });
-      withRole(undefined, () => {
-        expect(parseCharacterSummonMarker(markerFor("google-vertex/gemini-4-argon"))).toBe("HIKARI(히카리)");
-      });
-    });
-
-    test("a role pointing at another model does not hand HIKARI's face to it", () => {
-      withRole("google-vertex/claude-opus-5-5:low", () => {
-        expect(characterForProvider("google-vertex", [], "claude-opus-5-5")).toBeUndefined();
-        expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
-      });
-    });
-
-    test("a selector with a blank provider or model part is malformed", () => {
-      expect(roleModelSelector("google-vertex/ :low")).toBeUndefined();
-      expect(roleModelSelector(" /gemini-4-argon")).toBeUndefined();
-      expect(withRole("google-vertex/ :low", () => characterTarget("HIKARI(히카리)")?.model)).toBe(CHARACTER_TARGETS["HIKARI(히카리)"].model);
-    });
   });
 
   test("review paragraphs that quote switch sentences never become a switch command", () => {
@@ -384,7 +331,7 @@ describe("character voice identity", () => {
       "기존 긍정 \"린으로 교체해\"와 `미오로 교체해`는 보존한다.",
       "> 유키로 교체해",
       "```",
-      "parseCharacterIntent(\"hikari로 교체해\")",
+      "parseCharacterIntent(\"yuki로 교체해\")",
       "```",
     ].join("\n");
     expect(parseCharacterIntent(review)).toBeUndefined();
@@ -678,11 +625,11 @@ describe("character voice identity", () => {
 
   // 2026-10-31 집 PC 7.23일 실측: 정규식이 호출로 본 문장이 붙여 넣은 다른 세션 답과 호출 코드 질문이었다.
   const NOT_SUMMONS = [
-    "이사나와 히카리는 작업자가 아니라 검증자로 배치할게요. 히카리(제미나이)는 작업자 후보에 없어서 다른 경로로 불러야 하니, 먼저 이 PC에서 역할별로 묶인 모델을 확인해볼게요.",
-    "어제 히카리 호출했을 때 왜 실패했어?",
+    "이사나와 유키는 작업자가 아니라 검증자로 배치할게요. 유키는 다른 경로로 불러야 하니, 먼저 이 PC에서 역할별로 묶인 모델을 확인해볼게요.",
+    "어제 이사나 호출했을 때 왜 실패했어?",
     "이사나 호출 경로 코드 어디 있어?",
   ];
-  const SUMMONS = ["히카리 불러서 이 코드 검증시켜", "린 호출해서 이거 같이 봐줘"];
+  const SUMMONS = ["이사나 불러서 이 코드 검증시켜", "린 호출해서 이거 같이 봐줘"];
 
   test("JEV가 캐릭터 이야기나 붙여 넣은 글이라고 하면 input과 steering 모두 호출 지시를 넣지 않는다", async () => {
     for (const text of NOT_SUMMONS) {
@@ -713,7 +660,7 @@ describe("character voice identity", () => {
     const judged: unknown[] = [];
     setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", judged));
     const harness = createRuntimeHarness();
-    await harness.emit("input", { type: "input", source: "rpc", text: `히카리 불러서 \`src/a.ts\` 와 https://example.com/x 봐줘 ${"가".repeat(900)}` });
+    await harness.emit("input", { type: "input", source: "rpc", text: `이사나 불러서 \`src/a.ts\` 와 https://example.com/x 봐줘 ${"가".repeat(900)}` });
     const state = judged[0] as { excerpt: string };
     expect(state.excerpt).not.toContain("src/a.ts");
     expect(state.excerpt).not.toContain("example.com");
@@ -721,7 +668,7 @@ describe("character voice identity", () => {
     // cross-review R1-OAI-3: UNC 경로와 따옴표 안 경로도 가린다.
     const uncJudged: unknown[] = [];
     setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", uncJudged));
-    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: '히카리 불러서 \\\\server\\share\\report.txt 와 "/repo/alice/Client Acme acquisition.txt", "reports/Beta deal.txt", "/repo/bob/O\'Brien plan.txt", "/repo/bob/Acme \\"Project Cedar\\" plan.txt" 봐줘' });
+    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: '이사나 불러서 \\\\server\\share\\report.txt 와 "/repo/alice/Client Acme acquisition.txt", "reports/Beta deal.txt", "/repo/bob/O\'Brien plan.txt", "/repo/bob/Acme \\"Project Cedar\\" plan.txt" 봐줘' });
     const uncExcerpt = (uncJudged[0] as { excerpt: string }).excerpt;
     expect(uncExcerpt).not.toContain("server");
     expect(uncExcerpt).not.toContain("alice");
@@ -734,7 +681,7 @@ describe("character voice identity", () => {
     // 2차 체인(xr-20261030211626-f458f4) R1-OAI-4: ~~~ 펜스와 여러 backtick literal도 가린다.
     const fenceJudged: unknown[] = [];
     setCharacterIntentJudgeResolver(fakeIntentJudge("summon-now", fenceJudged));
-    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: "히카리 불러서 봐줘\n~~~\nprivate-fence-body\n~~~\n그리고 ``a `b` private-literal`` 와 `private-span\nsecond-line` 와 `alpha `` private-beta` 도" });
+    await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: "이사나 불러서 봐줘\n~~~\nprivate-fence-body\n~~~\n그리고 ``a `b` private-literal`` 와 `private-span\nsecond-line` 와 `alpha `` private-beta` 도" });
     const fenceExcerpt = (fenceJudged[0] as { excerpt: string }).excerpt;
     expect(fenceExcerpt).not.toContain("private-fence-body");
     expect(fenceExcerpt).not.toContain("private-literal");
@@ -747,9 +694,9 @@ describe("character voice identity", () => {
     const secretJudged: unknown[] = [];
     setCharacterIntentJudgeResolver(fakeIntentJudge("about-character", secretJudged));
     const secret = createRuntimeHarness();
-    const result = await secret.emit("input", { type: "input", source: "rpc", text: "히카리 불러서 이 token 값 확인해" }) as { text?: string } | undefined;
+    const result = await secret.emit("input", { type: "input", source: "rpc", text: "이사나 불러서 이 token 값 확인해" }) as { text?: string } | undefined;
     expect(secretJudged).toHaveLength(0);
-    expect(result?.text).toContain("HIKARI");
+    expect(result?.text).toContain("ISANA");
   });
 
   // cross-review R1-OAI-4·R2-OAI-1: choice가 빠지거나 질문에 없는 답은 판정 실패와 같다.
@@ -767,7 +714,7 @@ describe("character voice identity", () => {
     ]) {
       setCharacterIntentJudgeResolver(async () => ({ judge: async () => ({ answers: { intent } }) as never }));
       const result = await createRuntimeHarness().emit("input", { type: "input", source: "rpc", text: SUMMONS[0]! }) as { text?: string } | undefined;
-      expect(result?.text).toContain("HIKARI");
+      expect(result?.text).toContain("ISANA");
     }
   });
 
@@ -853,31 +800,6 @@ describe("character voice identity", () => {
     expect(serialized).not.toContain("MIO(미오)");
     expect(serialized).not.toContain("<report-style");
     expect(serialized).not.toContain("Problem / Decision / Check / Next를 항상 쓴다");
-  });
-
-  test.each([true, false])("Cloud Code Assist keeps voice inside systemInstruction (existing=%s)", (existing) => {
-    const payload = {
-      project: "fixture-project",
-      model: "gemini-test",
-      request: {
-        contents: [{ role: "user", parts: [{ text: "hello" }] }],
-        generationConfig: { maxOutputTokens: 100 },
-        ...(existing ? { systemInstruction: { role: "user", parts: [
-          { text: `base contract\n${renderCharacterVoice("YUKI(유키)")}` },
-        ] } } : {}),
-      },
-    };
-    const before = JSON.stringify(payload);
-    const once = injectCharacterVoice(payload, "HIKARI(히카리)") as typeof payload;
-    const twice = injectCharacterVoice(once, "HIKARI(히카리)") as typeof payload;
-    expect(twice).not.toHaveProperty("system");
-    expect(twice.request.contents).toEqual(payload.request.contents);
-    expect(twice.request.generationConfig).toEqual(payload.request.generationConfig);
-    expect(twice.request.systemInstruction).toEqual({
-      ...(existing ? { role: "user" } : {}),
-      parts: [...(existing ? [{ text: "base contract" }] : []), { text: renderCharacterVoice("HIKARI(히카리)") }],
-    });
-    expect(JSON.stringify(payload)).toBe(before);
   });
 
   // core는 system 맨 끝의 `<memories>`만 변동 구간으로 보고 그 앞에 cache breakpoint를 건다.
@@ -1286,7 +1208,7 @@ describe("configured seat identity through runtime hooks", () => {
         ["", "RIN(린)"],
         ['characterSeats:\n  "RIN(린)": -1\n  "MIO(미오)": 9007199254740992\n', "RIN(린)"],
         ['characterSeats:\n  "RIN(린)": 1\n  "MIO(미오)": 1\n', undefined],
-        ['characterSeats:\n  "YUKI(유키)": 1\n  "HIKARI(히카리)": 1\n', "RIN(린)"],
+        ['characterSeats:\n  "YUKI(유키)": 1\n  "ISANA(이사나)": 1\n', "RIN(린)"],
       ] as const) {
         writeFileSync(join(dir, "config.yml"), content);
         await expectHookVoice(harness, expected);
@@ -1369,9 +1291,8 @@ describe("office mode character seat", () => {
       );
       expect(result).toContain(OFFICE_ALIAS);
       expect(result).not.toContain("YUKI");
-      // 다른 6자리는 사무실 모드에서도 기본이다.
+      // Other seats retain their default characters.
       expect(characterForProvider("hive")).toBe("ISANA(이사나)");
-      expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("HIKARI(히카리)");
     });
   });
 
@@ -1452,15 +1373,13 @@ describe("office mode character seat", () => {
     },
   };
 
-  test("six seats change independently, MITSU stays default, and every seat keeps its own model, account and consult limits", async () => {
+  test("five seats change independently and a stale seat is ignored", async () => {
     await withOfficeProfile({ mode: "office", roster: MULTI_ROSTER }, (dir) => {
       writeFaces(dir, ["delta", "cedar", "birch", "alder", "elm", "tiber"]);
       expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
       expect(characterForProvider("hive")).toBe("ELM(엘름)");
       expect(characterForProvider("web6")).toBe("CEDAR(시더)");
-      expect(characterForProvider("google-vertex", [], "gemini-4-argon")).toBe("DELTA(델타)");
-      expect(characterForProvider("localproxy", [], "gemini-4-argon")).toBe("DELTA(델타)");
-      expect(withActiveSettings(Settings.isolated({ modelRoles: { implGemini: "localproxy/gemini-4-argon:auto" } }), () => characterTarget("DELTA(델타)")?.model)).toBe("localproxy/gemini-4-argon");
+      expect(characterTarget("DELTA(델타)")).toBeUndefined();
       expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
@@ -1470,7 +1389,7 @@ describe("office mode character seat", () => {
       expect(characterTarget("BIRCH(버치)")).toEqual({ ...CHARACTER_TARGETS["RIN(린)"], oauthPosition: 0 });
       expect(characterTarget("ALDER(앨더)")).toEqual({ ...CHARACTER_TARGETS["MIO(미오)"], oauthPosition: 1 });
       expect(characterTarget("TIBER(티버)")).toBeUndefined();
-      for (const [alias, id] of [["ELM(엘름)", "elm"], ["DELTA(델타)", "delta"], ["BIRCH(버치)", "birch"]]) {
+      for (const [alias, id] of [["ELM(엘름)", "elm"], ["BIRCH(버치)", "birch"]]) {
         expect(renderCharacterVoice(alias)).toContain(`FIXTURE-${id} 성향`);
       }
       expect(renderCharacterVoice("MITSU(미츠)")).toContain(CHARACTER_VOICES["MITSU(미츠)"].temperament);

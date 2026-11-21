@@ -71,7 +71,7 @@ description: Before delegation, child review or Git handoff.
     다음 발주도 다시 시도하며 core의 계정 차단과 쿨다운은 유지한다.
     첫 모델 요청이 공급자 거절로 끝난 Maker(stopReason error, 도구 호출 0, 파일 변경 없음)는 같은 child 안에서 `retry.fallbackChains`의 다음 모델로 한 번 자동 재발주된다(2026-11-18 사용자 결정: 「시작하자마자 거절되고 한 일이 없는 Maker는 대체 순서의 다음 모델로 한 번 자동 재발주하고, Main과 너에게 그 사실과 원래 오류를 바로 알림」, `extensions/lib/start-reject-fallback.ts`). Main은 원래 모델, 원문 오류, 새 모델이 담긴 알림을 받으면 수동으로 다시 발주하지 않는다. 대체 모델도 첫 요청에서 거절되거나 다음 모델이 없으면 그 사실을 알리고 멈춘다. 이 시작 실패 child는 owner와 placement 후보에서 빠지므로 Main이 같은 준비(preparedId와 이름)로 다시 발주할 수 있다.
     DeepSeek로 시작한 Maker가 실제 요청에서 core 분류상 사용 한도 오류를 받으면, 첫 요청이든 작업 중이든 같은 child에서 `NORMAL_SONNET`(`modelRoles.implSonnet`, auto)으로 한 번 전환한다(2026-11-18 사용자 결정). 대화와 완료한 도구 작업은 보존하고 child가 끝날 때까지 DeepSeek로 돌아가지 않는다. Main에 원 모델, 원문 오류, 새 모델을 알리고 라우팅 원장에 남긴다. Sonnet을 쓸 수 없거나 Sonnet도 끝내 실패하면 더 전환하지 않고 오류를 알린다. 일시적인 429, 네트워크 오류, 다른 Maker와 Main 및 helper의 동작은 기존 정책을 따른다.
-  - `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `NORMAL_DEEPSEEK`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. Gemini와 GLM은 Maker 후보가 아니다. `implGemini`는 HIKARI 호출과 사전 점검에만 쓰고, 두 모델로 발주하면 후보 밖이라 근거를 적어도 거절된다. 추천과 다른 의도한 예외는 `ROUTING_REASON`을 남긴다.
+  - `HARD_CODE_OPUS`, `HARD_CODE_SONNET`, `NORMAL_DEEPSEEK`, `HARD_CODE_DEEPSEEK`는 명시 선택 전용이다. GLM은 Maker 후보가 아니므로 근거를 적어도 발주할 수 없다. 추천과 다른 의도한 선택은 `ROUTING_REASON`을 남긴다.
     라우팅 슬롯 식별자는 유지하고 실제 모델과 alias, 교차검토 모델은 `config.yml`을 참조한다.
     일반 Maker 추천 후보와 helper 슬롯은 구별하며 다른 모델의 과거 평가를 현재 슬롯의 성능 증거로 옮기지 않는다.
     추천과 다른 후보를 고르면 `ROUTING_REASON`이 필요하다.

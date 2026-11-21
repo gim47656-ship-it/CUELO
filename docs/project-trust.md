@@ -33,6 +33,8 @@ Skills, rules, prompts, `AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `TITLE_SYS
 
 결정은 `~/.omp/agent/cuelo-trusted-projects.json`에 프로젝트의 real path를 기준으로 저장됩니다. 신뢰 승인은 CUELO의 브라우저 세션에 적용되며, 터미널에서 `omp` CLI가 프로젝트를 읽는 동작은 바꾸지 않습니다. 한 번 승인한 프로젝트는 다음에도 신뢰되며, 모든 프로젝트를 일괄 허용하지 않습니다. 삭제·결제·배포 등 개별 작업에 필요한 승인을 대신하지도 않습니다.
 
+세션이 자동으로 만든 작업 폴더와 재개한 세션의 작업 폴더, 야간 작업 폴더는 새 경로이더라도 본 checkout에 이미 부여된 명시적 신뢰 승인을 이어받습니다. `lib/session-worktree/runtime.ts`가 `lib/project-trust.ts`의 `inheritCheckoutTrust`를 호출합니다. 본 checkout이 승인되지 않았거나 신뢰 결정이 없으면 아무것도 기록하지 않고 작업 폴더도 제한 모드로 시작합니다. 이 규칙은 저장소의 `.finalize-checks.json`이 신뢰 확인 대상인 경우 새 작업 폴더에서 `git_finalize`가 게시 전 검사를 거부하지 않도록 합니다.
+
 ## 설정에서 관리
 
 설정의 **프로젝트 신뢰**에서 접근 가능한 프로젝트의 저장된 승인과 실행 중 세션 상태를 확인하고, 프로젝트별로 신뢰하거나 해제할 수 있습니다. 변경은 대상 경로를 확인한 뒤 명시적으로 승인합니다.

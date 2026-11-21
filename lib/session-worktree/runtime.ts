@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { getAgentDir } from "@oh-my-pi/pi-utils";
+import { inheritCheckoutTrust } from "../project-trust";
 import { getLiveSessionWorktreeUses, reserveWorktreeRemoval, startNewRpcSession, type AgentSessionWrapper, type RpcSessionStartOptions } from "../rpc-manager";
 import { removedAutoWorktreeRoot, rollbackUnstartedWorktree, selectSessionWorktree, sweepSessionWorktrees, withRepositoryLock, type LiveUse, type Selection } from "./index";
 import { findStaleAutoWorktrees, runWorktreeMaintenance, sessionWorktreeRoots } from "./maintenance";
@@ -17,6 +19,10 @@ const host = {
   live: (): LiveUse[] => [...getLiveSessionWorktreeUses(), ...Array.from(pending, ([id, cwd]) => ({ id, cwd }))],
   reserve: reserveWorktreeRemoval,
 };
+/** A worktree the server picks takes the checkout's explicit trust, as nightly worktrees do; otherwise git_finalize refuses `.finalize-checks.json`. */
+function inheritTrust(checkout: string, selected: Selection): void {
+  if (selected.worktree) inheritCheckoutTrust(checkout, selected.cwd, getAgentDir());
+}
 export async function startSessionWithWorktree(
   requestId: string | undefined,
   cwd: string,
@@ -36,6 +42,7 @@ export async function startSessionWithWorktree(
   const result = withRepositoryLock(cwd, async () => {
     const selected = await selectSessionWorktree(cwd, host, selection);
     try {
+      inheritTrust(cwd, selected);
       const started = await startNewRpcSession(requestId, selected.cwd, options);
       return { ...started, ...selected, cwd: started.session.cwd };
     } catch (error) {
@@ -63,7 +70,7 @@ export async function prepareResumedWorktree(manager: Pick<SessionManager, "getR
     const selected = await selectSessionWorktree(requested, host);
     const id = `resume:${randomUUID()}`;
     pending.set(id, selected.cwd);
-    try { manager.setCwdWithoutRelocation(selected.cwd); }
+    try { inheritTrust(requested, selected); manager.setCwdWithoutRelocation(selected.cwd); }
     catch (error) { pending.delete(id); await rollbackUnstartedWorktree(selected); throw error; }
     return () => { pending.delete(id); };
   });

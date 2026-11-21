@@ -6,9 +6,9 @@ import { inflateRawSync } from "node:zlib";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { draftDocument, type DraftCompletion } from "../draft";
-import { DRAFT_FALLBACK, GEMINI as PRIMARY_ROLE, HelperCallError, type HelperAnswer } from "../skim";
+import { DRAFT_FALLBACK, ROLE_PRIMARY as PRIMARY_ROLE, HelperCallError, type HelperAnswer } from "../skim";
 
-const GEMINI = "google-vertex/gemini-4-argon";
+const TEST_MODEL = "openai-codex/gpt-6.1-terra";
 const SONNET = "anthropic/claude-sonnet-5-5";
 const directories: string[] = [];
 const signal = new AbortController().signal;
@@ -19,19 +19,20 @@ function fixture() {
 }
 afterEach(() => { for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function context(cwd: string): ExtensionContext { return { cwd } as ExtensionContext; }
-/** 주입 모델 응답. 모델 이름을 밝히지 않는 fake는 요청한 표지(slot=GEMINI)로 응답한 것으로 본다. */
-const reply = (text: string, model: string = GEMINI): HelperAnswer => ({ text, model });
+const reply = (text: string, model: string = TEST_MODEL): HelperAnswer => ({ text, model });
 async function draftText(...args: Parameters<typeof draftDocument>): Promise<string> { return (await draftDocument(...args)).text; }
 
 test.each([
   ["503 Service Unavailable", true],
-  ["429 Vertex usage limit", true],
-  ["Request blocked by Google (SAFETY): temporarily unavailable", false],
+  ["429 usage limit", true],
+  ["empty answer", false],
+  ["content blocked by safety policy: temporarily unavailable", false],
+  ["401 OAuth token expired", false],
   ["403 Your account must be verified (429 retry hint)", false],
-] as const)("draft Hydrogen failure %s reaches at most the configured direct route", async (failure, fallbackCalled) => {
+] as const)("draft failure %s only reaches the configured alternate when operational", async (failure, fallbackCalled) => {
   const cwd = fixture();
-  const primary = "google-vertex/gemini-4-hydrogen";
-  const fallback = "openai-codex/gpt-6.1-terra";
+  const primary = TEST_MODEL;
+  const fallback = "anthropic/claude-haiku-5-5";
   const called: string[] = [];
   const ctx = { cwd, models: { resolve: (selector: string) => {
     const exact = selector === "@draft" ? primary : selector === "@draftFallback" ? fallback : selector;
@@ -40,10 +41,10 @@ test.each([
   } } } as ExtensionContext;
   const result = await withActiveSettings(Settings.isolated({
     modelRoles: { draft: primary, draftFallback: fallback },
-    retry: { fallbackChains: { [primary]: ["aistudio/gemini-4-hydrogen"] } },
   }), () => draftDocument({ instruction: "write", output: "checked.txt" }, ctx, signal, async (_prompt, _ctx, _signal, marker) => {
     if (marker === PRIMARY_ROLE) {
       called.push(primary);
+      if (failure === "empty answer") return reply("", primary);
       throw new HelperCallError(failure, primary, { providerFailure: true });
     }
     called.push(typeof marker === "object" ? marker.route : marker === DRAFT_FALLBACK ? fallback : marker);
@@ -57,15 +58,15 @@ test.each([
 
 test("an unreadable configured draft primary falls back once without re-resolving it", async () => {
   const cwd = fixture();
-  const primary = "google-vertex/gemini-4-hydrogen";
-  const fallback = "openai-codex/gpt-6.1-terra";
+  const primary = TEST_MODEL;
+  const fallback = "anthropic/claude-haiku-5-5";
   let resolutions = 0;
   const ctx = { cwd, models: { resolve: (selector: string) => {
     if (selector === "@draft") {
       resolutions++;
       throw new Error("fixture: primary model registry unavailable");
     }
-    return selector === fallback ? { provider: "openai-codex", id: "gpt-6.1-terra" } : undefined;
+    return selector === "@draftFallback" ? { provider: "anthropic", id: "claude-haiku-5-5" } : undefined;
   } } } as ExtensionContext;
   const called: string[] = [];
   const result = await withActiveSettings(Settings.isolated({ modelRoles: { draft: primary, draftFallback: fallback } }), () =>
@@ -222,33 +223,33 @@ describe("draft", () => {
     expect(existsSync(join(outside, "abs.md"))).toBe(false);
   });
 
-  test("Gemini 실패나 형식이 깨진 응답은 같은 prompt로 고정 대체(Sonnet)에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
+  test("형식이 깨진 응답은 고정 대체(Sonnet)에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "facts.md"), "재고 12개");
     writeFileSync(join(cwd, ".env.local"), "PRIVATE_MARKER");
     const calls: Array<{ prompt: string; model: string }> = [];
     const brokenCsv: DraftCompletion = async (prompt, _ctx, _signal, model) => {
       calls.push({ prompt, model });
-      return reply(model === GEMINI ? 'a,b\n"unclosed,1\n' : "```csv\n품목,수량\n장갑,12\n```", model);
+      return model === PRIMARY_ROLE ? reply('a,b\n"unclosed,1\n') : reply("```csv\n품목,수량\n장갑,12\n```", String(model));
     };
     const csv = await draftText({ instruction: "재고표", output: "stock.csv", paths: ["facts.md", ".env.local"] }, context(cwd), signal, brokenCsv);
-    expect(calls.map(({ model }) => model)).toEqual([GEMINI, SONNET]);
+    expect(calls.map(({ model }) => model)).toEqual([PRIMARY_ROLE, SONNET]);
     expect(calls[0]!.prompt).toBe(calls[1]!.prompt);
     expect(calls[0]!.prompt).toContain("재고 12개");
     expect(calls[0]!.prompt).not.toContain("PRIVATE_MARKER");
     expect(csv.startsWith(`model: ${SONNET}`)).toBe(true);
-    expect(csv).toContain("Gemini 실패: CSV: 닫히지 않은 따옴표가 있습니다.");
+    expect(csv).toContain(`${TEST_MODEL} 실패: CSV: 닫히지 않은 따옴표가 있습니다.`);
     expect(csv).toContain(".env.local: 비밀 경로 제외");
     expect(readFileSync(join(cwd, "stock.csv"), "utf8")).toBe("\uFEFF품목,수량\n장갑,12\n");
 
     const called: string[] = [];
     const failed = await draftText({ instruction: "요약", output: "summary.md" }, context(cwd), signal, async (_p, _c, _s, model) => {
       called.push(model);
-      throw new Error(model === GEMINI ? "Gemini original 429" : "Sonnet original 403");
+      throw new Error(model === PRIMARY_ROLE ? "primary original 429" : "Sonnet original 403");
     });
-    expect(called).toEqual([GEMINI, SONNET]);
+    expect(called).toEqual([PRIMARY_ROLE, SONNET]);
     expect(failed.startsWith("model: none")).toBe(true);
-    expect(failed).toContain("Gemini 실패: Gemini original 429");
+    expect(failed).toContain("@draft 실패: primary original 429");
     expect(failed).toContain("Sonnet 실패: Sonnet original 403");
     expect(existsSync(join(cwd, "summary.md"))).toBe(false);
   });
@@ -261,7 +262,7 @@ describe("draft", () => {
     ] };
     const result = await draftText({ instruction: "구매 계획", output: "plan.xlsx" }, context(cwd), signal,
       async () => reply(`\`\`\`json\n${JSON.stringify(workbook)}\n\`\`\``));
-    expect(result).toContain(`model: ${GEMINI}`);
+    expect(result).toContain(`model: ${TEST_MODEL}`);
     expect(result).toContain('시트 "구매_계획": 3행 × 3열');
     const parts = unzip(readFileSync(join(cwd, "plan.xlsx")));
     expect([...parts.keys()][0]).toBe("[Content_Types].xml");

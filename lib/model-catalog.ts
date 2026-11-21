@@ -59,7 +59,6 @@ export interface ModelCatalogRecommendation {
 const CONSENSUS_MIN_SHARE = 0.6;
 const KNOWN_PROVIDER_HOSTS: Record<string, readonly string[]> = {
   anthropic: ["api.anthropic.com"],
-  google: ["generativelanguage.googleapis.com"],
   openai: ["api.openai.com"],
   openrouter: ["openrouter.ai"],
 };

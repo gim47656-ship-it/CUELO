@@ -3,8 +3,8 @@
 //   GET  /usage                        CLI 사용량 + 로컬 계정 제어/저장 리셋
 //   GET  /models                       CLI 모델 집계 (기존 fallback 유지)
 //   POST /credential/<id>/{enable,disable,reset}
-//   GET  /credits                      API 크레딧 추정(Google Cloud Vertex 프로젝트·이 PC의 Hive·Anthropic 기록)과 지금 쓰는 API의 결제 화면 잔액 기록
-//   POST /credits/settings             Vertex·Hive 총액·시작일 {wallet:"google"|"hive", value|null} 또는 잔액 기록 {kind:"balance", wallet, value|null}
+//   GET  /credits                      Hive·Anthropic 추정 사용액과 현재 사용하는 API 결제 화면 잔액 기록
+//   POST /credits/settings             Hive 총액·시작일 또는 잔액 기록 {kind:"balance", wallet, value|null}
 // 추론 discovery/config는 건드리지 않는다. 관리 초기화 장애는 이 sidecar에만 국한한다.
 // 만료 1시간 전 리셋권 자동 사용은 agent 디렉터리의 cuelo-reset-expiry.json이 {"enabled":true}일 때만 돈다.
 'use strict';
@@ -47,6 +47,31 @@ const SDK_REPORT_CACHE_MS = 5_000;
 const STALE_MS = 10 * 60_000;
 const CLI_TIMEOUT_MS = 30_000;
 
+// Stored credentials and snapshots can outlive providers retired by the managed profile.
+const RETIRED_USAGE_PROVIDERS = new Set(['aistudio', 'google', 'google-gemini-cli', 'google-vertex', 'google-antigravity']);
+const activeUsageProvider = provider => !RETIRED_USAGE_PROVIDERS.has(provider);
+
+async function readSdkUsage({ storage, baseUrlResolver, defaultUsageProviders = [] }, signal) {
+    await storage.reload();
+    const providers = new Set(defaultUsageProviders.map(provider => provider.id));
+    for (const credential of storage.credentials.snapshot().credentials) providers.add(credential.provider);
+    const active = [...providers].filter(provider => activeUsageProvider(provider) && storage.usage.providerFor(provider));
+    const scoped = await Promise.allSettled(active.map(async provider =>
+        storage.usage.reports({ provider, baseUrlResolver, signal })));
+    signal.throwIfAborted();
+    const reports = [];
+    const unavailable = [];
+    for (const [index, result] of scoped.entries()) {
+        if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+            for (const report of result.value) reports.push(report);
+        } else {
+            unavailable.push(active[index]);
+        }
+    }
+    if (scoped.length && scoped.length === unavailable.length) throw controlError(502, 'usage_unavailable');
+    return { reports, ...(unavailable.length ? { notes: [`Usage unavailable: ${unavailable.join(', ')}`] } : {}) };
+}
+
 let cache = null; // { at, body }. 무효화는 at=0 으로 한다(오류 시 stale 응답을 살려 두려고).
 let inflight = null;
 
@@ -71,13 +96,8 @@ function fetchUsage() {
         try {
             let stdout;
             if (localControl) {
-                const { storage, baseUrlResolver } = localControl;
-                await storage.reload();
-                const reports = await storage.usage.reports({
-                    baseUrlResolver, signal: AbortSignal.timeout(CLI_TIMEOUT_MS),
-                });
-                if (!reports) throw controlError(502, 'usage_unavailable');
-                stdout = JSON.stringify({ generatedAt: Date.now(), reports });
+                const usage = await readSdkUsage(localControl, AbortSignal.timeout(CLI_TIMEOUT_MS));
+                stdout = JSON.stringify({ generatedAt: Date.now(), ...usage });
             } else {
                 stdout = await omp(['usage', '--json']);
                 JSON.parse(stdout);
@@ -460,14 +480,14 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
     async function enrich(raw) {
         const usage = {
             ...pick(raw, ['generatedAt', 'notes']),
-            reports: (raw.reports || []).map(safeReport),
-            ...(raw.accountsWithoutUsage ? { accountsWithoutUsage: raw.accountsWithoutUsage.map(account =>
+            reports: (raw.reports || []).filter(report => activeUsageProvider(report.provider)).map(safeReport),
+            ...(raw.accountsWithoutUsage ? { accountsWithoutUsage: raw.accountsWithoutUsage.filter(account => activeUsageProvider(account.provider)).map(account =>
                 pick(account, ['provider', 'type', ...IDENTITY_KEYS, 'orgName', 'enterpriseUrl', 'authorizedAt'])) } : {}),
-            ...(raw.disabledCredentials ? { disabledCredentials: raw.disabledCredentials.map(account => ({
+            ...(raw.disabledCredentials ? { disabledCredentials: raw.disabledCredentials.filter(account => activeUsageProvider(account.provider)).map(account => ({
                 ...pick(account, ['id', 'provider', 'type', ...IDENTITY_KEYS, 'orgName', 'disabledAtMs']),
                 cause: 'credential_disabled',
             })) } : {}),
-            ...(raw.capacity ? { capacity: Object.fromEntries(Object.entries(raw.capacity).map(([provider, stats]) => [
+            ...(raw.capacity ? { capacity: Object.fromEntries(Object.entries(raw.capacity).filter(([provider]) => activeUsageProvider(provider)).map(([provider, stats]) => [
                 provider, stats.map(stat => pick(stat, ['window', 'durationMs', 'meter', 'accounts', 'usedAccounts', 'remainingAccounts'])),
             ])) } : {}),
         };
@@ -502,7 +522,7 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
                 }
             }
             for (const credential of all) {
-                if (joined.has(credential.credentialId) || !control().storage.usage.providerFor(credential.provider)) continue;
+                if (!activeUsageProvider(credential.provider) || joined.has(credential.credentialId) || !control().storage.usage.providerFor(credential.provider)) continue;
                 if (credential.authError) {
                     // 수동 OFF·쿨다운 상태와 섞지 않는다. 그 id의 block은 재로그인 뒤 다시 보인다.
                     usage.reports.push({
@@ -743,16 +763,17 @@ async function initializeControl() {
             root = names.map(name => path.join(npmRoot, name)).find(hasSdk) ?? path.join(npmRoot, names[0]);
         }
         const load = (pkg, file) => import(pathToFileURL(path.join(root, 'node_modules', '@oh-my-pi', pkg, 'src', file)).href);
-        const [sdk, utils] = await Promise.all([
+        const [sdk, utils, usageRegistry] = await Promise.all([
             load('pi-coding-agent', 'index.ts'), load('pi-utils', 'index.ts'),
+            load('pi-ai', 'usage/registry.ts').catch(() => undefined),
         ]);
-        // API 크레딧의 Vertex 조회는 계정 storage와 무관하므로 storage가 실패해도 쓸 수 있게 먼저 걸어 둔다.
-        creditsCore = { env: utils.$env, load: (pkg, file) => load(pkg, file) };
         storage = await sdk.AuthStorage.create(utils.getAgentDbPath());
         await storage.reload();
         const registry = new sdk.ModelRegistry(storage);
         localControl = {
             storage, baseUrlResolver: provider => registry.getProviderBaseUrl(provider),
+            defaultUsageProviders: Array.isArray(usageRegistry?.DEFAULT_USAGE_PROVIDERS)
+                ? usageRegistry.DEFAULT_USAGE_PROVIDERS : [],
             // 만료 정책·전송 기록은 agent.db와 같은 profile의 agent 디렉터리에 둔다. 잠금은 SDK의 프로세스 간 배타 잠금이다.
             agentDir: utils.getAgentDir(), withFileLock: utils.withFileLock,
         };
@@ -1219,13 +1240,12 @@ async function buildStatsBody() {
 //
 // Hive에는 잔액 API도 사용량 API도 없다. 사용자가 한 번 입력한 총액·시작일에서 이 PC의 세션 jsonl
 // (model_usage provider hive + provider hive assistant 메시지)로 센 추정 사용액을 빼서 추정 잔액을 낸다(2026-10-26 사용자 결정).
-// Google Cloud 지갑은 Gemini가 AI Studio 프록시로 옮겨 가 Cloud Monitoring 조회가 의미 없어 뺐다(2026-10-27 사용자 결정).
 // 금액은 모두 추정이다. 단가를 모르는 모델·토큰 종류는 0이 아니라 미상(null)이고, 그때 잔액은 상한(≤)이다.
 //
 // 잔액(balances, 2026-11-03 사용자 요청 "현재쓰이는것들만"): 이 PC가 선불 크레딧으로 쓰는 API 중 지금 설정된 경로가 가리키고
 // 기간 안에 유료(키) 사용 기록이 있는 것만 낸다. 잔액을 읽는 공식 API가 지금 가진 키로는 없어서(Exa는 별도 Team Management
 // 서비스 키, TypeSafe·Hive는 콘솔뿐, Anthropic 비용 API는 admin 키) 결제 화면에서 보고 적은 값과 그 확인 시각만 저장한다.
-// 공급자에 요청을 보내지 않는다. 지금 보이지 않는 지갑의 기록과 옛 google 항목은 파일에 그대로 둔다.
+// 공급자에 요청을 보내지 않는다. 지금 보이지 않는 지갑의 기록은 파일에 그대로 둔다.
 const CREDITS_FILE_NAME = 'cuelo-api-credits.json';
 const USAGE_SCAN_MS = 30_000;
 const DEFAULT_WINDOW_DAYS = 30; // 시작일을 입력하기 전에 보여 줄 기간
@@ -1238,41 +1258,9 @@ const HIVE_PRICES = {
     'zai-org/glm-5.3-flash': { input: 0.05, output: 0.17, cacheRead: 0.01 },
 };
 const CREDIT_PRICE_SOURCES = {
-    google: ['https://cloud.google.com/vertex-ai/generative-ai/pricing', 'https://cloud.google.com/text-to-speech/pricing'],
     hive: ['https://thehive.ai/pricing'],
     checked: '2026-10-26',
 };
-
-// 완료된 날의 Monitoring 합계를 보관한다. Monitoring은 GCP 지표를 6주(42일)만 보관하는데 무료 크레딧은 90일이라,
-// 보관 기간이 지난 날도 합계에 남기려는 것이다. 형식: {version:1, project, days:{"YYYY-MM-DD":{"model|location|type":tokens}}}.
-// 날짜는 이 PC의 로컬 자정 기준이다. 같은 날을 다시 받으면 그 날 값을 통째로 바꾼다(더하지 않는다).
-const GOOGLE_LEDGER_FILE_NAME = 'cuelo-api-credits-google-days.json';
-const MONITORING_URL = 'https://monitoring.googleapis.com/v3/projects';
-const MONITORING_WINDOW_DAYS = 40; // 보관 42일에서 2일 여유
-const MONITORING_INGEST_DELAY_MS = 3 * 3_600_000; // 끝난 지 이만큼 지난 날만 장부에 확정한다
-const MONITORING_TIMEOUT_MS = 15_000;
-const GOOGLE_CACHE_MS = 5 * 60_000;
-const GOOGLE_ERROR_CACHE_MS = 60_000;
-const GOOGLE_AUTH_TIMEOUT_MS = 15_000; // ADC 토큰 발급이 멈춰도 다른 지갑까지 못 보이게 하지 않는다
-
-/** promise가 ms 안에 끝나지 않으면 code 오류로 끝낸다. 타이머는 끝나면 치운다. */
-function withDeadline(promise, ms, code) {
-    let timer;
-    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(creditError(503, code)), ms); });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-// 단가: USD / 1M tokens. Vertex — https://cloud.google.com/vertex-ai/generative-ai/pricing , TTS — https://cloud.google.com/text-to-speech/pricing (2026-10-26).
-//   gemini-4-argon: 표의 $2/$10(global)은 「50% credits back」 프로모션 가격이다. 청구는 정가로 되고 절반이 다음 달 7일에
-//     별도 크레딧(30일 만료)으로 돌아오므로 정가 $4/$20(global), $4.4/$22(non-global)로 매긴다. 캐시 입력 할인도 빼지 않아 상한 추정이다.
-//   gemini-3.8-live: Monitoring은 텍스트/오디오 토큰을 가르지 못한다. 높은 쪽(오디오) 단가로 매겨 잔액을 부풀리지 않는다. 상한 추정이다.
-//   gemini-2.5-flash-tts: 입력 텍스트 $0.50, 출력 오디오 $10. 종류가 정해져 있어 정확한 단가다.
-// 표에 없는 모델(예: gemini-4-hydrogen)은 단가를 지어내지 않고 금액 미상(null)으로 낸다. 토큰과 429는 그대로 센다.
-const VERTEX_PRICES = {
-    'gemini-4-argon': { basis: 'upper-bound', reason: 'gross-price', global: { input: 4, output: 20 }, regional: { input: 4.4, output: 22 } },
-    'gemini-3.8-live': { basis: 'upper-bound', reason: 'audio-rate', global: { input: 3, output: 12 }, regional: { input: 3, output: 12 } },
-    'gemini-2.5-flash-tts': { basis: 'exact', reason: null, global: { input: 0.5, output: 10 }, regional: { input: 0.5, output: 10 } },
-};
-const GOOGLE_ROLES = { 'gemini-4-argon': 'hikari', 'gemini-3.8-live': 'interpreter', 'gemini-2.5-flash-tts': 'tts' };
 
 // 단가 표는 고정 키만 쓴다. 세션 기록에서 온 이름(예: "constructor")이 Object.prototype을 집지 않게 한다.
 const own = (table, key) => (Object.hasOwn(table, key) ? table[key] : null);
@@ -1302,7 +1290,7 @@ function parseDay(value) {
 }
 
 /** 지갑 설정 하나를 검사한다. today가 있으면 미래 시작일을 거절한다(저장할 때만). */
-function validateCreditSetting(wallet, value, today) {
+function validateCreditSetting(value, today) {
     if (value === null) return null;
     if (value === undefined || typeof value !== 'object' || Array.isArray(value)) throw creditError(400, 'invalid_credit_settings');
     const totalUsd = value.totalUsd;
@@ -1312,14 +1300,7 @@ function validateCreditSetting(wallet, value, today) {
     const startDate = parseDay(value.startDate);
     if (!startDate) throw creditError(400, 'invalid_start_date');
     if (today && startDate > today) throw creditError(400, 'start_date_in_future');
-    if (wallet === 'hive') return { totalUsd, startDate };
-    let expiryDate = null;
-    if (value.expiryDate !== undefined && value.expiryDate !== null && value.expiryDate !== '') {
-        expiryDate = parseDay(value.expiryDate);
-        if (!expiryDate) throw creditError(400, 'invalid_expiry_date');
-        if (expiryDate < startDate) throw creditError(400, 'expiry_before_start');
-    }
-    return { totalUsd, startDate, expiryDate };
+    return { totalUsd, startDate };
 }
 
 const BALANCE_WALLETS = ['hive', 'exa', 'typesafe', 'anthropic'];
@@ -1340,7 +1321,7 @@ function validateBalance(value, nowMs) {
 }
 
 /**
- * 크레딧 설정을 읽는다. raw는 저장할 때 바꾸지 않는 항목(옛 google, 지금 안 보이는 지갑의 잔액)을 보존하려고 함께 낸다.
+ * raw를 함께 반환해 기존 파일의 알 수 없는 항목과 다른 지갑의 잔액을 보존한다.
  * 파일을 읽는 것 자체가 실패하면(ENOENT 제외) ioError로 알려 저장이 덮어쓰지 않게 한다.
  * 한 항목이 깨져도 다른 항목은 읽고, 깨진 항목은 미상(null)과 settings_unreadable로 알린다.
  */
@@ -1350,19 +1331,17 @@ function readCreditSettings(file) {
         text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
     } catch (error) {
         return error.code === 'ENOENT'
-            ? { google: null, hive: null, balances: {}, raw: null }
-            : { google: null, hive: null, balances: {}, raw: null, error: 'settings_unreadable', ioError: true };
+            ? { hive: null, balances: {}, raw: null }
+            : { hive: null, balances: {}, raw: null, error: 'settings_unreadable', ioError: true };
     }
     let raw = null;
     try { raw = JSON.parse(text); } catch { /* 문법이 깨진 파일은 되살릴 내용이 없다 */ }
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 1) {
-        return { google: null, hive: null, balances: {}, raw: null, error: 'settings_unreadable' };
+        return { hive: null, balances: {}, raw: null, error: 'settings_unreadable' };
     }
     let error;
-    let google = null;
     let hive = null;
-    try { google = validateCreditSetting('google', raw.google ?? null); } catch { error = 'settings_unreadable'; }
-    try { hive = validateCreditSetting('hive', raw.hive ?? null); } catch { error = 'settings_unreadable'; }
+    try { hive = validateCreditSetting(raw.hive ?? null); } catch { error = 'settings_unreadable'; }
     const balances = {};
     const stored = raw.balances ?? {};
     if (typeof stored !== 'object' || Array.isArray(stored)) error = 'settings_unreadable';
@@ -1372,7 +1351,7 @@ function readCreditSettings(file) {
             try { balances[wallet] = validateBalance(stored[wallet]); } catch { error = 'settings_unreadable'; }
         }
     }
-    return { google, hive, balances, raw, ...(error ? { error } : {}) };
+    return { hive, balances, raw, ...(error ? { error } : {}) };
 }
 
 /**
@@ -1424,215 +1403,6 @@ function writePrivateJson(file, value) {
         fs.rmSync(temp, { force: true });
         throw error;
     }
-}
-
-/**
- * 장부를 읽는다. writable은 이번 결과로 파일을 덮어써도 되는가다. 파일이 없거나(ENOENT) 문법이 깨져 되살릴 내용이 없을 때만 true다.
- * 읽기 I/O 오류, 다른 프로젝트의 장부, 모르는 버전의 장부는 지우지 않고 그대로 둔다(Monitoring은 42일만 보관해 지운 날을 다시 받을 수 없다).
- * 한 날의 값이 깨져도 나머지 날은 살리고 깨진 날만 버린다. 장부 하나는 프로젝트 하나의 것이다: 다른 프로젝트 장부가 있으면
- * 그 프로젝트는 이번 조회분만 보이고 쌓이지 않는다(이 PC는 프로젝트를 하나만 쓴다).
- */
-function readGoogleLedger(file, project) {
-    let raw;
-    try {
-        raw = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
-    } catch (error) {
-        if (error.code === 'ENOENT') return { days: {}, note: null, writable: true };
-        return error instanceof SyntaxError
-            ? { days: {}, note: 'ledger_unreadable', writable: true }
-            : { days: {}, note: 'ledger_read_failed', writable: false };
-    }
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { days: {}, note: 'ledger_unreadable', writable: true };
-    // 주인이 보이면 버전·날 값이 깨졌어도 다른 프로젝트 것은 계산에 쓰지 않고 덮어쓰지도 않는다.
-    if (typeof raw.project === 'string' && raw.project !== project) return { days: {}, note: 'ledger_other_project', writable: false };
-    if (raw.version !== 1) return { days: {}, note: 'ledger_read_failed', writable: false };
-    if (typeof raw.project !== 'string' || raw.days === null || typeof raw.days !== 'object') {
-        return { days: {}, note: 'ledger_unreadable', writable: true };
-    }
-    const days = {};
-    let dropped = false;
-    for (const [day, buckets] of Object.entries(raw.days)) {
-        const valid = parseDay(day) && buckets !== null && typeof buckets === 'object'
-            && Object.values(buckets).every(v => Number.isFinite(v) && v >= 0);
-        if (valid) days[day] = buckets; else dropped = true;
-    }
-    return { days, note: dropped ? 'ledger_unreadable' : null, writable: true };
-}
-
-function rate(price, location, type) {
-    const table = location === 'global' ? price.global : price.regional;
-    return table[type];
-}
-
-/**
- * 일별 버킷({day: {"model|location|type": tokens}})에서 since 이후를 모델 행으로 모은다.
- * 단가를 모르는 모델이나 input/output이 아닌 토큰이 있으면 그 행의 금액은 null(미상)이다.
- */
-function googleRows(days, sinceDay, errors429 = {}) {
-    const rows = new Map();
-    for (const [day, buckets] of Object.entries(days)) {
-        if (day < sinceDay) continue;
-        for (const [key, tokens] of Object.entries(buckets)) {
-            const [model, location, type] = key.split('|');
-            let row = rows.get(model);
-            if (!row) {
-                const price = own(VERTEX_PRICES, model);
-                row = { model, role: own(GOOGLE_ROLES, model), inputTokens: 0, outputTokens: 0, otherTokens: 0,
-                    costUsd: price ? 0 : null, pricing: price ? price.basis : 'unknown', pricingReason: price?.reason ?? null,
-                    errors429: 0 };
-                rows.set(model, row);
-            }
-            if (type === 'input') row.inputTokens += tokens;
-            else if (type === 'output') row.outputTokens += tokens;
-            else row.otherTokens += tokens;
-            const price = own(VERTEX_PRICES, model);
-            if (row.costUsd !== null && (type === 'input' || type === 'output')) row.costUsd += tokens * rate(price, location, type) / 1e6;
-            else if (tokens > 0 && type !== 'input' && type !== 'output') { row.costUsd = null; row.pricing = 'unknown'; }
-        }
-    }
-    for (const [model, count] of Object.entries(errors429)) {
-        const row = rows.get(model);
-        if (row) row.errors429 = count;
-        else rows.set(model, { model, role: own(GOOGLE_ROLES, model), inputTokens: 0, outputTokens: 0, otherTokens: 0,
-            costUsd: own(VERTEX_PRICES, model) ? 0 : null, pricing: own(VERTEX_PRICES, model)?.basis ?? 'unknown',
-            pricingReason: own(VERTEX_PRICES, model)?.reason ?? null, errors429: count });
-    }
-    const order = ['hikari', 'interpreter', 'tts'];
-    return [...rows.values()].sort((a, b) => {
-        const ra = a.role ? order.indexOf(a.role) : order.length;
-        const rb = b.role ? order.indexOf(b.role) : order.length;
-        return ra - rb || (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens) || a.model.localeCompare(b.model);
-    });
-}
-
-/** 만료일까지 남은 날. 만료일 당일이 0, 지나면 음수다. */
-function expiryDaysLeft(expiryDate, now) {
-    if (!expiryDate) return null;
-    return Math.round((dayStartMs(expiryDate) - dayStartMs(localDay(now))) / DAY_MS);
-}
-
-/** Monitoring timeSeries를 ALIGN_SUM으로 읽어 [{startMs, labels, value}]로 편다. 페이지를 끝까지 넘긴다. */
-async function monitoringPoints({ project, token, fetchImpl, filter, startMs, endMs, periodSec }) {
-    const points = [];
-    let pageToken = '';
-    for (let page = 0; page < 20; page += 1) {
-        const query = new URLSearchParams({
-            filter, 'interval.startTime': new Date(startMs).toISOString(), 'interval.endTime': new Date(endMs).toISOString(),
-            'aggregation.alignmentPeriod': `${periodSec}s`, 'aggregation.perSeriesAligner': 'ALIGN_SUM', pageSize: '10000',
-        });
-        if (pageToken) query.set('pageToken', pageToken);
-        let response;
-        try {
-            response = await fetchImpl(`${MONITORING_URL}/${encodeURIComponent(project)}/timeSeries?${query}`, {
-                headers: { Authorization: `Bearer ${token}`, 'x-goog-user-project': project },
-                signal: AbortSignal.timeout(MONITORING_TIMEOUT_MS),
-            });
-        } catch {
-            throw creditError(502, 'monitoring_unreachable');
-        }
-        if (response.status === 401 || response.status === 403) throw creditError(502, 'monitoring_denied');
-        if (!response.ok) throw creditError(502, 'monitoring_error');
-        const body = await response.json().catch(() => null);
-        // 오류가 섞인 200 응답이나 모양이 다른 응답을 「사용량 0」으로 읽으면 확정 장부의 날을 빈 값으로 덮는다.
-        if (!body || typeof body !== 'object' || Array.isArray(body) || (Array.isArray(body.executionErrors) && body.executionErrors.length > 0)
-            || (body.timeSeries !== undefined && !Array.isArray(body.timeSeries))) {
-            throw creditError(502, 'monitoring_error');
-        }
-        for (const series of body.timeSeries ?? []) {
-            const labels = { ...series.resource?.labels, ...series.metric?.labels };
-            for (const point of series.points ?? []) {
-                // 값이나 시각이 없는 점을 0으로 세면 확정 장부의 날을 빈 값으로 덮는다. 응답 전체를 오류로 낸다.
-                const raw = point.value?.int64Value ?? point.value?.doubleValue;
-                const value = (typeof raw === 'string' && raw.trim() !== '') || typeof raw === 'number' ? Number(raw) : NaN;
-                const start = Date.parse(point.interval?.startTime ?? point.interval?.endTime);
-                if (!Number.isFinite(value) || value < 0 || !Number.isFinite(start)) throw creditError(502, 'monitoring_error');
-                points.push({ startMs: start, labels, value });
-            }
-        }
-        pageToken = body.nextPageToken || '';
-        if (!pageToken) return points;
-    }
-    // 페이지가 남았는데 멈추면 사용량을 덜 센 채 장부에 확정하게 된다. 지갑 오류로 낸다.
-    throw creditError(502, 'monitoring_error');
-}
-
-// resource_container로 이 프로젝트의 시리즈만 고른다(여러 프로젝트를 모니터링하는 범위 프로젝트의 다른 프로젝트 사용량이 섞이지 않게).
-const TOKEN_FILTER = project => 'metric.type="aiplatform.googleapis.com/publisher/online_serving/token_count"'
-    + ` AND resource.labels.resource_container="${project}"`;
-const ERROR_429_FILTER = project => 'metric.type="aiplatform.googleapis.com/publisher/online_serving/model_invocation_count"'
-    + ` AND metric.labels.response_code="429" AND resource.labels.resource_container="${project}"`;
-
-/**
- * Monitoring 창(최근 MONITORING_WINDOW_DAYS일 + 오늘)의 일별 토큰과 429를 새로 받는다. 창 안의 날은 데이터가 없어도
- * 빈 버킷으로 관측된 것이다. 오늘은 진행 중인 부분합이다.
- * 버킷은 로컬 자정에서 정시로 끊기는 1시간(마지막 시간 조각은 1분) 단위로 받아 날로 더한다. 끝 시각이 정시가 아닌
- * 긴 alignmentPeriod는 Monitoring이 구간 시작 전 데이터를 섞어 냈다(2026-10-26 실측).
- */
-async function fetchGoogleWindow({ project, token, fetchImpl, now }) {
-    const today = localDay(now);
-    const windowStartDay = addDays(today, -MONITORING_WINDOW_DAYS);
-    const windowStart = dayStartMs(windowStartDay);
-    const todayStart = dayStartMs(today);
-    const hourEnd = todayStart + Math.floor((now - todayStart) / 3_600_000) * 3_600_000;
-    const minuteEnd = hourEnd + Math.floor((now - hourEnd) / 60_000) * 60_000;
-    const ranges = [{ startMs: windowStart, endMs: hourEnd, periodSec: 3_600 }];
-    if (minuteEnd > hourEnd) ranges.push({ startMs: hourEnd, endMs: minuteEnd, periodSec: 60 });
-    const days = {};
-    for (let day = windowStartDay; day <= today; day = addDays(day, 1)) days[day] = {};
-    const errors = {};
-    for (const range of ranges) {
-        const [tokens, refusals] = await Promise.all([
-            monitoringPoints({ project, token, fetchImpl, filter: TOKEN_FILTER(project), ...range }),
-            monitoringPoints({ project, token, fetchImpl, filter: ERROR_429_FILTER(project), ...range }),
-        ]);
-        for (const point of tokens) {
-            const day = localDay(point.startMs);
-            if (!days[day]) continue;
-            const key = `${point.labels.model_user_id || 'unknown'}|${point.labels.location || ''}|${point.labels.type || 'unknown'}`;
-            days[day][key] = (days[day][key] ?? 0) + point.value;
-        }
-        for (const point of refusals) {
-            const day = localDay(point.startMs);
-            if (!days[day]) continue;
-            errors[day] ??= {};
-            const model = point.labels.model_user_id || 'unknown';
-            errors[day][model] = (errors[day][model] ?? 0) + point.value;
-        }
-    }
-    return { today, windowStartDay, days, errors };
-}
-
-/**
- * 장부와 새 창을 합친다. 창 안의 날은 새 값이 이긴다. 끝난 지 MONITORING_INGEST_DELAY_MS가 지난 날만 장부에 확정하고
- * (같은 날은 통째로 바꾼다), 오늘·어제 같은 아직 들어오는 날은 계산에만 쓴다. 반환: {days, ledgerDays, changed}.
- */
-function mergeGoogleLedger(ledgerDays, window, now) {
-    const days = { ...ledgerDays };
-    const nextLedger = { ...ledgerDays };
-    let changed = false;
-    for (const [day, buckets] of Object.entries(window.days)) {
-        days[day] = buckets;
-        if (dayStartMs(addDays(day, 1)) + MONITORING_INGEST_DELAY_MS > now) continue;
-        if (JSON.stringify(nextLedger[day]) !== JSON.stringify(buckets)) {
-            nextLedger[day] = buckets;
-            changed = true;
-        }
-    }
-    return { days, ledgerDays: nextLedger, changed };
-}
-
-/** since부터 창 시작 전까지 장부에 없는 날. 0으로 세지 않고 「관측 안 됨」으로 낸다. */
-function unobservedDays(days, sinceDay, windowStartDay) {
-    let count = 0;
-    let from = null;
-    let to = null;
-    for (let day = sinceDay; day < windowStartDay; day = addDays(day, 1)) {
-        if (days[day]) continue;
-        count += 1;
-        from ??= day;
-        to = day;
-    }
-    return count === 0 ? null : { days: count, from, to };
 }
 
 function hivePrice(model) {
@@ -1933,18 +1703,14 @@ function createUsageScanner() {
 
 /**
  * /credits 서비스. 의존성은 주입한다(테스트는 임시 agent 디렉터리를 쓴다).
- *   agentDir(): agent 디렉터리. settingsFile(): 설정 파일 경로(Vertex 장부는 같은 디렉터리).
- *   googleAuth(): {project, token} 또는 creditError를 던짐. Vertex ADC 토큰으로 Cloud Monitoring을 읽기 전용 GET만 한다.
+ *   agentDir(): agent 디렉터리. settingsFile(): 설정 파일 경로.
  *   apiKeyProviders(): API 키 자격 증명이 있는 공급자 Set(관리 기능을 못 쓰면 null). Exa는 키가 없어도 무료 MCP로 검색되므로
  *   검색 기록만으로는 유료 사용이라 할 수 없어 이 값을 함께 본다.
  */
-function createCreditsService({ agentDir, settingsFile, googleAuth = async () => { throw creditError(503, 'core_unavailable'); }, fetchImpl = fetch, now = Date.now, apiKeyProviders = async () => null, authTimeoutMs = GOOGLE_AUTH_TIMEOUT_MS }) {
+function createCreditsService({ agentDir, settingsFile, now = Date.now, apiKeyProviders = async () => null }) {
     const scanner = createUsageScanner();
     let scanCache = null; // { at, events, sinceMs, error }
     let scanInflight = null;
-    let googleCache = null; // { at, project, window | null, error | null }
-    let googleInflight = null;
-    const ledgerFile = () => path.join(path.dirname(settingsFile()), GOOGLE_LEDGER_FILE_NAME);
 
     async function usageEvents(sinceMs, refresh) {
         const at = now();
@@ -1966,60 +1732,6 @@ function createCreditsService({ agentDir, settingsFile, googleAuth = async () =>
             scanInflight = { sinceMs, promise };
         }
         return scanInflight.promise;
-    }
-
-    async function googleWindow(refresh) {
-        const at = now();
-        const ttl = googleCache?.error ? GOOGLE_ERROR_CACHE_MS : GOOGLE_CACHE_MS;
-        if (!refresh && googleCache && at - googleCache.at < ttl) return googleCache;
-        googleInflight ??= (async () => {
-            try {
-                const { project, token } = await withDeadline(googleAuth(), authTimeoutMs, 'adc_unavailable');
-                // 필터에 그대로 들어가므로 프로젝트 ID 모양이 아니면 조회하지 않는다.
-                if (typeof project !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(project)) throw creditError(503, 'no_project');
-                const window = await fetchGoogleWindow({ project, token, fetchImpl, now: at });
-                googleCache = { at, project, window, error: null };
-            } catch (error) {
-                googleCache = { at, project: null, window: null, error: error?.code || 'monitoring_error' };
-            } finally {
-                googleInflight = null;
-            }
-            return googleCache;
-        })();
-        return googleInflight;
-    }
-
-    async function googleWallet(setting, refresh) {
-        const at = now();
-        const sinceDay = setting?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
-        const base = {
-            wallet: 'google', scope: 'project', source: 'cloud-monitoring', since: sinceDay,
-            sinceSource: setting ? 'start-date' : 'default', expiryDate: setting?.expiryDate ?? null,
-            expiryDays: expiryDaysLeft(setting?.expiryDate, at), priceSources: CREDIT_PRICE_SOURCES.google,
-        };
-        const cached = await googleWindow(refresh);
-        if (cached.error) {
-            return { ...base, status: 'error', error: cached.error, observedAt: cached.at, rows: [], unobserved: null,
-                ledgerNote: null, ...walletTotals([], setting, false), remainingUsd: null, remainingUpperBound: false };
-        }
-        const file = ledgerFile();
-        const ledger = readGoogleLedger(file, cached.project);
-        // 확정 여부는 조회 시각으로 판단한다(캐시를 나중에 꺼내 써도 그때 받은 값이 지연 시간을 넘긴 것은 아니다).
-        const merged = mergeGoogleLedger(ledger.days, cached.window, cached.at);
-        let ledgerNote = ledger.note;
-        if (ledger.writable && (merged.changed || ledger.note)) {
-            try { writePrivateJson(file, { version: 1, project: cached.project, days: merged.ledgerDays }); } catch { ledgerNote = 'ledger_write_failed'; }
-        }
-        // 429는 장부에 쌓지 않는다. 지금 Monitoring 창(MONITORING_WINDOW_DAYS일) 안의 거절만 센다.
-        const errors429 = {};
-        for (const [day, models] of Object.entries(cached.window.errors)) {
-            if (day < sinceDay) continue;
-            for (const [model, count] of Object.entries(models)) errors429[model] = (errors429[model] ?? 0) + count;
-        }
-        const rows = googleRows(merged.days, sinceDay, errors429);
-        const unobserved = unobservedDays(merged.days, sinceDay, cached.window.windowStartDay);
-        return { ...base, status: 'ok', error: null, observedAt: cached.at, rows, unobserved, ledgerNote,
-            ...walletTotals(rows, setting, unobserved === null) };
     }
 
     function hiveWallet(setting, sinceDay, cached) {
@@ -2060,16 +1772,6 @@ function createCreditsService({ agentDir, settingsFile, googleAuth = async () =>
         };
     }
 
-    function failedGoogleWallet(setting, at) {
-        return {
-            wallet: 'google', scope: 'project', source: 'cloud-monitoring',
-            since: setting?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS), sinceSource: setting ? 'start-date' : 'default',
-            status: 'error', error: 'internal', observedAt: at, rows: [], priceSources: CREDIT_PRICE_SOURCES.google,
-            ...walletTotals([], setting, false), remainingUsd: null, remainingUpperBound: false,
-            expiryDate: setting?.expiryDate ?? null, expiryDays: expiryDaysLeft(setting?.expiryDate, at), unobserved: null, ledgerNote: null,
-        };
-    }
-
     /**
      * 잔액 칸에 보일 지갑. 설정된 경로가 가리키고(readCreditRoutes) 사용 기간(DEFAULT_WINDOW_DAYS) 안에 유료 사용 기록이 있는 것만 낸다.
      * 경로는 있는데 기록을 다 읽지 못해 판단할 수 없으면 숨기지도 지어내지도 않고 evidence 'unverified'로 낸다.
@@ -2105,18 +1807,15 @@ function createCreditsService({ agentDir, settingsFile, googleAuth = async () =>
         const hiveSince = settings.hive?.startDate ?? addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
         const anthropicSince = addDays(localDay(at), -DEFAULT_WINDOW_DAYS);
         // 두 지갑이 한 번 훑은 기록을 같이 쓴다. 더 이른 시작일까지 읽어야 둘 다 빠짐없이 센다.
-        const [google, cached] = await Promise.all([
-            googleWallet(settings.google, refresh).catch(() => failedGoogleWallet(settings.google, at)),
-            usageEvents(Math.min(dayStartMs(hiveSince), dayStartMs(anthropicSince)), refresh).catch(() => null),
-        ]);
+        const cached = await usageEvents(Math.min(dayStartMs(hiveSince), dayStartMs(anthropicSince)), refresh).catch(() => null);
         const build = (make, fail) => {
             try { return cached ? make() : fail(); } catch { return fail(); }
         };
         const hive = build(() => hiveWallet(settings.hive, hiveSince, cached), () => failedWallet(settings.hive, hiveSince, at));
         const anthropic = build(() => anthropicWallet(anthropicSince, cached), () => failedAnthropicWallet(anthropicSince, at));
         const wallets = await balanceWallets(settings.balances, cached, at).catch(() => ({ balances: [], balancesError: 'internal' }));
-        return { generatedAt: now(), settings: { google: settings.google, hive: settings.hive },
-            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, google, hive, anthropic, ...wallets };
+        return { generatedAt: now(), settings: { hive: settings.hive },
+            settingsError: settings.error ?? null, priceCheckedAt: CREDIT_PRICE_SOURCES.checked, hive, anthropic, ...wallets };
     }
 
     // 읽기·계산·쓰기를 모두 이 줄 안에서 한다. 서로 다른 지갑을 동시에 저장해도 앞 저장이 쓴 파일을 다시 읽고 고친다.
@@ -2125,8 +1824,8 @@ function createCreditsService({ agentDir, settingsFile, googleAuth = async () =>
         const run = writing.then(() => {
             if (body === null || typeof body !== 'object') throw creditError(400, 'invalid_wallet');
             const balance = body.kind === 'balance';
-            if (balance ? !BALANCE_WALLETS.includes(body.wallet) : body.wallet !== 'google' && body.wallet !== 'hive') throw creditError(400, 'invalid_wallet');
-            const value = balance ? validateBalance(body.value, now()) : validateCreditSetting(body.wallet, body.value, localDay(now()));
+            if (balance ? !BALANCE_WALLETS.includes(body.wallet) : body.wallet !== 'hive') throw creditError(400, 'invalid_wallet');
+            const value = balance ? validateBalance(body.value, now()) : validateCreditSetting(body.value, localDay(now()));
             const file = settingsFile();
             const current = readCreditSettings(file);
             if (current.ioError) throw creditError(503, 'settings_unreadable');
@@ -2151,27 +1850,11 @@ function createCreditsService({ agentDir, settingsFile, googleAuth = async () =>
     return { snapshot, saveSettings };
 }
 
-// 운영 경로의 의존성. core SDK가 올라오면(initializeControl) 그 $env(agent .env 포함)와 Vertex ADC 토큰 함수를 쓴다.
-let creditsCore = null; // { env, load }
 const defaultAgentDir = () => localControl?.agentDir || process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.omp', 'agent');
 const credits = createCreditsService({
     agentDir: defaultAgentDir,
     settingsFile: () => process.env.CUELO_API_CREDITS_FILE || path.join(defaultAgentDir(), CREDITS_FILE_NAME),
     apiKeyProviders: () => facade.apiKeyProviders(),
-    async googleAuth() {
-        if (!creditsCore) throw creditError(503, 'core_unavailable');
-        const env = creditsCore.env;
-        const project = env.GOOGLE_CLOUD_PROJECT || env.GCP_PROJECT || env.GCLOUD_PROJECT;
-        if (!project) throw creditError(503, 'no_project');
-        let token;
-        try {
-            const auth = await creditsCore.load('pi-ai', 'providers/google-auth.ts');
-            token = await auth.getVertexAccessToken();
-        } catch {
-            throw creditError(503, 'adc_unavailable');
-        }
-        return { project, token };
-    },
 });
 
 function corsHeaders(extra) {
@@ -2376,6 +2059,7 @@ module.exports = {
     startServer,
     resolveOmpExecutable,
     startExpirySweep,
+    readSdkUsage,
     claimResetAttempt,
     createControlFacade,
     matchCredential,
@@ -2387,8 +2071,6 @@ module.exports = {
     modelCatalog,
     createCreditsService,
     validateCreditSetting,
-    googleRows,
-    expiryDaysLeft,
     hiveRows,
     walletTotals,
     localDay,

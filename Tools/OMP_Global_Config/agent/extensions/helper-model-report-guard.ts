@@ -28,10 +28,10 @@ const ROLE_CUE: Readonly<Record<Role, RegExp>> = {
 };
 
 // 제공사·계열만 가리키는 말. 뒤에 쪽·계열·측이 붙어야 계열 표현이다(「GPT-6 Astra」「Claude Code」는 아니다).
-const FAMILY_ONLY = /(?:GPT|OpenAI|오픈\s?AI|지피티|Anthropic|앤트로픽|Claude|클로드|Gemini|제미나이|Google|구글|DeepSeek|딥시크)\s?(?:쪽|계열|측)/gi;
+const FAMILY_ONLY = /(?:GPT|OpenAI|오픈\s?AI|지피티|Anthropic|앤트로픽|Claude|클로드|DeepSeek|딥시크)\s?(?:쪽|계열|측)/gi;
 
 // 모델 id 조각 중 이름이 아닌 것(계열·크기·버전 꼬리). 남는 조각이 모델의 이름이다(gpt-6-astra → astra).
-const GENERIC_TOKENS: Readonly<Record<string, true>> = { gpt: true, claude: true, gemini: true, flash: true, pro: true, mini: true, ai: true, preview: true, latest: true, exp: true, instruct: true, chat: true };
+const GENERIC_TOKENS: Readonly<Record<string, true>> = { gpt: true, claude: true, flash: true, pro: true, mini: true, ai: true, preview: true, latest: true, exp: true, instruct: true, chat: true };
 // 사용자가 부르는 한글 이름과 캐릭터 별칭. 없으면 라틴 이름만 본다.
 const KOREAN_NAMES: Readonly<Record<string, readonly string[]>> = {
   astra: ["아스트라", "유키"],
@@ -42,9 +42,6 @@ const KOREAN_NAMES: Readonly<Record<string, readonly string[]>> = {
   sonnet: ["소네트", "소넷"],
   haiku: ["하이쿠"],
   fable: ["페이블"],
-  hydrogen: ["하이드로젠"],
-  argon: ["아르곤"],
-  carbon: ["카본"],
   deepseek: ["딥시크", "이사나"],
   glm: ["미츠"],
 };
@@ -255,7 +252,7 @@ export function findings(text: string, helpers: HelperModels): Finding[] {
   return out;
 }
 
-/** 같은 이름(같은 모델의 다른 경로)은 한 번만 적고 id를 묶는다: 하이드로젠(aistudio/…, google-vertex/…). */
+/** 같은 모델이 여러 공급자 경로로 응답한 경우 이름은 한 번만 적는다. */
 function rosterLine(modelIds: Iterable<string>): string {
   const byName = new Map<string, string[]>();
   for (const id of modelIds) {

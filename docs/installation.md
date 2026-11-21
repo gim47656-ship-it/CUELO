@@ -131,7 +131,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 ```
 
 - `--model`은 core의 `default` 역할만 설정합니다.
-- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며 여러 번 쓸 수 있습니다. Maker 역할은 `implAstra`, `implSol`, `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [`implGemini`와 다른 도구 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
+- `--role <이름>=<provider/model>`은 하네스 역할을 하나씩 지정하며 여러 번 쓸 수 있습니다. Maker 역할은 `implAstra`, `implSol`, `implSonnet`, `implOpus`, `implDeepSeek`, `makerHardUiOpus`, `makerHardCodeOpus`, `makerHardCodeSonnet`이며, [다른 도구 역할](#하네스-도구검토판정-역할)도 같은 옵션으로 지정합니다.
 - 역할은 `config.yml`을 새로 만들 때만 기본값과 함께 기록됩니다. 파일이 이미 있으면 절대 고치지 않고, 무시한 역할과 아직 지정되지 않은 역할을 출력합니다.
 - 지정하지 않은 역할은 나중에 CUELO 설정의 Model roles 화면에서 고릅니다. 설치 스크립트는 모델을 추측해서 채우지 않습니다.
 
@@ -176,9 +176,8 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | --- | --- | --- |
 | `crossReviewOpenAI` | 코드 교차검토의 OpenAI 계열 필수 검토자 | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. |
 | `crossReviewAnthropic` | 코드 교차검토의 Anthropic 계열 필수 검토자. 슬롭 검사에서는 작성자 계열과 관계없이 판정합니다. | `anthropic` 제공자의 모델을 고릅니다. |
-| `crossReviewAdvisory` | 코드 교차검토의 보조 검토자. 슬롭 검사에서는 판정에 영향을 주지 않는 추가 의견을 냅니다. | 어느 제공자의 텍스트 모델이든 고를 수 있으며, 비워 두면 보조 호출이 없습니다. 코드 교차검토와 슬롭 검사의 자문 처리 방식은 [하네스 문서](harness.md)를 따릅니다. |
-| `implGemini` | HIKARI 호출 및 명시적 계획 사전 점검 | Maker 후보가 아니며 자동 지정하지 않습니다. |
-| `preflightAnthropic` | `implGemini`와 함께 수행하는 계획 자문. 필수 `crossReviewAnthropic`과 별도로 설정합니다. | 공개 설치에서는 사용자가 지원되는 텍스트 모델을 직접 고릅니다. 자동으로 모델을 채우지 않습니다. |
+| `preflightOpenAI` | 계획 사전 점검. Main이 Anthropic 모델일 때 이 역할이 점검합니다. | `openai` 또는 `openai-codex` 제공자의 모델을 고릅니다. 자동으로 모델을 채우지 않습니다. |
+| `preflightAnthropic` | 계획 사전 점검. Main이 Anthropic이 아니거나 알 수 없을 때 이 역할이 점검합니다. 필수 `crossReviewAnthropic`과 별도로 설정합니다. | 공개 설치에서는 사용자가 지원되는 텍스트 모델을 직접 고릅니다. 자동으로 모델을 채우지 않습니다. |
 | `skim` | 여러 소스 파일을 읽고 질문에 답변 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `ocr` | 이미지의 글자·숫자·표 전사 | 시각 입력을 지원하는 모델을 고릅니다. |

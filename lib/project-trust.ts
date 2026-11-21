@@ -239,11 +239,15 @@ export function setProjectTrust(cwd: string, agentDir: string, trusted: boolean)
 
 /**
  * Give a worktree the server just created from `checkout` that checkout's trust. Only an explicit
- * approval carries over; nothing is written for an untrusted or undecided checkout. Returns whether it did.
+ * approval carries over, read the way {@link getProjectTrustStatus} reads it (the directory's own
+ * decision, else its repository root's), so a session opened in a subdirectory of a trusted checkout
+ * inherits too. Nothing is written for an untrusted or undecided checkout. Returns whether it did.
  */
 export function inheritCheckoutTrust(checkout: string, worktree: string, agentDir: string): boolean {
   const decisions = readTrustedProjects(agentDir);
-  if (decisions[canonicalProjectKey(checkout)] !== true) return false;
+  const key = canonicalProjectKey(checkout);
+  const root = repositoryRootForChecks(key);
+  if ((decisions[key] ?? (root === undefined ? undefined : decisions[root])) !== true) return false;
   decisions[canonicalProjectKey(worktree)] = true;
   writeTrustedProjects(agentDir, decisions);
   return true;

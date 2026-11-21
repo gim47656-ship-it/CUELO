@@ -19,7 +19,9 @@ export function secretPaths(home = homedir(), agentDir = join(home, ".omp/agent"
   const result = new Set<string>();
   for (const root of new Set([join(home, ".omp/agent"), resolve(agentDir)])) {
     // Include absent well-known paths too, for the in-process tool guard.
-    for (const name of ["agent.db", "agent.db-wal", "agent.db-shm", "hive-api-key", "aistudio2api-key", "anthropic-fallback-api-key", "mcp.json", ".env", "cuelo-api-credits.json"]) result.add(join(root, name));
+    for (const name of ["agent.db", "agent.db-wal", "agent.db-shm", "hive-api-key", "anthropic-fallback-api-key", "mcp.json", ".env", "cuelo-api-credits.json"]) result.add(join(root, name));
+    // The retired relay's credential file may still exist or be restored from a previous profile.
+    result.add(join(root, "aistudio2api-key"));
     if (!existsSync(root)) continue;
     for (const name of readdirSync(root)) {
       const file = join(root, name);

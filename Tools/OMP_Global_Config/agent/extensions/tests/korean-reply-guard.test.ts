@@ -8,7 +8,7 @@ type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 type Sent = { customType: string; content: string; display: boolean };
 
 const ENGLISH = "I'm now going to inspect the extension loader and then write the focused regression test for it.";
-const KOREAN = "확장 로더를 먼저 확인하고, 그다음 `skim.ts`의 callModel 경로와 HIKARI 번역 호출을 비교하겠습니다.";
+const KOREAN = "확장 로더를 먼저 확인하고, 그다음 `skim.ts`의 callModel 경로와 Codex 번역 호출을 비교하겠습니다.";
 
 function harness(translate: TranslateReply, kind: "main" | "sub" = "main") {
   const handlers: Record<string, Handler[]> = {};
@@ -35,7 +35,7 @@ describe("classify", () => {
   test("영어 API·경로·식별자가 섞인 정상 한국어는 드리프트가 아니다", () => {
     expect(classify(KOREAN)).toBe("korean");
     expect(classify("Tools/OMP_Global_Config/setup.ps1 의 safetyFiles 목록에 korean-reply-guard.ts 를 추가했고 bun test 도 통과했습니다.")).toBe("korean");
-    expect(classify("WebSocket과 TypeScript, Gemini Flash, Cloudflare Workers 설정을 모두 확인했습니다.")).toBe("korean");
+    expect(classify("WebSocket과 TypeScript, OpenAI Codex, Cloudflare Workers 설정을 모두 확인했습니다.")).toBe("korean");
   });
   test("영어 진행 문장은 드리프트", () => {
     expect(classify(ENGLISH)).toBe("drift");

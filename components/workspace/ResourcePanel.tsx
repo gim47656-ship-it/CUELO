@@ -17,8 +17,6 @@ import {
   type BalanceWallet,
   type CreditSettingInput,
   type CreditWalletId,
-  type GoogleCreditSetting,
-  type GoogleCreditWallet,
   type AnthropicPaidWallet,
   type HiveCreditSetting,
   type HiveCreditWallet,
@@ -1010,19 +1008,12 @@ const CREDIT_ERROR_CODES: Record<string, true> = {
   invalid_total: true, invalid_start_date: true, start_date_in_future: true,
   session_scan_failed: true, session_scan_partial: true, internal: true, settings_unreadable: true,
   invalid_balance: true, invalid_observed_at: true, observed_at_in_future: true, routes_unreadable: true,
-  invalid_expiry_date: true, expiry_before_start: true, no_project: true, adc_unavailable: true, core_unavailable: true,
-  monitoring_denied: true, monitoring_unreachable: true, monitoring_error: true,
 };
 const CREDIT_PURPOSES: Record<string, true> = { session: true, memory: true, "korean-reply-translation": true };
 
 function creditReason(t: Translate, code: string | null | undefined, fallback = ""): string {
   if (!code) return fallback;
   return Object.hasOwn(CREDIT_ERROR_CODES, code) ? t(`credits.error.${code}`) : fallback || code;
-}
-
-function creditDayLabel(day: string): string {
-  const [, month, date] = day.split("-");
-  return `${Number(month)}/${Number(date)}`;
 }
 
 function CreditRowLine({
@@ -1032,7 +1023,6 @@ function CreditRowLine({
   model,
   cost,
   costMinimum = false,
-  upperBound,
   detail,
   t,
 }: {
@@ -1043,8 +1033,6 @@ function CreditRowLine({
   cost: number | null;
   /** 일부 요청 비용이 미상이라 cost가 하한이다. */
   costMinimum?: boolean;
-  /** 상한 단가로 매긴 금액이다. 값은 문구(title)로 이유를 설명한다. */
-  upperBound?: string;
   detail: string;
   t: Translate;
 }) {
@@ -1054,8 +1042,7 @@ function CreditRowLine({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-1.5">
           {title ? <span className="shrink-0 text-[13px] font-medium text-text">{title}</span> : null}
-          <span className={classNames("min-w-0 flex-1 font-mono text-[11px] text-text-dim", provider === "google-vertex" ? "[overflow-wrap:anywhere]" : "truncate")}>{model}</span>
-          {upperBound !== undefined ? <span className="usage-chip" title={upperBound}>{t("credits.upperBound")}</span> : null}
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-dim">{model}</span>
           <span className="shrink-0 font-mono text-xs tabular-nums text-text">
             {cost === null ? t("credits.priceUnknown") : `${costMinimum ? "≥" : ""}${formatMoney(cost)}`}
           </span>
@@ -1068,16 +1055,13 @@ function CreditRowLine({
 
 function CreditEditor({
   walletName,
-  withExpiry = false,
   setting,
   onSave,
   onClose,
   t,
 }: {
   walletName: string;
-  /** Vertex 무료 크레딧처럼 만료일이 있는 지갑. */
-  withExpiry?: boolean;
-  setting: HiveCreditSetting | GoogleCreditSetting | null;
+  setting: HiveCreditSetting | null;
   onSave: (value: CreditSettingInput | null) => Promise<void>;
   onClose: () => void;
   t: Translate;
@@ -1085,7 +1069,6 @@ function CreditEditor({
   const formId = useId();
   const [total, setTotal] = useState(setting ? String(setting.totalUsd) : "");
   const [start, setStart] = useState(setting?.startDate ?? "");
-  const [expiry, setExpiry] = useState(setting && "expiryDate" in setting ? setting.expiryDate ?? "" : "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputClass = "min-h-8 w-full min-w-0 bg-bg-hover px-2 font-mono text-xs text-text";
@@ -1110,9 +1093,7 @@ function CreditEditor({
       aria-label={t("credits.formLabel", { wallet: walletName })}
       onSubmit={(event) => {
         event.preventDefault();
-        const value = creditSettingFromForm(withExpiry
-          ? { totalUsd: total, startDate: start, expiryDate: expiry }
-          : { totalUsd: total, startDate: start });
+        const value = creditSettingFromForm({ totalUsd: total, startDate: start });
         if (!value) {
           setError(t("credits.invalid.total"));
           return;
@@ -1120,7 +1101,7 @@ function CreditEditor({
         void submit(value);
       }}
     >
-      <div className={classNames("grid gap-2", withExpiry ? "grid-cols-3" : "grid-cols-2")}>
+      <div className="grid grid-cols-2 gap-2">
         <label className="grid gap-1 text-[11px] text-text-muted" htmlFor={`${formId}-total`}>
           {t("credits.totalUsd")}
           <input id={`${formId}-total`} className={inputClass} inputMode="decimal" value={total} onChange={(event) => setTotal(event.target.value)} placeholder="300" required />
@@ -1129,12 +1110,6 @@ function CreditEditor({
           {t("credits.startDate")}
           <input id={`${formId}-start`} className={inputClass} type="date" value={start} onChange={(event) => setStart(event.target.value)} required />
         </label>
-        {withExpiry ? (
-          <label className="grid gap-1 text-[11px] text-text-muted" htmlFor={`${formId}-expiry`}>
-            {t("credits.expiryDate")}
-            <input id={`${formId}-expiry`} className={inputClass} type="date" value={expiry} onChange={(event) => setExpiry(event.target.value)} />
-          </label>
-        ) : null}
       </div>
       {error ? <div className="text-xs text-danger" role="alert">{error}</div> : null}
       <div className="flex flex-wrap justify-end gap-1.5">
@@ -1255,121 +1230,6 @@ function CreditWalletCard({
   );
 }
 
-/**
- * Vertex(Google Cloud) 카드. 값은 프로젝트 전체의 Cloud Monitoring 사용량(ADC 읽기 전용)이고 이 PC만의 기록이 아니다.
- * 고정 쿼터는 읽지 않는다: 한도는 프로젝트 공유 할당량이라 429 거절 횟수만 보인다. 총액·만료일은 직접 적어 둔 값이다.
- */
-function GoogleWalletCard({ wallet, setting, onSave, t }: {
-  wallet: GoogleCreditWallet;
-  setting: GoogleCreditSetting | null;
-  onSave: (wallet: CreditWalletId, value: CreditSettingInput | null) => Promise<void>;
-  t: Translate;
-}) {
-  const headingId = useId();
-  const [editing, setEditing] = useState(false);
-  const walletName = t("credits.wallet.google");
-  const expiryDays = wallet.expiryDays;
-  const meter = creditMeter(wallet, expiryDays);
-  const since = wallet.sinceSource === "start-date" ? t("credits.since", { date: wallet.since }) : t("credits.sinceDefault");
-  // 단가를 모르는 모델(예: gemini-4-hydrogen)이 섞이면 합계가 어느 쪽 한계도 못 된다. 금액·잔액을 지어내지 않고 토큰과 429만 보인다.
-  const unpriced = wallet.rows.some((row) => row.costUsd === null);
-  const spent = unpriced
-    ? t("credits.priceUnknown")
-    : spentIsMinimum(wallet) ? `≥${formatMoney(wallet.spentUsd)}` : formatMoney(wallet.spentUsd);
-  const remaining = wallet.remainingUsd === null
-    ? null
-    : `${wallet.remainingUpperBound ? "≤" : ""}${formatMoney(Math.max(0, wallet.remainingUsd))}`;
-  const expiryText = wallet.expiryDate === null || expiryDays === null
-    ? null
-    : expiryDays > 0
-      ? t("credits.expiryDays", { date: wallet.expiryDate, days: expiryDays })
-      : expiryDays === 0 ? t("credits.expiryToday", { date: wallet.expiryDate }) : t("credits.expired", { date: wallet.expiryDate });
-  const pct = unpriced || meter.spentFraction === null || wallet.remainingUsd === null ? null : Math.round(meter.spentFraction * 100);
-  const unobserved = wallet.unobserved;
-  return (
-    <section className={groupClass} aria-labelledby={headingId} data-credit-wallet="google">
-      <div className="flex min-w-0 items-center gap-2">
-        <h3 id={headingId} className="m-0 min-w-0 flex-1 text-sm font-semibold text-text">{walletName}</h3>
-        <BillingLink wallet="google" walletName={walletName} t={t} />
-        {!editing ? (
-          <ActionButton variant="neutralWeak" size="xsmall" onClick={() => setEditing(true)}>
-            {setting ? t("credits.edit") : t("credits.enter")}
-          </ActionButton>
-        ) : null}
-      </div>
-      <div className="mt-0.5 text-xs text-text-muted">{`${t("credits.scope.google")} · ${since}`}</div>
-      <p className="m-0 mt-1 break-keep text-xs text-text-muted [overflow-wrap:break-word]">{t("credits.google.note")}</p>
-      {unpriced ? <p className="m-0 mt-1 break-keep text-xs text-text [overflow-wrap:break-word]" role="note">{t("credits.google.unpriced")}</p> : null}
-      {wallet.status === "error" ? (
-        <div className="mt-1.5 text-xs text-text" role="alert">{t("credits.walletError", { reason: creditReason(t, wallet.error) })}</div>
-      ) : null}
-      {pct !== null ? (
-        <div className="py-2">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[13px] text-text-muted">{t("credits.remaining")}</span>
-            <span className={classNames("font-mono text-sm font-semibold tabular-nums", meter.tone === "danger" ? "text-danger" : "text-text")}>
-              {remaining}
-            </span>
-          </div>
-          <div
-            className="relative mt-1 h-3.5 overflow-hidden bg-metric-track"
-            role="progressbar"
-            aria-label={t("credits.meterLabel", { wallet: walletName })}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={pct}
-          >
-            <div className={classNames("absolute inset-y-0 left-0", meter.tone === "danger" ? "bg-danger" : "bg-metric")} style={{ width: `${pct}%` }} />
-          </div>
-          <div className="mt-1 text-right text-[11px] text-text-muted tabular-nums">{t("credits.usedPct", { pct })}</div>
-        </div>
-      ) : null}
-      <dl className="m-0 mt-1">
-        {wallet.totalUsd !== null ? <Metric label={t("credits.total")} value={formatMoney(wallet.totalUsd)} /> : null}
-        {wallet.status === "ok" ? <Metric label={t("credits.spent")} value={spent} /> : null}
-        {expiryText ? <Metric label={t("credits.expiry")} value={expiryText} /> : null}
-      </dl>
-      {!setting && !editing ? <p className="m-0 mt-1.5 text-xs text-text-muted">{t("credits.enterPrompt")}</p> : null}
-      {unobserved ? (
-        <p className="m-0 mt-1.5 break-keep text-xs text-text [overflow-wrap:break-word]" role="note">
-          {t("credits.unobserved", { from: creditDayLabel(unobserved.from), to: creditDayLabel(unobserved.to), days: unobserved.days })}
-        </p>
-      ) : null}
-      {wallet.ledgerNote ? <p className="m-0 mt-1.5 break-keep text-xs text-text-muted [overflow-wrap:break-word]" role="note">{t(`credits.ledger.${wallet.ledgerNote}`)}</p> : null}
-      {editing ? (
-        <CreditEditor walletName={walletName} withExpiry setting={setting} onSave={(value) => onSave("google", value)} onClose={() => setEditing(false)} t={t} />
-      ) : null}
-      {wallet.rows.length > 0 ? (
-        <ul className="m-0 mt-1.5 list-none p-0">
-          {wallet.rows.map((row) => {
-            const face = providerModelFace("google-vertex", row.model);
-            const roleLabel = row.role === "interpreter" || row.role === "tts" ? t(`credits.role.${row.role}`) : null;
-            const detail = [
-              t("credits.tokens", { input: formatTokens(row.inputTokens), output: formatTokens(row.outputTokens) }),
-              row.errors429 > 0 ? t("credits.errors429", { count: formatNumber(row.errors429) }) : null,
-            ].filter(Boolean).join(" · ");
-            return (
-              <CreditRowLine
-                key={row.model}
-                face={face}
-                provider="google-vertex"
-                title={face?.alias ?? roleLabel ?? ""}
-                model={row.model}
-                cost={row.costUsd}
-                upperBound={row.pricing === "upper-bound" ? (row.pricingReason ? t(`credits.reason.${row.pricingReason}`) : "") : undefined}
-                detail={detail}
-                t={t}
-              />
-            );
-          })}
-        </ul>
-      ) : wallet.status === "ok" ? (
-        <p className="m-0 mt-1.5 text-xs text-text-muted">{t("credits.google.none")}</p>
-      ) : null}
-    </section>
-  );
-}
-
 const COST_CATEGORY_TOKENS = {
   input: "inputTokens", output: "outputTokens", cacheRead: "cacheReadTokens", cacheWrite: "cacheWriteTokens",
 } as const;
@@ -1381,7 +1241,6 @@ function localDate(ms: number): string {
 
 /** 지금 가진 키로는 잔액을 읽는 공식 API가 없다(2026-11-03 확인). 실제 잔액은 각 콘솔의 결제 화면에서만 볼 수 있다. */
 const BILLING_URLS = {
-  google: "https://console.cloud.google.com/billing/credits",
   hive: "https://portal.deploy.com/",
   exa: "https://dashboard.exa.ai/billing",
   typesafe: "https://console.typesafe.ai/billing",
@@ -1727,7 +1586,6 @@ export function ApiCreditsCards({
   };
   const cards = data ? (
     <>
-      {data.google ? <GoogleWalletCard wallet={data.google} setting={data.settings.google ?? null} onSave={onSave} t={t} /> : null}
       <CreditWalletCard wallet={data.hive} setting={data.settings.hive} balance={listed.get("hive") ?? null} now={now} onSave={onSave} onSaveBalance={onSaveBalance} t={t} />
       {balanceOnly("exa")}
       {balanceOnly("typesafe")}

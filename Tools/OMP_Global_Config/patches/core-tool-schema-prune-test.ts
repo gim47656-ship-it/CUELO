@@ -1,4 +1,4 @@
-// Gemini 도구 스키마 토큰 추정(doc/history/2026/10/29-recall-bottlenecks). 실행:
+// 도구 스키마 토큰 추정(doc/history/2026/10/29-recall-bottlenecks). 실행:
 //   OMP_CORE_PATCH_TARGET=<patched-core copy> bun run patches/core-tool-schema-prune-test.ts
 // pruning applies only to native wire specs; owned dialects carry full definitions in-band.
 // 추정(상태줄·압축 기준·응답에 기록하는 toolSchemaTokens)도 그 wire 와 같아야 하고, 꺼진 세션은 /context 의 도구 항목 합과 같은 옛 값 그대로다.
@@ -41,13 +41,16 @@ const open = async (provider: string, id: string) =>
 	).session;
 
 try {
-	// ── Gemini: pruned wire ────────────────────────────────────────────────
-	const gemini = await open("google", "gemini-4-argon");
+	// ── Claude with explicit pruning: pruned wire ──────────────────────────
+	const prunedClaude = await open("anthropic", "claude-opus-5-5");
 	try {
-		const tokenizer = gemini.agent.tokenizer;
-		const tools = gemini.agent.state.tools;
-		const rev = gemini.settings.revision;
-		assert.equal(gemini.agent.pruneToolDescriptions, true, "fixture: Gemini session prunes wire tool descriptions");
+		cfgInlineToolDescriptors.set(prunedClaude.settings, "on");
+		prunedClaude.agent.pruneToolDescriptions = true;
+		const tokenizer = prunedClaude.agent.tokenizer;
+		const tools = prunedClaude.agent.state.tools;
+		const rev = prunedClaude.settings.revision;
+		assert.equal(prunedClaude.agent.prunesToolDescriptions(prunedClaude.model), true, "fixture: Claude session prunes native wire tool descriptions when enabled");
+		const systemPrompt = prunedClaude.systemPrompt;
 		const wire = (prune: boolean) =>
 			tokenizer.countTokens(
 				(normalizeTools(tools, { injectIntent: false, pruneDescriptions: prune }) as WireTool[]).flatMap(t =>
@@ -57,32 +60,32 @@ try {
 		const wirePruned = wire(true);
 		assert.ok(wirePruned < wire(false) / 2, `fixture: descriptions dominate the full spec (${wirePruned} vs ${wire(false)})`);
 
-		const breakdown = usage.computeNonMessageBreakdown(gemini, tokenizer, rev);
+		const breakdown = usage.computeNonMessageBreakdown(prunedClaude, tokenizer, rev);
 		assert.equal(breakdown.toolsTokens, wirePruned, "pruned estimate counts what the wire carries (name + description-stripped schema)");
 		assert.equal(
-			usage.computeNonMessageTokens(gemini, tokenizer, rev),
-			tokenizer.countTokens(gemini.systemPrompt) + wirePruned,
+			usage.computeNonMessageTokens(prunedClaude, tokenizer, rev),
+			tokenizer.countTokens(systemPrompt) + wirePruned,
 			"non-message total = system prompt (holds the inlined catalog) + pruned schemas, no double count",
 		);
 
 		// The tokens recorded with each response must use the same basis as nonMessageTokens.
-		const tracker = new SessionStatsTracker({ session: gemini, agent: gemini.agent } as never);
+		const tracker = new SessionStatsTracker({ session: prunedClaude, agent: prunedClaude.agent } as never);
 		assert.equal(tracker.nonMessageSnapshot().toolSchemaTokens, wirePruned, "recorded toolSchemaTokens follows the pruned wire");
 
 		// The roster cache is keyed on the prune flag, so the same roster and tokenizer answer both ways.
-		const model = gemini.model;
+		const model = prunedClaude.model;
 		const full = usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: false });
 		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: true }), wirePruned, "pruned after full on one roster");
 		assert.equal(usage.estimateContextToolSchemaTokens(tools, tokenizer, model, { sourceRevision: rev, pruneDescriptions: false }), full, "full again after pruned");
 		assert.ok(full > wirePruned);
 
 		// A model switch that turns pruning off must not reuse the pruned non-message total.
-		gemini.agent.pruneToolDescriptions = false;
-		assert.equal(usage.computeNonMessageBreakdown(gemini, tokenizer, rev).toolsTokens, full, "prune flag change invalidates the cached breakdown");
-		assert.equal(usage.computeNonMessageTokens(gemini, tokenizer, rev), tokenizer.countTokens(gemini.systemPrompt) + full);
-		console.log(JSON.stringify({ model: "google/gemini-4-argon", pruned: wirePruned, full }));
+		prunedClaude.agent.pruneToolDescriptions = false;
+		assert.equal(usage.computeNonMessageBreakdown(prunedClaude, tokenizer, rev).toolsTokens, full, "prune flag change invalidates the cached breakdown");
+		assert.equal(usage.computeNonMessageTokens(prunedClaude, tokenizer, rev), tokenizer.countTokens(prunedClaude.systemPrompt) + full);
+		console.log(JSON.stringify({ model: "anthropic/claude-opus-5-5", pruned: wirePruned, full }));
 	} finally {
-		await gemini.dispose();
+		await prunedClaude.dispose();
 	}
 
 	// ── Claude: not pruned, estimate unchanged ────────────────────────────
@@ -101,7 +104,7 @@ try {
 		await claude.dispose();
 	}
 	// Exercise the real agent loop with a local stream, never a provider request.
-	const dialectSession = await open("google", "gemini-4-argon");
+	const dialectSession = await open("anthropic", "claude-opus-5-5");
 	const originalEnv = process.env.PI_DIALECT;
 	try {
 		const agent = dialectSession.agent;

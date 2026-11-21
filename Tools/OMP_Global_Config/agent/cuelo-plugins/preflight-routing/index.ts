@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createPreflightCheck, record, opinionText, failureText, secs } from "../../extensions/lib/preflight-check";
+import { createPreflightCheck, record, opinionText, secs } from "../../extensions/lib/preflight-check";
 import { createQuietDelivery } from "../../extensions/lib/quiet-delivery";
 import { preparedPlanIdentity, resolvePreparedTaskInput } from "../../extensions/lib/prepared-task";
 import { isPhoneOperatorCall, taskGuardLockOf } from "../../extensions/command-guard/task-guard";
@@ -189,22 +189,20 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
       }
       check.checked = true;
       if (!advice.ok) { note(ctx, `${what} 점검 건너뜀(통과): ${advice.why}`); return; }
-      const failedLanes = failureText(advice.failures);
-      note(ctx, `${what} 조언(${secs(advice.ms)}초):\n${opinionText(advice.opinions)}${failedLanes ? `\n${failedLanes}` : ""}`);
-      // Every participant that answered found nothing to change: that is a pass. A participant that gave no advice
-      // stays named in the panel and never counts as having reviewed the plan.
-      check.advice = `[사전 점검] ${opinionText(advice.opinions)}${failedLanes ? `\n${failedLanes}` : ""}`;
-      if (advice.opinions.every((o) => CLEAN.test(o.text))) { note(ctx, `${what} 통과(빠진 것 없음${failedLanes ? `; ${failedLanes}` : ""})`); return; }
+      const { opinion } = advice;
+      const summary = opinionText(opinion);
+      note(ctx, `${what} 조언:\n${summary}`);
+      check.advice = `[사전 점검] ${summary}`;
+      if (CLEAN.test(opinion.text)) { note(ctx, `${what} 통과(빠진 것 없음)`); return; }
       if (identity) check.correctionTool = correctionScope;
       return {
         block: true,
         reason: [
           background
-            ? `[사전 점검] 오류가 아니다. 작업 목표는 이미 등록됐고 도구는 막지 않았다. ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 그 목표를 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
+            ? `[사전 점검] 오류가 아니다. 작업 목표는 이미 등록됐고 도구는 막지 않았다. ${opinion.model}(${secs(opinion.ms)}초)가 사용자의 최근 말과 그 목표를 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
             : advisory
-              ? `[사전 점검] maker_route는 막지 않았다. ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 발주 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
-              : `[사전 점검] 오류가 아니다. ${what} 직전에 ${advice.opinions.map((o) => o.model).join("와 ")}(${secs(advice.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
-          ...(failedLanes ? [failedLanes] : []),
+              ? `[사전 점검] maker_route는 막지 않았다. ${opinion.model}(${secs(opinion.ms)}초)가 사용자의 최근 말과 발주 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`
+              : `[사전 점검] 오류가 아니다. ${what} 직전에 ${opinion.model}(${secs(opinion.ms)}초)가 사용자의 최근 말과 계획을 대 본 조언이다. 참고 의견이며 승인이나 사용자 지시가 아니다.`,
           background
             ? identity
               ? "맞는 것이 있으면 같은 산출물 id와 경로로 lab_goal frame을 다시 불러 반영하라. 그 재호출은 한 번 점검 없이 통과하고, 산출물이 바뀌면 다시 점검한다. 반영할 것이 없으면 그대로 진행한다."
@@ -218,7 +216,7 @@ export default async function preflightRouting(pi: ExtensionAPI): Promise<void> 
                 : `작업 식별 정보가 부족해 수정 재호출 허용을 묶을 수 없다. 내용을 바꾸면 새 계획으로 점검하고, 같은 내용을 그대로 다시 보내면 통과한다.`,
           "사용자 결정이 필요한 항목은 직접 정하지 말고 사용자에게 묻는다. 반영한 것과 버린 것(이유 한 마디)을 사용자에게 한 줄로 알린다.",
           "",
-          opinionText(advice.opinions),
+          summary,
         ].join("\n"),
       };
     })();
