@@ -2,7 +2,16 @@ import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession } from "@/lib/rpc-manager";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
-import { getUpdateMutationBlock } from "@/lib/update-maintenance";
+import { getUpdateMutationBlock, type UpdateMutationBlock, UpdateTurnAdmissionError } from "@/lib/update-maintenance";
+
+function updateDrainingResponse(maintenance: UpdateMutationBlock) {
+  return NextResponse.json({
+    error: `CUELO update ${maintenance.phase}`,
+    code: "update_draining",
+    accepted: false,
+    requestId: maintenance.requestId,
+  }, { status: 503 });
+}
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -16,15 +25,7 @@ export async function POST(
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }
   const maintenance = getUpdateMutationBlock();
-  if (maintenance) {
-    return NextResponse.json({
-      error: `CUELO update ${maintenance.phase}`,
-      code: "update_draining",
-      accepted: false,
-      requestId: maintenance.requestId,
-    }, { status: 503 });
-  }
-
+  if (maintenance) return updateDrainingResponse(maintenance);
 
   const requestStarted = performance.now();
   const { id } = await params;
@@ -67,6 +68,7 @@ export async function POST(
       "Server-Timing": `session_prepare;dur=${(sessionReady - requestStarted).toFixed(2)}, command_accept;dur=${(completed - sessionReady).toFixed(2)}, request;dur=${(completed - requestStarted).toFixed(2)}`,
     } });
   } catch (error) {
+    if (error instanceof UpdateTurnAdmissionError) return updateDrainingResponse(error.maintenance);
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
       ...(commandType === "prompt" && !promptAccepted

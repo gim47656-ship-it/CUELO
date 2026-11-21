@@ -835,17 +835,40 @@ export function releaseUpdateFailureNoticeClaim(input: {
   }
 }
 
-export function getUpdateMutationBlock(): {
+export interface UpdateMutationBlock {
   requestId: string;
   stageHash: string;
   phase: UpdateMaintenancePhase;
-} | null {
+}
+
+export function getUpdateMutationBlock(): UpdateMutationBlock | null {
   const deployment = getActiveDeployment();
   return deployment ? {
     requestId: deployment.request.requestId,
     stageHash: deployment.command.stageHash,
     phase: deployment.command.phase,
   } : null;
+}
+
+export class UpdateTurnAdmissionError extends Error {
+  constructor(readonly maintenance: UpdateMutationBlock) {
+    super(`CUELO update ${maintenance.phase}`);
+  }
+}
+
+export function getUpdateTurnAdmissionBlock(sessionId: string): UpdateMutationBlock | null {
+  const block = getUpdateMutationBlock();
+  if (!block) return null;
+  // Match the updater's settled-ack contract. An unsettled ack cannot lead to
+  // cutover, and must not stop its queued work from finishing on this server.
+  const interruptId = `update-${block.requestId}`;
+  const ack = readJson(join(externalUpdateRoot(), "interrupts", `${interruptId}.ack.json`));
+  if (ack?.schemaVersion !== 1 || ack.id !== interruptId
+    || !Array.isArray(ack.unsettled) || ack.unsettled.length !== 0
+    || !Array.isArray(ack.aborted) || !ack.aborted.every((id) => typeof id === "string")
+    || (ack.settled !== undefined
+      && (!Array.isArray(ack.settled) || !ack.settled.every((id) => typeof id === "string")))) return null;
+  return ack.aborted.includes(sessionId) || ack.settled?.includes(sessionId) ? block : null;
 }
 
 declare global {

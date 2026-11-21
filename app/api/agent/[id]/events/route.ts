@@ -1,7 +1,7 @@
 import { buildSessionContext, resolveSessionPath } from "@/lib/session-reader";
 import { createMessageUpdateCoalescer, getRpcSession, startRpcSession, toToolProgressEvent, type AgentEvent } from "@/lib/rpc-manager";
 import { isApiRequestAllowed } from "@/lib/request-security";
-import { getUpdateMutationBlock } from "@/lib/update-maintenance";
+import { getUpdateMutationBlock, UpdateTurnAdmissionError } from "@/lib/update-maintenance";
 import { toWireEvent } from "@oh-my-pi/pi-coding-agent/session/loop-end-wire";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 
@@ -52,7 +52,13 @@ export async function GET(
     }
     try {
       ({ session } = await startRpcSession(id, filePath, undefined));
-    } catch {
+    } catch (error) {
+      if (error instanceof UpdateTurnAdmissionError) {
+        // Native EventSource retries a valid stream that closes, not a 500.
+        return new Response("retry: 1000\n\n", {
+          headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        });
+      }
       return new Response("Failed to start agent", { status: 500 });
     }
   }

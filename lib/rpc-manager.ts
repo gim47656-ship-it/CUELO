@@ -51,7 +51,7 @@ import { describeMissingModel } from "./model-discovery-recovery";
 import { PRESET_FULL } from "./tool-presets";
 import { computerTakeoverState, revokeComputerTakeover, setComputerTakeover, type ComputerTakeoverState } from "./computer-takeover";
 import type { SlashCommandInfo } from "./omp-types";
-import { recordRuntimeActivity } from "./update-maintenance";
+import { getUpdateTurnAdmissionBlock, recordRuntimeActivity, UpdateTurnAdmissionError } from "./update-maintenance";
 import { GoalModeController } from "./goal-mode";
 import { registerRootReviver } from "./subagent-revive";
 import { mergeSubagentSnapshot } from "./subagent-snapshots";
@@ -325,6 +325,23 @@ const CLOSING_REJECTED_COMMAND_TYPES: Record<string, true> = {
   prompt: true,
   steer: true,
 };
+
+const UPDATE_TURN_COMMAND_TYPES: Record<string, true> = {
+  bash: true,
+  compact: true,
+  execute_slash_command: true,
+  follow_up: true,
+  goal: true,
+  handoff: true,
+  navigate_tree: true,
+  prompt: true,
+  steer: true,
+};
+
+function assertUpdateTurnAdmission(sessionId: string): void {
+  const maintenance = getUpdateTurnAdmissionBlock(sessionId);
+  if (maintenance) throw new UpdateTurnAdmissionError(maintenance);
+}
 
 // 모델·thinking 상태를 바꾸는 명령. Main 프리셋 transaction은 모델·계정·thinking을 한 동작으로 수행하므로,
 // 그 사이에 끼어든 다른 mutation은 복원이 그 성공을 덮지 않도록 이 세션 안에서만 거절한다.
@@ -833,6 +850,7 @@ export class AgentSessionWrapper {
    * 중이어야 idle 전용 삭제·idle 종료가 받은 입력을 버리지 않는다(#42). 겹칠 수 있어 개수로 센다.
    */
   private pendingInputAdmissions = 0;
+  private pendingSdkSubmissions = 0;
   /** 진행 중인 모델 mutation 수. 평범한 변경끼리는 겹칠 수 있으므로 개수로 센다. */
   private modelMutations = 0;
   /**
@@ -883,6 +901,19 @@ export class AgentSessionWrapper {
     private readonly stopResumeToolReplay?: () => void,
     readonly restrictTools?: readonly string[],
   ) {
+    // The pinned SDK uses the same Agent instance for both fresh prompts and
+    // autonomous continuations. Guard before it claims a run or dequeues input,
+    // including if the SDK scheduled the dispatch before the ack was written.
+    const agent = inner.agent as Partial<Pick<AgentSession["agent"], "prompt" | "continue">>;
+    if (agent?.prompt) agent.prompt = this.fenceSdkDispatch(agent.prompt);
+    if (agent?.continue) agent.continue = this.fenceSdkDispatch(agent.continue);
+    // SDK extension actions do not go through send(). Refuse new submissions
+    // before preprocessing and keep any earlier submissions visible to the ack.
+    const session = inner as AgentSessionLike & Partial<Pick<AgentSession, "sendCustomMessage" | "sendUserMessage">>;
+    if (session.sendCustomMessage) session.sendCustomMessage = this.fenceSdkDispatch(session.sendCustomMessage, true);
+    if (session.sendUserMessage) session.sendUserMessage = this.fenceSdkDispatch(session.sendUserMessage, true);
+    if (session.steer) session.steer = this.fenceSdkDispatch(session.steer, true);
+    if (session.followUp) session.followUp = this.fenceSdkDispatch(session.followUp, true);
     this.subagents = new RpcSubagentRegistry(eventBus, (frame) => {
       const event = frame as unknown as AgentEvent;
       this.rememberSubagentFrame(event);
@@ -891,6 +922,29 @@ export class AgentSessionWrapper {
       notifyRunningChange();
     });
     this.subagents.setSubscriptionLevel("progress");
+  }
+
+  private fenceSdkDispatch<F extends (...args: never[]) => Promise<unknown>>(dispatch: F, trackSubmission = false): F {
+    return new Proxy(dispatch, {
+      apply: (target, receiver, args) => {
+        try {
+          assertUpdateTurnAdmission(this.sessionId);
+          const operation = Reflect.apply(target, receiver, args) as ReturnType<F>;
+          if (trackSubmission) {
+            this.pendingSdkSubmissions += 1;
+            const settled = () => { this.pendingSdkSubmissions -= 1; };
+            void operation.then(settled, settled);
+          }
+          return operation;
+        } catch (error) {
+          if (error instanceof UpdateTurnAdmissionError) {
+            // The SDK can consume a detached send/continuation's rejection.
+            console.warn(`[update-drain] ${this.sessionId}: ${error.message} — SDK turn rejected`);
+          }
+          return Promise.reject(error);
+        }
+      },
+    });
   }
 
   private rememberSubagentSnapshot(snapshot: SubagentSnapshot): void {
@@ -1015,6 +1069,9 @@ export class AgentSessionWrapper {
    */
   isSafelyIdle(): boolean {
     if (!this._alive || this.closing || this.isRunning() || this.pendingUiResponses.size > 0) return false;
+    if (this.pendingSdkSubmissions > 0 || this.inner.queuedMessageCount > 0) return false;
+    if ("hasAdmittedSubmission" in this.inner && this.inner.hasAdmittedSubmission === true) return false;
+    if ("hasPendingWake" in this.inner && this.inner.hasPendingWake === true) return false;
     const manager = backgroundJobManagerOf(this.inner);
     if (manager && (manager.getRunningJobs().length > 0 || manager.hasPendingDeliveries())) return false;
     // 배달됐지만 아직 턴에 주입되지 않은 결과(코어 yield queue)도 곧 턴을 다시 깨운다.
@@ -1242,6 +1299,12 @@ export class AgentSessionWrapper {
    * browser must still see the session go busy, exactly as for a real prompt.
    */
   private async runGoalContinuation(prompt: string): Promise<void> {
+    const maintenance = getUpdateTurnAdmissionBlock(this.sessionId);
+    if (maintenance) {
+      const error = new UpdateTurnAdmissionError(maintenance);
+      this.emit({ type: "prompt_error", errorMessage: error.message });
+      throw error;
+    }
     this.promptRunning = true;
     notifyRunningChange();
     try {
@@ -1542,6 +1605,7 @@ export class AgentSessionWrapper {
     this.resetIdleTimer();
     const type = command.type as string;
     if (this.shouldWaitForExtensions(type)) await this.waitForExtensionsBound();
+    if (UPDATE_TURN_COMMAND_TYPES[type] === true) assertUpdateTurnAdmission(this.sessionId);
     if (this.restrictTools !== undefined &&
       (type === "execute_slash_command" || (type === "bash" && !this.restrictTools.includes("bash")))) {
       throw new Error("Command is unavailable in this restricted session");
@@ -1614,11 +1678,13 @@ export class AgentSessionWrapper {
             // 강제 삭제·종료는 실행 중인 세션도 기다리지 않으므로, hook 사이에 닫힘이
             // 잡혔거나 세션이 끝났으면 늦은 모델 턴을 열지 않는다.
             if (this.closing || !this._alive) throw new Error("Session is closing");
+            assertUpdateTurnAdmission(this.sessionId);
           }
           const skill = resolveRpcSkillInvocation(this.inner, promptMessage);
           promptRun = skill
-            ? this.inner.buildUserSkillPrompt(skill.skill, skill).then((built) =>
-                this.inner.promptCustomMessage({
+            ? this.inner.buildUserSkillPrompt(skill.skill, skill).then((built) => {
+                assertUpdateTurnAdmission(this.sessionId);
+                return this.inner.promptCustomMessage({
                   customType: SKILL_PROMPT_MESSAGE_TYPE,
                   content: promptImages?.length
                     ? [{ type: "text" as const, text: built.message }, ...promptImages]
@@ -1626,8 +1692,8 @@ export class AgentSessionWrapper {
                   display: true,
                   details: built.details,
                   attribution: "user",
-                }, { ...(streamingBehavior ? { streamingBehavior } : {}), queueChipText: promptMessage })
-              )
+                }, { ...(streamingBehavior ? { streamingBehavior } : {}), queueChipText: promptMessage });
+              })
             : this.inner.prompt(promptMessage, {
                 ...(promptImages?.length ? { images: promptImages } : {}),
                 ...(streamingBehavior ? { streamingBehavior } : {}),
@@ -2979,6 +3045,7 @@ export async function startRpcSession(
     return result;
   }
 
+  assertUpdateTurnAdmission(sessionId);
   const starting = (async () => {
     // Some extensions access the SDK's global theme even outside the terminal UI.
     await initTheme(false);
@@ -3102,6 +3169,9 @@ export async function startRpcSession(
       // omp's own applier, so a prompt file goes through the same templates the
       // CLI renders it with instead of overwriting the whole system prompt.
       applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, systemPrompts.appendPrompt);
+      // The SDK exposes its agent to IRC before createAgentSession returns.
+      // Recheck after startup awaits, before it can publish that raw agent.
+      assertUpdateTurnAdmission(sessionManager.getSessionId());
       const { session: inner, eventBus, subagentEventBus, setToolUIContext, extensionsResult } = await createAgentSession(sessionOptions);
       // A lab extension that fails to import or throws in its factory is skipped by omp;
       // its error becomes the plugin's `problem`, and a clean load clears an old one.
