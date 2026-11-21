@@ -1251,8 +1251,11 @@ function parseGitInvocation(tokens: ShellToken[], invocation: Invocation): GitIn
 
 // `~`는 단어 맨 앞이나 assignment 꼴의 `=`·`:` 뒤에서만 셸이 확장한다. 경로 중간의 literal
 // `~`(8.3 짧은 이름 `RUNNER~1` 등)는 확장이 아니므로 저장소 판정으로 넘긴다.
+// `%`는 bash에서 확장이 아니다. cmd는 `%NAME%` 짝(이름에 공백이 들어가도 된다), 배치 인자(`%1`, `%~dp0`, `%*`),
+// FOR 변수(`%I`, `%%I`, `%_`)를 확장하므로 낱말 끝이 아닌 `%`는 모두 확장으로 본다. 낱말 끝에 홀로 선 `%`
+// (wrangler 점진 배포 `<version>@100%`)만 글자 그대로다(2026-11-20 집 PC에서 CUELO 밖 배포가 이 때문에 막혔다).
 function hasShellExpansion(value: string): boolean {
-  return /[$%`*?]|(?:^|[=:])~/.test(value);
+  return /[$`*?]|%(?!$)|(?:^|[=:])~/.test(value);
 }
 
 /**

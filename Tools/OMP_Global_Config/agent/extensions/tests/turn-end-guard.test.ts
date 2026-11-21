@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import turnEndGuard, { createTurnEndGuard } from "../turn-end-guard";
@@ -1214,6 +1214,8 @@ describe("turn-end publication", () => {
       writeFileSync(join(t.cwd, "node_modules/vendor/a.js"), "x\n");
       t.git("add", ".gitignore"); t.git("add", "-f", "node_modules/vendor/a.js"); t.git("commit", "-qm", "vendor");
       writeFileSync(join(t.cwd, "dist/out.js"), "x\n");
+      // A tracked file counts once its content really differs from HEAD.
+      writeFileSync(join(t.cwd, "node_modules/vendor/a.js"), "edited\n");
       await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
       await t.change("node_modules/vendor/a.js", "dist/out.js");
       await t.h.end("고쳤습니다.");
@@ -1221,5 +1223,50 @@ describe("turn-end publication", () => {
       expect(t.notices()[0]).toContain("node_modules/vendor/a.js");
       expect(t.notices()[0]).not.toContain("dist/out.js");
     } finally { t.done(); }
+  });
+  test("a scratch draft deleted before the turn ends and a file restored to HEAD are not asked to publish", async () => {
+    const scenarios = ["scratch-deleted", "scratch-dir-deleted", "restored", "still-changed", "committed-not-pushed", "merge-not-pushed", "pathspec-name", "leading-space"] as const;
+    for (const scenario of scenarios) {
+      const t = setup("turn-pub-gone-", "git");
+      try {
+        await t.h.emit("input", { source: "rpc", text: "고쳐 줘" });
+        if (scenario === "scratch-deleted" || scenario === "scratch-dir-deleted") {
+          // draft writes a scratch file; its text is pasted elsewhere and the file (or its whole folder) is removed.
+          const draft = scenario === "scratch-deleted" ? ".tmp-changelog-line.md" : "tmp-draft/line.md";
+          mkdirSync(dirname(join(t.cwd, draft)), { recursive: true });
+          writeFileSync(join(t.cwd, draft), "line\n");
+          await t.h.emit("tool_result", { toolName: "draft", input: { output: draft }, isError: false, details: { savedPath: join(t.cwd, draft) } });
+          rmSync(scenario === "scratch-deleted" ? join(t.cwd, draft) : join(t.cwd, "tmp-draft"), { recursive: true });
+        } else if (scenario === "pathspec-name" || scenario === "leading-space") {
+          // Names Git could read as pathspec magic or that start with a space must be matched exactly.
+          const name = scenario === "pathspec-name" ? ":(exclude)*" : " lead.txt";
+          writeFileSync(join(t.cwd, name), "new\n");
+          await t.write(name);
+          if (scenario === "leading-space") { t.git("add", "--", name); t.git("commit", "-qm", "local"); }
+        } else if (scenario === "merge-not-pushed") {
+          // The only change to src/a.ts lives in a local merge commit.
+          t.git("checkout", "-qb", "side");
+          writeFileSync(join(t.cwd, "side.txt"), "side\n");
+          t.git("add", "side.txt"); t.git("commit", "-qm", "side");
+          t.git("checkout", "-q", "-");
+          t.git("merge", "-q", "--no-ff", "--no-commit", "side");
+          writeFileSync(join(t.cwd, "src/a.ts"), "merged\n");
+          await t.write("src/a.ts");
+          t.git("add", "src/a.ts"); t.git("commit", "-qm", "merge");
+        } else {
+          writeFileSync(join(t.cwd, "src/a.ts"), "changed\n");
+          await t.write("src/a.ts");
+          if (scenario === "restored") writeFileSync(join(t.cwd, "src/a.ts"), "x\n");
+          if (scenario === "committed-not-pushed") { t.git("add", "src/a.ts"); t.git("commit", "-qm", "local"); }
+        }
+        await t.h.end("고쳤습니다.");
+        if (scenario === "scratch-deleted" || scenario === "scratch-dir-deleted" || scenario === "restored") {
+          expect([scenario, t.notices()]).toEqual([scenario, []]);
+        } else {
+          expect([scenario, t.notices().length]).toEqual([scenario, 1]);
+          if (scenario !== "pathspec-name" && scenario !== "leading-space") expect(t.notices()[0]).toContain("src/a.ts");
+        }
+      } finally { t.done(); }
+    }
   });
 });

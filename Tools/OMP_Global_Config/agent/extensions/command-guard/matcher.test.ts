@@ -821,6 +821,8 @@ describe("CUELO 밖 프로젝트의 wrangler 배포 (2026-11-04 사용자 결정
     ["config and env inside the project", "wrangler deploy -c wrangler.toml --env prod", PROJECT],
     ["cd into the project first", `cd ${PROJECT} && npx wrangler deploy`, CUELO],
     ["attached config and env inside the project", "wrangler deploy -c=wrangler.toml -eprod", PROJECT],
+    // A lone `%` is literal in bash and cmd: `<version>@<percent>%` is wrangler's gradual-deploy syntax.
+    ["versions deploy of a version at a percentage", "npx wrangler versions deploy 0adc207e-2be0@100% --yes --message 'title; data'", PROJECT],
   ] as const;
   for (const [name, command, cwd] of allowed) {
     test(`allows ${name}`, () => expect(matchBlockedCommand(command, at(cwd))).toBeUndefined());
@@ -842,6 +844,13 @@ describe("CUELO 밖 프로젝트의 wrangler 배포 (2026-11-04 사용자 결정
     ["--cwd outside while the shell runs inside CUELO", `wrangler deploy --cwd=${PROJECT}`, CUELO],
     ["attached config inside CUELO", `wrangler deploy -c${CUELO}/wrangler.toml`, PROJECT],
     ["attached config with = inside CUELO", `wrangler deploy -c=${CUELO}/wrangler.toml`, PROJECT],
+    ["versions deploy at a percentage inside CUELO", "npx wrangler versions deploy 0adc207e@100% --yes", CUELO],
+    ["config from a cmd variable", "wrangler deploy -c %APPDATA%/wrangler.toml", PROJECT],
+    ["config from a batch argument", "wrangler deploy -c %~dp0wrangler.toml", PROJECT],
+    ["config from a cmd variable whose name has a space", 'wrangler deploy -c "%Project Root%/wrangler.toml"', PROJECT],
+    ["config from a cmd FOR variable", "wrangler deploy -c %I/wrangler.toml", PROJECT],
+    ["config from a batch FOR variable", "wrangler deploy -c %%I/wrangler.toml", PROJECT],
+    ["config from a cmd FOR variable named _", "wrangler deploy -c %_/wrangler.toml", PROJECT],
   ] as const;
   for (const [name, command, cwd] of blocked) {
     test(`blocks ${name}`, () => expect(matchBlockedCommand(command, at(cwd))).toBeDefined());

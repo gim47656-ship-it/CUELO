@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { dirname, relative, sep } from "node:path";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { boundary, localPath, targets, within, type Boundary, type Result } from "./turn-documents";
 import { readGuardField } from "../command-guard/task-guard";
 
@@ -33,6 +33,53 @@ function guard(task: string): { workClass?: string; owned: string[] } {
     workClass: readGuardField(block, "WORK_CLASS")?.toLowerCase(),
     owned: (readGuardField(block, "OWNED_PATHS") ?? "").split(",").map((path) => path.trim()).filter(Boolean),
   };
+}
+
+/**
+ * 게시할 차이가 남은 파일만 돌려준다. 만들었다 지운 draft 초안이나 HEAD 내용으로 되돌린 파일은 올릴 것이 없다
+ * (11-18 사무실, 11-21 집: 지운 초안 파일이 안내에 실려 사용자가 그 파일을 올려 달라고 다시 물었다).
+ * 저장소마다 read-only `git status`와 upstream에서 갈라진 뒤 로컬에서 바뀐 트리로 판정한다. 판정할 수 없는 저장소(upstream 없음 등)의
+ * 파일과 시간 한도를 넘겨 판정하지 못한 파일은 모두 남긴다.
+ */
+function pendingOnly(base: string, files: string[]): string[] {
+  // --literal-pathspecs: 파일 이름을 pathspec 문법(`:(exclude)`, 글롭)으로 읽지 않는다.
+  const run = (cwd: string, args: string[]) => spawnSync("git", ["--no-optional-locks", "--literal-pathspecs", ...args], { cwd, encoding: "utf8", timeout: 5_000 });
+  const ok = (result: SpawnSyncReturns<string>) => result.status === 0 && !result.error;
+  const isDirectory = (path: string) => { try { return statSync(path).isDirectory(); } catch { return false; } };
+  // 턴 끝을 오래 붙잡지 않는다. 한도를 넘기면 남은 파일은 판정하지 않고 남긴다.
+  const deadline = Date.now() + 10_000;
+  const roots = new Map<string, string | undefined>();
+  const groups = new Map<string, string[]>();
+  const keep = new Set<string>();
+  for (const file of files) {
+    // 초안과 함께 지운 폴더에서는 Git을 시작할 수 없어 남아 있는 가장 가까운 상위 디렉터리에서 저장소를 찾는다.
+    let dir = dirname(join(base, file));
+    while (!isDirectory(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    if (!roots.has(dir)) {
+      if (Date.now() > deadline) { keep.add(file); continue; }
+      const top = run(dir, ["rev-parse", "--show-toplevel"]);
+      let root: string | undefined;
+      try { root = ok(top) ? realpathSync(top.stdout.replace(/\n$/, "")) : undefined; } catch { root = undefined; }
+      roots.set(dir, root);
+    }
+    const root = roots.get(dir);
+    if (!root) { keep.add(file); continue; }
+    groups.set(root, [...groups.get(root) ?? [], file]);
+  }
+  for (const [root, group] of groups) {
+    if (Date.now() > deadline) { for (const file of group) keep.add(file); continue; }
+    const paths = group.map((file) => relative(root, join(base, file)).split(sep).join("/"));
+    const status = run(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--", ...paths]);
+    // merge base부터 HEAD까지의 트리 비교라 병합 커밋에서만 바뀐 내용도 빠지지 않는다.
+    const unpushed = run(root, ["diff", "--name-only", "-z", "--no-renames", "@{upstream}...HEAD", "--", ...paths]);
+    if (!ok(status) || !ok(unpushed) || Date.now() > deadline) { for (const file of group) keep.add(file); continue; }
+    const pending = new Set([
+      ...status.stdout.split("\0").filter((entry) => entry.length > 3).map((entry) => entry.slice(3)),
+      ...unpushed.stdout.split("\0").filter(Boolean),
+    ]);
+    group.forEach((file, index) => { if (pending.has(paths[index]!)) keep.add(file); });
+  }
+  return files.filter((file) => keep.has(file));
 }
 
 export function createTurnPublication() {
@@ -147,6 +194,7 @@ export function createTurnPublication() {
           files = files.filter((file) => !skip.has(file));
         }
       }
+      if (files.length) files = pendingOnly(base, files);
       if (files.length) parts.push(`이번 세션에서 성공한 edit, write, draft로 바뀐 파일 ${files.length}개가 push까지 끝난 git_finalize 영수증(input.files)에 없다: ${shown(files)}`);
       for (const [id, owned] of handoffs) {
         // 선언 범위만 읽는다. --no-optional-locks: 다른 agent의 index.lock과 겹치지 않는다.
