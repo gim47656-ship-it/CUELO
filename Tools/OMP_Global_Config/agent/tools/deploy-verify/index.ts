@@ -339,7 +339,7 @@ const defaultDeps = (exec: Exec): VerifyDeps => ({
 const factory: CustomToolFactory = (pi) => ({
   name: "deploy_verify",
   label: "Deploy Verify",
-  // 2026-11-15: 배포 확인 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+  // 배포 확인 때만 쓰므로 시작 프롬프트에는 명령 목록으로만 제공한다.
   loadMode: "discoverable",
   description:
     "Read-only verification that a CUELO deploy (WSL or native Linux, both via wsl/update.sh) finished: (1) newest ~/.omp/wsl-update/*.log has `READY <revision>` matching the given revision (prefix ok), "

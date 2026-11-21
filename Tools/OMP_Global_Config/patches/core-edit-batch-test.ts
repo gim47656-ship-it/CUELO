@@ -53,9 +53,10 @@ function check(label: string, ok: boolean, detail: string): void {
 	ok ? passes++ : failures++;
 }
 
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
+
 if (!existsSync(join(core, "src/edit/index.ts"))) throw new Error(`코어 원본을 찾지 못했다: ${core}`);
-const source = readFileSync(script, "utf8");
-for (const path of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(match => match[1]!))) {
+for (const path of corePatchTargetFiles()) {
 	const original = join(core, path);
 	if (!existsSync(original)) continue;
 	const target = join(fixture, path);

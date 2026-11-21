@@ -960,6 +960,8 @@ describe("turn-end publication", () => {
     mkdirSync(join(cwd, "src"));
     mkdirSync(join(cwd, "doc/history/2026/11/11-pub"), { recursive: true });
     for (const file of ["src/a.ts", "src/b.ts", ...RECORDS]) writeFileSync(join(cwd, file), "x\n");
+    // The real-remote fixture states the publishing convention, so these cases do not depend on the machine's git identity.
+    if (repo === "git") writeFileSync(join(cwd, "AGENTS.md"), "마감은 git_finalize로 커밋과 push 한다.\n");
     // A real local upstream so the unpushed-commit check reads @{upstream} like a pushed checkout.
     const remote = repo === "git" ? mkdtempSync(join(tmpdir(), `${prefix}remote-`)) : undefined;
     if (remote) {

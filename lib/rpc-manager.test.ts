@@ -262,7 +262,7 @@ test("G5: cold SSE retries for an acked ID, then opens the same session after fa
     const authStorage = await AuthStorage.create(join(agentDir, "agent.db"));
     authStorage.keys.setRuntime("anthropic", "fixture-key-no-network");
     const settings = Settings.isolated({
-      "memory.backend": "off", "tools.xdev": false, "skills.enabled": false, "includeWorkspaceTree": false,
+      "memory.backend": "off", "tools.commands": false, "skills.enabled": false, "includeWorkspaceTree": false,
     });
     const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.yml"));
     process.env.PI_CODING_AGENT_DIR = agentDir;

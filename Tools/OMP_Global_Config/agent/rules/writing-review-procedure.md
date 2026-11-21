@@ -4,7 +4,7 @@ description: Before new/rewritten prose, draft or slop_check.
 
 - **글씨가 들어가는 콘텐츠는 `draft`로 먼저 쓰고 AI 슬롭 점검을 거친다(2026-10-25 사용자 결정).** 새로 쓰거나 한 문단
   이상 다시 쓰는 글은 Main·Maker 모두 먼저 `draft`로 쓴다. README·CHANGELOG·`docs/`·보고서·안내서·소개 글·게시물,
-  `HANDOFF.md`·`doc/history` 작업 기록의 서술, md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
+  `HANDOFF.md`·`doc/history` 작업 기록의 긴 서술(아래 짧은 사실 기록은 제외), md·csv·Excel·Word·PDF 보고서·표, PPT 슬라이드 문구, HTML·웹 화면과
   UI의 문구가 모두 대상이다. 사실·수치·경로·명령·커밋은 `instruction`이나 `paths`로 넘겨 모델이 지어내지 않게 한다.
   초안 모델과 한 번의 대체 모델은 `config.yml`의 `modelRoles.draft`, `draftFallback`을 따른다.
   설정한 대체가 실패하면 임의의 다른 모델로 넘어가지 않는다(참고 텍스트는 해당 제공자로
@@ -50,6 +50,11 @@ description: Before new/rewritten prose, draft or slop_check.
   검토 응답이 JSON으로 해석되지 않으면 실패 원문·파싱 오류를 먼저 확인한다. 토큰 길이로 원인을 추측하거나 같은 조건으로
   반복 호출하지 않는다. 검토 응답의 형식 오류를 피하려고 산출물의 따옴표·쉼표·내용을 바꾸지 않는다. 실제 내용상 지적에
   근거한 교정은 별개다. 불완전한 JSON을 임의로 보완하거나 필수 검토가 실패한 상태에서 통과시키지 않는다.
+- **내부용 짧은 사실 기록은 draft 대상에서 뺀다(2026-11-22 사용자 결정).** 경로가 `HANDOFF.md`, `doc/history/**`, `doc/README.md`인
+  내부 기록 파일에, 한 번의 `write`·`edit`가 더하거나 바꾸는 글이 400자(글자 기준) 이하이고 사실·수치·경로·명령·커밋·결과만 적을 때다.
+  기준은 파일 전체 길이가 아니라 그 호출이 더하는 양이라, 긴 `HANDOFF.md`에 사실 한 줄을 더하는 것도 해당한다. 사용자나 외부에 보이는 글
+  (README·CHANGELOG·`docs/`·보고서·화면 문구), 새 설명·예시·결론이 든 서술, 400자를 넘는 추가는 그대로 `draft` 대상이며, 호출을 잘게
+  나눠 400자를 피하지 않는다. 이 예외는 초안 규칙에만 해당한다. 위 슬롭 게이트 대상 분류와 검사·독립 검토는 바뀌지 않는다.
 - **슬롭 지적을 고칠 때는 확정한 결함만 최소로 고친다(`theclaymethod/unslop` core-contract 원칙을 요약).** 패턴에
   걸렸다는 사실만으로 결함이 되지 않는다. 지적마다 글의 맥락에서 실제 결함인지 먼저 확인한다. 확정한 지적은 인용된
   가장 작은 구간만 고치고, 지적이 없는 문장은 바이트 그대로 둔다. 확정한 결함이 없으면 고치지 않는다. 문맥상 타당한

@@ -26,6 +26,7 @@ description: Before delegation, child review or Git handoff.
   편집 대상의 정확한 줄은 `read`로 다시 확인한다.
 - 글 초안, 직접 교정, `slop_check`의 범위와 모델 경로는 `rule://writing-review-procedure`가 정본이다.
   사실과 경로를 `draft`에 제공하고 결과를 직접 읽는다. 작성 범위 밖 새 문단을 직접 덧붙이거나 실패한 검토를 우회하지 않는다.
+  내부용 짧은 사실 기록(`HANDOFF.md`·`doc/history/**`·`doc/README.md`에 한 번에 400자 이하로 더하는 사실·경로·명령·결과)은 정본 기준대로 `draft` 없이 직접 적는다.
 - 코어 번들 에이전트(`scout`·`sonic`·`task`·`reviewer`·`security-reviewer`)는 미러의 정의 파일을
   지운다고 사라지지 않는다. 선택 목록에서 빼는 지원 수단은 `config.yml`의 `task.disabledAgents`
   하나뿐이며 다섯 개를 모두 뺀다. 그 결과 코어 `/security` 자동 스캔은 이 프로필에서 쓸 수 없고,
@@ -227,7 +228,6 @@ judge 실패, timeout, 자격 없음이면 기존 결정론 동작만 남긴다.
 | 장치 | 구현 |
 |---|---|
 | 미답 질문, 종료 확인과 TODO 없는 혼자 종료 | `extensions/turn-end-guard.ts` |
-| 외부 조언 주장 검증 | `extensions/external-advice-check.ts` (2026-10-31 사용자 결정으로 JEV 복원, 2026-10-08 제거 결정을 대체) |
 | 정리 전 자기 job 점유 차단, Windows 셸 경계와 테스트 재시도 안내 | `extensions/jev-runtime.ts` |
 | 끼어든 말에 실제 답했는지 안내 | `extensions/steering-reply-gate.ts` (2026-09-27 사용자 요청) |
 | todo 없는 도구 호출 횟수 안내 | `extensions/todo-nudge.ts` (2026-10-08 사용자 결정: JEV 제거, 결정론 횟수만 유지) |

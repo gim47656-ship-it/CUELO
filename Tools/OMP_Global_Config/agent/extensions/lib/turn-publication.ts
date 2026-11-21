@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { boundary, localPath, targets, within, type Boundary, type Result } from "./turn-documents";
 import { readGuardField } from "../command-guard/task-guard";
@@ -82,6 +82,64 @@ function pendingOnly(base: string, files: string[]): string[] {
   return files.filter((file) => keep.has(file));
 }
 
+// 게시 관례 근거: 저장소 루트의 지침 문서 한 문단이 commit과 push 마감을 함께 적었거나(push를 금지하는 절이 있으면 제외), 이 사용자의 신원으로 쓴 커밋이 이미 원격 추적 ref에 있다.
+// 문서 문구 판독은 휴리스틱이다. 놓치면 기본 게시 안내만 생략되고(명시 게시 요청은 그대로 된다) 틀리게 읽으면 기존 안내가 나올 뿐이다.
+const CONVENTION_DOCS = ["AGENTS.md", "CLAUDE.md", "HANDOFF.md"];
+const COMMIT_WORD = /git_finalize|커밋|commit/i;
+const PUSH_WORD = /git_finalize|푸시|푸쉬|push|기본\s*게시/i;
+// push를 금지하는 문구: 부정어 뒤 몇 낱말 안에 push가 오거나, push 뒤에 금지 표현이 온다. 줄바꿈은 공백으로 보고 판정한다.
+const NEGATED_PUSH = /\b(?:never|don['’]?t|do not|must not|cannot|not allowed to|forbidden to|prohibit\w*|no\s+(?:push|pushes|pushing))\b\W*(?:\w+\W+){0,3}?(?:push|푸시|푸쉬|git_finalize)|(?:금지|하지\s*마|하지\s*말)\W+(?:\w+\W+){0,3}?(?:push|푸시|푸쉬|git_finalize)|(?:push|푸시|푸쉬)\S*\s*(?:is |are |was )?(?:forbidden|prohibited|not allowed|not permitted|금지|하지\s*마|하지\s*말|하지\s*않)|\bno\s+push(?:es|ing)?\b/i;
+/** 주소 비교 키: 도메인은 대소문자를 구분하지 않고, 앞부분은 그대로 둔다. */
+const addressKey = (email: string) => { const text = email.trim(); const at = text.lastIndexOf("@"); return at < 0 ? text : `${text.slice(0, at)}@${text.slice(at + 1).toLowerCase()}`; };
+type PublishScope = "yes" | "no-remote" | "no-convention" | "unknown";
+const conventionStated = (text: string) => text.split(/\n\s*\n/).some((paragraph) => COMMIT_WORD.test(paragraph) && PUSH_WORD.test(paragraph)
+  && !NEGATED_PUSH.test(paragraph.replace(/\s+/g, " ")));
+const HISTORY_LIMIT = 500;
+
+/** 선언 범위 경로가 속한 디렉터리(디렉터리면 그 자신). */
+function ownerDir(base: string, path: string): string {
+  const abs = join(base, path.replace(/\/+$/, ""));
+  try { return statSync(abs).isDirectory() ? abs : dirname(abs); } catch { return dirname(abs); }
+}
+
+/** 이 저장소가 기본 게시 대상인가. git 실패와 신원 없음은 모두 unknown이며 없다는 근거로 쓰지 않는다. 원격 조회 없이 로컬 설정과 추적 ref만 읽는다. known은 저장소 루트별 결과 캐시다. */
+function publishScope(base: string, known: Map<string, PublishScope>): PublishScope {
+  const run = (args: string[]) => spawnSync("git", ["--no-optional-locks", ...args], { cwd: base, encoding: "utf8", timeout: 5_000 });
+  const failed = (result: SpawnSyncReturns<string>) => result.status !== 0 || !!result.error;
+  const top = run(["rev-parse", "--show-toplevel"]);
+  if (failed(top)) return "unknown";
+  const root = top.stdout.endsWith("\n") ? top.stdout.slice(0, -1) : top.stdout;
+  const cached = known.get(root);
+  if (cached) return cached;
+  const scope = ((): PublishScope => {
+    const remotes = run(["remote"]);
+    if (failed(remotes)) return "unknown";
+    if (!remotes.stdout.trim()) return "no-remote";
+    for (const name of CONVENTION_DOCS) {
+      // O_NONBLOCK: 이름 있는 파이프로 바뀌어도 읽기가 쓰는 쪽을 기다리지 않는다. 열고 나서 fstat으로 일반 파일만 읽는다.
+      let fd: number | undefined;
+      try {
+        fd = openSync(join(root, name), constants.O_RDONLY | constants.O_NONBLOCK);
+        if (fstatSync(fd).isFile() && conventionStated(readFileSync(fd, "utf8"))) return "yes";
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "unknown"; // 읽지 못한 문서는 없다는 근거가 아니다
+      } finally {
+        if (fd !== undefined) closeSync(fd);
+      }
+    }
+    const identity = run(["config", "user.email"]);
+    const who = failed(identity) ? "" : addressKey(identity.stdout);
+    if (!who) return "unknown";
+    const prior = run(["log", "--remotes", "--format=%ae", "-n", String(HISTORY_LIMIT + 1)]);
+    if (failed(prior)) return "unknown";
+    const emails = prior.stdout.split("\n").filter(Boolean);
+    if (emails.some((email) => addressKey(email) === who)) return "yes";
+    return emails.length > HISTORY_LIMIT ? "unknown" : "no-convention";
+  })();
+  known.set(root, scope);
+  return scope;
+}
+
 export function createTurnPublication() {
   /** Main이 바꿨고 push까지 끝난 git_finalize가 아직 덮지 않은 절대 경로. */
   const changed = new Set<string>();
@@ -94,13 +152,16 @@ export function createTurnPublication() {
   let failedStage: string | undefined;
   let hold = false;
   let noticed = false;
+  /** 사용자가 직접 게시(commit·push)를 요청한 입력이 마지막 사용자 입력일 때만 참이다. */
+  let explicit = false;
   return {
-    reset() { changed.clear(); running.clear(); handoffs.clear(); branchOnly.clear(); failedStage = undefined; hold = false; noticed = false; },
+    reset() { changed.clear(); running.clear(); handoffs.clear(); branchOnly.clear(); failedStage = undefined; hold = false; noticed = false; explicit = false; },
     /** 사용자 직접 입력·조향만 넘긴다. Git 보류는 해제 전까지 유지하고, 해제는 안내를 다시 연다. */
     user(text: string) {
       const own = text.replace(QUOTED, " ");
-      if (HOLD.test(own)) hold = true;
-      else if (RELEASE.test(own)) { hold = false; noticed = false; }
+      if (HOLD.test(own)) { hold = true; explicit = false; }
+      else if (RELEASE.test(own)) { hold = false; noticed = false; explicit = true; }
+      else explicit = false;
     },
     observe(event: Result, cwd: string | undefined) {
       if (!cwd) return;
@@ -185,6 +246,15 @@ export function createTurnPublication() {
       try { base = realpathSync(cwd); } catch { return undefined; }
       const shown = (paths: string[]) => `${paths.slice(0, SHOWN).join(", ")}${paths.length > SHOWN ? ` 외 ${paths.length - SHOWN}개` : ""}`;
       const parts: string[] = [];
+      const scopes = new Map<string, boolean>();
+      const repoScopes = new Map<string, PublishScope>();
+      /** 저장소(dir)가 기본 게시 대상이 아니라고 확인됐는가. 명시 게시 요청과 unknown은 닫지 않는다. */
+      const closed = (dir: string) => {
+        if (explicit) return false;
+        let value = scopes.get(dir);
+        if (value === undefined) { const scope = publishScope(dir, repoScopes); value = scope === "no-remote" || scope === "no-convention"; scopes.set(dir, value); }
+        return value;
+      };
       let files = [...changed].map((path) => relative(base, path).split(sep).join("/"));
       if (files.length) {
         // gitignore 대상은 게시할 파일이 아니다. 판정할 수 없으면(exit 128 등) 모두 남긴다. 추적 중인 파일은 무시 대상으로 나오지 않는다.
@@ -194,9 +264,10 @@ export function createTurnPublication() {
           files = files.filter((file) => !skip.has(file));
         }
       }
-      if (files.length) files = pendingOnly(base, files);
+      if (files.length) files = pendingOnly(base, files).filter((file) => !closed(dirname(join(base, file))));
       if (files.length) parts.push(`이번 세션에서 성공한 edit, write, draft로 바뀐 파일 ${files.length}개가 push까지 끝난 git_finalize 영수증(input.files)에 없다: ${shown(files)}`);
       for (const [id, owned] of handoffs) {
+        if (owned.every((path) => closed(ownerDir(base, path)))) continue;
         // 선언 범위만 읽는다. --no-optional-locks: 다른 agent의 index.lock과 겹치지 않는다.
         const status = spawnSync("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...owned], { cwd: base, encoding: "utf8", timeout: 5_000 });
         if (status.status !== 0 || status.error) {
@@ -217,8 +288,11 @@ export function createTurnPublication() {
         }
         parts.push(`완료한 구현 Maker ${id}(OWNED_PATHS ${owned.join(",")})의 선언 범위에 커밋되지 않은 변경 ${dirty.length}개가 남아 있다: ${shown(dirty)}. 다른 writer 몫이 섞였을 수 있으니 receipt와 대조하라`);
       }
-      const branch = [...branchOnly].map((path) => relative(base, path).split(sep).join("/"));
+      const branch = [...branchOnly].filter((path) => !closed(dirname(path))).map((path) => relative(base, path).split(sep).join("/"));
       if (branch.length) parts.push(`wt 세션 브랜치 upstream에만 push됐고 git_integrate 완료 영수증이 없는 파일 ${branch.length}개가 있다: ${shown(branch)}`);
+      // 2026-11-22 사용자 결정(게시 범위 좁히기): 원격이 없거나 게시 관례 근거가 없는 저장소의 변경은 기본 게시로 재촉하지 않는다(작업 트리에 두고 보고).
+      // 위 판정은 파일이 속한 저장소마다 한다. 사용자가 직접 게시를 요청했으면 보지 않고, 확인하지 못한 상태는 없다는 근거가 아니므로 기존대로 안내한다.
+      // 이미 실패한 게시 호출 보고는 그대로 둔다.
       if (failedStage) parts.push(`마지막 게시 호출이 push까지 끝나지 않았다(${failedStage})`);
       if (!parts.length) return undefined;
       noticed = true;

@@ -123,7 +123,7 @@ function fileUriPath(uri: string): string | undefined {
 
 /**
  * edit·write 입력 경로가 가리키는 교훈 검색 대상(`relativeTarget` 형식). 파일이 아니면 undefined다.
- * 파일은 실제 경로와 `file://`뿐이다. `proc://<id>/kill`·`agent://Main`·`conflict://1`·`local://…`·`xd://…` 같은 core 내부·원격 URI는
+ * 파일은 실제 경로와 `file://`뿐이다. `proc://<id>/kill`·`agent://Main`·`conflict://1`·`local://…`·`help://read/urls` 같은 core 내부·원격 URI는
  * 프로젝트 파일이 아니라서 경로로 접으면 basename(`kill`·`Main`·`1`)이 무관한 기억에 걸린다(2026-10-26 관측, 블록의 22%).
  */
 export function lessonTarget(cwd: string | undefined, path: string): string | undefined {

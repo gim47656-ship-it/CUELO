@@ -585,7 +585,7 @@ export function createArtifactSearchTool(pi: Pick<CustomToolAPI, "zod">, options
   return {
     name: "artifact_search",
     label: "Artifact Search",
-    // 2026-11-15: 큰 출력 검색 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+    // 큰 출력 검색 때만 쓰므로 시작 프롬프트에는 명령 목록으로만 제공한다.
     loadMode: "discoverable" as const,
     approval: "read" as const,
     description:

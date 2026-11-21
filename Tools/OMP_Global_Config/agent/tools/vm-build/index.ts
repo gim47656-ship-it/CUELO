@@ -191,7 +191,7 @@ const defaultDeps = (cwd: string, run: Runner, signal?: AbortSignal): RunDeps =>
 const factory: CustomToolFactory = (pi) => ({
   name: "vm_build",
   label: "VM Build",
-  // 2026-11-15: VM 빌드 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+  // VM 빌드 때만 쓰므로 시작 프롬프트에는 명령 목록으로만 제공한다.
   loadMode: "discoverable",
   description:
     "Push the Linux source of truth one way to its Windows VM copy over SSH (mapping in ~/.omp/agent/vm-build.json, e.g. `ssh winboat`), then optionally build or test it there. "

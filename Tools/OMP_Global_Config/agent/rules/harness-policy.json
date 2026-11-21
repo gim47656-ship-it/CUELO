@@ -628,20 +628,6 @@
             "the-message_end-handler-never-waits-for-the-judgment-only-the-held-ask-tool_call-awaits-it-within-the-timeout-and-a-new-user-input-or-session-start-discards-a-late-reminder-or-held-ask-result",
             "the-judgment-only-removes-reminders-the-deterministic-candidate-raised-and-never-changes-the-2026-10-19-chart-rule-text"
           ]
-        },
-        "external-advice-source": {
-          "owner": "the-session-receiving-the-input",
-          "when": "a-genuine-interactive-or-rpc-input-that-the-deterministic-external-advice-detector-already-matched-judged-at-input-and-awaited-in-before_agent_start-of-that-prompt",
-          "questions": [
-            "do-the-pasted-claims-come-from-outside-advice-or-from-this-tools-own-report-or-status-text-external-advice-internal-report-or-status-or-unknown"
-          ],
-          "decisionMapping": [
-            "input-is-a-1000-character-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
-            "only-internal-report-or-status-chosen-at-probability-0.5-or-more-adds-no-verification-message-and-every-other-answer-adds-the-existing-one",
-            "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-verification-message",
-            "a-newer-input-or-genuine-user-steering-message-discards-the-pending-judgment-so-before_agent_start-never-applies-a-stale-result",
-            "2026-10-31-user-instruction-reinstates-the-judgment-removed-on-2026-10-08-because-the-judge-now-answers-in-about-0.2-seconds-instead-of-the-2.5-second-wait-that-motivated-the-removal"
-          ]
         }
       },
       "observation": {

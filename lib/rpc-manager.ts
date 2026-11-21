@@ -633,7 +633,7 @@ export async function restoreRpcSessionTools(
 
   const declared = new Set(tools.declared);
   const enabled = session.getEnabledToolNames();
-  const mounted = new Set(session.getMountedXdevToolNames());
+  const mounted = new Set(session.getMountedToolCommandNames());
   const branch = session.sessionManager.getBranch();
   const replyIndex = branch.findLastIndex((entry) =>
     entry.type === "message" && entry.message.role === "assistant" &&
@@ -1124,7 +1124,11 @@ export class AgentSessionWrapper {
   }
 
 
-  start(): void {
+  /**
+   * `onAgentStart` runs once, on the session's first `agent_start`. It lets the caller hold work
+   * (hint compression) that must not run while a finished session is only being opened.
+   */
+  start(onAgentStart?: () => void): void {
     this.syncPlanModeFromSession();
     void this.goalMode.restore().catch((error) => {
       console.error(
@@ -1132,7 +1136,12 @@ export class AgentSessionWrapper {
         error instanceof Error ? error.message : error,
       );
     });
+    let agentStarted = false;
     this.unsubscribe = this.inner.subscribe((sdkEvent) => {
+      if (!agentStarted && sdkEvent.type === "agent_start") {
+        agentStarted = true;
+        onAgentStart?.();
+      }
       // SDK interfaces need no index signature; web consumers retain every event field unchanged.
       const event = sdkEvent as AgentEvent;
       if (event.type === "agent_end") {
@@ -1424,7 +1433,7 @@ export class AgentSessionWrapper {
         text: [
           "Plan refinement requested.",
           feedback ? `User feedback:\n${feedback}` : "",
-          `Update the plan file, then write ${resolvedTitle} to xd://propose again when ready.`,
+          `Update the plan file, then submit it again with \`propose\`. Use this title: ${JSON.stringify(resolvedTitle)}.`,
         ].filter(Boolean).join("\n\n"),
       }],
       details,
@@ -3146,6 +3155,9 @@ export async function startRpcSession(
       // A browser-runtime tool context without a bound manager is not a plain CLI call.
       Reflect.set(globalThis, Symbol.for("cuelo.finalizeChecksBrowser"), true);
       const sessionOptions: CreateAgentSessionOptions = {
+        // Opening a finished session (SSE, history, cold resume) must not call the model; the
+        // wrapper starts hint compression on the first real turn instead.
+        deferHintCompression: true,
         cwd: sessionCwd,
         agentDir,
         settings: sessionSettings,
@@ -3242,7 +3254,7 @@ export async function startRpcSession(
         wrapper.destroy();
         throw new Error("Project trust was revoked while this session was starting. Please try again.");
       }
-      wrapper.start();
+      wrapper.start(() => inner.startHintCompression());
 
       const realSessionFile = inner.sessionFile as string | undefined;
       if (realSessionFile) cacheSessionPath(realSessionId, realSessionFile);

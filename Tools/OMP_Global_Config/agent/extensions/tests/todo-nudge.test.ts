@@ -61,15 +61,30 @@ describe("todo nudge", () => {
     expect(h.sent[0]).toMatchObject({ customType: "todo-nudge", display: false, attribution: "agent" });
     expect(h.deliveries).toEqual([{ deliverAs: "aside" }]);
     h.input("새 작업을 조사하고 수정하고 검증해줘", "rpc");
-    h.calls(["bash", "write", "bash", "eval"]);
+    h.calls(["bash", "write", "bash", "task"]);
     expect(h.sent).toHaveLength(1);
     h.calls(["edit"]);
     expect(h.sent).toHaveLength(2);
   });
 
+  test("two-step work (change and run) never triggers a reminder however many calls it takes; a third step kind does", () => {
+    const h = harness();
+    h.input();
+    h.calls(["edit", "bash", "write", "bash", "edit", "eval", "write", "bash", "edit", "bash", "write", "eval"]);
+    expect(h.sent).toHaveLength(0);
+    h.calls(["git_finalize"]);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]).toMatchObject({ customType: "todo-nudge" });
+
+    const three = harness();
+    three.input();
+    three.calls(["edit", "bash", "task", "write", "bash"]);
+    expect(three.sent).toHaveLength(1);
+  });
+
   test("a core mid-run nudge suppresses the fifth-call reminder until the next direct input", () => {
     const h = harness();
-    const working = ["bash", "edit", "eval", "write", "bash"];
+    const working = ["bash", "edit", "task", "write", "bash"];
     h.input();
     h.notice("mid-run-todo-nudge");
     h.calls(working);
@@ -83,12 +98,12 @@ describe("todo nudge", () => {
     const h = harness();
     h.input();
     h.emit("tool_call", { toolName: "wait" });
-    h.calls(["bash", "edit", "eval", "write"]);
+    h.calls(["bash", "edit", "task", "write"]);
     expect(h.sent).toHaveLength(0);
     h.input();
     h.emit("tool_result", { toolName: "wait", isError: false });
     expect(h.sent).toHaveLength(0);
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     expect(h.sent).toHaveLength(1);
   });
 
@@ -96,7 +111,7 @@ describe("todo nudge", () => {
     const h = harness();
     h.input();
     h.todoState("in_progress");
-    h.calls(["bash", "edit", "eval"]);
+    h.calls(["bash", "edit", "task"]);
     h.todoState("completed");
     h.calls(["write"]);
     expect(h.sent).toHaveLength(0);
@@ -105,9 +120,9 @@ describe("todo nudge", () => {
 
     h.input();
     h.todoState("in_progress");
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     h.todoState("completed");
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     expect(h.sent).toHaveLength(1);
   });
 
@@ -120,9 +135,9 @@ describe("todo nudge", () => {
 
   test("사용자 직접 입력이 없는 세션(child)과 확장 입력에는 안내가 없다", () => {
     const h = harness();
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     h.input("세 단계 작업", "extension");
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     expect(h.sent).toHaveLength(0);
   });
 
@@ -134,14 +149,14 @@ describe("todo nudge", () => {
       details: { phases: [{ tasks: [{ content: "work", status: "in_progress" }] }] },
     });
     h.input();
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     expect(h.sent).toHaveLength(0);
     h.emit("tool_result", {
       toolName: "todo", isError: false,
       details: { phases: [{ tasks: [{ content: "work", status: "completed" }] }] },
     });
     h.input();
-    h.calls(["bash", "edit", "eval", "write", "bash"]);
+    h.calls(["bash", "edit", "task", "write", "bash"]);
     expect(h.sent).toHaveLength(1);
   });
 });

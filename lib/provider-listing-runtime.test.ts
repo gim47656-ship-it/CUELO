@@ -28,7 +28,8 @@ test("openai-codex is named by its primary login, offers the device login, and h
 test("OAuth-only providers leave the API-key list; key-accepting ones stay", () => {
   const apiKeyIds = buildApiKeyProviderList(inputs).map((p) => p.id);
 
-  expect(apiKeyIds).not.toContain("google-gemini-cli");
+  expect(apiKeyIds).not.toContain("openai-codex");
+  expect(apiKeyIds).toContain("google-gemini-cli");
   // anthropic: catalog descriptor; gitlab-duo: auth env GITLAB_TOKEN; snowflake: raw PAT exception.
   expect(apiKeyIds).toEqual(expect.arrayContaining(["anthropic", "gitlab-duo", "snowflake"]));
 });

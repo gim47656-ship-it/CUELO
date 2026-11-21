@@ -433,16 +433,6 @@ const requiredPolicyMembers = [
     "the-message_end-handler-never-waits-for-the-judgment-only-the-held-ask-tool_call-awaits-it-within-the-timeout-and-a-new-user-input-or-session-start-discards-a-late-reminder-or-held-ask-result",
     "the-judgment-only-removes-reminders-the-deterministic-candidate-raised-and-never-changes-the-2026-10-19-chart-rule-text",
   ]],
-  ["routing.typedJudgmentRouting.placements.external-advice-source.questions", [
-    "do-the-pasted-claims-come-from-outside-advice-or-from-this-tools-own-report-or-status-text-external-advice-internal-report-or-status-or-unknown",
-  ]],
-  ["routing.typedJudgmentRouting.placements.external-advice-source.decisionMapping", [
-    "input-is-a-1000-character-excerpt-with-code-fences-literals-urls-and-paths-removed-and-no-call-when-a-secret-or-credential-pattern-appears",
-    "only-internal-report-or-status-chosen-at-probability-0.5-or-more-adds-no-verification-message-and-every-other-answer-adds-the-existing-one",
-    "unknown-judge-failure-missing-credentials-or-the-1.5-second-timeout-keeps-the-existing-verification-message",
-    "a-newer-input-or-genuine-user-steering-message-discards-the-pending-judgment-so-before_agent_start-never-applies-a-stale-result",
-    "2026-10-31-user-instruction-reinstates-the-judgment-removed-on-2026-10-08-because-the-judge-now-answers-in-about-0.2-seconds-instead-of-the-2.5-second-wait-that-motivated-the-removal",
-  ]],
   // 실장비 인계 한 통에 들어가야 하는 것. 이 항목이 줄면 "무엇을 켜고 무엇이 정상이며 언제 멈추는가"가
   // 빠진 인계가 되어, 사용자가 장비 앞에서 판단할 근거를 잃는다.
   ["implementationOwnership.writerValidation.deviceVerificationHandoff.packet", [
@@ -751,7 +741,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability", "external-advice-source"];
+const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -1338,8 +1328,7 @@ if (policy !== null) {
       typedJudgmentPlacements["steering-reply-answered"]?.owner === "main" &&
       typedJudgmentPlacements["pre-turn-memory-application"]?.owner === "the-session-receiving-the-recall" &&
       typedJudgmentPlacements["character-summon-intent"]?.owner === "the-session-receiving-the-input" &&
-      typedJudgmentPlacements["report-chart-applicability"]?.owner === "main" &&
-      typedJudgmentPlacements["external-advice-source"]?.owner === "the-session-receiving-the-input",
+      typedJudgmentPlacements["report-chart-applicability"]?.owner === "main",
     "typed judgment placement의 실행 주체가 다르다.",
   );
   check(

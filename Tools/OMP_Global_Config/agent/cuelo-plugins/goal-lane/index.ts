@@ -65,9 +65,9 @@ const CONFIRMATION_PATTERN =
   /(승인(?:이 필요|을 (?:요청|부탁|기다)|해 주|받아야)|허락(?:이 필요|해 주|받아야)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|정해\s?주세요|정해\s?줘|주시면|라고\s?(?:알려|말해)\s?(?:줘|주세요)|(?:네|너의|당신의|사용자님의?)\s?결정|동의(?:를|가)?\s?(?:기다리|필요)|골라 주세요|선택해 주세요|어느 쪽|shall I|may I|would you like|(?:need|needs|awaiting|waiting for) your (?:approval|decision|permission))/i;
 
 const SYSTEM_BLOCK = `# Goal lane (Main only)
-Before the first substantive tool call for a user-judged result, call \`lab_goal\` frame: goal = purpose, explicit = user's own conditions, assumptions = yours, deliverables = required outputs and expert-convincing checks. Pure typo/one-line edits may omit framing or use size:small.
+Before the first substantive tool call for a user-judged result, call \`lab_goal\` frame: goal = purpose, explicit = user's own conditions, assumptions = yours, deliverables = required outputs and expert-convincing checks. Pure typo/one-line edits may omit framing or use size:small. A size:small frame is registered with the frame call alone: no separate \`evidence\` call (the plugin stays silent for it); still run the real checks and state them in the answer.
 - Only user-stated conditions are explicit. Drop or ask about assumptions that limit the goal. Use expert source material, tools and checks, not summaries or impressions.
-- Before done/waiting, record evidence for each deliverable: file proves existence only; command = executed bash command or exact successful eval line; url = responding URL; observation = vision read (\`read <file>?q=…\`), not your own look. Observed evidence does not prove fulfillment: judge its relevance. Delegation does not remove your deliverables; work on yours while children run.
+- For size normal/deep, before done/waiting, record evidence for each deliverable: file proves existence only; command = executed bash command or exact successful eval line; url = responding URL; observation = vision read (\`read <file>?q=…\`), not your own look. Observed evidence does not prove fulfillment: judge its relevance. Delegation does not remove your deliverables; work on yours while children run.
 - Reframe changed requests with all still-owed deliverables. Evidence survives only when id, check, what and path all stay the same.`;
 
 // The system prompt carries only the fixed SYSTEM_BLOCK. The frame used to be appended there too, so every new frame
@@ -733,7 +733,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         if (ungrounded.length) {
           lines.push(`사용자 원문에 없는 조건을 assumptions로 옮겼다: ${ungrounded.join(" / ")}. 사용자가 실제로 한 말이면 그 말을 그대로 explicit에 다시 적어라.`);
         }
-        if (size === "small") lines.push("small: 이 요청에서는 플러그인이 더 개입하지 않는다.");
+        if (size === "small") lines.push("small: 이 요청에서는 플러그인이 더 개입하지 않는다. 별도 evidence 호출은 필요 없다(실제 검사는 그대로 하고 답변에 적는다).");
         else if (assumptions.length) lines.push("assumptions는 사용자 조건이 아니다. 목표 달성을 제한하면 버리거나 사용자에게 물어라.");
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       }

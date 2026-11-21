@@ -1838,9 +1838,9 @@ try {
 	);
 } catch (error) {
 	csArbitrarySelectorRejected =
-		error instanceof Error && error.message.includes("completion() received invalid arguments");
+		error instanceof Error && /completion\(\) (received invalid arguments|could not resolve model "tier\/not-allowed")/.test(error.message);
 }
-check("임의 exact selector는 schema에서 거부한다", csArbitrarySelectorRejected);
+check("unknown selector cannot reach a model (fixed tiers, exact WEB6, or registered user tag only)", csArbitrarySelectorRejected);
 
 csWeb6Fails = true;
 csCompletionModels.web6.reset();

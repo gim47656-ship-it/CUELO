@@ -6,7 +6,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 // 2026-10-16 재조사(doc/history/2026/10/16-rag-reinvestigation): 격리 표본 12건에서 문서 지도를 연 경우가 0건이었다.
 // 도구나 규칙만 두면 같은 문제가 되풀이되므로, 사용자 요청마다 하네스가 지도·RECORD 헤더 검색을 직접 돌려
 // 후보 기록과 맞는 구간을 그 prompt의 숨은 메시지로 넘긴다. 하한 미만·지도 없음·오류면 아무것도 붙이지 않는다.
-// 안내는 external-advice-check와 같은 이유로 aside가 아니라 그 prompt의 `before_agent_start` 메시지로만 붙인다.
+// 안내는 aside가 아니라 그 prompt의 `before_agent_start` 메시지로만 붙인다(aside로 보내면 idle 세션에서 안내만으로 턴이 먼저 열려 본문 prompt가 거절됐다).
 //
 // 2026-10-17 사용자 결정(doc/history/2026/10/17-docmap-judge): 낱말로 고른 후보의 절반은 주제만 겹치는 지시였다
 // (실제 프롬프트 표본 60건 중 맞는 첨부 29·엉뚱한 첨부 31). 낱말·길이·의도 표지로는 둘이 갈리지 않아, 붙이기 전에

@@ -204,9 +204,13 @@ impl<'de: 'a, 'a> Deserialize<'de> for Raw<'a> {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct BorrowedText<'a>(#[serde(borrow)] Cow<'a, str>);
+
 impl Raw<'_> {
     fn is(&self, name: &str) -> bool {
-        self.0.is_some_and(|v| serde_json::from_str::<std::borrow::Cow<str>>(v.get()).is_ok_and(|s| s == name))
+        self.0.is_some_and(|v| serde_json::from_str::<BorrowedText>(v.get()).is_ok_and(|s| s.0 == name))
     }
 }
 
@@ -261,6 +265,24 @@ struct Message<'a> {
     tool_name: Raw<'a>,
     #[serde(default, borrow, rename = "isError")]
     is_error: Raw<'a>,
+    #[serde(default, borrow)]
+    details: Raw<'a>,
+}
+
+#[derive(Deserialize)]
+struct CommandDetails<'a> {
+    #[serde(default, borrow, rename = "toolCommands")]
+    tool_commands: Raw<'a>,
+}
+
+#[derive(Deserialize)]
+struct ToolCommand<'a> {
+    #[serde(default, borrow)]
+    tool: Raw<'a>,
+    #[serde(default, borrow)]
+    mode: Raw<'a>,
+    #[serde(default, borrow, rename = "exitCode")]
+    exit_code: Raw<'a>,
 }
 
 #[derive(Deserialize)]
@@ -354,6 +376,48 @@ impl W<'_> {
     }
 }
 
+struct WriteToolCommands<'a, 'b>(&'a mut W<'b>);
+
+impl<'de> Visitor<'de> for WriteToolCommands<'_, '_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a tool command array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+        let w = self.0;
+        let mut wrote_command = false;
+        while let Some(command) = seq.next_element::<Obj<ToolCommand>>()? {
+            let Obj::Object(command) = command else { continue };
+            // RawValue has already validated the JSON. A numeric token starts with a digit or minus.
+            if !command.exit_code.0.is_some_and(|v| matches!(v.get().as_bytes()[0], b'-' | b'0'..=b'9'))
+                || !command.mode.is("execute")
+                || !(command.tool.is("recall") || command.tool.is("git_finalize"))
+            {
+                continue;
+            }
+            if wrote_command {
+                w.out.push(',');
+            } else {
+                w.key("details");
+                w.out.push_str("{\"toolCommands\":[");
+                wrote_command = true;
+            }
+            w.out.push('{');
+            let mut cw = W { out: w.out, first: true };
+            cw.field("tool", command.tool);
+            cw.field("mode", command.mode);
+            cw.field("exitCode", command.exit_code);
+            w.out.push('}');
+        }
+        if wrote_command {
+            w.out.push_str("]}");
+        }
+        Ok(())
+    }
+}
+
 fn project_entry(line: &[u8], out: &mut String) {
     let text = std::str::from_utf8(line).expect("decoded line");
     let start = out.len();
@@ -413,6 +477,16 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
         mw.field("credentialId", m.credential_id);
         mw.field("toolName", m.tool_name);
         mw.field("isError", m.is_error);
+        if let Some(details) = m.details.0.filter(|v| v.get().starts_with('{')) {
+            if m.role.is("toolResult") && m.tool_name.is("bash") {
+                let details: CommandDetails = serde_json::from_str(details.get()).ok()?;
+                if let Some(commands) = details.tool_commands.0.filter(|v| v.get().starts_with('[')) {
+                    serde_json::Deserializer::from_str(commands.get())
+                        .deserialize_seq(WriteToolCommands(&mut mw))
+                        .ok()?;
+                }
+            }
+        }
         if let Some(content) = m.content.0 {
             let failed = m.is_error.0.is_some_and(|v| !matches!(v.get(), "false" | "null"));
             let result_text = m.role.is("toolResult") && (failed || ["wait", "hub", "git_finalize"].iter().any(|k| m.tool_name.is(k)));
@@ -488,4 +562,36 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
     }
     w.out.push('}');
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn projects_only_the_counted_bash_dispatch_fields() {
+        let mut output = String::new();
+        let input = r#"{"type":"message","message":{"role":"toolResult","toolName":"bash",
+            "content":[{"type":"text","text":"stdout"}],
+            "details":{"exitCode":1,"toolCommands":[
+                {"tool":"recall","mode":"execute","exitCode":1,"args":{"query":"fixture"}},
+                {"tool":"recall","mode":"help","exitCode":0},
+                {"tool":"git_finalize","mode":"execute","exitCode":"0"},
+                ["git_finalize","execute",0],
+                {"tool":"read","mode":"execute","exitCode":0},
+                {"tool":"git\u005ffinalize","mode":"execute","exitCode":0,"inner":{"stage":"complete"}}
+            ]}}}"#;
+
+        assert_eq!(write_projection(input, &mut output), Some(()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&output).unwrap(),
+            json!({"type":"message","message":{"role":"toolResult","toolName":"bash",
+                "details":{"toolCommands":[
+                    {"tool":"recall","mode":"execute","exitCode":1},
+                    {"tool":"git_finalize","mode":"execute","exitCode":0}
+                ]}
+            }})
+        );
+    }
 }

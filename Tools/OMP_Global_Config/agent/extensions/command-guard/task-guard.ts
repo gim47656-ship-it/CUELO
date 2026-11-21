@@ -935,6 +935,16 @@ const EVAL_MODEL_BRIDGE_PATTERNS = [
 // 반환값(커밋 SHA)을 잃었다. 길이가 정해지지 않은 Main 게이트 도구는 eval 안에서 부르지 않고 직접
 // 호출한다. 직접 호출에는 eval 셀 데드라인이 없다.
 const EVAL_GATE_TOOL_NAMES = "git_finalize|git_integrate|cross_review|slop_check|deploy_verify";
+const EVAL_GATE_TOOL_NAME = new RegExp(`^(?:${EVAL_GATE_TOOL_NAMES})$`);
+const EVAL_GATE_REASON =
+  "[EvalGateGuard] eval 안에서 git_finalize/git_integrate/cross_review/slop_check/deploy_verify를 부르지 마세요. " +
+  "eval 셀 데드라인(30~300s)이 먼저 끝나면 셀이 실패 처리되어 도구 반환값(커밋 SHA·reviewId)을 잃습니다. " +
+  "eval 밖에서 직접 호출하세요. 명령으로 제공되는 도구는 bash에서 실행하세요.";
+
+/** OMP carries the enclosing eval or kernel-tool ID through nested tool dispatch. */
+export function matchBlockedEvalGateOrigin(event: { toolName: string; parentToolCallId?: string }): string | undefined {
+  return event.parentToolCallId !== undefined && EVAL_GATE_TOOL_NAME.test(event.toolName) ? EVAL_GATE_REASON : undefined;
+}
 const GATE_MEMBER = `(?:\\.\\s*|\\[\\s*["'\`])(?:${EVAL_GATE_TOOL_NAMES})(?![\\w$])(?:["'\`]\\s*\\])?`;
 const EVAL_GATE_TOOL_PATTERNS = [
   // tool.name(…) / tool["name"](…)
@@ -967,14 +977,7 @@ export function matchBlockedEvalModelBridge(input: EvalCallInput): string | unde
       "판정 상담용 stateless completion()은 허용합니다."
     );
   }
-  if (callsEvalGateTool(input.code)) {
-    return (
-      "[EvalGateGuard] eval 안에서 git_finalize/git_integrate/cross_review/slop_check/deploy_verify를 부르지 마세요. " +
-      "eval 셀 데드라인(30~300s)이 먼저 끝나면 셀이 실패 처리되어 도구 반환값(커밋 SHA·reviewId)을 잃습니다. " +
-      "이 도구들은 eval 밖에서 직접 호출하세요."
-    );
-  }
-  return undefined;
+  return callsEvalGateTool(input.code) ? EVAL_GATE_REASON : undefined;
 }
 
 // 2026-10-31 사용자 결정 「스페이스공간 따로 만들어서 그쪽에다 하는 건 기본으로 두자 하네스정책상」: ego lite PC에서는

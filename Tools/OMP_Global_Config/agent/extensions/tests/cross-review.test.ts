@@ -563,6 +563,72 @@ describe("runReview", () => {
     await expect(runReview(input({ previousReviewId: first.reviewId }), d, signal)).rejects.toThrow("nothing changed since round 1");
   });
 
+  test("2회차부터 blocker와 앞 수정의 회귀만 고칠 대상이고 나머지는 limit 후보로 안내하며, 1회차와 통과 규칙은 그대로다(2026-11-22 「2번」)", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), "export const two = 2;\n");
+    const calls: { family: Lane; prompt: string }[] = [];
+    const d = deps(env, { openai: JSON.stringify({ findings: [{ severity: "minor", file: "a.ts", claim: "two is wrong", why: "w", regressionOf: "R0-OAI-1" }], summary: "s" }) }, calls);
+    const first = await runReview(input(), d, signal);
+    expect(calls[0]!.prompt).not.toContain("ROUND CAP");
+    expect(calls[0]!.prompt).not.toContain("regressionOf");
+    expect(first.findings[0]!.regressionOf).toBeUndefined();
+    expect(first.roundCap).toBeUndefined();
+    expect(first.nextStep).toContain("Fix or refute each finding.");
+    writeFileSync(join(env.work, "a.ts"), "export const two = 22;\n");
+    const answer = JSON.stringify({ findings: [
+      { severity: "major", file: "a.ts", claim: "the fix broke three", why: "w", regressionOf: "R1-OAI-1" },
+      { severity: "blocker", file: "a.ts", claim: "data loss", why: "w" },
+      { severity: "major", file: "a.ts", claim: "new non-blocker", why: "w" },
+      { severity: "minor", file: "a.ts", claim: "unknown regression id", why: "w", regressionOf: "R9-OAI-9" },
+    ], summary: "s" });
+    const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, { openai: answer }, calls), signal);
+    expect(calls[1]!.prompt).toContain("ROUND CAP");
+    expect(calls[1]!.prompt).toContain('"regressionOf"');
+    expect(second.findings.map((item) => item.regressionOf)).toEqual(["R1-OAI-1", undefined, undefined, undefined]);
+    expect(second.roundCap).toEqual({ fix: ["R2-OAI-1", "R2-OAI-2"], limitCandidates: ["R2-OAI-3", "R2-OAI-4"] });
+    expect(second.nextStep).toContain("Fix or refute R2-OAI-1, R2-OAI-2");
+    expect(second.nextStep).toContain("Do NOT fix R2-OAI-3, R2-OAI-4");
+    expect(second.nextStep).not.toContain("Fix or refute each finding.");
+    // 통과 규칙은 그대로다: limit 후보도 resolve가 닫아야 통과한다.
+    const resolveDeps = { exec: spawnExec(), readAll: d.readAll, append: d.append };
+    const fixed = ["R1-OAI-1", "R2-OAI-1", "R2-OAI-2"].map((id) => ({ id, status: "fixed", evidence: "test" }));
+    const partial = await runResolve({ reviewId: second.reviewId, resolutions: fixed }, resolveDeps);
+    expect(partial.pass).toBe(false);
+    expect(partial.open).toEqual(["R2-OAI-3", "R2-OAI-4"]);
+    const limits = ["R2-OAI-3", "R2-OAI-4"].map((id) => ({ id, status: "limit", evidence: `${id}: round 2+ non-blocker, not a regression of an earlier fix` }));
+    expect((await runResolve({ reviewId: second.reviewId, resolutions: [...fixed, ...limits] }, resolveDeps)).pass).toBe(true);
+  });
+
+  test("상한은 2회차부터 체인 전체에 적용돼 새 지적 없는 라운드와 probe 확인 뒤에도 limit 후보로 남고, 안내 문장이 서로 엇갈리지 않는다", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), "export const two = 2;\n");
+    const first = await runReview(input(), deps(env, { openai: finding("two is wrong") }), signal);
+    writeFileSync(join(env.work, "a.ts"), "export const two = 22;\n");
+    const minorWithRecipe = JSON.stringify({ findings: [{ severity: "minor", file: "a.ts", claim: "naming nit", why: "w", proof: "needs-run", probe: { steps: "run t", expectIfReal: "fails" } }], summary: "s" });
+    const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, { openai: minorWithRecipe }), signal);
+    expect(second.roundCap).toEqual({ fix: [], limitCandidates: ["R2-OAI-1"] });
+    expect(second.nextStep).toContain("Do NOT fix R2-OAI-1");
+    expect(second.nextStep).toContain("a round-cap limit candidate needs no run");
+    expect(second.nextStep).not.toContain("one that shows the defect means fix it.");
+    expect(second.nextStep).not.toContain("run each recipe");
+    // 뒤 라운드의 probe가 2회차 비blocker를 확인해도 limit 후보로 남는다.
+    const third = await runReview(
+      input({ previousReviewId: second.reviewId, probeResults: probeOutput({ findingId: "R2-OAI-1" }) }),
+      deps(env, { openai: verdictAnswer([{ id: "R2-OAI-1", verdict: "confirmed", why: "it failed" }]) }), signal);
+    expect(third.roundCap).toEqual({ fix: [], limitCandidates: ["R2-OAI-1"] });
+    expect(third.nextStep).toContain("Fix only the confirmed findings that are not round-cap limit candidates");
+    expect(third.nextStep).toContain("except a round-cap limit candidate, which is closed as limit whatever its verdict");
+    // 새 지적 없는 2회차는 빈 roundCap을 싣고, 앞 지적이 남았으면 빈 resolve를 권하지 않는다.
+    const env2 = repo();
+    writeFileSync(join(env2.work, "a.ts"), "export const two = 2;\n");
+    const r1 = await runReview(input(), deps(env2, { openai: finding("two is wrong") }), signal);
+    writeFileSync(join(env2.work, "a.ts"), "export const two = 22;\n");
+    const r2 = await runReview(input({ previousReviewId: r1.reviewId }), deps(env2, {}), signal);
+    expect(r2.roundCap).toEqual({ fix: [], limitCandidates: [] });
+    expect(r2.nextStep).not.toContain("resolutions:[]");
+    expect(r2.nextStep).toContain("covering every finding of the whole chain");
+  });
+
   test("1회차에 files와 acceptance가 함께 빠지면 한 번에 둘 다 알린다", async () => {
     const env = repo();
     const d = deps(env, {});
@@ -1005,7 +1071,8 @@ describe("probe 라운드", () => {
 
   test("probe 라운드나 마지막 라운드가 새로 낸 needs-run 지적도 세어, probe 라운드가 없으니 재현 방법을 직접 돌려 근거로 쓰라고 안내한다", async () => {
     const { env, base, first } = await firstWithProbe();
-    const fresh = [{ severity: "major", file: "a.ts", claim: "new race", why: "w", proof: "needs-run", probe: recipe("bun test race.test.ts") }];
+    // 2라운드부터 비blocker는 limit 후보라 실행 안내가 없으므로(2026-11-22 「2번」) 실행이 필요한 blocker로 이 경로를 본다.
+    const fresh = [{ severity: "blocker", file: "a.ts", claim: "new race", why: "w", proof: "needs-run", probe: recipe("bun test race.test.ts") }];
     const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }], fresh)]), signal);
     expect(probed.nextStep).toContain("1 finding(s) need a run to settle but this chain has no probe round left");
     let last = probed;

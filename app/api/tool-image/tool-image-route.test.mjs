@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { saveImagesToTemp } from "@oh-my-pi/pi-coding-agent/utils/image-temp";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, {
@@ -57,6 +58,13 @@ test("serves only the images that session's tool result actually carries", async
   const unrelatedName = await tempFile(`routetest-${process.pid}.png`, PNG);
   const outside = join(outsideDir, "omp-image-outside.png");
   await writeFile(outside, PNG);
+  const unrelatedImage = Buffer.concat([PNG, Buffer.from("read")]);
+  const commandImage = Buffer.concat([PNG, Buffer.from(`command ${process.pid}`)]);
+  const secondImage = Buffer.concat([PNG, Buffer.from(`second ${process.pid}`)]);
+  const [hashed, secondHashed] = await saveImagesToTemp(
+    [commandImage, secondImage].map(bytes => ({ data: bytes.toString("base64"), mimeType: "image/png" })),
+  );
+  tempFiles.push(hashed, secondHashed);
 
   await withSession(t, [
     toolResult("read-1", {
@@ -69,6 +77,57 @@ test("serves only the images that session's tool result actually carries", async
       content: [{ type: "text", text: "Generated 5 image(s)" }],
       details: { xdev: { tool: "generate_image", inner: { imagePaths: [generated, disguised, svg, unrelatedName, outside] } } },
     }),
+    toolResult("gen-command", {
+      toolName: "bash",
+      content: [{ type: "image", data: commandImage.toString("base64"), mimeType: "image/png" }],
+      details: { toolCommands: [{ tool: "generate_image", mode: "execute", exitCode: 0, inner: { imagePaths: [hashed] } }] },
+    }),
+    toolResult("gen-attachment", {
+      toolName: "generate_image",
+      content: [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }],
+      details: { imagePaths: [generated] },
+    }),
+    toolResult("gen-cmd-blob", {
+      toolName: "bash",
+      content: [{ type: "image", data: "blob:missing", mimeType: "image/png" }],
+      details: { toolCommands: [{ tool: "generate_image", mode: "execute", exitCode: 0, inner: { imagePaths: [generated] } }] },
+    }),
+    toolResult("gen-cmd-mixed", {
+      toolName: "bash",
+      content: [
+        { type: "image", data: PNG.toString("base64"), mimeType: "image/png" },
+        { type: "image", data: "blob:missing", mimeType: "image/png" },
+      ],
+      details: { toolCommands: [
+        { tool: "read", mode: "execute", exitCode: 0 },
+        { tool: "generate_image", mode: "execute", exitCode: 0, inner: { imagePaths: [generated] } },
+      ] },
+    }),
+    toolResult("gen-cmd-mixed-partial", {
+      toolName: "bash",
+      content: [unrelatedImage, unrelatedImage, commandImage].map(bytes =>
+        ({ type: "image", data: bytes.toString("base64"), mimeType: "image/png" })),
+      details: { toolCommands: [
+        { tool: "read", mode: "execute", exitCode: 0 },
+        { tool: "generate_image", mode: "execute", exitCode: 0, inner: { imagePaths: [hashed, secondHashed] } },
+      ] },
+    }),
+    toolResult("gen-cmd-mixed-duplicate", {
+      toolName: "bash",
+      content: [
+        { type: "image", data: "blob:missing", mimeType: "image/png" },
+        { type: "image", data: commandImage.toString("base64"), mimeType: "image/png" },
+      ],
+      details: { toolCommands: [
+        { tool: "read", mode: "execute", exitCode: 0 },
+        { tool: "generate_image", mode: "execute", exitCode: 0, inner: { imagePaths: [hashed] } },
+      ] },
+    }),
+    toolResult("gen-partial", {
+      toolName: "generate_image",
+      content: [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }],
+      details: { imagePaths: [generated, generated] },
+    }),
     // generate_image 가 아닌 도구의 details 에 적힌 경로는 이미지 출처가 아니다.
     toolResult("other", { toolName: "bash", content: [{ type: "text", text: generated }], details: { imagePaths: [generated] } }),
     toolResult("text-image", { toolName: "read", content: [{ type: "image", data: Buffer.from("plain text").toString("base64"), mimeType: "image/png" }] }),
@@ -78,14 +137,27 @@ test("serves only the images that session's tool result actually carries", async
   assert.equal(await count("read-1"), 1);
   assert.equal(await count("gen-1"), 1);
   assert.equal(await count("gen-xdev"), 5);
+  assert.equal(await count("gen-command"), 1);
+  assert.equal(await count("gen-attachment"), 1, "an attachment and its saved path count once");
+  assert.equal(await count("gen-cmd-blob"), 1);
+  assert.equal(await count("gen-cmd-mixed"), 2);
+  const mixedFile = await GET(request({ sessionId: SESSION_ID, toolCallId: "gen-cmd-mixed", index: "1" }));
+  assert.equal(mixedFile.status, 200);
+  assert.deepEqual(Buffer.from(await mixedFile.arrayBuffer()), PNG);
+  assert.equal(await count("gen-cmd-mixed-partial"), 4);
+  const partial = await GET(request({ sessionId: SESSION_ID, toolCallId: "gen-cmd-mixed-partial", index: "3" }));
+  assert.equal(partial.status, 200);
+  assert.deepEqual(Buffer.from(await partial.arrayBuffer()), secondImage);
+  assert.equal(await count("gen-cmd-mixed-duplicate"), 1);
+  assert.equal(await count("gen-partial"), 2);
   assert.equal(await count("other"), 0);
 
-  for (const toolCallId of ["read-1", "gen-1"]) {
+  for (const toolCallId of ["read-1", "gen-1", "gen-command", "gen-attachment", "gen-cmd-blob"]) {
     const response = await GET(request({ sessionId: SESSION_ID, toolCallId, index: "0" }));
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "image/png");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-    assert.deepEqual(Buffer.from(await response.arrayBuffer()), PNG);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), toolCallId === "gen-command" ? commandImage : PNG);
   }
 
   const status = async (query) => (await GET(request({ sessionId: SESSION_ID, ...query }))).status;

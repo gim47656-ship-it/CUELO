@@ -143,7 +143,7 @@ describe("todo-nudge 세션 전환", () => {
     const ctx = contextFor(session, { agent: { kind: "main" }, isIdle: () => true });
     const emit = (name: string, event: Record<string, unknown> = {}) => handlers[name]!.forEach((handler) => handler(event, ctx));
     const fiveNonReadCalls = () => {
-      for (const toolName of ["edit", "bash", "eval", "write", "bash"]) emit("tool_call", { toolName, input: {} });
+      for (const toolName of ["edit", "bash", "task", "write", "bash"]) emit("tool_call", { toolName, input: {} });
     };
     return { session, emit, sent, fiveNonReadCalls };
   }

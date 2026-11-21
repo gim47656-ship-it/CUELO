@@ -264,7 +264,7 @@ export default function pluginLab(pi: ExtensionAPI): void {
     }
   };
   pi.registerTool({
-    // 2026-11-15: 플러그인 작업 때만 쓰므로 xd:// 장치로 내린다(doc/history/2026/11/15-startup-context-cut).
+    // 플러그인 작업 때만 쓰므로 시작 프롬프트에는 명령 목록으로만 제공한다.
     name: "plugin_lab", label: "Plugin Lab", loadMode: "discoverable", approval: "read",
     description: "CUELO Plugin Lab (plugins for this user's own profile; read skill://plugin-lab before writing one). action list: installed plugins with problems and 14-day usage. inspect: this session's tool names and sources (tool=<name> adds its description and parameter schema) so a new tool name does not clash. check id=<plugin>: validate plugin.json and paths, import the extension entry in a child Bun process with a timeout and compare the tools it registers with the manifest; it checks the repository source folder Tools/OMP_Global_Config/agent/cuelo-plugins/<id>/ when there is one and says which copy it read, so a plugin can be validated before it is installed. enable/disable id=<plugin>: turn an installed plugin on or off for new sessions and /reload. Nothing is written, deleted or deployed here: the plugin itself ships through the normal review, version, CI and deploy path.",
     parameters: z.object({

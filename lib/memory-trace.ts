@@ -8,6 +8,7 @@
  */
 
 import { isRecord } from "@oh-my-pi/pi-utils";
+import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 import { maskDeep } from "./run-xray-turns";
 import { maskSecrets } from "./session-recall";
 import type {
@@ -59,6 +60,8 @@ interface Line {
     synthetic?: unknown;
     attribution?: unknown;
     toolCallId?: unknown;
+    toolName?: unknown;
+    details?: unknown;
     isError?: unknown;
   };
 }
@@ -335,14 +338,27 @@ export class MemoryTraceBuilder {
     }
     if (role === "toolResult") {
       this.flushPending();
-      if (this.calls.size === 0) return;
+      if (this.calls.size === 0 && !line.includes('"toolCommands"')) return;
       let callId = TOOL_CALL_ID_RE.exec(head)?.[1];
       if (!callId) {
         record ??= parse(line);
         callId = typeof record?.message?.toolCallId === "string" ? record.message.toolCallId : undefined;
       }
-      const call = callId ? this.calls.get(callId) : undefined;
-      if (!call || !callId) return;
+      if (!callId) return;
+      let call = this.calls.get(callId);
+      if (!call && line.includes('"toolCommands"')) {
+        record ??= parse(line);
+        const commands = toolCommandDispatches(String(record?.message?.toolName ?? ""), record?.message);
+        for (const { tool, args, mode, exitCode } of commands) {
+          if (mode !== "execute" || exitCode !== 0 || (tool !== "recall" && tool !== "reflect")) continue;
+          this.explicit(
+            typeof record?.id === "string" ? record.id : "", time(record?.timestamp),
+            commands.length === 1 ? callId : null, tool, firstString(args ?? {}, ["query", "question", "q"]),
+          );
+        }
+        call = this.calls.get(callId);
+      }
+      if (!call) return;
       this.calls.delete(callId);
       record ??= parse(line);
       const message = record?.message;

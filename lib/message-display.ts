@@ -223,11 +223,17 @@ function endsWithDeferredToolImages(result: ToolResultMessage): boolean {
  */
 export function mayCarryToolImages(call: ToolCallContent, result: ToolResultMessage | undefined): boolean {
   if (!result || result.isError) return false;
-  if (result.content?.some((block) => block.type === "image")) return true;
+  if (endsWithDeferredToolImages(result) || result.content?.some((block) => block.type === "image")) return true;
   const input = call.input ?? {};
   if (call.toolName === "generate_image") return true;
   if (call.toolName === "write") return input.path === "xd://generate_image";
-  if (call.toolName === "eval") return endsWithDeferredToolImages(result);
+  if (call.toolName === "bash") {
+    const details = result.details;
+    return typeof details === "object" && details !== null && "toolCommands" in details
+      && Array.isArray(details.toolCommands)
+      && details.toolCommands.some((command: { tool?: string; mode?: string; exitCode?: number } | null) =>
+        command?.tool === "generate_image" && command.mode === "execute" && command.exitCode === 0);
+  }
   return call.toolName === "read" && typeof input.path === "string" && isImagePath(input.path);
 }
 

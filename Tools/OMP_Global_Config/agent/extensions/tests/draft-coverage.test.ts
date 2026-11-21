@@ -248,6 +248,20 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("write", { path: "CHANGELOG.md", content: markdown(DIRECT) })?.block).toBe(true);
   });
 
+  // 2026-11-22: a short internal factual record is exempt from the draft rule by path class and added amount, not by total file size.
+  test("긴 HANDOFF·작업 기록에 사실 한 줄을 더하는 edit는 통과하고, 같은 길이를 공개 문서에 더하면 계속 멈춘다", () => {
+    const cwd = workdir();
+    mkdirSync(join(cwd, "doc/history/2026/11/22-x"), { recursive: true });
+    const longBody = `# 기록\n\n${Array.from({ length: 80 }, (_, i) => `기존 기록 ${i}번 항목은 이미 있는 사실을 적은 줄이다.`).join("\n")}\n`;
+    for (const path of ["HANDOFF.md", "doc/history/2026/11/22-x/main.md", "guide.md"]) writeFileSync(join(cwd, path), longBody);
+    const fact = `${DIRECT[0]} ${DIRECT[1]}`;
+    const s = session(cwd);
+    s.input();
+    expect(s.edit("HANDOFF.md", fact)?.block).toBeUndefined();
+    expect(s.edit("doc/history/2026/11/22-x/main.md", fact)?.block).toBeUndefined();
+    expect(s.edit("guide.md", fact)?.block).toBe(true);
+  });
+
   test("Docs/처럼 대소문자가 다른 문서 루트의 기록·지도도 보지 않지만, history 없는 docs/README.md는 계속 멈춘다", () => {
     const cwd = workdir();
     mkdirSync(join(cwd, "Docs/history"), { recursive: true });

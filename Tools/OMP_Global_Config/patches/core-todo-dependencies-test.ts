@@ -14,10 +14,11 @@ const fixture = join(root, "target");
 const home = join(root, "home");
 const baseline = process.env.TODO_DEPENDENCIES_BASELINE === "1";
 const originalHome = homedir();
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
+
 try {
   mkdirSync(home);
-  const source = readFileSync(script, "utf8");
-  for (const file of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(match => match[1]!))) {
+  for (const file of corePatchTargetFiles()) {
     const original = join(core, file);
     if (!existsSync(original)) continue;
     const dest = join(fixture, file);

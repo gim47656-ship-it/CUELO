@@ -46,6 +46,7 @@ const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required; never test the live core");
 const CORE = resolve(target, "src").replace(/\\/g, "/");
 if (!existsSync(join(CORE, "eval/preludes.ts"))) throw new Error(`core 사본을 찾지 못했다: ${CORE}`);
+const hostedMcp = existsSync(join(CORE, "mcp/host/contract.ts"));
 const PACKAGES = resolve(dirname(CORE), "..").replace(/\\/g, "/");
 const fixtureRoot = process.env.OMP_MCP_EVAL_FIXTURE_ROOT!;
 const agentDir = join(fixtureRoot, "home", ".omp", "agent");
@@ -275,7 +276,8 @@ check(
 check("[1d] eval: 도구 이름과 입력 schema를 읽는다", JSON.stringify(r1?.tools) === JSON.stringify([{ name: "fetch_rows", schema: ["limit"] }]), r1?.tools);
 check("[1e] eval: 실제 stdio tool 호출 결과(structured)를 코드에서 쓴다", r1?.isError === false && r1?.rows === 40 && r1?.lastId === 40, r1);
 check("[1f] eval이 연결한 서버는 연결됨·비노출", JSON.stringify(r1?.after) === JSON.stringify([{ name: "data-stub", status: "connected", exposed: false }]), r1?.after);
-check("[1g] 실제 spawn 1·call 1", count("spawn data-stub") === 1 && count("call data-stub") === 1, logLines());
+const initialStarts = hostedMcp ? 2 : 1; // A cold 19.1.0 host probes the era before opening the legacy upstream.
+check("[1g] expected cold starts and exactly one tools/call", count("spawn data-stub") === initialStarts && count("call data-stub") === 1, logLines());
 check("[1h] 같은 턴 다음 provider 요청에도 data-stub 도구 0(연결 refresh가 노출하지 않는다)", mcpNames(second).length === 0, mcpNames(second));
 check("[1i] 코드가 출력하지 않은 원문(40행 PAYLOAD)은 대화에 들어가지 않는다", !JSON.stringify(second?.messages).includes("PAYLOAD-data-stub"), out1);
 
@@ -296,7 +298,7 @@ check(
 // [2] 다음 무관 요청: 선택이 그 서버를 노출하지 않는다(연결은 유지, 재spawn 없음).
 const [next] = await plainTurn(a.session, "테스트만 돌려줘");
 evidence.nextTurnMcpNames = mcpNames(next);
-check("[2] 다음 요청 provider 도구에도 data-stub 0·재spawn 0", mcpNames(next).length === 0 && count("spawn data-stub") === 1, { names: mcpNames(next), log: logLines() });
+check("[2] 다음 요청 provider 도구에도 data-stub 0·재spawn 0", mcpNames(next).length === 0 && count("spawn data-stub") === initialStarts, { names: mcpNames(next), log: logLines() });
 
 // [3] 꺼진 서버는 eval에서도 닿지 않는다(spawn 0).
 const [, disabledAfter] = await evalTurn(

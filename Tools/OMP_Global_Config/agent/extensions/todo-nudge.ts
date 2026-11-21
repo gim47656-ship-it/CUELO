@@ -3,11 +3,18 @@ import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 
-// 사용자 직접 입력 하나에서 todo 없이 읽기 전용이 아닌 도구를 다섯 번 부르면 안내한다.
+// 2026-11-22 사용자 결정(절차 턴 줄이기): "3단계 이상"은 작업 단계이지 도구 호출 수가 아니다. 관측 신호는 이번 요청에서 읽기 전용이 아닌
+// 호출의 서로 다른 작업 종류 수다. 변경과 검사만 오가는 두 단계 작업은 호출이 아무리 많아도 안내하지 않고, 위임·초안·게시·검토 등
+// 세 번째 종류가 더해지고 비-읽기 호출이 다섯 번 이상이면 한 번 안내한다.
+// 근거: doc/history/2026/11/21-harness-bench-design/weight-causes.md 1절, doc/history/2026/11/22-procedure-trim/main.md.
+// 사용자 직접 입력 하나에서 todo 없이 읽기 전용이 아닌 도구를 다섯 번 이상 부르고 작업 종류가 셋 이상이면 안내한다.
 // 2026-10-08 사용자 결정: 요청 분류용 JEV 호출을 두지 않는다. 결정론적 횟수 규칙만 쓴다.
 // 2026-10-28 표본(doc/history/2026/10/28-guard-trim/advisory): 세 번째 호출 알림 281건 중 비-todo 호출이 넷 이하로 끝난 요청이
 // 93건(미추종 61)이었고, 미추종 표본 25건 중 17건이 짧은 질문·조회라 목록이 필요 없었다. 그래서 다섯 번째 호출로 늦춘다.
 const TOOL_CALLS_BEFORE_NUDGE = 5;
+const STEP_KINDS_BEFORE_NUDGE = 3;
+// 작업 단계 종류: 변경 = write·edit·ast_edit, 실행 = bash·eval, 그 밖의 도구는 이름 그대로 한 종류다.
+const STEP_KIND: Record<string, string> = { write: "change", edit: "change", ast_edit: "change", bash: "run", eval: "run" };
 
 // Registered read-only tools: file reads/searches, skim, web search and AST queries.
 // LSP is mixed-mode: only the core's read-only actions are exempt. Unknown modes, bash and eval count.
@@ -48,6 +55,8 @@ export function createTodoNudge(now: () => number = Date.now) {
   let usedTodo = false;
   const queuedFifth = new WeakMap<object, Request>();
   let calls = 0;
+  let kinds = new Set<string>();
+  let decided = false;
   let todos: readonly TodoSnapshotItem[] = [];
   let noticeNudged = false;
   let coreNudgedAt = Number.NEGATIVE_INFINITY;
@@ -90,6 +99,8 @@ export function createTodoNudge(now: () => number = Date.now) {
     request = slot ? { slot, currentCoreSlot } : { slot: { claimed: false } };
     usedTodo = false;
     calls = 0;
+    kinds = new Set();
+    decided = false;
   });
   pi.on("tool_result", (event) => {
     if (event.toolName !== "todo" || event.isError) return;
@@ -113,7 +124,7 @@ export function createTodoNudge(now: () => number = Date.now) {
   });
   pi.on("tool_call", (event, ctx) => {
     if (event.toolName === "todo") noticeNudged = false;
-    if (!request || request.slot.claimed || usedTodo || calls >= TOOL_CALLS_BEFORE_NUDGE) return;
+    if (!request || request.slot.claimed || usedTodo || decided) return;
     if (request.currentCoreSlot && request.currentCoreSlot() !== request.slot) return;
     if (event.toolName === "todo") {
       usedTodo = true;
@@ -122,7 +133,9 @@ export function createTodoNudge(now: () => number = Date.now) {
     if (Object.hasOwn(READ_ONLY_TOOLS, event.toolName)) return;
     if (event.toolName === "lsp" && "action" in event.input &&
         typeof event.input.action === "string" && Object.hasOwn(READ_ONLY_LSP_ACTIONS, event.input.action)) return;
-    if (++calls < TOOL_CALLS_BEFORE_NUDGE) return;
+    kinds.add(STEP_KIND[event.toolName] ?? event.toolName);
+    if (++calls < TOOL_CALLS_BEFORE_NUDGE || kinds.size < STEP_KINDS_BEFORE_NUDGE) return;
+    decided = true; // 두 조건이 처음 함께 충족된 순간 한 번만 판단한다. 이후 목록 상태가 바뀌어도 다시 열지 않는다.
     // 이전 요청의 진행 중 목록이 있으면 이미 추적 중이다.
     if (todos.some((item) => item.status === "pending" || item.status === "in_progress")) return;
     request.slot.claimed = true;

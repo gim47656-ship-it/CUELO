@@ -110,6 +110,20 @@ function createGuardHarness(
   };
 }
 
+test("the eval tool origin blocks publication and review tools without blocking direct Bash commands", async () => {
+  const harness = createGuardHarness();
+  for (const toolName of ["git_finalize", "git_integrate", "cross_review", "slop_check", "deploy_verify"]) {
+    const call = { toolName, toolCallId: "shell:cmd:0", input: {} };
+    expect(await harness.emit("tool_call", { ...call, parentToolCallId: "eval-cell" })).toMatchObject({
+      block: true, reason: expect.stringContaining("[EvalGateGuard]"),
+    });
+    expect(await harness.emit("tool_call", call)).toBeUndefined();
+  }
+  expect(await harness.emit("tool_call", {
+    toolName: "artifact_search", toolCallId: "shell:cmd:1", parentToolCallId: "eval-cell", input: {},
+  })).toBeUndefined();
+});
+
 test("bash entry refuses low-memory builds, but permits a single build and non-build commands", async () => {
   let bytes = MIN_BUILD_AVAILABLE_BYTES - 1024;
   const buildResourceReaders: BuildResourceReaders = {

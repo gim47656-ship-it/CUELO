@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { isExistingPathWithinRoots } from "@/lib/path-security";
@@ -56,24 +57,43 @@ function imagePathsOf(details: unknown): string[] {
 
 /** 이 도구 결과가 대화창에 내놓는 이미지. 순서가 곧 `index` 다. */
 export function toolImageSources(result: ToolResultMessage): ToolImageSource[] {
-  const sources: ToolImageSource[] = [];
-  for (const block of result.content ?? []) {
-    if (block.type !== "image") continue;
-    // 세션 파일은 pi-ai 의 평평한 {data, mimeType} 모양이고, 옛 모양은 source 안에 담는다.
-    const data = "data" in block && typeof block.data === "string"
-      ? block.data
-      : block.source?.type === "base64" ? block.source.data : undefined;
-    // 풀리지 않은 blob 참조는 바이트가 아니다.
-    if (data && !data.startsWith("blob:")) sources.push({ kind: "data", data });
-  }
   const details = result.details;
   const xdev = typeof details === "object" && details !== null && "xdev" in details ? details.xdev : undefined;
+  const commands = result.toolName === "bash" ? toolCommandDispatches("bash", result) : [];
+  const commandPaths = commands.flatMap(({ tool, mode, exitCode, inner }) =>
+    tool === "generate_image" && mode === "execute" && exitCode === 0 ? imagePathsOf(inner) : []);
   const generated = result.toolName === "generate_image"
     ? imagePathsOf(details)
     : typeof xdev === "object" && xdev !== null && "tool" in xdev && xdev.tool === "generate_image" && "inner" in xdev
       ? imagePathsOf(xdev.inner)
       : [];
-  for (const imagePath of generated) sources.push({ kind: "file", path: imagePath });
+  const sources: ToolImageSource[] = [];
+  let imageIndex = 0;
+  // Bash merges unrelated images. Match the resolved content to the core's
+  // content-addressed filename rather than guessing which command emitted it.
+  const attached = commandPaths.length > 0 ? new Map<string, number>() : undefined;
+  for (const block of result.content ?? []) {
+    if (block.type !== "image") continue;
+    const imagePath = generated[imageIndex++];
+    // A resolved attachment and its on-disk copy occupy the same image slot.
+    const data = "data" in block && typeof block.data === "string"
+      ? block.data
+      : block.source?.type === "base64" ? block.source.data : undefined;
+    if (data && !data.startsWith("blob:")) {
+      sources.push({ kind: "data", data });
+      if (attached && Math.floor(data.length * 3 / 4) <= IMAGE_PREVIEW_MAX_BYTES + 3) {
+        const key = Bun.hash(Buffer.from(data, "base64")).toString(16);
+        attached.set(key, (attached.get(key) ?? 0) + 1);
+      }
+    } else if (imagePath) sources.push({ kind: "file", path: imagePath });
+  }
+  for (const imagePath of generated.slice(imageIndex)) sources.push({ kind: "file", path: imagePath });
+  for (const imagePath of commandPaths) {
+    const key = /^omp-image-([0-9a-f]+)\./.exec(path.basename(imagePath))?.[1];
+    const matching = key === undefined ? 0 : attached?.get(key) ?? 0;
+    if (attached && key !== undefined && matching > 0) attached.set(key, matching - 1);
+    else sources.push({ kind: "file", path: imagePath });
+  }
   return sources;
 }
 
@@ -89,7 +109,7 @@ export function sniffImageMime(bytes: Uint8Array): string | null {
   return null;
 }
 
-/** `generate_image` 가 짓는 이름(`omp-image-<snowflake>.<ext>`)과 그 도구가 쓰는 확장자만. */
+/** `generate_image` uses this filename family for both historical IDs and content hashes. */
 const GENERATED_IMAGE_NAME = /^omp-image-[A-Za-z0-9]+\.(?:png|jpe?g|gif|webp)$/i;
 const NOT_FOUND: ToolImageBody = { ok: false, status: 404, error: "Image not found" };
 

@@ -85,6 +85,33 @@ test("frames never change the system prompt; the frame is re-shown as a message 
  expect((await start())?.message).toBeUndefined();
 });
 
+// 2026-11-22: a size:small request registers the frame only. The fixed text must say so, and nothing may ask for evidence afterwards.
+test("a size:small frame needs no separate evidence call and draws no later reminder", async () => {
+ const handlers = new Map<string, Handler[]>();
+ let tool: GoalTool;
+ const notices: { customType: string; content: string }[] = [];
+ const ctx = { cwd: process.cwd(), agent: { kind: "main" }, sessionManager: { getBranch: () => [] }, ui: { setWidget() {} } };
+ goalLane({
+  zod: z,
+  on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+  registerTool(value: GoalTool) { tool = value; },
+  sendMessage(value: { customType: string; content: string }) { notices.push(value); },
+  appendEntry() {},
+ } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
+ const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
+ await emit("session_start", {});
+ const start = (await emit("before_agent_start", { reason: "prompt", prompt: "x", systemPrompt: ["base"] }))[0] as { systemPrompt: string[] };
+ const block = start.systemPrompt.at(-1)!;
+ expect(block).toContain("size:small frame is registered with the frame call alone: no separate `evidence` call");
+ expect(block).toContain("For size normal/deep, before done/waiting, record evidence");
+ await emit("input", { source: "rpc", text: "Fix the typo in the heading." });
+ const framed = await tool!.execute("goal-test", { op: "frame", goal: "Fix a heading typo", size: "small" }, undefined, undefined, ctx);
+ expect(framed.content[0].text).toContain("별도 evidence 호출은 필요 없다");
+ await emit("tool_result", { toolName: "bash", input: { command: "bun test" }, details: { exitCode: 0 }, content: [], isError: false });
+ await emit("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: "Fixed and checked." }] }] });
+ expect(notices).toEqual([]);
+});
+
 // 11-14 home measurement E4/E5: a no-edit condition from an earlier message fell outside the last 4000 characters
 // sent to the judge, which then answered not-stated for a condition it never saw.
 test("an explicit condition outside the recent tail is still sent to the judge with that tail", async () => {

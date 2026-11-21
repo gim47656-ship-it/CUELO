@@ -61,6 +61,7 @@ type Entry = {
     credentialId?: unknown;
     toolName?: string;
     isError?: boolean;
+    details?: { toolCommands?: unknown };
     /** 네이티브 리더가 성공한 read 결과에만 싣는 저장 JSON 값의 UTF-8 바이트 수와 지문(본문 대신) */
     contentBytes?: number;
     contentHash?: string;
@@ -1063,6 +1064,12 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             if (at >= 0) {
               each((w) => w.exportFailures++);
               note("memory-export-failures", text.slice(at).split("\n")[0].slice(0, 160));
+            }
+          } else if (m.toolName === "bash" && Array.isArray(m.details?.toolCommands)) {
+            for (const command of m.details.toolCommands) {
+              if (command?.mode !== "execute" || typeof command.exitCode !== "number") continue;
+              if (command.tool === "recall") each((w) => w.recallCalls++);
+              else if (command.tool === "git_finalize" && command.exitCode === 0) each((w) => w.finalizeResults++);
             }
           }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;

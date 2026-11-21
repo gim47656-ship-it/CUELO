@@ -48,9 +48,10 @@ if (!process.env.OMP_WEEKLY_FALLBACK_ROOT) {
 }
 
 const root = join(process.env.APPDATA ?? join(homedir(), "AppData/Roaming"), "npm/node_modules");
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
+
 const core = process.env.OMP_CORE_PATCH_TARGET ?? [join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent"), join(process.env.CUELO_REAL_HOME ?? homedir(), "cuelo-run/node_modules/@oh-my-pi/pi-coding-agent"), join(root, "omp-web/node_modules/@oh-my-pi/pi-coding-agent")].find(dir => existsSync(dir)) ?? join(root, "cuelo/node_modules/@oh-my-pi/pi-coding-agent");
 const script = resolve(import.meta.dirname, "apply-core-patch.mjs");
-const source = readFileSync(script, "utf8");
 const temp = process.env.OMP_WEEKLY_FALLBACK_ROOT;
 const fixture = join(temp, "target");
 const patchHome = join(temp, "patch-home");
@@ -67,7 +68,7 @@ function check(label: string, ok: boolean, detail: string): void {
 if (!existsSync(join(aiRoot, "auth-storage.ts"))) throw new Error(`코어 원본을 찾지 못했다: ${aiRoot}`);
 // Copy only declared patch targets. The source install and its credentials stay untouched.
 const pristine = process.env.OMP_CORE_PATCH_BACKUP;
-for (const path of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(match => match[1]!))) {
+for (const path of corePatchTargetFiles()) {
 	const backup = pristine ? join(pristine, path) : undefined;
 	const original = backup && existsSync(backup) ? backup : join(core, path);
 	if (!existsSync(original)) continue;

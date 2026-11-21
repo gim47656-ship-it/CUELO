@@ -25439,6 +25439,366 @@ const legacyArtifactHandler: ProtocolHandler = {
 		"const successPreview = await formatAsyncSuccessPreview(text, job, result => this.sessionManager.saveArtifact(result));");
 }
 
+// 19.1.0: version-specific shapes; keep 19.0.1 rollback bodies intact.
+{
+	const one = (file, marker) => {
+		const entries = EDITS.filter(entry => entry.file === file && entry.marker === marker);
+		if (entries.length !== 1) throw new Error(`19.1.0 candidate ${file}: ${entries.length}/1 entries for ${JSON.stringify(marker)}`);
+		return entries[0];
+	};
+	const alternate = (entry, discriminator, anchor, patched = anchor, marker = patched, file = entry.file) => {
+		for (const old of [entry, ...(entry.alternates ?? [])]) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		(entry.alternates ??= []).push({ file, requires: discriminator, anchor, patched, marker });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`19.1.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const prior = entry => entry.alternates?.at(-1) ?? entry;
+
+	const advisor = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&HYe(c))continue';
+	const advisorEntry = EDITS.find(entry => entry.file === "dist/cli.js" && entry.marker.includes('o==="__advisor.jsonl"'));
+	alternate(advisorEntry, advisor, advisor);
+
+	const executor = one("src/task/executor.ts", "import { PARENT_REQUEST_STEER, AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry }");
+	const withExtractIntent = text => swap(text, "recordHandoff, resolveTelemetry", "extractIntent, recordHandoff, resolveTelemetry");
+	alternate(executor, "extractIntent, recordHandoff, resolveTelemetry",
+		withExtractIntent(prior(executor).anchor), withExtractIntent(prior(executor).patched));
+
+	const relay = one("src/prompts/system/browser-relay.md", "Where ego lite is installed (the `ego_browser` tool runs)");
+	const relayEnd = "for a throwaway managed browser.{{/if}}{{/if}}\n";
+	alternate(relay, "{{#if only}}This session was started from omp's extension", relayEnd,
+		swap(prior(relay).patched, prior(relay).anchor, relayEnd), relay.marker);
+
+	const output = one("src/exec/bash-executor.ts", "summary.output += checkCueloSandboxGit(");
+	const imageLinks = "const output = await appendImageLinks(summary.output, decodedImages);";
+	const dumped = "\t\tconst summary = await sink.dump(notice);\n";
+	alternate(output, imageLinks, `${dumped}\t\t${imageLinks}`,
+		`${dumped}\t\tif (sandboxCommand !== undefined) summary.output += checkCueloSandboxGit(sandboxCwd);\n\t\t${imageLinks}`,
+		output.marker);
+
+	const help = (file, marker, discriminator, transform = text => text) => {
+		const entry = one(file, marker);
+		const toHelp = text => text.replaceAll("xd://", "help://");
+		alternate(entry, discriminator, toHelp(prior(entry).anchor), transform(toHelp(prior(entry).patched)), toHelp(prior(entry).marker));
+	};
+	const evalDoc = "src/prompts/tools/eval.md";
+	help(evalDoc, "{{name}}=xd://eval/{{name}}", "help://eval/judge");
+	help(evalDoc, "/completion: xd://eval/judge", "help://eval/{{name}}");
+	help(evalDoc, "- agent/workpool: xd://eval/agents", "help://eval/judge");
+	// Preserve the closing tag that groups the namespace list.
+	help(evalDoc, "{{/each}}\n{{#each inlinePreludes}}", "help://eval/judge",
+		text => text.replace("{{#each inlinePreludes}}", "</namespaces>\n{{#each inlinePreludes}}"));
+	// Keep this marker aligned with the retained closing tag.
+	one(evalDoc, "{{/each}}\n{{#each inlinePreludes}}").alternates.at(-1).marker = "{{/each}}\n</namespaces>\n{{#each inlinePreludes}}";
+	help("src/prompts/tools/read.md", "- Read xd://read/sources BEFORE", "help://read/sources");
+	help("src/prompts/system/system-prompt.md", 'FS/bash URIs.{{#has tools "read"}}', "help://read/urls");
+	const helperIntro = one(evalDoc, "Helpers: read xd://eval/helpers FIRST.");
+	const helperNew = "Helpers: read help://eval/helpers FIRST.";
+	alternate(helperIntro, "help://eval/judge", prior(helperIntro).anchor,
+		swap(prior(helperIntro).patched, helperIntro.marker, helperNew), helperNew);
+
+	const proc = one("src/prompts/internal-urls/proc.md", "proc://[id]: jobs/agents/services status;");
+	const newStreams = "pipes and redirected files so far";
+	alternate(proc, newStreams,
+		swap(prior(proc).anchor, "pipes so far (live under `| tail`/`| grep`", `${newStreams} (live under \`| tail\`/\`| grep\`/\`> log\``),
+		swap(prior(proc).patched, "bash pipes so far", `bash ${newStreams}`), proc.marker);
+
+	const catalog = one("src/tools/xdev.ts", 'if (!listedElsewhere?.has(name)) lines.push(`- ${name}`);');
+	const commandCatalog = "src/prompts/system/tool-command-catalog.md";
+	const onDemand = "Run `<tool> --help` before first use.";
+	alternate(catalog, onDemand, "- `{{this.name}}` — {{this.summary}}", "- `{{this.name}}`", "- `{{this.name}}`\n", commandCatalog);
+
+	const mcp = "src/mcp/manager.ts";
+	const hostManager = "private hostAccess?: McpHostAccess,";
+	const selection = one(mcp, "\t/** Connected by per-request selection; a manual reconnect or disconnect clears it. */");
+	const discovery = "\t#discoveryInFlight: Promise<unknown> = Promise.resolve();";
+	const between = (text, start, end) => {
+		const from = text.indexOf(start);
+		const to = end === undefined ? text.length : text.lastIndexOf(end);
+		if (from < 0 || from !== text.lastIndexOf(start) || to < from + start.length) {
+			throw new Error(`19.1.0 boundaries: ${JSON.stringify([start, end])}`);
+		}
+		return text.slice(from, to);
+	};
+	alternate(selection, hostManager, discovery, discovery + between(selection.patched,
+		"\n\t/** When set, discovery records allowed configs", "\n\t/**\n\t * Timestamps of recent"), selection.marker);
+	const reconnect = one(mcp, "\t\tif (options?.manual) this.#selectionConnected.delete(name);");
+	const pending = "\t\tconst pending = this.#pendingReconnections.get(name);";
+	const reconnectStart = "\t): Promise<MCPServerConnection | null> {\n";
+	const manualBody = between(reconnect.patched, "\t\tif (options?.manual) this.#selectionConnected.delete(name);", "\t\tif (options?.manual) {");
+	alternate(reconnect, hostManager, reconnectStart + pending,
+		reconnectStart + swap(manualBody, "if (deferred) {", "if (options?.manual && deferred) {") + pending, reconnect.marker);
+	const sdk = one("src/sdk.ts", "\tcfgMcpSelection,");
+	const idle = "\tcfgMcpIdleStopMinutes,";
+	alternate(sdk, idle, idle, `${idle}\n\tcfgMcpSelection,`, sdk.marker);
+	// As in the 18.9.1 alternatives, distinguish per-session deferred servers
+	// from the unrelated static #deferred manager factory.
+	for (const entry of [selection, reconnect]) {
+		const candidate = entry.alternates.at(-1);
+		candidate.patched = candidate.patched.replace(/#deferred\b/g, "#deferredServers");
+	}
+	const connectSelection = one(mcp, "\t * are ignored. An already-aborted signal starts nothing; an abort mid-handshake drops the servers");
+	const selectBody = prior(connectSelection);
+	const isReady = 'if (this.getConnectionStatus(name) === "connected") continue;';
+	alternate(connectSelection, hostManager, selectBody.anchor,
+		swap(
+			swap(selectBody.patched, "if (this.#connections.has(name)) continue;", isReady),
+			"if (!entry) continue;",
+			'if (!entry || this.getConnectionStatus(name) !== "disconnected") continue;',
+		), selectBody.marker);
+
+	// Keep the selection metadata cache local to the session manager. The host
+	// cache cannot be queried without resolving a server (which can start it).
+	const newEdit = (file, discriminator, anchor, patched, old) => EDITS.push({
+		file, requires: discriminator, anchor, patched, marker: patched,
+		alternates: [{ file, excludes: discriminator, anchor: old, patched: old, marker: old }],
+	});
+	const cacheTypes = 'import type { AuthStorage } from "../session/auth-storage";';
+	const storageType = 'import type { AgentStorageApi } from "../session/agent-storage";';
+	const cacheImport = 'import { logger, untilAborted } from "@oh-my-pi/pi-utils";';
+	newEdit(mcp, hostManager, cacheImport,
+		'import { isRecord, logger, stableStringifyJson, untilAborted } from "@oh-my-pi/pi-utils";', cacheTypes);
+	newEdit(mcp, hostManager, cacheTypes, `${storageType}\n${cacheTypes}`, cacheTypes);
+	const cacheRead = 'const cached = (await this.toolCache?.get(name, config).catch(() => null)) ?? [];';
+	const selection19 = connectSelection.alternates.at(-1);
+	selection19.patched = swap(swap(swap(swap(selection19.patched,
+		cacheRead, 'const cached = this.#selectionCatalog(name, config);'),
+		'Array.from(this.#deferredServers, async ', 'Array.from(this.#deferredServers, '),
+		'return Promise.all(\n\t\t\tArray.from(', 'return Array.from('),
+		'\n\t\t\t}),\n\t\t);', '\n\t\t\t});');
+	const publish = "\t#publishServerTools(name: string, connection: MCPServerConnection, serverTools: MCPToolDefinition[]): void {";
+	newEdit(mcp, hostManager, publish, String.raw`	#selectionStorage: Pick<AgentStorageApi, "getCache" | "setCache"> | null = null;
+
+	setSelectionStorage(storage: Pick<AgentStorageApi, "getCache" | "setCache"> | null): void {
+		this.#selectionStorage = storage;
+	}
+
+	#selectionCatalog(name: string, config: MCPServerConfig): MCPDeferredServer["cachedTools"] {
+		try {
+			const raw = this.#selectionStorage?.getCache("mcp_tools:" + name);
+			if (!raw) return [];
+			const cached: unknown = JSON.parse(raw);
+			if (!isRecord(cached) || cached.version !== 1 || !Array.isArray(cached.tools) ||
+				cached.configHash !== Bun.SHA256.hash(stableStringifyJson(config), "hex")) return [];
+			return cached.tools.flatMap(tool => isRecord(tool) && typeof tool.name === "string"
+				? [{ name: tool.name, description: typeof tool.description === "string" ? tool.description : undefined }]
+				: []);
+		} catch (error) {
+			logger.debug("MCP selection catalog could not be read", { path: "mcp:" + name, error: String(error) });
+			return [];
+		}
+	}
+
+${publish}
+		if (this.#selectionStorage) {
+			const config = this.#serverConfigs.get(name) ?? connection.config;
+			try {
+				const configHash = Bun.SHA256.hash(stableStringifyJson(config), "hex");
+				// Keep the existing on-disk format so 19.0.1 rollback can still read it.
+				const expires = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
+				this.#selectionStorage.setCache("mcp_tools:" + name, JSON.stringify({ version: 1, configHash, tools: serverTools }), expires);
+			} catch (error) {
+				logger.debug("MCP selection catalog could not be saved", { path: "mcp:" + name, error: String(error) });
+			}
+		}`, cacheTypes);
+	const loader = "src/mcp/loader.ts";
+	const loaderManager = "\tconst manager = new MCPManager(cwd, undefined, options?.idleStopMs);";
+	const loaderIdle = "\tidleStopMs?: number;";
+	newEdit(loader, "idleStopMs?: number;", loaderIdle,
+		`${loaderIdle}\n\tselectionStorage?: Parameters<MCPManager["setSelectionStorage"]>[0];`, cacheTypes);
+	newEdit(loader, "idleStopMs?: number;", loaderManager,
+		`${loaderManager}\n\tmanager.setSelectionStorage(options?.selectionStorage ?? null);`, cacheTypes);
+	const sdkFile = "src/sdk.ts";
+	const deferredManager = "\t\t\t\tconst deferredMCPManager = new MCPManager(cwd, undefined, mcpIdleStopMs);";
+	newEdit(sdkFile, idle, deferredManager,
+		`${deferredManager}\n\t\t\t\tdeferredMCPManager.setSelectionStorage(settings.getStorage());`, "const deferMCPDiscoveryForUI = enableMCP");
+	const loadManager = "\t\t\t\t\tidleStopMs: mcpIdleStopMs,";
+	newEdit(sdkFile, idle, loadManager, `${loadManager}\n\t\t\t\t\tselectionStorage: settings.getStorage(),`,
+		"const deferMCPDiscoveryForUI = enableMCP");
+
+	// Do not let command-mode special tools widen an explicit tools-off set.
+	const sessionTools = "src/session/session-tools.ts";
+	const commandShape = "const commandTransportActive =";
+	const specialTools = "\t\tif (!commandTransportActive) {\n\t\t\tconst planModeEnabled = this.#host.planModeEnabled();";
+	newEdit(sessionTools, commandShape, specialTools,
+		swap(specialTools, "!commandTransportActive", "!commandTransportActive && selectedTools.length > 0"),
+		"\tsetActiveToolsByName(toolNames: string[]): Promise<void> {");
+
+	// Upstream detects ambiguous numeric selectors before the not-found fallback.
+	// Keep the same-folder hint on that path without changing its suffix/reverse detection.
+	const read = "src/tools/read.ts";
+	const numericSelector = [
+		"\t\t\t\t\t\t\tthrow new ToolError(",
+		"\t\t\t\t\t\t\t\t`Invalid line selector ':${prefix.sel}:${localTarget.sel}'. Use :${prefix.sel} for a single line${range}.`,",
+		"\t\t\t\t\t\t\t);",
+	].join("\n");
+	const nearbyPatch = prior(one(read, "// HANSE: read range selector hint")).patched;
+	const nearby = nearbyPatch.slice(0, nearbyPatch.indexOf("\t\t\t\t\t// HANSE: read range selector hint"))
+		.split("\n").filter(Boolean).map(line => "\t\t" + line).join("\n");
+	newEdit(read, "A numeric pair can also be a literal filename plus a selector", numericSelector,
+		`${nearby}\n${swap(numericSelector, "for a single line${range}.", "for a single line${range}.${range ? ` Try ${prefix.path}:${prefix.sel}-${localTarget.sel}.` : \"\"}${nearby}")}`,
+		'readonly name = "read";');
+
+	// The npm package omits the monorepo browser-relay sibling. Keep the v19.1.0
+	// extension's native host wire shapes in the published relay protocol instead.
+	const relayDir = "src/tools/browser/relay/";
+	const protocol = `${relayDir}protocol.ts`;
+	const panelVersion = "export const PANEL_PROTOCOL_VERSION = 1;";
+	const oldProtocol = "export interface TabSnapshot {";
+	const oldRelay = { file: protocol, excludes: panelVersion, marker: oldProtocol, anchor: oldProtocol, patched: oldProtocol };
+	const nativeHost = 'export const NATIVE_HOST = "sh.omp.browser";';
+	EDITS.push({
+		file: protocol, requires: panelVersion, anchor: panelVersion, marker: nativeHost,
+		patched: `${panelVersion}
+
+${nativeHost}
+
+export type ToNativeHost =
+	| { t: "open"; cwd: string; extensionId: string }
+	| { t: "link"; extensionId: string }
+	| { t: "rpc"; line: string }
+	| { t: "relay"; line: string };
+
+export type FromNativeHost =
+	| { t: "ready"; pid: number }
+	| { t: "rpc"; line: string }
+	| { t: "linked" }
+	| { t: "unlinked"; reason: string }
+	| { t: "relay"; line: string }
+	| { t: "chunk"; relay?: true; id: number; index: number; last: boolean; data: string }
+	| { t: "exit"; code: number | null; stderr: string };`,
+		alternates: [oldRelay],
+	});
+	for (const [file, imported] of [
+		["native-host-manifest.ts", "import { NATIVE_HOST }"],
+		["native-host.ts", "import type { FromNativeHost, ToNativeHost }"],
+		["native-relay.ts", "import type { FromNativeHost, ToNativeHost }"],
+	]) {
+		const anchor = `${imported} from "../../../../../browser-relay/extension/messages";`;
+		const patched = `${imported} from "./protocol";`;
+		EDITS.push({ file: `${relayDir}${file}`, marker: patched, anchor, patched, alternates: [oldRelay] });
+	}
+
+	const completion = "src/eval/completion-bridge.ts";
+	const tagged = "function resolveTaggedAgentCandidates(";
+	const exact = 'const EXACT_WEB6_MODEL = "web6/gpt-6-pro" as const;';
+	const tierType = 'type CompletionTier = "smol" | "default" | "slow";';
+	alternate(one(completion, exact), tagged, tierType, `${tierType}\n${exact}`, exact);
+	const executeTier = "\ttier: CompletionTier | undefined,";
+	alternate(one(completion, "\tfinalTier: CompletionTier | undefined,"), tagged, executeTier);
+	const resultDetails = "\t\tdetails: { model: formatModelString(model), tier, structured: Boolean(schema) },";
+	alternate(one(completion, "...(finalTier === undefined ? {} : { tier: finalTier })"), tagged, resultDetails,
+		'\t\tdetails: { model: formatModelString(model), ...(tier === undefined ? {} : { tier }), structured: Boolean(schema) },');
+	const candidateAnchor = [
+		"\tconst candidates = tier",
+		"\t\t? resolveTierCandidates(tier, options.session)",
+		"\t\t: resolveTaggedAgentCandidates(requested, options.session);",
+		"\tif (candidates.length === 0) {",
+	].join("\n");
+	alternate(one(completion, 'const requestedModel: CompletionModel = model ?? "default";'), tagged,
+		candidateAnchor, [
+			"\tconst candidates = tier",
+			"\t\t? resolveTierCandidates(tier, options.session)",
+			"\t\t: requested === EXACT_WEB6_MODEL",
+			"\t\t\t? resolveExactWeb6Candidate(options.session)",
+			"\t\t\t: resolveTaggedAgentCandidates(requested, options.session);",
+			"\tif (candidates.length === 0) {",
+			'\t\tif (requested === EXACT_WEB6_MODEL) throw new ToolError(`completion() could not resolve exact model "${EXACT_WEB6_MODEL}".`);',
+		].join("\n"), "\t\t\t? resolveExactWeb6Candidate(options.session)");
+	const retain = '\treturn retainCompletionHandle("cmp", options, async (signal, attempts) => {';
+	const execute = "\t\t\treturn await executeCompletion(\n\t\t\t\tprompt,\n\t\t\t\ttier,\n\t\t\t\tsystem,\n\t\t\t\tschema,\n\t\t\t\tcandidates,";
+	alternate(one(completion, "const effectiveCandidates ="), tagged, `${retain}\n\t\tconst rawBuffer = new RawSseDebugBuffer();\n\t\ttry {\n${execute}`,
+		[
+			"\tconst effectiveCandidates = parsed.effort === undefined ? candidates : candidates.map(candidate => ({",
+			"\t\t...candidate,",
+			"\t\t...reasoningForCandidate(tier, candidate.model, parsed.effort),",
+			"\t}));",
+			retain,
+			"\t\tconst rawBuffer = new RawSseDebugBuffer();",
+			"\t\ttry {",
+			execute.replace("\n\t\t\t\tcandidates,", "\n\t\t\t\teffectiveCandidates,"),
+		].join("\n"), "const effectiveCandidates =");
+	const exactDoc = '"web6/gpt-6-pro"';
+	const taggedDoc = '"m<N>"';
+	const judgeDoc = one("src/prompts/tools/eval-judge.md", "effort?=None");
+	const tagModels = text => text.replaceAll('"slow"', `"slow"|${taggedDoc}`);
+	alternate(judgeDoc, "or a user-tagged model agent name", tagModels(prior(judgeDoc).anchor),
+		tagModels(prior(judgeDoc).patched).replaceAll(taggedDoc, `${taggedDoc}|${exactDoc}`), judgeDoc.marker);
+	const workflow = one("src/prompts/system/workflow-notice.md", "effort=None)");
+	const beforeEffort = 'Tiers: `"smol"`, `"default"`, `"slow"`.';
+	const upstreamModels = 'Tiers: `"smol"`, `"default"`, `"slow"`; or a user-tagged model agent (`"m<N>"`).';
+	alternate(workflow, upstreamModels, swap(prior(workflow).anchor, beforeEffort, upstreamModels),
+		swap(prior(workflow).patched, beforeEffort, `${upstreamModels} Exact selector: \`${exactDoc}\`.`), prior(workflow).marker);
+
+	const backend = "src/mnemopi/backend.ts";
+	const memDoc = "src/prompts/system/mnemopi-instructions.md";
+	const instructions = "prompt.render(mnemopiInstructions)";
+	const memBody = one(memDoc, "Mnemopi: <memories> background");
+	const fixedNames = text => text.replace(/\{\{toolRefs\.(recall|retain|reflect)\}\}/g, "$1");
+	const memDiscriminator = "- Use `recall` proactively";
+	const memHead = fixedNames(prior(memBody).anchor);
+	const memCompact = prior(memBody).patched
+		.replace(/\{\{toolRefs\.(recall|retain|reflect)\}\}/g, "`$1`")
+		.replace("`recall` BEFORE history/preferences", "\n- Use `recall` proactively before history/preferences");
+	alternate(memBody, memDiscriminator, memHead, memCompact, memBody.marker);
+	// The existing settings-import patch also applies on 19.1.0.
+	const globalMemory = one(backend, 'staticInstructions(primary?.config.autoRetain ?? settings.get("mnemopi.autoRetain"))');
+	const globalRender = "\t\t\tconst parts = [prompt.render(mnemopiInstructions)];";
+	const memoryBackend = "const parts = [prompt.render(mnemopiInstructions";
+	alternate(globalMemory, memoryBackend, globalRender,
+		swap(globalRender, instructions, 'prompt.render(mnemopiInstructions, { autoRetain: primary?.config.autoRetain ?? cfgMnemopiAutoRetain.get(settings) })'));
+	const sessionMemory = one(backend, "const instructions = staticInstructions(");
+	const budgeting = "\t\tconst instructions = prompt.render(mnemopiInstructions);";
+	const sessionRender = swap(budgeting, instructions,
+		"prompt.render(mnemopiInstructions, { autoRetain: (this.aliasOf ?? this).config.autoRetain })");
+	// The pre-19.1.0 state.ts candidate renders with toolRefs on separate lines.
+	sessionMemory.alternates.push({
+		file: "src/mnemopi/state.ts", requires: "budgetRecallBlock(block: string): string {",
+		anchor: budgeting, marker: sessionRender, patched: sessionRender,
+	});
+
+	const worker = "src/tools/computer/worker.ts";
+	const windowAccess = "class Win extends WindowAccess {";
+	const windowInput = one(worker, "return windowInputResult(action, this.id, options);");
+	const oldWin = prior(windowInput);
+	const throughObserve = text => {
+		const menu = text.indexOf("\n\tget menu() {");
+		if (menu < 0) throw new Error("19.1.0 window methods: missing old menu boundary");
+		return text.slice(0, menu);
+	};
+	const observed = text => swap(swap(text,
+		"\t\tconst screenshot = await emitScreenshot(context, result.capture, options);",
+		"\t\tconst screenshot = await emitScreenshot(context, result.capture, options);\n\t\tconst ax = treeText(result.accessibility);"),
+		"ax: result.accessibility.text,", "ax,");
+	const observeText = text => swap(observed(throughObserve(text)), "text: result.accessibility.text });", "text: ax });");
+	const observeAnchor = observeText(oldWin.anchor);
+	const observePatched = swap(observeText(oldWin.patched),
+		"noteSnapshot(this.id, result.accessibility.text)", "noteSnapshot(this.id, ax)");
+	alternate(windowInput, windowAccess, observeAnchor, observePatched, oldWin.marker);
+
+	const addWindowMethod = (anchor, patched, marker = patched) => EDITS.push({
+		file: worker, requires: windowAccess, anchor, patched, marker,
+		alternates: [{ file: worker, excludes: windowAccess, anchor: "class Win {", patched: "class Win {", marker: "class Win {" }],
+	});
+	const withoutAx = text => between(text, "\tasync raise():", "\tasync ax(")
+		+ between(text, "\tref(ref: string): ElRef");
+	addWindowMethod(withoutAx(oldWin.anchor), withoutAx(oldWin.patched), '\t\treturn windowInputResult("raise", this.id);');
+
+	const axAccess = "\tasync ax(options?: AxOptions): Promise<string> {";
+	const onlyWindowAx = text => between(text, axAccess, "\tref(ref: string): ElRef").trimEnd();
+	const sharedAx = swap(onlyWindowAx(oldWin.anchor),
+		"return (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;", "return treeText(await nativeCall(signal, () => this.#session.axSnapshot(this.id, options)));");
+	const stableAx = swap(onlyWindowAx(oldWin.patched),
+		"const text = (await nativeCall(signal, () => this.#session.axSnapshot(this.id, options))).text;", "const text = treeText(await nativeCall(signal, () => this.#session.axSnapshot(this.id, options)));");
+	addWindowMethod(sharedAx, stableAx, "return foundElements(await issueElements(this.#session, this.#getContext, nodes, this.id));");
+}
+
+/** All possible targets, including files reached only by a version alternate. */
+export function corePatchTargetFiles() {
+	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];
+}
+
 /**
  * 항목 하나를 이 설치에서 성립하는 후보로 좁힌다. 후보는 항목 자신과 `alternates` 이고 각 후보는
  * file·anchor·marker·patched 묶음이다. upstream 이 그 조각을 다른 모듈이나 다른 패키지로 옮기면

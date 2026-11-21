@@ -47,6 +47,7 @@ const target = process.env.OMP_CORE_PATCH_TARGET;
 if (!target) throw new Error("OMP_CORE_PATCH_TARGET is required; never test the live core");
 const CORE = resolve(target, "src").replace(/\\/g, "/");
 if (!existsSync(join(CORE, "mcp/manager.ts"))) throw new Error(`core 사본을 찾지 못했다: ${CORE}`);
+const hostedMcp = existsSync(join(CORE, "mcp/host/contract.ts"));
 const PACKAGES = resolve(dirname(CORE), "..").replace(/\\/g, "/");
 const fixtureRoot = process.env.OMP_MCP_SELECTION_FIXTURE_ROOT!;
 const agentDir = join(fixtureRoot, "home", ".omp", "agent");
@@ -94,6 +95,7 @@ process.stdin.on("data", chunk => {
 		if (request.id === undefined) continue;
 		const reply = result => send({ jsonrpc: "2.0", id: request.id, result });
 		if (request.method === "initialize") {
+			appendFileSync(log + ".handshake", name + " " + process.pid + "\\n");
 			const result = { protocolVersion: request.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name, version: "1.0.0" } };
 			if (mode === "slow") setTimeout(() => reply(result), 4000);
 			else reply(result);
@@ -118,7 +120,9 @@ const spawnLines = () =>
 		.map(line => line.split(" ") as [string, string]);
 const spawned = () => spawnLines().map(([name]) => name);
 const count = (name: string) => spawned().filter(item => item === name).length;
-const pidOf = (name: string) => Number(spawnLines().findLast(([item]) => item === name)?.[1]);
+const handshakes = () => existsSync(spawnLog + ".handshake")
+	? readFileSync(spawnLog + ".handshake", "utf8").trim().split("\n").filter(line => line.startsWith("slow-stub "))
+	: [];
 const alive = (pid: number) => {
 	try {
 		process.kill(pid, 0);
@@ -239,7 +243,7 @@ async function open(options: { selection: "all" | "per-request"; judge?: JudgeFa
 	return createAgentSession({
 		cwd: work,
 		agentDir,
-		settings: Settings.isolated({ "mcp.selection": options.selection }),
+		settings: Settings.isolated({ "mcp.selection": options.selection, ...(hostedMcp && { "tools.commands": true, "mcp.shared": false }) }),
 		model,
 		getApiKey: () => "example",
 		hasUI: options.hasUI ?? false,
@@ -295,11 +299,12 @@ const evidence: Record<string, unknown> = {};
 	const [seen] = await turn(all.session, "README 오타만 고쳐줘");
 	await until(() => spawned().length >= 5);
 	evidence.allSpawned = [...spawned()].sort();
+	const attempted = hostedMcp ? [...new Set(evidence.allSpawned as string[])] : evidence.allSpawned;
 	evidence.allMcpNames = mcpNames(seen);
 	evidence.allPromptBytes = promptBytes(seen!);
 	check(
 		"[0] all 모드는 활성 5개 서버를 시작 시 띄우고 끈 서버는 띄우지 않는다",
-		JSON.stringify(evidence.allSpawned) === JSON.stringify(["broken-stub", "docs-stub", "figma-stub", "slow-stub", "user-stub"]),
+		JSON.stringify(attempted) === JSON.stringify(["broken-stub", "docs-stub", "figma-stub", "slow-stub", "user-stub"]),
 		evidence.allSpawned,
 	);
 	await all.session.dispose();
@@ -318,7 +323,13 @@ check("[2b] unrelated request makes no JEV call", judgeCalls.length === 0, judge
 
 // 관련 요청: 선택 서버만 실제 spawn → 같은 턴 provider 요청에 그 장치만 → 실제 tool 호출 결과.
 const [relevant, afterTool] = await turn(a.session, "figma 시안 노드를 읽어서 버튼 색을 맞춰줘", [
-	{ tool: c => ({ name: "write", args: { path: `xd://${mcpNames(c).find(name => name.includes("figma"))}`, content: "{}" } }) },
+	{ tool: c => {
+		const name = mcpNames(c).find(name => name.includes("figma"));
+		assert.ok(name, "the selected tool is present in the provider request");
+		return hostedMcp
+			? { name: "bash", args: { command: name, cwd: work } }
+			: { name: "write", args: { path: `xd://${name}`, content: "{}" } };
+	} },
 	{},
 ]);
 evidence.relevantMcpNames = mcpNames(relevant);
@@ -388,9 +399,10 @@ check("[6c] 실패 서버의 수동 /mcp reconnect 경로는 유지된다(다시
 // 취소: 이미 abort된 신호는 spawn 0, handshake 중 취소는 늦은 연결·고아 프로세스 없이 후보로 복귀.
 await a.mcpManager.connectDeferred(["slow-stub"], AbortSignal.abort());
 check("[7a] 이미 취소된 요청은 선택 서버를 spawn하지 않는다", count("slow-stub") === 0, spawned());
+const beforeAbort = handshakes().length;
 const cancelled = turn(a.session, "slow-stub 도구로 처리해줘").catch(() => []);
-await until(() => count("slow-stub") === 1);
-const slowPid = pidOf("slow-stub");
+assert.ok(await until(() => handshakes().length > beforeAbort), "the slow initialize request started");
+const slowPid = Number(handshakes().at(-1)?.split(" ")[1]);
 a.session.abort();
 await cancelled;
 const slowGone = await until(() => !alive(slowPid));
@@ -429,16 +441,32 @@ check(
 
 // [10] 수동 우회: /mcp reconnect(manual)는 deferred 서버를 바로 연결하고, 정상 판정이 not-needed여도 노출을 유지한다.
 failing.on = false;
-const manual = await b.mcpManager.reconnectServer("docs-stub", { manual: true });
+const manualPending = b.mcpManager.reconnectServer("docs-stub", { manual: true });
+await b.mcpManager.connectDeferred(["docs-stub"], new AbortController().signal);
+const manual = await manualPending;
 await b.session.refreshMCPTools(b.mcpManager.getTools());
-const [manualTurn] = await turn(b.session, "테스트만 돌려줘");
-check("[10] 수동 연결 서버는 spawn되고 다음 요청에서도 노출 유지", manual !== null && count("docs-stub") === 1 && mcpNames(manualTurn).some(name => name.includes("docs")), { spawned: spawned(), names: mcpNames(manualTurn) });
+const [manualTurn, manualResult] = await turn(b.session, "테스트만 돌려줘", [
+	{ tool: context => {
+		const name = mcpNames(context).find(name => name.includes("docs"));
+		assert.ok(name, "the manually connected tool remains visible");
+		return hostedMcp
+			? { name: "bash", args: { command: name, cwd: work } }
+			: { name: "write", args: { path: `xd://${name}`, content: "{}" } };
+	} },
+	{},
+]);
+check("[10a] selection did not claim the pending manual connect",
+	!b.mcpManager.isSelectionConnected("docs-stub"), spawned());
+const docsWorked = manualResult?.messages.some(message => JSON.stringify(message).includes("STUB-docs-stub-OK"));
+check("[10] 수동 연결 뒤 무관한 요청에서도 노출되고 실제 도구가 응답한다",
+	manual !== null && count("docs-stub") === 1 && Boolean(docsWorked), { spawned: spawned(), names: mcpNames(manualTurn), docsWorked });
 
 // [11] handshake 중 세션 dispose: 소유 manager가 정리되고 고아 stub이 남지 않는다.
 const c = await open({ selection: "per-request", judge: judgeBy(byRequest) });
+const beforeDispose = handshakes().length;
 const disposing = turn(c.session, "slow-stub 도구로 처리해줘").catch(() => []);
-await until(() => count("slow-stub") === 2);
-const disposedPid = pidOf("slow-stub");
+assert.ok(await until(() => handshakes().length > beforeDispose), "the slow initialize request started");
+const disposedPid = Number(handshakes().at(-1)?.split(" ")[1]);
 await c.session.dispose();
 await c.mcpManager?.disconnectAll();
 await disposing;

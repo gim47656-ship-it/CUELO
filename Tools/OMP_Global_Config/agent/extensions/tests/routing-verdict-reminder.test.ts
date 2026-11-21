@@ -51,14 +51,19 @@ test("Main receives one quiet reminder per terminal turn until the exact attempt
     });
     const model = registry.find("fixture", "main")!;
     let end = Promise.withResolvers<void>();
+    const verdictHooks: string[] = [];
     const { session } = await createAgentSession({
       cwd: root, agentDir, agentId: "Main", model, modelRegistry: registry, sessionManager: sessions,
-      settings: Settings.isolated({ tools: { approvalMode: "yolo" } } as never),
+      settings: Settings.isolated({ tools: { commands: true, approvalMode: "yolo" } } as never),
       disableExtensionDiscovery: true, enableMCP: false, enableLsp: false, skipPythonPreflight: true,
-      skills: [], rules: [], contextFiles: [], toolNames: ["write"],
+      skills: [], rules: [], contextFiles: [],
       extensions: [
         createJevRuntime({ ledgerPath, resolveJudge: () => { throw new Error("No judge expected"); } }),
-        pi => pi.on("agent_end", event => { if (!event.willContinue) end.resolve(); }),
+        pi => {
+          pi.on("agent_end", event => { if (!event.willContinue) end.resolve(); });
+          pi.on("tool_call", event => { if (event.toolName === "routing_verdict") verdictHooks.push("call"); });
+          pi.on("tool_result", event => { if (event.toolName === "routing_verdict") verdictHooks.push(event.isError ? "error" : "result"); });
+        },
       ],
     });
     try {
@@ -77,9 +82,9 @@ test("Main receives one quiet reminder per terminal turn until the exact attempt
         const stream = createAssistantMessageEventStream();
         const write = recordOnNextCall;
         recordOnNextCall = false;
-        const toolCall = { type: "toolCall" as const, id: "record-verdict", name: "write", arguments: {
-          path: "xd://routing_verdict",
-          content: JSON.stringify({ sessionId, assignmentId: pending.assignmentId, attemptId: pending.attemptId, verdict: "held", reason: "Waiting for test evidence." }),
+        const params = { sessionId, assignmentId: pending.assignmentId, attemptId: pending.attemptId, verdict: "held", reason: "Waiting for test evidence." };
+        const toolCall = { type: "toolCall" as const, id: "record-verdict", name: "bash", arguments: {
+          command: `routing_verdict --json '${JSON.stringify(params)}'`,
         } };
         const message: AssistantMessage = {
           role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
@@ -108,7 +113,7 @@ test("Main receives one quiet reminder per terminal turn until the exact attempt
       expect(reminders()).toHaveLength(1);
       const [first] = reminders();
       expect(first).toContain(`${sessionId}|${pending.assignmentId}|${pending.attemptId}`);
-      expect(first).toContain("xd://routing_verdict");
+      expect(first).toContain("routing_verdict --help");
       expect(first).not.toMatch(/#a1|AlreadyAccepted|AlreadyHeld|ForeignMaker|FailedMaker|CancelledMaker|RunningMaker/);
       expect(ledger.read(sessionId).filter(row => row.type === "verdict" && row.attemptId === pending.attemptId)).toMatchObject([{ verdict: "unknown" }]);
       console.log(first);
@@ -120,11 +125,12 @@ test("Main receives one quiet reminder per terminal turn until the exact attempt
 
       recordOnNextCall = true;
       await run("Record the explicit held verdict.");
+      expect(verdictHooks).toEqual(["call", "result"]);
       expect(ledger.read(sessionId).findLast(row => row.type === "verdict" && row.attemptId === pending.attemptId)).toMatchObject({ verdict: "held" });
       expect(reminders()).toEqual([first, first]);
       expect(calls).toBe(4);
       expect(errors).toEqual([]);
-      console.log("SDK smoke: 1 reminder per undecided Main turn, 0 additional reminders after xd://routing_verdict, 0 autonomous turns.");
+      console.log("SDK smoke: 1 reminder per undecided Main turn, 0 additional reminders after the routing_verdict command, 0 autonomous turns.");
     } finally {
       await session.dispose();
     }

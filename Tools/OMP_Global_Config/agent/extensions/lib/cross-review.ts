@@ -1553,6 +1553,12 @@ const RECIPE_RULE = [
 
 const MAX_HIDING_LEADS_SHOWN = 20;
 
+/**
+ * 2026-11-22 사용자 결정(「2번」): 2라운드부터 저자는 blocker와 앞 라운드 수정이 만든 회귀만 고치고 그 밖의 지적은 limit로 닫는다.
+ * reviewer에게 그 사실을 알리고, 회귀는 앞 지적 id(regressionOf)로 표시하게 한다. 1라운드 프롬프트는 바뀌지 않는다.
+ */
+const ROUND_CAP_RULE = 'ROUND CAP: from round 2 the author fixes only blockers and regressions that a fix for an earlier finding introduced; any other new finding is closed as a documented limit without a fix. Focus on blockers in the delta and on what the fixes broke. When a new problem was caused by the fix for an earlier finding, set "regressionOf" to that earlier finding id and say in "why" which fix broke what. Leave "regressionOf" out otherwise.';
+
 export function buildReviewPrompt(input: { acceptance: string; round: number; parts: ReviewPart[]; previousFindings?: CrossReviewFinding[]; inputs?: { path: string; text: string }[]; references?: { path: string; text: string }[]; probeResults?: PreparedProbeResult[]; probeAvailable?: boolean; hidingLeads?: readonly HidingLead[]; batch?: { index: number; count: number } }): string {
   const blocks = input.parts.map((part) => `<${part.kind} path="${part.path}"${part.part ? ` part="${part.part}"` : ""}>\n${part.text}\n</${part.kind}>`);
   const references = input.references ?? [];
@@ -1599,13 +1605,14 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pa
   } else {
     scope = `ROUND ${input.round}: only the delta since round ${last} (diff of the content you were shown in round ${last} against the current content; files new since round ${last} in full). Check whether the earlier findings below were actually fixed and whether the fixes introduced new problems. Do not re-report findings that are fixed.`;
   }
+  if (input.round > 1) scope = `${scope}\n${ROUND_CAP_RULE}`;
   const previous = input.previousFindings?.length
     ? ["EARLIER FINDINGS (claims only; refer to them by id):", ...input.previousFindings.map((finding) => `- ${finding.id} ${finding.file}${finding.line ? `:${finding.line}` : ""} [${finding.severity}] ${finding.claim}`), ""]
     : [];
   const probeGuide = input.probeAvailable === false
     ? "PROBES: no probe round is available any more in this chain, so you will not judge any run; the author runs your recipes only to fix or refute findings. Report only what the code itself supports."
     : "PROBES: when a claim cannot be settled from the code alone, mark it needs-run and do NOT report it as a speculative major/blocker. The author will run the needs-run recipes once and you will judge the results. A finding settled by quoted code still gets a recipe (the test or command that exposes it) but needs no run.";
-  const findingShape = '{"severity":"blocker|major|minor","file":"path","line":123,"claim":"what is wrong","why":"how it fails in a realistic run, quoting the code","proof":"cited-line|reasoned|needs-run","probe":{"steps":"...","expectIfReal":"...","expectIfNot":"..."}}';
+  const findingShape = `{"severity":"blocker|major|minor","file":"path","line":123,"claim":"what is wrong","why":"how it fails in a realistic run, quoting the code","proof":"cited-line|reasoned|needs-run","probe":{"steps":"...","expectIfReal":"...","expectIfNot":"..."}${input.round > 1 ? ',"regressionOf":"R1-OAI-2"' : ""}}`;
   const outputShape = probeRound
     ? `{"findings":[${findingShape}],"verdicts":[{"id":"R1-OAI-1","verdict":"confirmed|withdrawn|unresolved","why":"one or two sentences from the result"}],"summary":"one sentence"}`
     : `{"findings":[${findingShape}],"summary":"one sentence"}`;
@@ -1727,7 +1734,7 @@ export function planReviewPrompts(parts: readonly ReviewPart[], leads: readonly 
   return prompts.some((prompt) => utf8(prompt) > MAX_INPUT_BYTES) ? { refused: "shared-context" } : { prompts };
 }
 
-export interface ParsedFinding { severity: CrossReviewFinding["severity"]; file: string; line?: number; claim: string; why: string; probe?: CrossReviewProbe; proof?: CrossReviewProofLevel }
+export interface ParsedFinding { severity: CrossReviewFinding["severity"]; file: string; line?: number; claim: string; why: string; probe?: CrossReviewProbe; proof?: CrossReviewProofLevel; regressionOf?: string }
 export interface ParsedVerdict { id: string; verdict: CrossReviewVerdict["verdict"]; why: string }
 
 const VERDICTS: Record<string, true> = { confirmed: true, withdrawn: true, unresolved: true };
@@ -1822,6 +1829,7 @@ export function parseReviewerOutput(raw: string): { ok: true; findings: ParsedFi
         ...("line" in item && typeof item.line === "number" && Number.isFinite(item.line) ? { line: item.line } : {}),
         ...(probe ? { probe } : {}),
         ...(proof ? { proof } : {}),
+        ...("regressionOf" in item && typeof item.regressionOf === "string" && item.regressionOf.trim() ? { regressionOf: item.regressionOf.trim() } : {}),
       });
     }
     if (!valid) continue;
@@ -2000,6 +2008,36 @@ export interface ReviewResult {
   carriedOver?: ("files" | "acceptance")[];
   /** 변경이 한 번의 호출 상한을 넘어 나눠 심사했을 때만: reviewer 자리마다 부른 호출 수(모두 같은 기준·같은 라운드). */
   batches?: number;
+  /**
+   * 2라운드부터 항상(2026-11-22 사용자 결정 「2번」): 2라운드부터 체인에 나온 지적의 fix(고칠 대상: blocker, 또는 regressionOf로 앞 수정의 회귀로 표시된 것)와
+   * limitCandidates(고치지 않고 근거를 적어 limit로 닫을 후보)다. 안내일 뿐이며 resolve의 통과 규칙(모든 finding에 fixed|refuted|limit)은 그대로다.
+   */
+  roundCap?: RoundCap;
+}
+
+export interface RoundCap { fix: string[]; limitCandidates: string[] }
+
+/** 2라운드부터 체인에 나온 지적을 고칠 대상과 limit 후보로 나눈다. blocker이거나 앞 수정의 회귀(regressionOf)면 고친다. */
+export function roundCapOf(findings: readonly CrossReviewFinding[]): RoundCap {
+  const fix: string[] = [];
+  const limitCandidates: string[] = [];
+  for (const finding of findings) (finding.severity === "blocker" || finding.regressionOf !== undefined ? fix : limitCandidates).push(finding.id);
+  return { fix, limitCandidates };
+}
+
+/** 원장 finding id(R<round>-<표지>-<n>)의 라운드. 모양이 다르면 0. */
+function findingRound(id: string): number {
+  const match = /^R(\d+)-/.exec(id);
+  return match ? Number(match[1]) : 0;
+}
+
+/** 2라운드부터의 다음 단계 안내에 넣는 상한 문장. */
+function roundCapNote(cap: RoundCap, maker: boolean): string {
+  const fix = cap.fix.length > 0 ? `Fix or refute ${cap.fix.join(", ")} (blocker, or a regression an earlier fix introduced).` : "No finding from round 2 on is a blocker or a regression of an earlier fix.";
+  const limit = cap.limitCandidates.length > 0
+    ? ` Do NOT fix ${cap.limitCandidates.join(", ")}: ${maker ? "propose" : "close"} each as limit with evidence naming the finding id and the reason (e.g. "${cap.limitCandidates[0]}: round 2+ non-blocker, not a regression of an earlier fix").`
+    : "";
+  return `ROUND CAP (user decision 2026-11-22, 「2번」): from round 2 only blockers and regressions caused by an earlier round's fix are fixed. ${fix}${limit} Earlier round-1 findings are still handled in full, and the pass rule is unchanged (every finding needs fixed|refuted|limit).`;
 }
 
 interface ReferenceEntry { path: string; blob: string; bytes: number; redacted?: number; text: string; content: Buffer }
@@ -2080,6 +2118,10 @@ interface NextState {
   limitFailures: readonly string[];
   /** 실패한 필수 reviewer 가운데 한도 예외가 덮지 않는 자리의 목록. */
   uncoveredFailures: readonly string[];
+  /** 2라운드부터 항상: 2라운드부터 체인에 나온 지적의 고칠 대상과 limit 후보(2026-11-22 사용자 결정 「2번」). */
+  cap?: RoundCap;
+  /** 앞 라운드들이 낸 지적 수. 이번 라운드에 새 지적이 없어도 resolve가 이들을 닫아야 한다(교차검토 R1-OAI-4). */
+  chainFindings: number;
 }
 
 /** 공급자 한도 실패의 모양. 11-09 야간 실패 원문: `429 {"type":"error","error":{"type":"rate_limit_error",…}} retry-after-ms=…`. */
@@ -2108,28 +2150,39 @@ function describeNext(state: NextState): string {
   const canDelta = roundsLeft && state.plainUsed < MAX_PLAIN_ROUNDS;
   const delta = "run one more review with previousReviewId (reviews only the change since this round)";
   const close = state.maker ? MAKER_REPORT : RESOLVE_HINT;
+  // 2라운드부터의 limit 후보가 있으면 "남은 지적을 고치라"는 문장이 상한과 엇갈리지 않게 한다(교차검토 R1-OAI-1·R1-OAI-3).
+  const capped = state.cap !== undefined && state.cap.limitCandidates.length > 0;
+  const makerAfterLimit = capped ? MAKER_AFTER_LIMIT.replace("fix or refute the remaining findings", "fix or refute the remaining findings except the round-cap limit candidates (propose those as limit)") : MAKER_AFTER_LIMIT;
   const limit = state.maker
-    ? `Round limit reached: no further review is allowed in this chain. ${MAKER_AFTER_LIMIT}`
+    ? `Round limit reached: no further review is allowed in this chain. ${makerAfterLimit}`
     : "Round limit reached: no further review is allowed. Close every finding with resolve (fixed / refuted with evidence / limit documented).";
   // 실행이 증명한 지적만 남긴다(pstack interrogate): 재현 방법을 돌려 결함이 안 보이면 그 명령·출력이 refuted 근거이고, 보이면 고친다. 판정은 여전히 resolve가 한다.
-  const recipe = state.recipeFindings > 0 ? " A recipe run that shows no defect is evidence for refuted (quote its command and output); one that shows the defect means fix it." : "";
+  const recipe = state.recipeFindings > 0
+    ? capped
+      ? " For an id to fix, a recipe run that shows no defect is evidence for refuted (quote its command and output) and one that shows the defect means fix it; a round-cap limit candidate needs no run and is not fixed even if its recipe would show the defect."
+      : " A recipe run that shows no defect is evidence for refuted (quote its command and output); one that shows the defect means fix it."
+    : "";
   // probe 라운드를 쓸 수 없는 라운드(probe 라운드 자신, 마지막 라운드)가 새로 낸 needs-run 지적도 실행으로 가리게 한다(교차검토 R1-OAI-1).
   const runLocal = state.runFindings > 0 ? ` ${state.runFindings} finding(s) need a run to settle but this chain has no probe round left: run each recipe yourself and give its command and output as the evidence.` : "";
+  const capNote = state.cap !== undefined && (state.cap.fix.length > 0 || capped) ? ` ${roundCapNote(state.cap, state.maker)}` : "";
   if (state.probeRound) {
     const counts = (["confirmed", "withdrawn", "unresolved"] as const).map((kind) => `${state.verdicts.filter((verdict) => verdict.verdict === kind).length} ${kind}`).join(", ");
-    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${canDelta ? `, then ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left)` : ""}. Then ${close} (withdrawn: refuted with the probe evidence; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}${runLocal}${recipe}`;
+    return `Probe verdicts (${counts}) are advisory: a withdrawn finding is NOT closed. Fix only the confirmed findings${capped ? " that are not round-cap limit candidates (a confirmed limit candidate is still closed as limit)" : ""}${canDelta ? `, then ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left)` : ""}. Then ${close} (withdrawn: refuted with the probe evidence${capped ? ", except a round-cap limit candidate, which is closed as limit whatever its verdict" : ""}; unresolved: your own judgment or limit documented).${canDelta ? "" : ` ${limit}`}${runLocal}${recipe}${capNote}`;
   }
   if (state.findings === 0) {
-    if (!state.maker) return "No findings. Call cross_review {action:\"resolve\", reviewId, resolutions:[]} to record the pass for the current file contents.";
-    return `No findings in this round. Then ${MAKER_REPORT}. ${canDelta ? "If you change a reviewed file afterwards, run one more review with previousReviewId and report the new head." : MAKER_AFTER_LIMIT}`;
+    if (!state.maker) {
+      if (state.chainFindings === 0) return "No findings. Call cross_review {action:\"resolve\", reviewId, resolutions:[]} to record the pass for the current file contents.";
+      return `No new findings in this round. Then ${RESOLVE_HINT} (an earlier finding the delta fixed is closed as fixed with that evidence).${capNote}`;
+    }
+    return `No findings in this round. Then ${MAKER_REPORT}. ${canDelta ? "If you change a reviewed file afterwards, run one more review with previousReviewId and report the new head." : makerAfterLimit}${capNote}`;
   }
-  if (!canProbe && !canDelta) return state.maker ? `${limit} Then ${close}.${runLocal}${recipe}` : `${limit} Findings of this chain still open need resolve before the pass.${runLocal}${recipe}`;
-  const parts = [`Fix or refute each finding.${recipe}`];
+  if (!canProbe && !canDelta) return state.maker ? `${limit} Then ${close}.${runLocal}${recipe}${capNote}` : `${limit} Findings of this chain still open need resolve before the pass.${runLocal}${recipe}${capNote}`;
+  const parts = [state.cap ? `${roundCapNote(state.cap, state.maker)}${recipe}` : `Fix or refute each finding.${recipe}`];
   if (state.runFindings > 0 && canProbe) parts.push(`${state.runFindings} finding(s) need a run to settle (proof needs-run, or a probe without proof): run each recipe (probe.steps) against the real code yourself or through the existing Maker, then call cross_review review with previousReviewId and probeResults:[{findingId, command, exitCode, output}] (one probe round per chain; no code change needed; output is an excerpt of at most ${MAX_PROBE_OUTPUT_BYTES} bytes per result, ${MAX_PROBE_TOTAL_BYTES} in total).`);
   else if (runLocal) parts.push(runLocal.trim());
   if (canDelta) parts.push(`After fixing, ${delta} so the fixes themselves are reviewed (${MAX_PLAIN_ROUNDS - state.plainUsed} non-probe round(s) left): a finding closed as fixed with no later round leaves that fix unreviewed, and resolve reports the files that changed since the last reviewed round.`);
   parts.push(`Then ${close}.`);
-  if (!canDelta) parts.push(state.maker ? MAKER_AFTER_LIMIT : "After this no further non-probe review is allowed: close any remaining finding with resolve (refuted with evidence, or limit documented).");
+  if (!canDelta) parts.push(state.maker ? makerAfterLimit : "After this no further non-probe review is allowed: close any remaining finding with resolve (refuted with evidence, or limit documented).");
   return parts.join(" ");
 }
 
@@ -2680,6 +2733,13 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     if (read.rawChars !== undefined) rawChars[item.family] = read.rawChars;
     if (read.verdicts) parsedByFamily.set(item.family, read.verdicts);
   }
+  // 2026-11-22 사용자 결정(「2번」): 회귀 표시는 2라운드부터, 이 체인의 앞 지적 id를 가리킬 때만 남긴다. 모르는 id는 회귀로 세지 않는다.
+  const earlierIds = new Set(chainFindings.map((finding) => finding.id));
+  for (const finding of findings) {
+    if (finding.regressionOf !== undefined && (round === 1 || !earlierIds.has(finding.regressionOf))) delete finding.regressionOf;
+  }
+  // 상한은 2라운드부터 체인에 나온 지적 전체에 적용한다: 뒤 라운드의 probe가 확인해도 2라운드부터의 비blocker는 여전히 limit 후보다(교차검토 R1-OAI-2).
+  const roundCap = round > 1 ? roundCapOf([...chainFindings.filter((finding) => findingRound(finding.id) >= 2), ...findings]) : undefined;
   // 결과를 받은 finding마다 판단을 모은다. finding을 낸 reviewer가 판단을 안 냈거나 모양이 틀리면 unresolved로 채운다(답 전체를 버리지 않는다).
   const verdicts: CrossReviewVerdict[] = [];
   if (probeRound) {
@@ -2733,12 +2793,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     ...(inputEntries.length > 0 || skippedInputs.length > 0 ? { inputs: inputEntries.map(({ path, bytes, blob, redacted: matches }) => ({ path, bytes, blob, ...(matches ? { redacted: matches } : {}) })), skippedInputs } : {}),
     skippedReferences, passable, snapshotDir, ...(resolvedBase ? { base: resolvedBase } : {}), ...(probeRound ? { probeResults: probeMeta, verdicts } : {}), ...(hidingLeads.length > 0 ? { hidingLeads } : {}),
     ...(sentDocs.length > 0 ? { docsMovedToReferences: sentDocs.map((target) => target.path) } : {}),
-    ...(carriedOver.length > 0 ? { carriedOver } : {}), ...(prompts.length > 1 ? { batches: prompts.length } : {}),
+    ...(carriedOver.length > 0 ? { carriedOver } : {}), ...(prompts.length > 1 ? { batches: prompts.length } : {}), ...(roundCap ? { roundCap } : {}),
     nextStep: [withInputWarning(describeNext({
-      round, passable, findings: findings.length, runFindings: findings.filter(needsRun).length, recipeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
+      round, passable, findings: findings.length, runFindings: findings.filter((finding) => needsRun(finding) && !roundCap?.limitCandidates.includes(finding.id)).length, recipeFindings: findings.filter((finding) => finding.probe).length, probeRound, verdicts,
       probeUsed: probesBefore + (probeRound ? 1 : 0), plainUsed: chain.length - probesBefore + (probeRound ? 0 : 1), maker: input.maker === true,
       limitFailures,
       uncoveredFailures,
+      cap: roundCap,
+      chainFindings: chainFindings.length,
     }), skippedInputs), ...(earlierAdvisoryFindings.length > 0 ? [`NOTE: earlier rounds of this chain also carry late advisory finding(s) ${earlierAdvisoryFindings.map((item) => item.id).join(", ")} recorded before the advisory reviewer was removed (see earlierAdvisoryFindings); resolve must close them like any other finding.`] : []), ...(sentDocs.length > 0 ? [`NOTE: doc file(s) ${sentDocs.map((target) => target.path).join(", ")} are not gate targets (docs and records are never covered by a pass), so they were taken out of files and sent as reference context only (docsMovedToReferences). Reviewers report no findings on them.`] : []), ...(policyExcluded.length > 0 ? [`WARNING: ${policyGuidance(policyExcluded)}`] : []), ...(policyReferences.length > 0 ? [`NOTE: reference(s) excluded by policy and never sent: ${policyReferences.join(", ")}.`] : [])].join(" "),
   };
 }

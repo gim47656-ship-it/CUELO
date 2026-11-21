@@ -327,6 +327,11 @@ export interface CrossReviewFinding {
    * 실패 경로를 한 단계씩 짚었다. needs-run: 재현 방법을 실제로 돌려야만 가려진다. 없는데 probe가 있으면 needs-run으로 읽는다.
    */
   proof?: CrossReviewProofLevel;
+  /**
+   * 2라운드부터만: reviewer가 이 지적을 앞 라운드 지적의 수정이 만든 회귀로 표시했을 때 그 앞 지적의 id. 같은 체인에 있는 id일 때만 남는다
+   * (2026-11-22 사용자 결정 「2번」: 2라운드부터는 blocker와 앞 수정이 만든 회귀만 고치고 나머지는 limit로 닫는다).
+   */
+  regressionOf?: string;
   /** Legacy advisory finding (R<n>-ADV-k). Resolve still has to close it. */
   advisory?: true;
 }

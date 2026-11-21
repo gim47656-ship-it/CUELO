@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { compactSkills } from "../agent/extensions/prompt-compact";
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
 
 if (!process.env.OMP_RESUME_TEST_ROOT) {
   const root = mkdtempSync(join(tmpdir(), "omp-resume-prefix-"));
@@ -23,8 +24,7 @@ if (!process.env.OMP_RESUME_TEST_ROOT) {
   const core = resolve(process.env.OMP_CORE_PATCH_TARGET ?? "node_modules/@oh-my-pi/pi-coding-agent");
   const fixture = join(root, "target");
   const script = resolve(import.meta.dirname, "apply-core-patch.mjs");
-  const source = readFileSync(script, "utf8");
-  for (const file of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(m => m[1]!))) {
+  for (const file of corePatchTargetFiles()) {
     const backup = process.env.OMP_CORE_PATCH_BACKUP && join(process.env.OMP_CORE_PATCH_BACKUP, file);
     const original = backup && existsSync(backup) ? backup : join(core, file);
     if (!existsSync(original)) continue;

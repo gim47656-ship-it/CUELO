@@ -55,10 +55,11 @@ function check(label: string, ok: boolean, detail: string): void {
 	ok ? passes++ : failures++;
 }
 
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
+
 if (!existsSync(join(core, "src/tools/read.ts"))) throw new Error(`코어 원본을 찾지 못했다: ${core}`);
-const source = readFileSync(script, "utf8");
 const pristine = process.env.OMP_CORE_PATCH_BACKUP;
-for (const path of new Set([...source.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(match => match[1]!))) {
+for (const path of corePatchTargetFiles()) {
 	const backup = pristine ? join(pristine, path) : undefined;
 	const original = backup && existsSync(backup) ? backup : join(core, path);
 	if (!existsSync(original)) continue;

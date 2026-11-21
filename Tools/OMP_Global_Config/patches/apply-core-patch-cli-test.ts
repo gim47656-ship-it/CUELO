@@ -18,9 +18,9 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { corePatchTargetFiles } from "./apply-core-patch.mjs";
 
 const SCRIPT = resolve(import.meta.dirname, "apply-core-patch.mjs");
-const SCRIPT_TEXT = readFileSync(SCRIPT, "utf8");
 
 /** 전역 npm 위치는 PC마다 다르다. apply-core-patch.mjs 와 같은 순서로 찾는다. */
 function resolveCore(): string {
@@ -56,9 +56,8 @@ const emptyTarget = join(tmpRoot, "empty");
 mkdirSync(fakeHome, { recursive: true });
 mkdirSync(emptyTarget, { recursive: true });
 
-/** EDITS 가 건드리는 파일만 사본으로 만든다. 목록은 스크립트 자신이 정본이다.
- *  줄 끝은 LF·CRLF 어느 쪽으로 저장돼도 허용한다. */
-const editFiles = [...new Set([...SCRIPT_TEXT.matchAll(/^\s*file: "([^"]+)",\s*$/gm)].map(m => m[1]!))];
+// Include version alternates (some targets exist only on one release).
+const editFiles = corePatchTargetFiles();
 if (editFiles.length === 0) throw new Error("apply-core-patch.mjs 에서 EDITS 대상 파일을 하나도 뽑지 못했다");
 for (const rel of editFiles) {
 	const src = join(CORE, rel);

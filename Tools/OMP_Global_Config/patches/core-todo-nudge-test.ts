@@ -58,7 +58,9 @@ try {
     const active = [{ name: "Plan", tasks: [{ content: "Keep tracking", status: "in_progress" }] }];
     const CORE = "mid-run-todo-nudge";
     const FIFTH = "todo-nudge";
-    type Batch = { count: number; todos?: boolean };
+    // kinds: before the writes, emit run (bash) and delegation (task) tool calls so the request has three work kinds,
+    // which the fifth-call reminder needs since 2026-11-22 (user decision: TODO reminder only for 3+ step work).
+    type Batch = { count: number; todos?: boolean; kinds?: boolean };
     let batches: Batch[] = [];
     let call = 0;
     session.agent.streamFn = () => {
@@ -76,6 +78,11 @@ try {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       queueMicrotask(async () => {
+        if (batch?.kinds) {
+          for (const toolName of ["bash", "task"]) {
+            await session.extensionRunner.emitToolCall({ type: "tool_call", toolName, toolCallId: `fixture-${toolName}-${call}`, input: {} });
+          }
+        }
         if (batch?.todos !== undefined) {
           const phases = batch.todos ? active : [];
           // Simulate a todo snapshot arriving without a model todo call in this request.
@@ -125,13 +132,13 @@ try {
     await run("extension", "Reloading the same transcript keeps the request cap", [],
       { count: 12, todos: true }, { count: 0, todos: false });
     await run("interactive", "Fifth call first; an eligible core reminder cannot follow", [FIFTH],
-      { count: 5 }, { count: 12, todos: true }, { count: 0, todos: false });
+      { count: 5, kinds: true }, { count: 12, todos: true }, { count: 0, todos: false });
     await run("rpc", "The next direct input gets a fresh core reminder", [CORE],
       { count: 12, todos: true }, { count: 0, todos: false });
     supersedeAfterWrite = writes.length + 5;
-    await run("interactive", "A newer input drops a fifth-call reminder already ready for injection", [], { count: 5 });
+    await run("interactive", "A newer input drops a fifth-call reminder already ready for injection", [], { count: 5, kinds: true });
     cfgTodoMidRunNudges.set(session.settings, "off");
-    await run("interactive", "Turning off periodic core reminders does not turn off the fifth-call reminder", [FIFTH], { count: 5 });
+    await run("interactive", "Turning off periodic core reminders does not turn off the fifth-call reminder", [FIFTH], { count: 5, kinds: true });
     cfgTodoMidRunNudges.set(session.settings, "capped");
     for (const extension of session.extensionRunner.extensions) extension.handlers.delete("input");
     await run("rpc", "The host opens a new request even without any extension input handlers", [CORE],

@@ -43,6 +43,7 @@ import {
   decideOwnerWrite,
   dropOwnedChildren,
   hasUnreportedChildren,
+  matchBlockedEvalGateOrigin,
   matchBlockedEvalModelBridge,
   matchRelayBrowserOpen,
   matchUserEgoAppCdp,
@@ -1312,6 +1313,8 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     for (let decision = summonDecision; decision; decision = summonDecision === decision ? undefined : summonDecision) {
       await decision;
     }
+    const evalGateReason = matchBlockedEvalGateOrigin(event);
+    if (evalGateReason) return { block: true, reason: evalGateReason };
     if (isToolCallEventType<"task", TaskCallInput>("task", event)) {
       let canonicalInput: TaskCallInput;
       const preparedNotices: string[] = [];
