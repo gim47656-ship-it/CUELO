@@ -275,6 +275,24 @@ test("a successful but unrelated command is reported as observed evidence, never
  expect(await reminder()).toBeUndefined();
 });
 
+test("a cross_review reviewId this session resolved with pass is observed command evidence; an open or failed one is not", async () => {
+ const { call, emit, frame } = await lane();
+ await frame([{ id: "review", what: "Reviewed change", check: "cross_review passes" }]);
+ const resolve = (reviewId: string, pass: boolean, isError = false) => emit("tool_result", {
+  toolName: "cross_review", input: { action: "resolve", reviewId },
+  content: [{ type: "text", text: JSON.stringify({ reviewId, pass, open: pass ? [] : ["R1-OAI-1"] }) }], isError,
+ });
+ await resolve("xr-20261122135346-aaaaaa", false);
+ await resolve("xr-20261122135347-bbbbbb", true, true);
+ for (const reviewId of ["xr-20261122135346-aaaaaa", "xr-20261122135347-bbbbbb", "xr-20261122135348-cccccc"]) {
+  expect(await call({ op: "evidence", id: "review", kind: "command", value: reviewId })).toContain("review: 자기 보고만");
+ }
+ await resolve("xr-20261122135349-dddddd", true);
+ const text = await call({ op: "evidence", id: "review", kind: "command", value: "xr-20261122135349-dddddd" });
+ expect(text).toContain("review: 근거 관측됨");
+ expect(text).toContain("통과(pass)로 닫았다");
+});
+
 test("pending guidance says observed evidence is not acceptance and Main assesses relevance", async () => {
  const { frame, reminder } = await lane();
  await frame([{ id: "out", what: "w", check: "c" }]);

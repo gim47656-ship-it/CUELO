@@ -51,11 +51,18 @@ describe("turn documentation evidence", () => {
     f.observe("read", "HANDOFF.md"); f.observe("read", "Docs/README.md"); f.observe("write", "Docs/history/2026/11/05-work/main.md");
     expect(f.docs.note(f.root)).toBeUndefined();
   });
-  test("documents created after source edits remove missing and unobserved claims", () => {
+  test("a repository without any HANDOFF or doc/history convention gets no notice (2026-11-18 decision)", () => {
     const f = fixture(false); f.put("index.ts"); f.observe("write", "index.ts");
+    expect(f.docs.note(f.root)).toBeUndefined();
+    f.put("HANDOFF.md");
     expect(f.docs.note(f.root)).toContain("없거나 확인 불가");
     for (const path of ["HANDOFF.md", "doc/README.md", "doc/history/2026/11/03-work/maker-A.md"]) { f.put(path); f.observe("write", path); }
     expect(f.docs.note(f.root)).toBeUndefined();
+  });
+  test("a repository whose convention lives in doc/history still flags a project missing every document", () => {
+    const f = fixture(); f.put("doc/history/2026/11/01-old/main.md"); f.put("pkg/HANDOFF.md");
+    f.put("index.ts"); f.observe("write", "index.ts");
+    expect(f.docs.note(f.root)).toContain("HANDOFF.md");
   });
   test("draft credits authoritative saved metadata, never unsaved or failed results", () => {
     const f = fixture(); f.put("index.ts"); f.observe("write", "index.ts");
@@ -75,7 +82,7 @@ describe("turn documentation evidence", () => {
     expect(f.docs.note(f.root)).toContain("작업 기록 쓰기");
   });
   test.each(["vendor/maintained.ts", ".omp/settings.json", ".env.local"])("explicit mutation of maintained source/config %s still needs documentation", (path) => {
-    const f = fixture(); f.put(path); f.observe("write", path);
+    const f = fixture(); f.put("HANDOFF.md"); f.put(path); f.observe("write", path);
     expect(f.docs.note(f.root)).toContain("HANDOFF.md");
   });
   test("read-only, doc-only, failed, URI, arbitrary code and assets do not count as source mutations", () => {
@@ -90,14 +97,14 @@ describe("turn documentation evidence", () => {
     expect(f.docs.note(f.root)).toBeUndefined();
   });
   test("actual resolved write/edit metadata supersedes requested names and handles multi-file rename/delete", () => {
-    const f = fixture(); f.put("actual.ts");
+    const f = fixture(); f.put("HANDOFF.md"); f.put("actual.ts");
     f.observe("write", "requested.md", { resolvedPath: join(f.root, "actual.ts") });
     expect(f.docs.note(f.root)).toContain("HANDOFF.md"); f.docs.reset();
     f.docs.observe({ toolName: "edit", input: { input: "[requested.md#ABCD]\nPUT 1.=1:\n+x" }, details: { perFileResults: [{ path: "actual.ts", sourcePath: "old.ts", move: "actual.ts", op: "update" }, { path: "gone.ts", op: "delete" }] }, isError: false }, f.root);
     expect(f.docs.note(f.root)).toContain("HANDOFF.md");
   });
   test("successful edit headers and file URIs are local; reset discards evidence", () => {
-    const f = fixture(); f.put("index.ts");
+    const f = fixture(); f.put("HANDOFF.md"); f.put("index.ts");
     f.docs.observe({ toolName: "edit", input: { input: "*** Begin Patch\n[index.ts#ABCD]\nPUT 1.=1:\n+x\n*** End Patch" }, isError: false }, f.root);
     expect(f.docs.note(f.root)).toContain("HANDOFF.md"); f.docs.reset();
     f.observe("write", new URL(`file://${f.root}/index.ts`).href);

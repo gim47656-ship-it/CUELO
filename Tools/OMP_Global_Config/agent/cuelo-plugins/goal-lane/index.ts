@@ -410,6 +410,8 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   /** Latest status per exact eval cell code this session (true = ran without error), for `command` evidence by line. */
   const evalCells = new Map<string, boolean>();
   const visionReads = new Map<string, string>();
+  /** reviewIds this session's cross_review resolve closed with pass:true, for `command` evidence by reviewId. */
+  const passedReviews = new Set<string>();
 
   const reset = () => {
     frame = undefined;
@@ -429,6 +431,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     commands.clear();
     evalCells.clear();
     visionReads.clear();
+    passedReviews.clear();
   };
 
   const showWidget = (ctx: ExtensionContext) => {
@@ -580,6 +583,14 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
           visionReads.set(resolve(ctx.cwd, match[1]!), excerpt(text));
         }
         // No early return: a read result can still carry a pending reframe reminder below.
+      } else if (event.toolName === "cross_review" && event.input.action === "resolve" && !event.isError) {
+        // 2026-11-22 short-prompt pilot: a Sol run spent ~55s hunting the review ledger with bash because a passed
+        // review could only be cited as a file. The resolve result itself reports reviewId and pass.
+        const text = event.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+        try {
+          const result = JSON.parse(text) as { reviewId?: unknown; pass?: unknown };
+          if (result.pass === true && typeof result.reviewId === "string") passedReviews.add(result.reviewId);
+        } catch {}
       }
       if (!main || !inScope(ctx.cwd) || !activeInput) return;
       if (!frame || frame.size === "small") {
@@ -654,7 +665,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     // Bookkeeping only: the core runs this call even when user steering arrived mid-response (apply-core-patch steeringSafe).
     steeringSafe: true,
     description:
-      "Main goal/evidence tracking, advisory not a gate. Skip for bounded solo work without risk. frame: goal, explicit(user-stated), assumptions(yours), deliverables[{id,what,check,path?}], size. Reframing retains evidence only for unchanged id/check/what/normalized path. evidence: id, kind(file|command|url|observation), value; unobserved evidence stays self-reported. Observation is not proof of fulfillment. status: current state.",
+      "Main goal/evidence tracking, advisory not a gate. Skip for bounded solo work without risk. frame: goal, explicit(user-stated), assumptions(yours), deliverables[{id,what,check,path?}], size. Reframing retains evidence only for unchanged id/check/what/normalized path. evidence: id, kind(file|command|url|observation), value (command: a bash command, an eval line, or a cross_review reviewId this session resolved with pass); unobserved evidence stays self-reported. Observation is not proof of fulfillment. status: current state.",
     parameters: z.object({
       op: z.enum(["frame", "evidence", "status"]),
       size: z.enum(["small", "normal", "deep"]).optional(),
@@ -751,7 +762,8 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         const exit = commands.get(value);
         const evalOk = value.length >= EVAL_LINE_MIN
           && [...evalCells].some(([code, ok]) => ok && code.split("\n").some((raw) => raw.trim() === value));
-        if (evalOk) { verified = true; detail = "이 세션의 eval 셀에서 이 줄을 실행, 오류 없음(단언이 실제로 검사했는지는 그 줄이 말한다)"; }
+        if (passedReviews.has(value)) { verified = true; detail = "이 세션의 cross_review resolve가 이 reviewId를 통과(pass)로 닫았다"; }
+        else if (evalOk) { verified = true; detail = "이 세션의 eval 셀에서 이 줄을 실행, 오류 없음(단언이 실제로 검사했는지는 그 줄이 말한다)"; }
         else if (exit === undefined) detail = "이 세션의 bash 도구로 같은 명령을 실행했거나 eval 셀에 같은 줄이 있었던 기록이 없다(문자열이 같아야 한다)";
         else if (Number.isNaN(exit)) detail = "실행 기록은 있지만 종료 코드가 보고되지 않았다(백그라운드·서비스 실행): 종료 코드가 나오는 실행으로 확인하라";
         else if (exit !== 0) detail = `가장 최근 실행의 종료 코드 ${exit}`;

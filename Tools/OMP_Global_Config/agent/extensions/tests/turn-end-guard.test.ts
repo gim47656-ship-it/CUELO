@@ -887,6 +887,7 @@ describe("turn-end documentation", () => {
     try {
       mkdirSync(join(cwd, ".git"));
       writeFileSync(join(cwd, "index.ts"), "export const value = 1;\n");
+      writeFileSync(join(cwd, "HANDOFF.md"), "# project\n");
       const h = harness([], undefined, undefined, undefined, cwd);
       await h.emit("input", { source: "rpc", text: "수정해 줘" });
       await h.emit("tool_result", {
@@ -907,6 +908,7 @@ describe("turn-end documentation", () => {
     const cwd = mkdtempSync(join(tmpdir(), "turn-docs-steer-"));
     try {
       writeFileSync(join(cwd, "index.ts"), "export {};\n");
+      writeFileSync(join(cwd, "HANDOFF.md"), "# project\n");
       const h = harness([], undefined, async () => [false], undefined, cwd);
       await h.emit("input", { source: "rpc", text: "수정해 줘" });
       await h.emit("tool_result", { toolName: "write", input: { path: "index.ts" }, isError: false });
@@ -929,6 +931,7 @@ describe("turn-end documentation", () => {
     const cwd = mkdtempSync(join(tmpdir(), "turn-docs-life-"));
     try {
       writeFileSync(join(cwd, "index.ts"), "export {};\n");
+      writeFileSync(join(cwd, "HANDOFF.md"), "# project\n");
       for (const reset of ["input", "session_start", "session_shutdown", "new-session", "reload", "abort"]) {
         const h = harness([], undefined, undefined, undefined, cwd);
         await h.emit("input", { source: "rpc", text: "수정해 줘" });

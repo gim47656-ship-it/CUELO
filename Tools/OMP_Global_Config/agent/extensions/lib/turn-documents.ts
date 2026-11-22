@@ -128,6 +128,11 @@ export function createTurnDocuments() {
         projects.set(project, projects.get(project) === true || (found.handoff === undefined && dirname(path) !== base));
       }
       const notices: string[] = [];
+      // 2026-11-18 사용자 결정(「일단좁히고」, rule://docs-handoff): 문서가 없을 때 새로 만드는 것은 같은 저장소가 이미
+      // HANDOFF/doc/history 관례를 쓸 때뿐이다. 관례 없는 저장소의 「없거나 확인 불가」 안내는 마감할 것이 없는 헛걸음이라 내지 않는다.
+      const repoRoot = current.git ?? base;
+      const repoDocRoot = findDocRoot(repoRoot);
+      const repoHasConvention = isFile(join(repoRoot, "HANDOFF.md")) || (repoDocRoot !== undefined && isDir(join(repoDocRoot, "history")));
       for (const [project, uncertain] of projects) {
         const docRoot = findDocRoot(project) ?? join(project, "doc");
         const docName = relative(project, docRoot).split(sep).join("/");
@@ -139,6 +144,7 @@ export function createTurnDocuments() {
         }
         if (!isDir(history)) absent.push(`${docName}/history 작업 기록`);
         else if (![...written].some((path) => within(history, path) && /^\d{4}\/\d{2}\/\d{2}-[^/]+\/(?:main|maker-[^/]+)\.md$/.test(relative(history, path).split(sep).join("/")) && isFile(path))) unseen.push("작업 기록 쓰기");
+        if (absent.length === 3 && !repoHasConvention) continue;
         if (!absent.length && !unseen.length) continue;
         const label = relative(base, project).split(sep).join("/") || ".";
         notices.push(`\`${label}\`: ${[uncertain ? "프로젝트 경계 미확인(cwd 기준)" : "", absent.length ? `없거나 확인 불가: ${absent.join("·")}` : "", unseen.length ? `이번 작업 미관측: ${unseen.join("·")}` : ""].filter(Boolean).join("; ")}`);
