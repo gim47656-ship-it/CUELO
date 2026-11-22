@@ -127,12 +127,20 @@ function writeArtifact(outDir, target, bytes, source) {
 
 // install.mjs and prepare-runtime.js point HOME at an isolated build home. rustup and cargo keep
 // their default homes under the account's own home, so name those unless they are already set.
+// rustup puts cargo in CARGO_HOME/bin, which service units (the cloud nightly run) leave off PATH.
+// It is appended to the PATH string as given, so a cargo already on PATH still wins; an unset PATH
+// keeps the system default search. Only Windows treats `Path` and `PATH` as the same variable.
 function cargoEnv(env) {
   const home = os.userInfo().homedir;
+  const cargoHome = env.CARGO_HOME || path.join(home, ".cargo");
+  const pathKey = process.platform === "win32" ? Object.keys(env).find((key) => key.toUpperCase() === "PATH") : "PATH";
+  const current = pathKey === undefined ? undefined : env[pathKey];
+  const bin = path.join(cargoHome, "bin");
   return {
     ...env,
-    CARGO_HOME: env.CARGO_HOME || path.join(home, ".cargo"),
+    CARGO_HOME: cargoHome,
     RUSTUP_HOME: env.RUSTUP_HOME || path.join(home, ".rustup"),
+    ...(current === undefined || current.split(path.delimiter).includes(bin) ? {} : { [pathKey]: `${current}${path.delimiter}${bin}` }),
   };
 }
 

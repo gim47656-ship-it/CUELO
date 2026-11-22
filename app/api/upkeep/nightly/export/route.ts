@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { collectUpkeep } from "@/lib/upkeep/collect";
 import { buildNightlyExport, exportContextLoad, nightlySourceName } from "@/lib/upkeep/nightly-inbox";
+import { collectPluginEvents } from "@/lib/upkeep/plugin-events";
 import { scanSessions } from "@/lib/upkeep/sessions";
 import { collectSkillCandidates, observedCandidates } from "@/lib/upkeep/skill-candidates";
 import { buildSkillUsage, installedSkills } from "@/lib/upkeep/skill-usage";
@@ -27,11 +28,12 @@ export async function GET(req: Request) {
     const since = now.getTime() - 14 * DAY_MS;
     const agentDir = getAgentDir();
     const sessionsDir = getSessionsDir(agentDir);
-    const [report, learned, scan, installed] = await Promise.all([
+    const [report, learned, scan, installed, pluginEvents] = await Promise.all([
       collectUpkeep(true),
       collectSkillCandidates(sessionsDir, since, now.getTime()),
       scanSessions(sessionsDir, now.getTime(), [], [], true),
       installedSkills(agentDir),
+      collectPluginEvents(agentDir, now),
     ]);
     const bundle = buildNightlyExport({
       source: nightlySourceName(process.env, hostname()),
@@ -45,6 +47,7 @@ export async function GET(req: Request) {
       dreaming: scan.dreaming,
       contextLoad: exportContextLoad(scan),
       modelErrors: scan.modelErrors,
+      pluginEvents,
     });
     const observed = bundle.skillCandidates.filter((c) => c.kind === "observed").length;
     console.log(`[upkeep/nightly/export] ${bundle.source}: ${bundle.problems.length} problem(s), ${bundle.skillCandidates.length} candidate(s) (${observed} observed), ${bundle.toolFailures.length} failure group(s), ${bundle.skillUsage.rows.length} skill(s) opened`);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { saveImagesToTemp } from "@oh-my-pi/pi-coding-agent/utils/image-temp";
 import { createJiti } from "jiti";
@@ -46,8 +46,11 @@ test("serves only the images that session's tool result actually carries", async
     tempFiles.push(file);
     return file;
   };
-  // 도구 결과에 적힌 경로라도 임시 폴더 밖이면 열지 않는다.
-  const outsideDir = await mkdtemp(join(process.cwd(), ".tool-image-test-"));
+  // 도구 결과에 적힌 경로라도 임시 폴더 밖이면 열지 않는다. 저장소 자체가 임시 폴더 안에 있으면(게시 전 격리 후보)
+  // 저장소 아래는 밖이 아니므로 홈 폴더에 만든다.
+  const fromTemp = relative(await realpath(tmpdir()), await realpath(process.cwd()));
+  const cwdInTemp = fromTemp === "" || (!fromTemp.startsWith("..") && !isAbsolute(fromTemp));
+  const outsideDir = await mkdtemp(join(cwdInTemp ? homedir() : process.cwd(), ".tool-image-test-"));
   t.after(async () => {
     await rm(outsideDir, { recursive: true, force: true });
     await Promise.all(tempFiles.map((file) => rm(file, { force: true })));

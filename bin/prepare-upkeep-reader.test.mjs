@@ -198,6 +198,31 @@ test("an unpublished version or other release source without cargo names what is
   }
 });
 
+test("a cargo installed by rustup in CARGO_HOME/bin is found when PATH leaves it out", { skip: process.platform === "win32" }, async () => {
+  const root = sourceTree("cargo-home");
+  const outDir = path.join(root, "out");
+  const cargoHome = path.join(root, "cargo-home");
+  fs.mkdirSync(path.join(cargoHome, "bin"), { recursive: true });
+  // Answers the availability probe, then fails the build with a code the assertion can see.
+  fs.writeFileSync(path.join(cargoHome, "bin", "cargo"), "#!/bin/sh\n[ \"$1\" = --version ] && { echo cargo 0.0.0; exit 0; }\nexit 7\n", { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, CARGO_HOME: process.env.CARGO_HOME };
+  const server = await releaseServer({});
+  try {
+    process.env.PATH = path.join(root, "empty-path");
+    process.env.CARGO_HOME = cargoHome;
+    await assert.rejects(
+      reader.ensure({ root, outDir, baseUrl: server.url, log: () => {} }),
+      /cargo build failed \(exit 7\)/,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await server.close();
+  }
+});
+
 // The npm package carries the binary next to the crate inputs it was built from; an installed
 // copy validates and loads it without cargo or network. Needs the prepared host artifact
 // (`bun run prepare:source` makes it before tests in CI).

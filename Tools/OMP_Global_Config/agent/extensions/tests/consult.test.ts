@@ -138,6 +138,7 @@ describe("consult through the extension loader", () => {
     expect(out.sessionFiles).toHaveLength(1);
   });
 
+  // 사례마다 자격 저장소와 확장 로더를 새로 열어 혼자서도 약 3초 걸린다. 전체 묶음 부하에서 5초 기본값을 넘긴다.
   test("별칭·짧은 이름·접미사·없는 모델·자격 없음·이미지 전용·미지원 강도·비밀·초과 입력은 호출 없이 거절한다", async () => {
     const cases: Array<[Record<string, unknown>, string, string?]> = [
       [{ model: "@smol", question: "?" }, "정확한 provider/id"],
@@ -165,7 +166,7 @@ describe("consult through the extension loader", () => {
       expect(bodies).toHaveLength(0);
       expect(out.usage).toEqual([]);
     }
-  });
+  }, 30_000);
 
   test("제공자 오류는 다른 모델로 넘어가지 않고 오류로 돌려주며 청구된 응답을 기록한다", async () => {
     behavior["claude-fable-5-1"] = "fail";

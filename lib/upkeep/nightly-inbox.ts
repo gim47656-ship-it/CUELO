@@ -18,6 +18,7 @@ import {
 } from "./nightly";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { MODEL_ERROR_DAYS, modelErrorFrom, utcDay, type ModelErrorDay, type ModelErrorExport } from "./model-errors";
+import { isPluginEventKind, PLUGIN_EVENT_DAYS, PLUGIN_FILE_LIMIT, PLUGIN_KIND_LIMIT, type PluginEventExport, type PluginEventFile } from "./plugin-events";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import { OBSERVED_LIMIT, OBSERVED_MIN_SESSIONS, type SkillCandidate } from "./skill-candidates";
@@ -89,6 +90,8 @@ export interface NightlyBundle {
   contextLoad?: ContextLoadExport;
   /** Optional v2 field; bundles without it leave the Codex model error counts unmeasured. */
   modelErrors?: ModelErrorExport;
+  /** Optional v2 field; bundles without it leave the plugin observation rows unmeasured. */
+  pluginEvents?: PluginEventExport;
 }
 
 /**
@@ -175,6 +178,7 @@ export function buildNightlyExport(input: {
   dreaming?: DreamingEvidence;
   contextLoad?: ContextLoadExport;
   modelErrors?: ModelErrorExport;
+  pluginEvents?: PluginEventExport;
 }): NightlyBundle {
   const toolFailures = rankToolFailures(input.errorsBySignature);
   // 관찰 후보의 실패 묶음을 먼저 싣는다(순위 20개 밖이거나 직전 7일 실패여도 후보 근거가 빠지지 않게). 같은 묶음은 한 번만.
@@ -194,6 +198,7 @@ export function buildNightlyExport(input: {
     dreaming: input.dreaming,
     contextLoad: input.contextLoad,
     modelErrors: input.modelErrors,
+    pluginEvents: input.pluginEvents,
     failureExcerpts: [...new Set(signatures)].flatMap((signature) => {
       const excerpts = input.failureExcerpts?.[signature];
       const split = signature.indexOf(": ");
@@ -363,6 +368,50 @@ function parseModelErrors(value: unknown, generatedAt: number | null): ModelErro
   return { from: raw.from as string, to: raw.to as string, partial: raw.partial, days };
 }
 
+const PLUGIN_EXPORT_FIELDS = ["from", "partial", "plugins", "to"].join();
+const PLUGIN_FILE_FIELDS = ["first", "kinds", "last", "plugin", "unreadable"].join();
+const PLUGIN_KIND_FIELDS = ["kind", "recent", "total"].join();
+const PLUGIN_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+/**
+ * 플러그인 이벤트 집계. 키 집합, 기간(묶음 시각에 끝나는 14일), 이름 모양, 건수와 시각이 PC 집계로 나올 수 없는 모양(최근이
+ * 전체보다 많음, 종류가 있는데 시각이 없음, 첫 시각이 마지막보다 늦음, 마지막 시각이 집계 시각보다 늦음, 모든 기록이 기간 앞인데
+ * 최근 건수가 있음, 모든 기록이 기간 안인데 최근이 전체보다 적음)이면 고쳐 읽지 않고 전체를 없는 것(null)으로 읽어 미측정으로 남긴다.
+ */
+function parsePluginEvents(value: unknown, generatedAt: number | null): PluginEventExport | null {
+  const raw = rows([value])[0];
+  if (generatedAt === null || !raw || Object.keys(raw).sort().join() !== PLUGIN_EXPORT_FIELDS || typeof raw.partial !== "boolean") return null;
+  if (!Array.isArray(raw.plugins) || raw.plugins.length > PLUGIN_FILE_LIMIT) return null;
+  // PC는 집계 시각과 묶음 시각을 같은 `now`로 쓴다.
+  const from = isoInstant(raw.from), to = isoInstant(raw.to);
+  if (from === null || to === null || to !== generatedAt || from !== to - PLUGIN_EVENT_DAYS * DAY_MS) return null;
+  const plugins: PluginEventFile[] = [];
+  const ids = new Set<string>();
+  for (const item of raw.plugins) {
+    const p = rows([item])[0];
+    if (!p || Object.keys(p).sort().join() !== PLUGIN_FILE_FIELDS || typeof p.plugin !== "string" || !PLUGIN_ID.test(p.plugin) || ids.has(p.plugin)) return null;
+    if (!isCount(p.unreadable) || !Array.isArray(p.kinds) || p.kinds.length > PLUGIN_KIND_LIMIT) return null;
+    ids.add(p.plugin);
+    const kinds: PluginEventFile["kinds"] = [];
+    const names = new Set<string>();
+    for (const entry of p.kinds) {
+      const k = rows([entry])[0];
+      if (!k || Object.keys(k).sort().join() !== PLUGIN_KIND_FIELDS || typeof k.kind !== "string" || !isPluginEventKind(k.kind) || names.has(k.kind)) return null;
+      if (!isCount(k.total) || !isCount(k.recent) || k.total === 0 || k.recent > k.total) return null;
+      names.add(k.kind);
+      kinds.push({ kind: k.kind, total: k.total, recent: k.recent });
+    }
+    const first = p.first === null ? null : isoInstant(p.first);
+    const last = p.last === null ? null : isoInstant(p.last);
+    if (kinds.length === 0 ? p.first !== null || p.last !== null : first === null || last === null || first > last || last > to) return null;
+    if (last !== null && last < from && kinds.some((k) => k.recent > 0)) return null;
+    if (first !== null && first >= from && kinds.some((k) => k.recent !== k.total)) return null;
+    if (kinds.reduce((sum, k) => sum + k.total, 0) === 1 && first !== last) return null;
+    plugins.push({ plugin: p.plugin, first: p.first as string | null, last: p.last as string | null, kinds, unreadable: p.unreadable });
+  }
+  return { from: raw.from as string, to: raw.to as string, partial: raw.partial, plugins };
+}
+
 /** 받은 묶음을 믿지 않고 모양을 다시 맞춘다. v1과 v2를 읽는다. 맞지 않으면 null. */
 function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const raw = rows([value])[0];
@@ -374,6 +423,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const dreaming = raw.version === 2 ? parseDreamingEvidence(raw.dreaming, generatedAt.getTime(), maskSecrets) : null;
   const contextLoad = raw.version === 2 ? parseContextLoad(raw.contextLoad) : null;
   const modelErrors = raw.version === 2 ? parseModelErrors(raw.modelErrors, isoInstant(raw.generatedAt)) : null;
+  const pluginEvents = raw.version === 2 ? parsePluginEvents(raw.pluginEvents, isoInstant(raw.generatedAt)) : null;
   return {
     version: raw.version,
     source: fileSource,
@@ -395,6 +445,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     ...(dreaming ? { dreaming } : {}),
     ...(contextLoad ? { contextLoad } : {}),
     ...(modelErrors ? { modelErrors } : {}),
+    ...(pluginEvents ? { pluginEvents } : {}),
   };
 }
 
@@ -853,6 +904,31 @@ function modelErrorBlock(source: string, errors: ModelErrorExport | undefined): 
   ].join("\n");
 }
 
+const utcMinute = (iso: string) => `${iso.slice(5, 10)} ${iso.slice(11, 16)}`;
+
+/**
+ * 출처의 플러그인 이벤트 집계. 묶음에 없으면 미측정, 파일이 없는 플러그인은 0건 관찰이 아니라 표본 없음이라고 적는다.
+ * 첫 기록 시각은 설치 시각이 아니다.
+ */
+function pluginEventBlock(source: string, events: PluginEventExport | undefined): string {
+  const head = [
+    "## 플러그인 이벤트 집계",
+    "",
+    `\`${source}\` 프로필의 하네스 플러그인 이벤트 파일(\`cuelo-<id>-events.jsonl\`)에서 센 종류별 건수입니다. 「전체」는 집계 시각까지 파일에 남은 모든 줄, 「최근」은 집계 시각 앞 ${PLUGIN_EVENT_DAYS}일입니다. 세션과 본문(질문, 명령, 경로)은 싣지 않으므로 오탐 여부는 이 건수만으로 판정하지 않습니다. 첫 기록 시각은 설치 시각이 아니라 이 PC에 처음 기록이 남은 때(UTC)입니다. 일부만 측정이 아닌 묶음에서 목록에 없는 플러그인은 이벤트 파일이 없는 것이며 0건 관찰이 아니라 표본 없음입니다. 일부만 측정인 묶음에서는 목록에 없는 플러그인이 읽지 못했거나 상한 때문에 빠진 것일 수 있어 미측정으로 둡니다.`,
+  ];
+  if (!events) return [...head, "- 이 묶음에는 플러그인 이벤트 집계가 없습니다(이 집계를 싣기 전 판, 모양이 틀린 집계, 또는 PC가 프로필 폴더를 읽지 못함). 미측정으로 둡니다."].join("\n");
+  const lines = events.plugins.map((p) => {
+    const span = p.first && p.last ? `첫 기록 ${utcMinute(p.first)}, 마지막 ${utcMinute(p.last)}` : "읽은 기록 없음";
+    const kinds = p.kinds.map((k) => `\`${k.kind}\` 전체 ${group(k.total)}건(최근 ${group(k.recent)}건)`).join(", ");
+    return `- \`${p.plugin}\`: ${span}${kinds ? `; ${kinds}` : ""}${p.unreadable ? `; 종류나 시각을 읽지 못한 줄 ${group(p.unreadable)}개` : ""}`;
+  });
+  return [
+    ...head,
+    `- 집계 시각: ${events.to.slice(0, 10)} ${events.to.slice(11, 16)} UTC${events.partial ? ". 파일 일부를 읽지 못했거나 상한 때문에 덜 실었습니다(일부만 측정)" : ""}`,
+    ...(lines.length ? lines : [events.partial ? "- 읽은 이벤트 파일이 없습니다. 읽지 못한 파일이 있어 미측정으로 둡니다." : "- 이벤트 파일이 하나도 없습니다. 표본 없음으로 둡니다."]),
+  ].join("\n");
+}
+
 function weeklyBlock(source: string, failures: readonly ToolFailure[]): string {
   return [
     "## 주간 성능 점검",
@@ -1007,6 +1083,7 @@ export function planInboxRun(
     if (bundle.failureExcerpts.length) block.push("", excerptBlock(bundle.source, bundle.failureExcerpts));
     block.push("", contextLoadBlock(bundle.source, bundle.contextLoad));
     block.push("", modelErrorBlock(bundle.source, bundle.modelErrors));
+    block.push("", pluginEventBlock(bundle.source, bundle.pluginEvents));
     if (candidates.length) block.push("", skillBlock(bundle.source, candidates, bundle.failureExcerpts));
     if (bundle.skillUsage.rows.length || bundle.skillUsage.unused.length) block.push("", skillHealthBlock(bundle.source, bundle.skillUsage));
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));
