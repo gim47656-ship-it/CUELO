@@ -1,6 +1,7 @@
 // Model calls and session context shared by the explicit check and automatic routing plugins.
 import type { Api, AssistantMessage, Model, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { helperAttemptRecorder } from "./helper-usage";
 import { beforeModelAbort, sameModelRoutes } from "./model-routes";
 const MAX_PLAN = 24_000;
 const MAX_USER = 6_000;
@@ -18,7 +19,7 @@ const SYSTEM = [
 ].join("\n");
 
 type Attempt = { ok: true; text: string; model: string } | { ok: false; why: string; model?: string; usageLimit?: boolean };
-type Opinion = { text: string; model: string; ms: number; fallback?: { from: string; why: string } };
+type Opinion = { text: string; model: string; ms: number; fallback?: { from: string; why: string }; partial?: boolean };
 type Advice = { ok: true; opinion: Opinion } | { ok: false; why: string };
 
 const SECRET_ANYWHERE = new RegExp(SECRET.source, "gi");
@@ -37,34 +38,54 @@ const secs = (ms: number) => (ms / 1000).toFixed(1);
 
 /** Label the advice with the model that actually answered. */
 function opinionText(opinion: Opinion): string {
-  return `${opinion.model}(${secs(opinion.ms)}초)${opinion.fallback ? `\n${fallbackLine(opinion)}` : ""}\n${opinion.text}`;
+  const partial = opinion.partial ? "\n부분 점검: 입력 일부가 생략돼 전체를 보지 않고 낸 의견이다." : "";
+  return `${opinion.model}(${secs(opinion.ms)}초)${opinion.fallback ? `\n${fallbackLine(opinion)}` : ""}${partial}\n${opinion.text}`;
 }
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…(${text.length - max}자 생략)`;
 }
 
+/** Keep the head and the end of a long text, cutting the middle, so a closing instruction survives the budget. */
+function clipEnds(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const sized = (omitted: number) => `\n…(${omitted}자 생략)…\n`;
+  // The longest marker (digits of the full length) fixes the room, so the result never exceeds max.
+  const room = Math.max(0, max - sized(text.length).length);
+  const marker = sized(text.length - room);
+  const head = Math.floor(room / 4);
+  return `${text.slice(0, head)}${marker}${text.slice(text.length - (room - head))}`;
+}
+
+type UserTurn = { text: string; cut: boolean; secret: boolean };
+
 /**
  * The last six user turns within `max` characters. The budget fills from the newest turn, so long earlier turns never
  * push out the latest instruction (issue #72); the kept turns stay oldest first under their numbers, and a leading line
  * counts the earlier turns left out.
  */
-function recentTurns(turns: readonly string[], max: number): string {
+function recentTurns(turns: readonly UserTurn[], max: number): { text: string; partial: boolean } {
   const recent = turns.slice(-6);
   const kept: string[] = [];
   let used = 0;
+  let partial = false;
   for (let i = recent.length - 1; i >= 0; i--) {
-    const line = `(${i + 1}) ${recent[i]}`;
+    const turn = recent[i]!;
+    // Only the newest turn is kept whole; an earlier turn may be clipped to its head.
+    const body = i === recent.length - 1 ? turn.text : clip(turn.text, 2000);
+    const line = `(${i + 1}) ${body}`;
     const cost = line.length + (kept.length ? 1 : 0);
     if (used + cost > max) {
-      if (!kept.length) kept.push(clip(line, max));
+      if (!kept.length) { kept.push(clipEnds(line, max)); partial = true; }
       break;
     }
     kept.unshift(line);
     used += cost;
+    if (turn.cut || (i !== recent.length - 1 && turn.text.length > 2000)) partial = true;
   }
   const dropped = recent.length - kept.length;
-  return dropped > 0 ? [`…(앞선 발언 ${dropped}개 생략)`, ...kept].join("\n") : kept.join("\n");
+  if (dropped > 0) partial = true;
+  return { text: dropped > 0 ? [`…(앞선 발언 ${dropped}개 생략)`, ...kept].join("\n") : kept.join("\n"), partial };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -85,7 +106,7 @@ const panelHistory = shared[PANEL_HISTORY] ??= new WeakMap<object, string[]>();
 
 export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = () => {}) {
   let main = true;
-  let userTurns: string[] = [];
+  let userTurns: UserTurn[] = [];
   let panelSession: object | undefined;
   /** Provider calls to abort when their session or turn ends. */
   const inflight = new Set<AbortController>();
@@ -124,6 +145,7 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
     try { target = ctx.models.resolve(exact ? selector : `@${selector}`); } catch { /* report an unresolved role below */ }
     if (!target || (exact && `${target.provider}/${target.id}` !== selector)) return { ok: false, why: `${exact ? selector : `modelRoles.${selector}`} 모델을 이 PC에서 해석하지 못했다`, ...(exact ? { model: selector } : {}) };
     const model = `${target.provider}/${target.id}`;
+    const usage = helperAttemptRecorder(ctx, { purpose: "preflight", role: exact ? undefined : selector, model: target, scrub: (message) => message.replace(SECRET_ANYWHERE, "[가림]") });
     if (!exact && (selector === "preflightOpenAI"
       ? target.provider !== "openai-codex" && target.provider !== "openai"
       : target.provider !== "anthropic")) {
@@ -157,8 +179,11 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
         apiKey, sessionId, maxTokens: 8192,
         reasoning: reasoning as never,
         signal: callSignal,
+        // Every completed attempt (including core-internal retries) is billed, so each one lands in the model_usage ledger.
+        onAttempt: usage.onAttempt,
       });
       const response: AssistantMessage = await beforeModelAbort(callSignal, complete);
+      usage.assertSaved();
       const text = response.content.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("").trim();
       // Do not retry an answer containing a secret, even when it stopped with an error.
       if (SECRET.test(text)) return { ok: false, why: "답에 비밀값으로 보이는 내용이 있어 쓰지 않았다", model };
@@ -184,15 +209,17 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
     const t0 = Date.now();
     const deadline = t0 + timeoutMs;
     // Screen the whole input before clipping so a secret split by the budget is not sent.
-    if (SECRET.test(`${plan}\n${extra}`)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다" };
-    const user = recentTurns(userTurns, MAX_USER);
-    const prompt = `# 사용자의 최근 말\n${user || "(기록 없음)"}\n\n${clip(plan, MAX_PLAN)}${extra ? `\n\n${extra}` : ""}`;
+    if (SECRET.test(`${plan}\n${extra}`) || userTurns.slice(-6).some((turn) => turn.secret)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다" };
+    const recent = recentTurns(userTurns, MAX_USER);
+    const user = recent.text;
+    const partial = recent.partial || plan.length > MAX_PLAN;
+    const prompt = `${partial ? "[부분 입력: 아래 내용 일부가 생략 부호(…)로 잘려 있다. 보지 못한 부분이 있으니 전체를 점검한 것처럼 말하지 말고 부분 점검임을 밝혀라.]\n\n" : ""}# 사용자의 최근 말\n${user || "(기록 없음)"}\n\n${clip(plan, MAX_PLAN)}${extra ? `\n\n${extra}` : ""}`;
     if (SECRET.test(prompt)) return { ok: false, why: "비밀값으로 보이는 내용이 있어 보내지 않았다" };
     const provider = (ctx.models.current() ?? ctx.model)?.provider;
     const slot = provider === "anthropic" ? "preflightOpenAI" : "preflightAnthropic";
     const first = await attempt(ctx, slot, prompt, deadline, opts.signal);
     const success = (answer: Extract<Attempt, { ok: true }>, fallback?: Opinion["fallback"]): Advice => ({
-      ok: true, opinion: { text: answer.text, model: answer.model, ms: Date.now() - t0, ...(fallback ? { fallback } : {}) },
+      ok: true, opinion: { text: answer.text, model: answer.model, ms: Date.now() - t0, ...(fallback ? { fallback } : {}), ...(partial ? { partial } : {}) },
     });
     if (first.ok) return success(first);
     let why = first.why;
@@ -219,7 +246,12 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
 
   const rememberUser = (text: string) => {
     const t = text.trim();
-    if (t && userTurns[userTurns.length - 1] !== t) userTurns = [...userTurns, clip(t, 2000)].slice(-12);
+    // The latest request keeps its head and its end (a closing constraint often sits last); only an oversized one is cut.
+    const kept = clipEnds(t, MAX_USER - 8); // room for the "(n) " number the line gets
+    // The secret screen reads the whole request: clipping can drop a key's header while its body survives.
+    const secret = SECRET.test(t);
+    const last = userTurns[userTurns.length - 1];
+    if (t && (last?.text !== kept || last.secret !== secret)) userTurns = [...userTurns, { text: kept, cut: kept !== t, secret }].slice(-12);
   };
 
   // After a reload or restart the hook state is empty; rebuild the recent user turns from the saved branch.

@@ -587,7 +587,7 @@ evidence locator·이유를 남긴다. `held`는 같은 identity와 보류 이�
   `routing.high-risk.mainIntervention`이다.
 - **계열 교차검증과 Maker의 보고 전 검토는 `rule://cross-review-procedure`가 정본이다.**
   Main은 Maker 소유 코드에 직접 `cross_review`를 돌리지 않고 owner에게 지적과 다음 라운드를 넘긴 뒤 근거를 확인해 resolve한다.
-  owner를 다시 깨울 수 없을 때만 Main이 대신한다. 한 체인은 최대 5회(probe 1회, non-probe 4회)다.
+  owner를 다시 깨울 수 없을 때만 Main이 대신한다. 검토 횟수 상한은 같은 정본을 따른다.
   면제는 사용자 명시 지시만 허용하며 2026-11-09 공급자 한도 상시 예외도 같은 정본을 따른다.
 - Main은 각 finding을 `ACCEPTED`·`REJECTED_WITH_EVIDENCE`·`ESCALATED`로 판정한다. 재작업 주문에는
   사용자 관측·재현 결과 또는 실제 diff와 요구 계약의 모순 및 정확한 locator가 필요하다.

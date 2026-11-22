@@ -2,6 +2,7 @@ import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import { invalidateModelsCache } from "./models-cache";
 import { canonicalProjectKey, getProjectTrustStatus, setProjectTrust, trustProject } from "./project-trust";
 import type { ProjectTrustAction, ProjectTrustState } from "./api-types";
+import { resumeHeldWorktreePrepare } from "./session-worktree";
 
 /**
  * Applying a project trust change to running sessions.
@@ -134,6 +135,7 @@ function reconcileKey(host: ProjectTrustHost, key: string, change: TrustChange):
       errors().set(key, error instanceof Error ? error.message : String(error));
       return;
     }
+    void resumeHeldWorktreePrepare(key, change.agentDir);
     invalidateModelsCache();
     for (const session of reserved) void session.shutdown().catch(logShutdownFailure);
     return;

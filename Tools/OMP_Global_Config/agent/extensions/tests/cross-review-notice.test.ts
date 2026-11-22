@@ -1,7 +1,7 @@
 // 편집 직후 조기 알림: marker에 맞는 게이트 대상 코드 파일은 git_finalize 전에 cross_review가 필요하다고 파일당 세션에 한 번만 알린다(게이트 아님).
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -99,12 +99,23 @@ describe("편집 직후 조기 알림", () => {
     expect(env.sent).toHaveLength(1);
   });
 
-  test("지금 내용을 덮는 통과한 검토가 이미 있으면 알리지 않는다", async () => {
+  const passLedger = (root: string, path: string, content: string) =>
+    `${JSON.stringify({ type: "cross-review", reviewId: "xr-1", root })}\n${JSON.stringify({ type: "cross-review-resolve", reviewId: "xr-1", pass: true, files: [{ path, blob: blobOf(content) }] })}\n`;
+
+  test("지금 내용을 덮는 통과한 검토가 같은 저장소에 이미 있으면 알리지 않는다", async () => {
     const env = setup();
     writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
-    writeFileSync(env.ledger, `${JSON.stringify({ type: "cross-review-resolve", reviewId: "xr-1", pass: true, files: [{ path: "a.ts", blob: blobOf(MARKER_CODE) }] })}\n`);
+    writeFileSync(env.ledger, passLedger(realpathSync(env.work), "a.ts", MARKER_CODE));
     await env.edited("write", "a.ts");
     expect(env.sent).toEqual([]);
+  });
+
+  test("다른 저장소에서 통과한 같은 경로·같은 내용은 덮지 않으므로 알린다", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    writeFileSync(env.ledger, passLedger("/some/other/repo", "a.ts", MARKER_CODE));
+    await env.edited("write", "a.ts");
+    expect(env.sent).toHaveLength(1);
   });
 
   test("session 시작이 알림 기록을 비운다", async () => {

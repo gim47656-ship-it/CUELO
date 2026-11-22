@@ -1,4 +1,5 @@
-import type { ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { helperAttemptRecorder } from "./helper-usage";
 import { beforeModelAbort, directFallbackModel, modelRoleSelector, sameModelRoutes } from "./model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
@@ -54,6 +55,7 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
     const model = models[index]!;
     signal.throwIfAborted();
     try {
+      const usage = helperAttemptRecorder(ctx, { purpose, role: model === fallback ? "interpreterFallback" : role, model });
       const response = await beforeModelAbort(signal, async () => {
         if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) {
           throw new Error(`${model.provider}/${model.id} 모델 자격을 찾지 못했습니다.`);
@@ -61,12 +63,9 @@ export async function interpret(prompt: string, purpose: string, ctx: ExtensionC
         signal.throwIfAborted();
         return completeSimple(model, {
           messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-        }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal });
+        }, { apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined, disableReasoning: true, signal, onAttempt: usage.onAttempt });
       });
-      (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-        purpose, role: model === fallback ? "interpreterFallback" : role, api: model.api, provider: model.provider, model: model.id,
-        usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
-      }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
+      usage.assertSaved();
       signal.throwIfAborted();
       const truncated = response.stopReason === "length";
       if (response.stopReason !== "stop" && !truncated) {

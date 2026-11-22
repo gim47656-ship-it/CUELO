@@ -317,6 +317,14 @@ try {
     $stagedByFinalizer = $true
     [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'add', '-A', '--') + $repoPaths))
     $cachedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff', '--cached', '--no-renames', '--name-only')
+    if ($payload.finalizeChecksTree) {
+        $stage = 'finalize-checks'
+        $stagedTree = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('write-tree')).Output
+        if ($stagedTree -cne $payload.finalizeChecksTree) {
+            throw 'The staged tree does not match the checked publication candidate. Call git_finalize again.'
+        }
+        $stage = 'stage'
+    }
     # 계열 교차검증 게이트(index.ts)가 본 파일별 blob(요청한 모든 경로, 안 바뀐 것 포함)과 stage된 내용이 같아야 커밋한다.
     # 게이트 검사와 이 잠금 사이에 파일이 바뀌었거나 게이트가 보지 못한 경로가 stage되면 검토받지 않은 내용이 커밋되므로
     # 거절한다(요청에 gateBlobs가 없으면, 즉 코드 파일이 없는 요청이면 검사하지 않는다).
@@ -380,6 +388,12 @@ try {
         }
         $committedPaths = Get-GitPaths -WorkingDirectory $repoRoot -GitArgs @('-c', 'core.quotepath=false', 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', $createdCommit)
         Assert-ExactPathSet -Actual $committedPaths -Expected $cachedPaths -Label 'Committed path set'
+        if ($payload.finalizeChecksTree) {
+            $committedTree = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', "$createdCommit^{tree}")).Output
+            if ($committedTree -cne $payload.finalizeChecksTree) {
+                throw "The created commit $createdCommit does not match the checked publication candidate. The local commit exists and was NOT pushed; inspect it before retrying."
+            }
+        }
         # 커밋 hook이 stage 뒤 파일을 다시 쓸 수 있으므로 push 전에 커밋에 들어간 blob도 게이트가 본 blob과 대조한다. 어긋나면 되돌리지
         # 않고(사용자 작업 보존) 로컬 커밋이 남았음을 알리며 멈춘다.
         if ($gateMap) {

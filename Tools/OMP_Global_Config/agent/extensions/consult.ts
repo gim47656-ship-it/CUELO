@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { SECRET_CONTENT, toolResult, type HelperResult } from "./skim";
+import { helperAttemptRecorder } from "./lib/helper-usage";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
 /**
@@ -79,6 +80,7 @@ export async function consultModel(input: ConsultInput, ctx: ExtensionContext, s
     }
   }
   const sessionId = ctx.sessionManager.getSessionId();
+  const usage = helperAttemptRecorder(ctx, { purpose: "consult", model: target });
   try {
     if (!(await ctx.modelRegistry.getApiKey(target, sessionId, { signal }))) return reject(`${resolved} 자격을 찾지 못했습니다.`, resolved);
     const { completeSimple } = await import("@oh-my-pi/pi-ai");
@@ -92,13 +94,11 @@ export async function consultModel(input: ConsultInput, ctx: ExtensionContext, s
       // 한 번 묻고 끝나는 본문이라 캐시가 다시 읽히지 않는다(cross_review와 같은 이유로 Anthropic 캐시 쓰기를 끈다).
       ...(target.provider === "anthropic" ? { cacheRetention: "none" as const } : {}),
       signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
-      // 응답이 돌아온 시도는 오류·잘린 답도 청구되므로 판정 전에 장부에 남긴다(skim completeRole과 같다). core의 thinking-loop
-      // 재시도는 같은 모델을 다시 부르므로 시도마다 남긴다. 저장 실패는 삼키지 않고 오류로 알린다.
-      onAttempt: (attempt: AssistantMessage) => (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-        purpose: "consult", api: target.api, provider: target.provider, model: target.id,
-        usage: attempt.usage, stopReason: attempt.stopReason, errorMessage: attempt.errorMessage,
-      }, { sessionId, parentId: ctx.sessionManager.getLeafId() }),
+      // 응답이 돌아온 시도는 오류·잘린 답도 청구되므로 판정 전에 장부에 남긴다. core의 thinking-loop 재시도는 같은 모델을
+      // 다시 부르므로 시도마다 남긴다. 저장 실패는 삼키지 않고 오류로 알린다.
+      onAttempt: usage.onAttempt,
     });
+    usage.assertSaved();
     const answer = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
     const respondedName = `${response.provider}/${response.model}`;
     const done: Report = { ...base, resolved, responded: respondedName !== resolved ? respondedName : undefined, status: "complete", answer: answer || undefined };

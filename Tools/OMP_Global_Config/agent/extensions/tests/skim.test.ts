@@ -352,6 +352,27 @@ describe("skim", () => {
     expect(out.failures).toEqual(["@primary 실패: boom", "x/terra 실패: boom"]);
   });
 
+  test("skim: 계정 확인·정책 거절은 다른 모델로 다시 보내지 않고, 일시적 운영 장애는 기존대로 대체 모델을 부른다", async () => {
+    const cwd = fixture();
+    writeFileSync(join(cwd, "guide.md"), "fact");
+    const run = (cause: unknown) => {
+      const called: string[] = [];
+      const result = skimQuestion({ paths: ["guide.md"], question: "?" }, context(cwd), signal, async (_p, _c, _s, model) => {
+        called.push(model);
+        if (model === ROLE_PRIMARY) throw new HelperCallError("provider refused", TEST_MODEL, { cause, providerFailure: true });
+        return reply("ok", model);
+      }).then((out) => ({ out, called }));
+      return result;
+    };
+    const refused = await run(new Error("Your account must be verified to use this model"));
+    expect(refused.called).toEqual([ROLE_PRIMARY]);
+    expect(refused.out.isError).toBe(true);
+    expect(refused.out.text).toContain("model: none");
+    const transient = await run({ stopReason: "error", errorStatus: 503, errorMessage: "Unavailable" });
+    expect(transient.called).toEqual([ROLE_PRIMARY, "anthropic/claude-sonnet-5-5"]);
+    expect(transient.out.isError).toBe(false);
+  });
+
   test("core Settings가 별도 skim 슬롯을 그대로 해석한다", () => {
     const settings = Settings.isolated({ modelRoles: { skim: TEST_MODEL } });
     expect(settings.getModelRole("skim")).toBe(TEST_MODEL);

@@ -486,7 +486,6 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       const outsideCwdReason = params.outsideCwdReason?.trim();
       const request = { cwd: windows?.[0] ?? pi.cwd, files, message, outsideCwdReason, generatedFiles: regeneratedManifest ? [manifestPath] : undefined };
       let finalizeChecks: FinalizeChecksResult | undefined;
-      let finalizeChecksHead: string | undefined;
       const run = spawnExec(signal);
       let pathPreflight: { root: string; paths: string[] } | undefined;
       const verifyPaths = async () => {
@@ -510,7 +509,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       try {
         finalizeChecks = await runFinalizeChecks({
           root, files: paths, git, exec: run, signal, waiver: params.finalizeChecksWaiver,
-          sessionManager: ctx?.sessionManager, showDirtyTracked: true,
+          sessionManager: ctx?.sessionManager, publicationCandidate: true,
           authorize: async () => {
             // Project commands may only run after the finalizer approves the same target/paths.
             const authoritative = await verifyPaths();
@@ -519,13 +518,10 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
               authoritative.paths.some((path, index) => pathKey(path) !== pathKey(paths[index]))) {
               throw new Error("The publication paths changed during path preflight.");
             }
-            const head = await run(git, ["rev-parse", "--verify", "HEAD"], { cwd: root });
-            if (head.code !== 0) throw new Error(`Could not read HEAD: ${(head.stderr || head.stdout).trim()}`);
-            finalizeChecksHead = head.stdout.trim();
             const missing = paths.filter((path) => !gateBlobs || !Object.hasOwn(gateBlobs, path));
             const blobs = await currentBlobs(run, git, root, missing);
             gateBlobs = { ...Object.fromEntries(blobs), ...gateBlobs };
-            onUpdate?.({ content: [{ type: "text", text: "Running the repository's finalize checks on the working tree." }], details: { phase: "finalize-checks" } });
+            onUpdate?.({ content: [{ type: "text", text: "Checking the repository's publication candidate." }], details: { phase: "finalize-checks" } });
           },
         });
       } catch (error) {
@@ -537,7 +533,10 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         details: { phase: "preflight", files },
       });
       // Gate blobs and HEAD bind the checked publication to the commit transaction under the lock.
-      await writeFile(requestPath, JSON.stringify({ ...request, finalizeChecksHead, gateBlobs: gateBlobs && Object.keys(gateBlobs).length ? gateBlobs : undefined }), "utf8");
+      await writeFile(requestPath, JSON.stringify({
+        ...request, finalizeChecksHead: finalizeChecks?.publicationHead, finalizeChecksTree: finalizeChecks?.candidateTree,
+        gateBlobs: gateBlobs && Object.keys(gateBlobs).length ? gateBlobs : undefined,
+      }), "utf8");
       const result = await pi.exec(shell, args, options);
       const parsed = parseResult(result.stdout);
       if (result.code !== 0 || !parsed?.ok) {
@@ -561,6 +560,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
           }
         }
       }
+      const checksNote = finalizeChecksNote(finalizeChecks);
       return {
         content: [
           {
@@ -572,7 +572,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
               + (memory.file ? ` 기억 transport(${memory.file})를 함께 커밋했다.` : "")
               + (memory.note ? ` ${memory.note}` : "")
               + (handoffNote ? ` ${handoffNote}` : "")
-              + (finalizeChecks ? `\n${finalizeChecksNote(finalizeChecks)}` : "")
+              + (checksNote ? `\n${checksNote}` : "")
               + (parsed.outsideCwdReason ? `\n세션 cwd 밖 경로를 사용자 지시(outsideCwdReason)로 커밋했다: ${parsed.outsideCwdReason}` : "")
               + (parsed.leftoverTotal && parsed.leftoverFiles?.length
                 ? `\n커밋하지 않고 남은 파일(${parsed.leftoverScope}/ 아래 ${parsed.leftoverTotal}개, 이번 커밋에 포함되지 않음):\n${parsed.leftoverFiles.join("\n")}`
@@ -582,7 +582,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
               + syncHint
           },
         ],
-        details: finalizeChecks ? { ...parsed, finalizeChecks } : parsed,
+        details: checksNote ? { ...parsed, finalizeChecks } : parsed,
       };
     } finally {
       await rm(tempDir, { recursive: true, force: true });

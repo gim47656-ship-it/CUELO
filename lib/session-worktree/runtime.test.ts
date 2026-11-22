@@ -1,14 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { ModelRegistry, Settings } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
-import { listProjectTrustDecisions } from "../project-trust";
+import { requestProjectTrustChange } from "../project-trust-lifecycle";
+import { getProjectTrustStatus, listProjectTrustDecisions, setProjectTrust } from "../project-trust";
 import { AgentSessionWrapper, getLiveSessionWorktreeUses } from "../rpc-manager";
-import { prepareResumedWorktree, notifySessionWorktreeClosed } from "./runtime";
+import { prepareResumedWorktree, notifySessionWorktreeClosed, startSessionWithWorktree } from "./runtime";
 import { checkoutIsBusy, selectSessionWorktree, withRepositoryLock } from "./index";
+import { PREPARE_LOG, PREPARE_STATUS } from "./prepare";
 const roots: string[] = [];
 const savedRegistry = globalThis.__ompSessions;
 afterEach(() => { globalThis.__ompSessions = savedRegistry; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -25,6 +29,30 @@ function fixture() {
   writeFileSync(join(main, "base"), "base"); git(main, "add", "."); git(main, "commit", "-qm", "base");
   git(main, "remote", "add", "origin", join(root, "origin.git")); git(main, "push", "-qu", "origin", "main");
   return { root, main };
+}
+function addPrepare(main: string) {
+  writeFileSync(join(main, "package.json"), JSON.stringify({ scripts: { "prepare:worktree": "echo prepared >> prepare-marker" } }));
+  mkdirSync(join(main, "src"));
+  writeFileSync(join(main, "src", "tracked"), "");
+  git(main, "add", "."); git(main, "commit", "-qm", "prepare"); git(main, "push", "-q");
+}
+function prepareStatusPath(cwd: string) {
+  return join(git(cwd, "rev-parse", "--absolute-git-dir"), PREPARE_STATUS);
+}
+async function expectPrepared(cwd: string) {
+  const status = prepareStatusPath(cwd);
+  const { promise, resolve } = Promise.withResolvers<string>();
+  const observe = () => {
+    if (!existsSync(status)) return;
+    const contents = readFileSync(status, "utf8");
+    if (contents.includes('"state":"done"') || contents.includes('"state":"failed"')) resolve(contents);
+  };
+  const watcher = watch(dirname(status), { persistent: false }, observe);
+  try {
+    observe();
+    expect(JSON.parse(await promise)).toMatchObject({ state: "done" });
+    expect(readFileSync(join(cwd, "prepare-marker"), "utf8")).toBe("prepared\n");
+  } finally { watcher.close(); }
 }
 function wrapper(id: string, cwd: string, jobs: unknown[] = []) {
   return { isAlive: () => true, sessionId: id, cwd, inner: { asyncJobManager: { getRunningJobs: () => jobs, hasPendingDeliveries: () => false, waitForAll: async () => {} } } };
@@ -61,8 +89,45 @@ test("missing auto resume returns to main unless main is busy; parallel resumes 
   expect(second).toMatch(/-worktrees\/wt-s-\d{8}-[a-f0-9]{8}$/);
   release?.(); releaseSecond?.();
 });
+test("an untrusted resumed worktree holds its only executable resource until the checkout grant applies", async () => {
+  const f = fixture(); addPrepare(f.main);
+  const agentDir = join(f.root, "agent"); mkdirSync(agentDir);
+  const previousAgentDir = getAgentDir(); setAgentDir(agentDir);
+  globalThis.__ompSessions = new Map([["main", wrapper("main", f.main) as never]]);
+  let cwd = "";
+  let release: (() => void) | undefined;
+  let starting = false;
+  const trustHost = { sessions: () => [], isStarting: () => starting };
+  const settings = Settings.isolated();
+  try {
+    release = await prepareResumedWorktree({
+      getRecordedCwd: () => `${f.main}-worktrees/wt-issue-7`,
+      setCwdWithoutRelocation: (value) => { cwd = value; },
+    });
+    expect(cwd).toMatch(/-worktrees\/wt-s-\d{8}-[a-f0-9]{8}$/);
+    const statusPath = prepareStatusPath(cwd);
+    expect(JSON.parse(readFileSync(statusPath, "utf8"))).toMatchObject({ state: "held" });
+    expect(existsSync(join(cwd, "prepare-marker"))).toBe(false);
+    expect(existsSync(join(git(cwd, "rev-parse", "--absolute-git-dir"), PREPARE_LOG))).toBe(false);
+
+    expect(requestProjectTrustChange(trustHost, join(cwd, "src"), agentDir, "grant", settings).trusted).toBe(true);
+    expect(JSON.parse(readFileSync(statusPath, "utf8"))).toMatchObject({ state: "held" });
+    starting = true;
+    expect(requestProjectTrustChange(trustHost, cwd, agentDir, "grant", settings)).toMatchObject({ pending: "grant", trusted: false });
+    expect(JSON.parse(readFileSync(statusPath, "utf8"))).toMatchObject({ state: "held" });
+    requestProjectTrustChange(trustHost, cwd, agentDir, "cancel", settings);
+    starting = false;
+    expect(requestProjectTrustChange(trustHost, cwd, agentDir, "grant", settings)).toMatchObject({ requiresTrust: true, trusted: true });
+    await expectPrepared(cwd);
+    const finished = readFileSync(statusPath, "utf8");
+    requestProjectTrustChange(trustHost, cwd, agentDir, "revoke", settings);
+    requestProjectTrustChange(trustHost, cwd, agentDir, "grant", settings);
+    expect(readFileSync(statusPath, "utf8")).toBe(finished);
+    expect(readFileSync(join(cwd, "prepare-marker"), "utf8")).toBe("prepared\n");
+  } finally { release?.(); setAgentDir(previousAgentDir); }
+});
 test("a worktree picked for a resumed session takes the trusted checkout's approval", async () => {
-  const f = fixture(); globalThis.__ompSessions = new Map();
+  const f = fixture(); addPrepare(f.main); globalThis.__ompSessions = new Map();
   const agentDir = join(f.root, "agent"); mkdirSync(agentDir);
   writeFileSync(join(agentDir, "cuelo-trusted-projects.json"), JSON.stringify({ [realpathSync(f.main)]: true }));
   const previousAgentDir = getAgentDir(); setAgentDir(agentDir);
@@ -74,7 +139,52 @@ test("a worktree picked for a resumed session takes the trusted checkout's appro
     releases.push(await prepareResumedWorktree({ getRecordedCwd: () => recorded, setCwdWithoutRelocation: (value) => { second = value; } }));
     expect(first).toBe(f.main);
     expect(listProjectTrustDecisions(agentDir)[realpathSync(second)]).toBe(true);
+    await expectPrepared(second);
   } finally { for (const release of releases) release?.(); setAgentDir(previousAgentDir); }
+});
+test("a new session prepares at the trusted checkout root without approving nested extensions", async () => {
+  const f = fixture(); addPrepare(f.main);
+  const nested = join(f.main, "src");
+  const extensions = join(nested, ".omp", "extensions");
+  mkdirSync(extensions, { recursive: true });
+  writeFileSync(join(extensions, "local.ts"), "export default () => {};\n");
+  git(f.main, "add", "."); git(f.main, "commit", "-qm", "nested extensions"); git(f.main, "push", "-q");
+  const agentDir = join(f.root, "agent");
+  setProjectTrust(f.main, agentDir, true);
+  const authStorage = await AuthStorage.create(join(agentDir, "agent.db"));
+  authStorage.keys.setRuntime("anthropic", "fixture-key-no-network");
+  const settings = Settings.isolated({
+    "memory.backend": "off", "tools.commands": false, "skills.enabled": false, "includeWorkspaceTree": false,
+  });
+  const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.yml"));
+  const previousAgentDir = getAgentDir(); setAgentDir(agentDir);
+  const previousRuntime = globalThis.__ompRuntimePromise;
+  const previousUpdateRoot = process.env.CUELO_EXTERNAL_UPDATE_ROOT;
+  process.env.CUELO_EXTERNAL_UPDATE_ROOT = join(f.root, "external-update");
+  globalThis.__ompRuntimePromise = Promise.resolve({ agentDir, settings, authStorage, modelRegistry });
+  globalThis.__ompSessions = new Map();
+  let session: AgentSessionWrapper | undefined;
+  try {
+    expect(getProjectTrustStatus(nested, agentDir, settings).trusted).toBe(false);
+    const started = await startSessionWithWorktree(undefined, nested, {
+      initialModel: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+    }, { autoWorktree: true });
+    session = started.session;
+    const worktree = started.created!.path;
+    expect(started.cwd).toBe(join(worktree, "src"));
+    expect(getProjectTrustStatus(worktree, agentDir, settings)).toEqual({ requiresTrust: true, trusted: true });
+    expect(session.projectCodeLoaded).toBe(false);
+    await expectPrepared(worktree);
+  } finally {
+    try { await session?.shutdown(); }
+    finally {
+      globalThis.__ompRuntimePromise = previousRuntime;
+      setAgentDir(previousAgentDir);
+      if (previousUpdateRoot === undefined) delete process.env.CUELO_EXTERNAL_UPDATE_ROOT;
+      else process.env.CUELO_EXTERNAL_UPDATE_ROOT = previousUpdateRoot;
+      authStorage.close();
+    }
+  }
 });
 test("close notification sweeps a landed tree and leaves live trees alone", async () => {
   const f = fixture(); globalThis.__ompSessions = new Map();

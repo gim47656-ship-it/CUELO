@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hasExplicitProjectTrust, setProjectTrust } from "../project-trust";
 import { checkoutIsBusy, parseIssue, removedAutoWorktreeRoot, rollbackUnstartedWorktree, selectSessionWorktree, sweepSessionWorktrees, withRepositoryLock, type LiveUse, type WorktreeHost } from "./index";
 import { addWorktree, removeWorktree } from "../worktree";
+import { PREPARE_LOG, PREPARE_STATUS, startWorktreePrepare } from "./prepare";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function git(cwd: string, ...args: string[]): string {
@@ -420,26 +422,61 @@ describe("issue #88 missing worktree registrations", () => {
 });
 
 describe("prepare:worktree convention on selection", () => {
-  function withPrepare(f: ReturnType<typeof fixture>, scripts?: Record<string, string>) {
-    if (scripts) { writeFileSync(join(f.main, "package.json"), JSON.stringify({ scripts })); git(f.main, "add", "."); git(f.main, "commit", "-qm", "pkg"); git(f.main, "push", "-q"); }
-    const calls: { worktree: string; gitDir: string | undefined }[] = [];
-    const host: WorktreeHost = { ...f.host, prepare: async (worktree, gitDir) => { calls.push({ worktree, gitDir }); } };
-    return { host, calls };
+  function withPrepare(f: ReturnType<typeof fixture>, scripts: Record<string, string>) {
+    writeFileSync(join(f.main, "package.json"), JSON.stringify({ scripts }));
+    git(f.main, "add", "."); git(f.main, "commit", "-qm", "pkg"); git(f.main, "push", "-q");
+    const agentDir = join(f.root, "agent");
+    setProjectTrust(f.main, agentDir, true);
+    const calls: { worktree: string; gitDir: string | undefined; trusted: boolean }[] = [];
+    const host: WorktreeHost = { ...f.host, prepare: async (worktree, gitDir) => {
+      calls.push({ worktree, gitDir, trusted: hasExplicitProjectTrust(worktree, agentDir) });
+      await startWorktreePrepare(worktree, gitDir, () => ({ once() {}, unref() {} }));
+    } };
+    return { host, calls, agentDir };
   }
   test("a new auto worktree requests the preparation once, with its private git dir", async () => {
     const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
-    const tree = await selectSessionWorktree(f.main, p.host, { autoWorktree: true });
-    expect(p.calls).toEqual([{ worktree: tree.cwd, gitDir: git(tree.cwd, "rev-parse", "--absolute-git-dir") }]);
+    const tree = await selectSessionWorktree(f.main, p.host, { autoWorktree: true, agentDir: p.agentDir });
+    expect(p.calls).toEqual([{ worktree: tree.cwd, gitDir: git(tree.cwd, "rev-parse", "--absolute-git-dir"), trusted: true }]);
   });
-  test("a reused issue worktree, a plain checkout and a script-less repository request nothing", async () => {
+  test("a reused issue worktree and a plain checkout request nothing", async () => {
     const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
-    const first = await selectSessionWorktree(f.main, p.host, { issue: "#5" });
+    const first = await selectSessionWorktree(f.main, p.host, { issue: "#5", agentDir: p.agentDir });
     expect(p.calls).toHaveLength(1);
-    const again = await selectSessionWorktree(f.main, p.host, { issue: "#5" });
+    const again = await selectSessionWorktree(f.main, p.host, { issue: "#5", agentDir: p.agentDir });
     expect(again.cwd).toBe(first.cwd);
     expect(p.calls).toHaveLength(1);
     await selectSessionWorktree(f.main, p.host);
     expect(p.calls).toHaveLength(1);
+  });
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a new checkout for an existing issue branch holds prepare if inherited trust cannot be written", async () => {
+    const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
+    git(f.main, "branch", "wt/issue-7");
+    chmodSync(p.agentDir, 0o500);
+    try {
+      await expect(selectSessionWorktree(f.main, p.host, { issue: "#7", agentDir: p.agentDir })).rejects.toThrow(/EACCES/);
+    } finally { chmodSync(p.agentDir, 0o700); }
+    const root = `${f.main}-worktrees/wt-issue-7`;
+    const gitDir = git(root, "rev-parse", "--absolute-git-dir");
+    expect(p.calls).toHaveLength(0);
+    expect(existsSync(join(gitDir, PREPARE_LOG))).toBe(false);
+    expect(JSON.parse(readFileSync(join(gitDir, PREPARE_STATUS), "utf8"))).toMatchObject({ state: "held" });
+  });
+  test.skipIf(process.platform === "win32")("a fresh worktree records held status without a separate Git directory query", async () => {
+    const f = fixture();
+    writeFileSync(join(f.main, "package.json"), '{"scripts":{"prepare:worktree":"echo prepare"}}');
+    git(f.main, "add", "."); git(f.main, "commit", "-qm", "pkg"); git(f.main, "push", "-q");
+    const bin = join(f.root, "bin"); mkdirSync(bin);
+    symlinkSync(Bun.which("git")!, join(bin, "real-git"));
+    writeFileSync(join(bin, "git"), '#!/bin/sh\nif [ "$1:$2" = "rev-parse:--absolute-git-dir" ]; then exit 73; fi\nexec "$(dirname "$0")/real-git" "$@"\n', { mode: 0o700 });
+    const savedPath = process.env.PATH;
+    let selected;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try { selected = await selectSessionWorktree(f.main, f.host, { autoWorktree: true }); }
+    finally { process.env.PATH = savedPath; }
+    const gitDir = git(selected.cwd, "rev-parse", "--absolute-git-dir");
+    expect(JSON.parse(readFileSync(join(gitDir, PREPARE_STATUS), "utf8"))).toMatchObject({ state: "held" });
+    expect(existsSync(join(gitDir, PREPARE_LOG))).toBe(false);
   });
   test("without the script the real default starts no process and the session start succeeds", async () => {
     const f = fixture(); const tree = await selectSessionWorktree(f.main, f.host, { autoWorktree: true });
@@ -447,7 +484,8 @@ describe("prepare:worktree convention on selection", () => {
     expect(existsSync(join(git(tree.cwd, "rev-parse", "--absolute-git-dir"), "cuelo-prepare.json"))).toBe(false);
   });
   test("a failing preparation start never fails the selection", async () => {
-    const f = fixture(); const host: WorktreeHost = { ...f.host, prepare: async () => { throw new Error("boom"); } };
-    expect((await selectSessionWorktree(f.main, host, { autoWorktree: true })).created).toBeDefined();
+    const f = fixture(); const p = withPrepare(f, { "prepare:worktree": "echo" });
+    const host = { ...p.host, prepare: async () => { throw new Error("boom"); } };
+    expect((await selectSessionWorktree(f.main, host, { autoWorktree: true, agentDir: p.agentDir })).created).toBeDefined();
   });
 });

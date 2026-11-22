@@ -25924,10 +25924,11 @@ function main() {
 		return;
 	}
 
-	// 어느 후보가 정본인지 정할 수 없는 상태(ambiguous)도 조용히 넘기지 않는다.
-	const unresolved = state.filter(s => s.status === "anchor-lost" || s.status === "ambiguous");
+	// 어느 후보가 정본인지 정할 수 없는 상태(ambiguous)와 대상 파일이 없는 상태(missing-file)도 쓰기 전에 막는다.
+	// missing-file 을 여기서 빼면 앞 파일을 이미 고친 뒤 쓰기 루프에서 ENOENT 로 멈춰 설치가 반쯤 패치된다.
+	const unresolved = state.filter(s => s.status === "anchor-lost" || s.status === "ambiguous" || s.status === "missing-file");
 	if (unresolved.length > 0) {
-		const lost = unresolved.map(s => (s.status === "ambiguous" ? `${s.file} (후보가 둘 이상 성립한다)` : s.file));
+		const lost = unresolved.map(s => (s.status === "ambiguous" ? `${s.file} (후보가 둘 이상 성립한다)` : s.status === "missing-file" ? `${s.file} (파일이 없다)` : s.file));
 		throw new Error(`앵커를 찾지 못했다: ${lost.join(", ")} — 패키지 버전이 바뀌었다. 패치를 다시 만들어야 한다.`);
 	}
 	if (state.every(s => s.status === "applied")) {

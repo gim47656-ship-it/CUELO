@@ -13,6 +13,8 @@ import {
   codeReviewLanes,
   collectChanges,
   CrossReviewRefusal,
+  boundInputPaths,
+  coveredBlobs,
   decideGate,
   passedBlobsInRoot,
   detectHidingLeads,
@@ -1216,6 +1218,17 @@ describe("게이트", () => {
     expect((await runGate(gateOptions(other, { files: ["copy.ts"] }))).decision?.uncovered).toEqual([]);
   });
 
+  test("다른 저장소에서 통과한 같은 경로·같은 바이트도 면제하지 않고, 같은 저장소에서는 그대로 덮는다", async () => {
+    const other = repo();
+    writeFileSync(join(other.work, "a.ts"), MARKER_BASE);
+    await passReview(other, ["a.ts"]);
+    const env = repo();
+    writeFileSync(env.ledger, readFileSync(other.ledger, "utf8"));
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+    await expect(runGate(gateOptions(env, { files: ["a.ts"] }))).rejects.toThrow("- a.ts: marker");
+    expect((await runGate(gateOptions(other, { files: ["a.ts"] }))).decision?.uncovered).toEqual([]);
+  });
+
   const round = (reviewId: string, root: string) => ({ type: "cross-review", reviewId, root }) as unknown as CrossReviewLedgerRecord;
   const pass = (reviewId: string, files: { path: string; blob: string }[], inputs?: { path: string; blob: string }[]): CrossReviewLedgerRecord =>
     ({ type: "cross-review-resolve", ts: "t", reviewId, chain: [reviewId], resolutions: [], open: [], pass: true, files, ...(inputs ? { inputs } : {}) });
@@ -1234,6 +1247,14 @@ describe("게이트", () => {
     // root를 모르면 다른 경로의 통과는 쓰지 않는다.
     const bare: ChangedFile = { ...change, path: "c.ts" };
     expect(decideGate([bare], ["c.ts"], records, new Map(), new Map(), undefined).uncovered).toHaveLength(1);
+    // root를 모르면 같은 경로의 통과도 덮지 않고, 다른 저장소의 같은 경로·blob도 덮지 않는다.
+    const same: ChangedFile = { ...change, path: "b.ts", blob: blobOf(text) };
+    expect(decideGate([same], ["b.ts"], records, new Map([["spec.md", "5".repeat(40)]]), new Map(), "/repo").uncovered).toEqual([]);
+    expect(decideGate([same], ["b.ts"], records, new Map([["spec.md", "5".repeat(40)]]), new Map(), "/other").uncovered).toHaveLength(1);
+    expect(decideGate([same], ["b.ts"], records, new Map([["spec.md", "5".repeat(40)]]), new Map(), undefined).uncovered).toHaveLength(1);
+    expect(coveredBlobs(records, "/other").get("b.ts")).toBeUndefined();
+    expect(boundInputPaths([same], records, false, "/other")).toEqual([]);
+    expect(boundInputPaths([same], records, false, "/repo")).toEqual(["spec.md"]);
   });
 
   test("decideGate: 다른 경로의 통과에 묶인 입력이 그대로일 때만 덮고, 바뀌었으면 다시 요구한다", () => {
@@ -1942,10 +1963,12 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const blob = "b".repeat(40);
     const specBlob = "5".repeat(40);
     const change: ChangedFile = { path: "a.ts", status: "added", blob, binary: false, changedLines: [{ line: 1, text: "rmSync(target);" }], text: "", content: null };
-    const records: CrossReviewLedgerRecord[] = [{ type: "cross-review-resolve", ts: "t", reviewId: "r1", chain: ["r1"], resolutions: [], open: [], pass: true, files: [{ path: "a.ts", blob }], inputs: [{ path: "spec.md", blob: specBlob }] }];
-    expect(decideGate([change], [], records, new Map([["spec.md", specBlob]])).uncovered).toEqual([]);
-    expect(decideGate([change], [], records).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (not checked)") }]);
-    expect(decideGate([change], [], records, new Map([["spec.md", "c".repeat(40)]])).uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (changed)"), reviewInputs: ["spec.md"] }]);
+    const records: CrossReviewLedgerRecord[] = [{ type: "cross-review", reviewId: "r1", root: "/repo" } as unknown as CrossReviewLedgerRecord, { type: "cross-review-resolve", ts: "t", reviewId: "r1", chain: ["r1"], resolutions: [], open: [], pass: true, files: [{ path: "a.ts", blob }], inputs: [{ path: "spec.md", blob: specBlob }] }];
+    expect(decideGate([change], [], records, new Map([["spec.md", specBlob]]), new Map(), "/repo").uncovered).toEqual([]);
+    expect(decideGate([change], [], records, new Map(), new Map(), "/repo").uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (not checked)") }]);
+    expect(decideGate([change], [], records, new Map([["spec.md", "c".repeat(40)]]), new Map(), "/repo").uncovered).toMatchObject([{ path: "a.ts", note: expect.stringContaining("spec.md (changed)"), reviewInputs: ["spec.md"] }]);
+    // root를 모르면 같은 경로의 통과도 덮지 않는다.
+    expect(decideGate([change], [], records, new Map([["spec.md", specBlob]])).uncovered).toHaveLength(1);
   });
 
   test("cross_review 도구에 inputs를 주면 Main 세션에서도 묶이고, resolve 뒤 입력이 바뀌면 게이트가 다시 거절한다", async () => {

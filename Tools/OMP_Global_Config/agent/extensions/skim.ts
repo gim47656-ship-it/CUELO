@@ -2,7 +2,8 @@ import { lstat, open, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { helperAttemptRecorder } from "./lib/helper-usage";
 import { modelRoleSelector, operationalFailure, sameModelRoutes } from "./lib/model-routes";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 
@@ -335,6 +336,10 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
     identity = name;
     if (!model.input.includes("text")) throw new HelperCallError(`${name}은 텍스트 입력을 지원하지 않아 ${call.role} 도구에 쓸 수 없습니다.`, name);
     const sessionId = ctx.sessionManager.getSessionId();
+    // judge·cache-warm과 같은 대화 밖 비용 장부(`model_usage`)에 응답이 돌아온 시도마다 onAttempt로 남긴다(core 내부
+    // 재시도 포함). 오류·빈 답 응답도 청구된 시도라 먼저 기록하고, 응답 없이 던진 예외는 관측한 usage가 없어 남기지 않는다.
+    // 장부 저장 실패는 삼키지 않고 그 모델 이름으로 실패시킨다. 부모 leaf는 자격 확인 전에 호출을 시작한 시점으로 잡는다.
+    const usage = helperAttemptRecorder(ctx, { purpose: call.role, role: slotName, model });
     if (!(await ctx.modelRegistry.getApiKey(model, sessionId, { signal }))) throw new HelperCallError(`${name} 자격을 찾지 못했습니다.`, name);
     signal.throwIfAborted();
     const maxTokens = call.maxTokens ?? model.maxTokens;
@@ -344,18 +349,11 @@ export async function completeRole(prompt: string, ctx: ExtensionContext, signal
       response = await completeSimple(model, {
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
       }, { apiKey, sessionId, maxTokens: maxTokens ?? undefined,
-        disableReasoning: true, signal });
+        disableReasoning: true, signal, onAttempt: usage.onAttempt });
     } catch (error) {
       throw new HelperCallError(error instanceof Error ? error.message : String(error), name, { cause: error, providerFailure: true });
     }
-    // judge·cache-warm과 같은 대화 밖 비용 장부(`model_usage`)에 응답이 돌아온 시도만 남긴다. 오류·빈 답
-    // 응답도 청구된 시도라 먼저 기록하고, 응답 없이 던진 예외는 관측한 usage가 없어 남기지 않는다.
-    // 장부 저장 실패는 삼키지 않고 그 모델 이름으로 실패시킨다.
-    // ctx 타입은 읽기 전용이지만 런타임 값은 세션의 SessionManager다(extensions/runner.ts).
-    (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-      purpose: call.role, role: slotName, api: model.api, provider: model.provider,
-      model: model.id, usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
-    }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
+    usage.assertSaved();
     const truncated = response.stopReason === "length" && call.acceptTruncated === true;
     if (response.stopReason !== "stop" && !truncated) {
       throw new HelperCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, { cause: response, providerFailure: response.stopReason === "error" });
@@ -490,25 +488,25 @@ export async function withFallback<T>(attempt: (requested: HelperModel) => Promi
       const text = raw.replace(/\s+/g, " ").trim();
       failures.push(`${typeof requested === "object" ? model : displayName(model)} 실패: ${text}`);
       if (signal.aborted) return { status: "cancelled", failures };
-      // A non-operational refusal, including an empty provider response, does not authorize resending a draft.
-      if (scope?.role === "draft" && error instanceof HelperCallError && error.providerFailure
-        && !(await operationalFailure(error.cause ?? error))) break;
-      if (requested === ROLE_PRIMARY && error instanceof HelperCallError && error.providerFailure) {
-        let limited = false;
+      // A non-operational refusal (auth, account, policy), including an empty provider response, does not authorize
+      // resending the request to another model, for skim and draft alike. A provider usage limit keeps its routes.
+      let limited = false;
+      if (error instanceof HelperCallError && error.providerFailure) {
         try {
           // The host loader rewrites runtime SDK imports; static package imports bypass that boundary.
           const { isUsageLimitOutcome } = await import("@oh-my-pi/pi-ai");
           limited = isUsageLimitOutcome(undefined, raw);
         } catch { /* Optional route classification cannot prevent the existing fallback. */ }
-        if (limited) {
-          if (slot && model === primary) {
-            const expiry = await limitExpiry(raw, Date.now());
-            if (expiry !== undefined && !signal.aborted) slot.map.set(slot.key, expiry);
-          }
-          if (scope) {
-            const routes = await sameModelRoutes(scope.ctx.cwd, model);
-            requests.splice(index + 1, 0, ...routes.filter((route) => route !== fallback?.name).map((route) => ({ route })));
-          }
+        if (!limited && !(await operationalFailure(error.cause ?? error))) break;
+      }
+      if (limited && requested === ROLE_PRIMARY) {
+        if (slot && model === primary) {
+          const expiry = await limitExpiry(raw, Date.now());
+          if (expiry !== undefined && !signal.aborted) slot.map.set(slot.key, expiry);
+        }
+        if (scope) {
+          const routes = await sameModelRoutes(scope.ctx.cwd, model);
+          requests.splice(index + 1, 0, ...routes.filter((route) => route !== fallback?.name).map((route) => ({ route })));
         }
       }
       if (signal.aborted) return { status: "cancelled", failures };

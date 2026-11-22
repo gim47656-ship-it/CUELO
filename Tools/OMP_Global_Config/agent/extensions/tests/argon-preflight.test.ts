@@ -290,6 +290,63 @@ describe("argon-preflight recent user turns", () => {
     expect(prompts).toHaveLength(1);
     expect(recentSection(prompts[0])).toContain(`(6) ${LATEST}`);
   });
+
+  test("the end of a 2,607-character latest request reaches the model whole, with no partial marker", async () => {
+    const constraint = "FINAL_CONSTRAINT: do not deploy and do not delete anything.";
+    const request = `${"background detail. ".repeat(200).slice(0, 2607 - constraint.length)}${constraint}`;
+    expect(request.length).toBe(2607);
+    await withPreflightRole(async () => {
+      const s = await mainSession();
+      await s.say(request);
+      expect((await s.dispatch())?.block).toBe(true);
+    });
+    expect(recentSection(prompts[0])).toContain(constraint);
+    expect(prompts[0]).not.toContain("부분 입력");
+  });
+
+  test("an oversized latest request keeps its head and its end and the prompt and the opinion say the check is partial", async () => {
+    const head = "HEAD_REQUEST: export only CSV.";
+    const constraint = "FINAL_CONSTRAINT: do not deploy and do not delete anything.";
+    const request = `${head} ${"middle filler. ".repeat(800)}${constraint}`;
+    let text = "";
+    await withPreflightRole(async () => {
+      const s = await mainSession();
+      await s.say(request);
+      text = (await s.preflight({ plan: "Write the CSV export." })).content.map((part) => part.text).join("");
+    });
+    expect(prompts).toHaveLength(1);
+    const section = recentSection(prompts[0]);
+    expect(section).toContain(head);
+    expect(section).toContain(constraint);
+    expect(section).toMatch(/…\(\d+자 생략\)…/);
+    expect(prompts[0]).toContain("부분 입력");
+    expect(text).toContain("부분 점검");
+  });
+
+  test("a secret that clipping would cut away from its header still stops the request before the provider", async () => {
+    // Assembled at runtime so the public mirror's .publicdeny key pattern never matches this fixture.
+    const keyLabel = ["PRIVATE", "KEY"].join(" ");
+    const request = `${"x".repeat(3000)}\n-----BEGIN ${keyLabel}-----\n${"A".repeat(5000)}\n-----END ${keyLabel}-----\nclosing note`;
+    await withPreflightRole(async () => {
+      const s = await mainSession();
+      await s.say(request);
+      await expect(s.preflight({ plan: "Write the CSV export." })).rejects.toThrow("비밀값");
+    });
+    expect(prompts).toHaveLength(0);
+  });
+
+  test("an earlier turn clipped by a few characters still marks the check partial", async () => {
+    let text = "";
+    await withPreflightRole(async () => {
+      const s = await mainSession();
+      await s.say("x".repeat(2009));
+      await s.say("next");
+      text = (await s.preflight({ plan: "Write the CSV export." })).content.map((part) => part.text).join("");
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("부분 입력");
+    expect(text).toContain("부분 점검");
+  });
 });
 
 

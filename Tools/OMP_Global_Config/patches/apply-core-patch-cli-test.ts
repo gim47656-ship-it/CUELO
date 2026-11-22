@@ -348,6 +348,40 @@ for (const [writer, reader, escaped] of [["node", process.execPath, false], [pro
 	check("unknown changed provenance is refused without clobbering", refused.code === 1 && readFileSync(stateFile, "utf8").includes('const gone: string[] = ["local"];'));
 }
 
+// A later missing target must stop apply before any earlier file is written (2026-11-22 audit: the first file was
+// patched and the second raised ENOENT).
+console.log("\n[P] 뒤 대상 파일이 없으면 앞 파일도 바꾸지 않는다");
+{
+	const missingRoot = join(tmpRoot, "missing-file");
+	const missingTarget = join(missingRoot, "target");
+	const missingHome = join(missingRoot, "home");
+	mkdirSync(missingHome, { recursive: true });
+	for (const [rel, bytes] of snapshot) {
+		mkdirSync(dirname(join(missingTarget, rel)), { recursive: true });
+		writeFileSync(join(missingTarget, rel), bytes);
+	}
+	const missingEnv = { ...baseEnv, USERPROFILE: missingHome, HOME: missingHome, OMP_CORE_PATCH_TARGET: missingTarget };
+	// A file whose entries have alternates turns into anchor-lost when removed, which was already blocked.
+	// Take the latest target whose removal really yields missing-file, so earlier files would be written first.
+	let missingRel: string | undefined;
+	for (const rel of [...snapshot.keys()].filter(rel => rel !== "src/registry/agent-registry.ts").reverse().slice(0, 12)) {
+		rmSync(join(missingTarget, rel));
+		const checked = run(["--check"], { env: missingEnv });
+		if (checked.out.split("\n").some(line => line.trim() === `missing-file ${rel}`)) {
+			missingRel = rel;
+			break;
+		}
+		writeFileSync(join(missingTarget, rel), snapshot.get(rel)!);
+	}
+	check("준비: 지우면 missing-file 이 되는 뒤쪽 대상 파일이 있다", missingRel !== undefined);
+	if (missingRel !== undefined) {
+		const refused = run([], { env: missingEnv });
+		check("missing-file 이 있으면 적용은 실패로 끝난다", refused.code !== 0 && refused.out.includes(`${missingRel} (파일이 없다)`), `code=${refused.code} out=${refused.out.slice(-400)}`);
+		check("missing-file 실패는 어떤 대상 파일도 쓰지 않는다", [...snapshot].every(([rel, bytes]) => rel === missingRel || readFileSync(join(missingTarget, rel)).equals(bytes)));
+		check("missing-file 실패는 백업도 만들지 않는다", !existsSync(join(missingHome, ".omp/core-patch-backup")));
+	}
+}
+
 rmSync(tmpRoot, { recursive: true, force: true });
 console.log(`\n결과: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

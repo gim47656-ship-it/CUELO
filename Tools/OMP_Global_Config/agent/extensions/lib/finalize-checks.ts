@@ -1,11 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent";
 import { Process } from "@oh-my-pi/pi-natives";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { spawnExec, type Exec } from "./cross-review";
+import { windowsPathToPosix } from "../../tools/git-finalizer/wsl-git";
 
 export const FINALIZE_CHECKS_CONFIG = ".finalize-checks.json";
 const DEFAULT_TIMEOUT_SECONDS = 1_200;
@@ -15,7 +17,13 @@ const TAIL_BYTES = 12_000;
 
 type Check = { name: string; paths: string[]; command: [string, ...string[]]; timeoutSeconds: number };
 type CheckResult = { name: string; seconds: number; reused: boolean };
-export type FinalizeChecksResult = { checks: CheckResult[]; waiver?: string };
+export type FinalizeChecksResult = {
+  checks: CheckResult[];
+  waiver?: string;
+  publicationHead?: string;
+  candidateTree?: string;
+  candidateContext?: string;
+};
 
 type Options = {
   root: string;
@@ -27,7 +35,7 @@ type Options = {
   signal?: AbortSignal;
   git?: string;
   exec?: Exec;
-  showDirtyTracked?: boolean;
+  publicationCandidate?: boolean;
 };
 
 function objectWithKeys(value: unknown, keys: string[]): value is Record<string, unknown> {
@@ -40,7 +48,7 @@ function validPath(value: unknown): value is string {
     && value.replace(/\/$/, "").split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
-async function loadConfig(path: string): Promise<{ source: string; checks: Check[] } | undefined> {
+async function readConfigSource(path: string): Promise<string | undefined> {
   try {
     const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
@@ -48,13 +56,20 @@ async function loadConfig(path: string): Promise<{ source: string; checks: Check
     });
     if (!stat) return undefined;
     if (!stat.isFile()) throw new Error("expected a regular file");
-    const source = await readFile(path, "utf8");
+    return await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function parseConfig(path: string, source: string): Check[] {
+  try {
     const config: unknown = JSON.parse(source);
     if (!objectWithKeys(config, ["version", "checks"]) || config.version !== 1 || !Array.isArray(config.checks)) {
       throw new Error("expected version 1 and a checks array");
     }
     const names = new Set<string>();
-    const checks = config.checks.map((entry: unknown, index: number): Check => {
+    return config.checks.map((entry: unknown, index: number): Check => {
       if (!objectWithKeys(entry, ["name", "paths", "command", "timeoutSeconds"])) throw new Error(`checks[${index}] has unknown fields or is not an object`);
       const { name, paths, command, timeoutSeconds = DEFAULT_TIMEOUT_SECONDS } = entry;
       if (typeof name !== "string" || name.trim() !== name || !name || /[\x00-\x1f\x7f]/.test(name) || names.has(name)) {
@@ -70,7 +85,6 @@ async function loadConfig(path: string): Promise<{ source: string; checks: Check
       names.add(name);
       return { name, paths, command: command as Check["command"], timeoutSeconds };
     });
-    return { source, checks };
   } catch (error) {
     throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -122,10 +136,13 @@ async function fileFingerprint(root: string, path: string, checkPaths: readonly 
 }
 
 type ReadGit = (args: string[]) => ReturnType<Exec>;
-type Snapshot = { hash: string; complete: boolean };
+type Snapshot = { hash: string; sourceHash: string; complete: boolean };
 
 /** Hash raw working bytes rather than `git diff`, which can hide changes behind clean filters and index flags. */
-async function fingerprint(root: string, files: readonly string[], paths: readonly string[], git: ReadGit, signal?: AbortSignal): Promise<Snapshot | undefined> {
+async function fingerprint(
+  root: string, files: readonly string[], paths: readonly string[], git: ReadGit,
+  signal?: AbortSignal, publication = false,
+): Promise<Snapshot | undefined> {
   try {
     const [head, tracked, committed, untracked] = await Promise.all([
       git(["rev-parse", "--verify", "HEAD"]),
@@ -145,15 +162,26 @@ async function fingerprint(root: string, files: readonly string[], paths: readon
       if (!entry.slice(0, tab).endsWith(" 0") || entry.startsWith("160000 ")) complete = false;
       inputs.add(entry.slice(tab + 1));
     }
-    for (const path of untracked.stdout.split("\0")) if (path && matches(paths, path)) inputs.add(path);
+    const outputs = new Set<string>();
+    for (const path of untracked.stdout.split("\0")) {
+      if (!path || !matches(paths, path) || inputs.has(path)) continue;
+      inputs.add(path);
+      if (publication) outputs.add(path);
+    }
     const hash = createHash("sha256").update(JSON.stringify([head.stdout.trim(), tracked.stdout, files]));
+    const sourceHash = outputs.size ? hash.copy() : undefined;
+    const update = (path: string, value: string | null) => {
+      const data = JSON.stringify([path, value]);
+      hash.update(data);
+      if (!outputs.has(path)) sourceHash?.update(data);
+    };
     const ordered: string[] = [];
     for (const path of [...inputs].sort()) {
       // The text Git adapter cannot distinguish invalid UTF-8 from U+FFFD. Keep
       // that part opaque instead of dropping the evidence from all other paths.
       if (path.includes("\uFFFD")) {
         complete = false;
-        hash.update(JSON.stringify([path, null]));
+        update(path, null);
       } else ordered.push(path);
     }
     for (let index = 0; index < ordered.length; index += 32) {
@@ -164,14 +192,15 @@ async function fingerprint(root: string, files: readonly string[], paths: readon
         const entry = entries[offset];
         if (entry.status === "rejected") {
           complete = false;
-          hash.update(JSON.stringify([batch[offset], null]));
+          update(batch[offset], null);
         } else {
           if (entry.value.opaque) complete = false;
-          hash.update(JSON.stringify([batch[offset], entry.value.value]));
+          update(batch[offset], entry.value.value);
         }
       }
     }
-    return { hash: hash.digest("hex"), complete };
+    const digest = hash.digest("hex");
+    return { hash: digest, sourceHash: sourceHash?.digest("hex") ?? digest, complete };
   } catch {
     // Cache evidence is optional. Unknown, inaccessible or unsupported inputs require a fresh run.
     return undefined;
@@ -244,25 +273,131 @@ async function runCommand(check: Check, cwd: string, env: NodeJS.ProcessEnv, fd:
   }
 }
 
-async function failureContext(root: string, files: readonly string[], git: ReadGit): Promise<string> {
-  const result = await git(["--no-optional-locks", "status", "--porcelain=v1", "--no-renames", "--untracked-files=no", "-z"]);
-  const label = "Dirty tracked paths outside this publication";
-  const paths = result.stdout.split("\0").filter(Boolean).map((line) => line.slice(3))
-    .filter((path) => !matches(files, path));
-  const names = result.code !== 0 ? "could not be determined" : paths.length === 0 ? "none"
-    : paths.slice(0, 8).map((path) => JSON.stringify(path)).join(", ") + (paths.length > 8 ? ` (+${paths.length - 8} more)` : "");
-  return `The check ran on the working tree at ${root}. ${label}: ${names}.`;
+async function gitOutput(git: ReadGit, args: string[]): Promise<string> {
+  const result = await git(args);
+  if (result.code !== 0) throw new Error(`git ${args.join(" ")}: ${(result.stderr || result.stdout).trim() || `exit ${result.code}`}`);
+  return result.stdout;
+}
+
+async function verifyPublicationConfig(git: ReadGit, head: string, source: string | undefined) {
+  const entry = (await gitOutput(git, ["ls-tree", head, "--", FINALIZE_CHECKS_CONFIG])).trim();
+  const blob = /^100(?:644|755) blob ([0-9a-f]+)\t/.exec(entry)?.[1];
+  const committed = blob === undefined ? undefined : await gitOutput(git, ["cat-file", "blob", blob]);
+  // Git can store LF for a CRLF checkout. The actual checkout bytes still bind the receipt.
+  if ((entry && !blob) || committed?.replaceAll("\r\n", "\n") !== source?.replaceAll("\r\n", "\n")) {
+    throw new Error(`${FINALIZE_CHECKS_CONFIG} differs from the publication candidate. Include it in the publication or restore its committed version.`);
+  }
+}
+
+async function excludedPaths(git: ReadGit, files: readonly string[], checkIndexFlags = false): Promise<string[]> {
+  const [status, flags] = await Promise.all([
+    gitOutput(git, ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+      "status", "--porcelain=v1", "--no-renames", `--untracked-files=${checkIndexFlags ? "all" : "no"}`, "--ignore-submodules=none", "-z"]),
+    checkIndexFlags ? gitOutput(git, ["ls-files", "-v", "-z"]) : "",
+  ]);
+  const paths = new Set(status.split("\0").filter(Boolean).map((line) => line.slice(3)));
+  // Skip-worktree and assume-unchanged paths can hide divergence from status.
+  for (const entry of flags.split("\0")) if (/^[Sa-z] /.test(entry)) paths.add(entry.slice(2));
+  return [...paths].filter((path) => !matches(files, path));
+}
+
+async function withCandidate<T>(
+  options: Options, root: string, head: string, files: readonly string[], git: ReadGit,
+  run: (cwd: string, git: ReadGit, tree: string, cache: string) => Promise<T>,
+): Promise<T> {
+  const parent = await realpath(tmpdir());
+  const fromRepo = relative(root, parent);
+  if (!isAbsolute(fromRepo) && fromRepo !== ".." && !fromRepo.startsWith(`..${sep}`)) {
+    throw new Error("The temporary directory for publication candidates must be outside the repository.");
+  }
+  // Repository-local overrides would redirect writes away from the private index.
+  for (const name of ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]) {
+    if (process.env[name] !== undefined) throw new Error(`Unset ${name} before constructing the publication candidate.`);
+  }
+  // Windows Git locates the source; native WSL Git creates a POSIX gitdir for native checks.
+  const wslWindowsGit = options.git === "git.exe" && process.platform === "linux";
+  const gitDir = (await gitOutput(git, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  const commonDir = wslWindowsGit ? windowsPathToPosix(gitDir) : gitDir;
+  const temp = await mkdtemp(join(parent, "omp-publication-"));
+  const cwd = join(temp, "candidate");
+  const exec = options.exec ?? spawnExec(options.signal);
+  const command = wslWindowsGit ? "git" : options.git ?? "git";
+  const flags = ["-c", `core.hooksPath=${join(temp, "no-hooks")}`, "-c", "core.fsmonitor=false",
+    "-c", "core.sparseCheckout=false", "-c", "core.untrackedCache=false"];
+  const repoArgs = [`--git-dir=${commonDir}`, ...flags];
+  const candidateGit: ReadGit = (args) => exec(command, [...flags, ...args], { cwd });
+  const uncancelled = spawnExec();
+  const worktreeGit: ReadGit = (args) => uncancelled(command, [...repoArgs, ...args], { cwd: root });
+  let registered = false;
+  let failure: unknown;
+  try {
+    // No checkout/hook sees the wrong tree. Git stages from the source under
+    // the same repository config, but only in the candidate's private index.
+    await gitOutput(worktreeGit, ["worktree", "add", "--detach", "--no-checkout", cwd, head]);
+    registered = true;
+    options.signal?.throwIfAborted();
+    await gitOutput(candidateGit, ["read-tree", head]);
+    if (wslWindowsGit) {
+      // Stage with the same Git that will publish (including Windows filter/EOL config).
+      // Pass its private gitdir directly: the temporary checkout's .git file uses POSIX paths.
+      const privateDir = (await gitOutput(candidateGit, ["rev-parse", "--absolute-git-dir"])).trim();
+      const paths = await Promise.all([privateDir, root].map(async (path) => {
+        const converted = await exec("wslpath", ["-w", path], { cwd: root });
+        if (converted.code !== 0 || !converted.stdout.trim()) throw new Error(`Could not convert ${path}: ${converted.stderr || converted.stdout}`);
+        return converted.stdout.trim();
+      }));
+      await gitOutput(git, [`--git-dir=${paths[0]}`, `--work-tree=${paths[1]}`, "-c", "core.fsmonitor=false",
+        "-c", "core.sparseCheckout=false", "--literal-pathspecs", "add", "-A", "--", ...files]);
+    } else {
+      await gitOutput(candidateGit, [`--work-tree=${root}`, "--literal-pathspecs", "add", "-A", "--", ...files]);
+    }
+    const tree = (await gitOutput(candidateGit, ["write-tree"])).trim();
+    await gitOutput(candidateGit, ["checkout-index", "--all", "--index"]);
+    return await run(cwd, candidateGit, tree, join(temp, "bun-cache"));
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    // Cleanup is uncancelled. Preserve the check's log/error even if teardown fails.
+    let unregisterError: unknown;
+    const remove = ["worktree", "remove", "--force", cwd];
+    if (registered || await lstat(join(cwd, ".git")).catch(() => undefined)) {
+      await gitOutput(worktreeGit, remove).catch((error) => { unregisterError = error; });
+    }
+    let directoryError: unknown;
+    await rm(temp, { recursive: true, force: true, maxRetries: 2 }).catch((error) => { directoryError = error; });
+    if (unregisterError && !directoryError) {
+      // The filesystem changed: retry only the owned registry entry after removing its tree.
+      unregisterError = undefined;
+      await gitOutput(worktreeGit, remove).catch((error) => { unregisterError = error; });
+    }
+    if (unregisterError || directoryError) {
+      const details = [unregisterError, directoryError].filter(Boolean).map(String).join("; ");
+      throw new Error(`${failure ? `${failure instanceof Error ? failure.message : String(failure)}\n` : ""}Publication candidate cleanup failed (${temp}): ${details}`, { cause: failure });
+    }
+  }
 }
 
 export async function runFinalizeChecks(options: Options): Promise<FinalizeChecksResult | undefined> {
   const configPath = join(options.root, FINALIZE_CHECKS_CONFIG);
-  const config = await loadConfig(configPath);
-  if (!config?.checks.length) return undefined;
-  const files = typeof options.files === "function" ? await options.files() : options.files;
-  const selected = config.checks.filter((check) => files.some((file) => matches(check.paths, file)));
-  if (!selected.length) return undefined;
+  const exec = options.exec ?? spawnExec(options.signal);
+  const git: ReadGit = (args) => exec(options.git ?? "git", args, { cwd: options.root });
+  const publicationHead = options.publicationCandidate ? (await gitOutput(git, ["rev-parse", "--verify", "HEAD"])).trim() : undefined;
+  const source = await readConfigSource(configPath);
+  const files = options.files;
+  const publicationFiles = publicationHead ? (typeof files === "function" ? await files() : files) : undefined;
+  if (publicationHead && publicationFiles && !matches(publicationFiles, FINALIZE_CHECKS_CONFIG)) {
+    await verifyPublicationConfig(git, publicationHead, source);
+  }
+  const noChecks = publicationHead ? { checks: [], publicationHead } : undefined;
+  if (source === undefined) return noChecks;
+  const checks = parseConfig(configPath, source);
+  if (!checks.length) return noChecks;
+  const paths = publicationFiles ?? (typeof files === "function" ? await files() : files);
+  const selected = checks.filter((check) => paths.some((file) => matches(check.paths, file)));
+  if (!selected.length) return noChecks;
   const waiver = options.waiver?.trim();
-  if (waiver) return { checks: [], waiver };
+  if (waiver) return { checks: [], waiver, publicationHead };
   const trust = options.sessionManager && Reflect.get(options.sessionManager, Symbol.for("cuelo.finalizeChecksProjectTrust"));
   const inCuelo = Reflect.get(globalThis, Symbol.for("cuelo.finalizeChecksBrowser")) === true;
   if ((inCuelo || trust !== undefined) && (typeof trust !== "function" || trust(options.root) !== true)) {
@@ -270,24 +405,57 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
   }
   await options.authorize?.();
 
-  const exec = options.exec ?? spawnExec(options.signal);
-  const git: ReadGit = (args) => exec(options.git ?? "git", args, { cwd: options.root });
+  options.signal?.throwIfAborted();
   const root = await realpath(options.root);
+  if (!publicationHead) return runSelectedChecks(options, root, paths, source, selected, root, git);
+  const excluded = await excludedPaths(git, paths, true);
+  const context = excluded.length
+    ? `The checks ran on an isolated publication candidate. Excluded dirty or index-hidden paths: ${excluded.slice(0, 8).map((path) => JSON.stringify(path)).join(", ")}${excluded.length > 8 ? ` (+${excluded.length - 8} more)` : ""}.`
+    : "The checks ran on the publication candidate in place; no dirty paths were excluded.";
+  if (!excluded.length) {
+    const result = await runSelectedChecks(options, root, paths, source, selected, root, git, context);
+    if ((await excludedPaths(git, paths)).length) throw new Error("Paths outside the publication changed during the checks; call the publication tool again.");
+    return { ...result, publicationHead };
+  }
+  return withCandidate(options, root, publicationHead, paths, git, async (cwd, candidateGit, candidateTree, bunCache) => {
+    const candidateSource = await readConfigSource(join(cwd, FINALIZE_CHECKS_CONFIG));
+    if (candidateSource === undefined || candidateSource.replaceAll("\r\n", "\n") !== source.replaceAll("\r\n", "\n")) {
+      throw new Error(`${configPath} differs from the materialized publication candidate. Include it in the publication or restore its committed version.`);
+    }
+    const result = await runSelectedChecks(options, root, paths, candidateSource, selected, cwd, candidateGit, context, candidateTree, bunCache);
+    if (await readFile(configPath, "utf8").catch(() => undefined) !== source) {
+      throw new Error(`${configPath} changed during the checks; call the publication tool again.`);
+    }
+    return { ...result, publicationHead, candidateTree };
+  });
+}
+
+async function runSelectedChecks(
+  options: Options, root: string, files: readonly string[], source: string, selected: readonly Check[],
+  cwd: string, git: ReadGit, candidateContext?: string, candidateTree?: string, bunCache?: string,
+): Promise<FinalizeChecksResult> {
   const agentDir = getAgentDir();
   const ledgerDir = resolve(options.ledgerDir ?? (process.env.OMP_FINALIZE_CHECKS_LEDGER || join(agentDir, "finalize-checks-ledger")));
   const env = { ...process.env };
   const envKey = createHash("sha256").update(JSON.stringify(Object.entries(env).sort())).digest("hex");
+  // No ignored paths are transferred. CUELO installs and prepares SDK/native
+  // dependencies in cwd; a private Bun cache cannot hardlink back into the source.
+  if (bunCache) {
+    env.BUN_INSTALL_CACHE_DIR = bunCache;
+    env.PWD = cwd;
+  }
   const results: CheckResult[] = [];
   const verified: { check: Check; fingerprint: string }[] = [];
   let ranAfterVerification = false;
   let logDir: string | undefined;
   for (const check of selected) {
     options.signal?.throwIfAborted();
-    const prior = await fingerprint(root, files, check.paths, git, options.signal);
+    const prior = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate);
     options.signal?.throwIfAborted();
     const slot = createHash("sha256").update(JSON.stringify([root, check.name])).digest("hex");
     const ledgerFile = join(ledgerDir, slot);
-    const key = prior?.complete ? createHash("sha256").update(JSON.stringify([2, envKey, check, prior.hash])).digest("hex") : undefined;
+    const key = prior?.complete ? createHash("sha256").update(JSON.stringify(options.publicationCandidate
+      ? [3, envKey, check, candidateTree ?? null, prior.hash] : [2, envKey, check, prior.hash])).digest("hex") : undefined;
     if (key && await readFile(ledgerFile, "utf8").catch(() => undefined) === key) {
       results.push({ name: check.name, seconds: 0, reused: true });
       verified.push({ check, fingerprint: prior!.hash });
@@ -305,7 +473,7 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
     let failure: string | undefined;
     let tail = "";
     try {
-      failure = await runCommand(check, root, env, handle.fd, options.signal).catch((error: Error) => `could not start: ${error.message}`);
+      failure = await runCommand(check, cwd, env, handle.fd, options.signal).catch((error: Error) => `could not start: ${error.message}`);
       if (failure) {
         const size = (await handle.stat()).size;
         const buf = Buffer.allocUnsafe(Math.min(size, TAIL_BYTES));
@@ -317,12 +485,14 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
     }
     const seconds = Math.round(performance.now() - started) / 1_000;
     if (failure) {
-      const context = options.showDirtyTracked ? await failureContext(root, files, git) : undefined;
-      throw new Error([`${check.name} ${failure} (${seconds}s).`, context, tail && `Last output:\n${tail}`, `Full log: ${log}`, "Fix the failing check, then call the publication tool again."].filter(Boolean).join("\n"));
+      throw new Error([`${check.name} ${failure} (${seconds}s).`, candidateContext, tail && `Last output:\n${tail}`, `Full log: ${log}`, "Fix the failing check, then call the publication tool again."].filter(Boolean).join("\n"));
     }
     results.push({ name: check.name, seconds, reused: false });
     ranAfterVerification = verified.length > 0;
-    const after = await fingerprint(root, files, check.paths, git, options.signal);
+    const after = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate);
+    if (options.publicationCandidate && prior?.sourceHash !== after?.sourceHash) {
+      throw new Error(`${check.name}'s publication candidate inputs changed during the check. Call the publication tool again when the inputs are stable.`);
+    }
     if (after) verified.push({ check, fingerprint: after.hash });
     if (key && after?.complete && after.hash === prior?.hash) {
       try {
@@ -334,20 +504,23 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
   // Subsequent checks can touch inputs of earlier checks. Do not publish based on a stale pass.
   if (ranAfterVerification) {
     for (const entry of verified) {
-      if ((await fingerprint(root, files, entry.check.paths, git, options.signal))?.hash !== entry.fingerprint) {
+      if ((await fingerprint(cwd, files, entry.check.paths, git, options.signal))?.hash !== entry.fingerprint) {
         throw new Error(`${entry.check.name}'s working-tree inputs changed after it passed. Call the publication tool again when the inputs are stable.`);
       }
     }
   }
   options.signal?.throwIfAborted();
-  if (await readFile(configPath, "utf8").catch(() => undefined) !== config.source) {
+  const configPath = join(cwd, FINALIZE_CHECKS_CONFIG);
+  if (await readFile(configPath, "utf8").catch(() => undefined) !== source) {
     throw new Error(`${configPath} changed during the checks; call the publication tool again.`);
   }
-  return { checks: results };
+  return { checks: results, candidateContext };
 }
 
 export function finalizeChecksNote(result?: FinalizeChecksResult): string {
   if (!result) return "";
   if (result.waiver) return `Finalize checks waived by explicit user instruction: ${result.waiver}.`;
-  return `Finalize checks: ${result.checks.map(({ name, seconds, reused }) => reused ? `${name} reused` : `${name} ran (${seconds}s)`).join("; ")}.`;
+  if (!result.checks.length) return "";
+  return `Finalize checks: ${result.checks.map(({ name, seconds, reused }) => reused ? `${name} reused` : `${name} ran (${seconds}s)`).join("; ")}.`
+    + (result.candidateContext ? ` ${result.candidateContext}` : "");
 }

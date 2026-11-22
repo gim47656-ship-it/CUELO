@@ -1121,11 +1121,30 @@ export interface CoveringPass { reviewId: string; inputs: readonly CrossReviewFi
 /** 의존 입력이 일반 파일이 아닌 상태(링크·디렉터리·읽을 수 없음)를 나타내는 값. git blob이 아니므로 어떤 기록과도 같을 수 없다. */
 export const NOT_REGULAR_BLOB = "not-a-regular-file";
 
-/** 통과한 resolve 기록이 덮는 (경로, blob) 쌍과 그 쌍을 덮는 기록들. 통과하지 못한 resolve는 아무것도 덮지 않는다. */
-export function coveredBlobs(records: readonly CrossReviewLedgerRecord[]): Map<string, Map<string, CoveringPass[]>> {
-  const covered = new Map<string, Map<string, CoveringPass[]>>();
+/**
+ * root 저장소에서 통과한 resolve 기록. 저장소는 resolve 기록이 가리키는 라운드 기록의 root로 가르며, 그 라운드 기록이 없거나 root가 없거나 다르면
+ * (한 reviewId가 서로 다른 root로 기록된 경우 포함) 어느 저장소의 통과인지 정할 수 없으므로 포함하지 않는다. 통과하지 못한 resolve도 포함하지 않는다.
+ * 저장소 루트는 git이 돌려준 실제 경로 그대로 비교한다(철자만 다른 root는 같은 저장소로 합치지 않아 덮지 않는다: fail-closed).
+ */
+function passedResolvesInRoot(records: readonly CrossReviewLedgerRecord[], root: string): CrossReviewResolveRecord[] {
+  const rootOf = new Map<string, string | null>();
   for (const record of records) {
-    if (record.type !== "cross-review-resolve" || record.pass !== true) continue;
+    if (record.type !== "cross-review") continue;
+    const next = typeof record.root === "string" && record.root ? pathKey(record.root) : null;
+    rootOf.set(record.reviewId, rootOf.has(record.reviewId) && rootOf.get(record.reviewId) !== next ? null : next);
+  }
+  const wanted = pathKey(root);
+  return records.filter((record): record is CrossReviewResolveRecord => {
+    if (record.type !== "cross-review-resolve" || record.pass !== true) return false;
+    const recordRoot = rootOf.get(record.reviewId);
+    return !!recordRoot && recordRoot === wanted;
+  });
+}
+
+/** 같은 저장소(root)에서 통과한 resolve 기록이 덮는 (경로, blob) 쌍과 그 쌍을 덮는 기록들. 다른 저장소의 같은 경로·blob은 덮지 않는다. */
+export function coveredBlobs(records: readonly CrossReviewLedgerRecord[], root: string): Map<string, Map<string, CoveringPass[]>> {
+  const covered = new Map<string, Map<string, CoveringPass[]>>();
+  for (const record of passedResolvesInRoot(records, root)) {
     const pass: CoveringPass = { reviewId: record.reviewId, inputs: record.inputs ?? [] };
     for (const { path, blob } of record.files) {
       const blobs = covered.get(path) ?? new Map<string, CoveringPass[]>();
@@ -1138,23 +1157,11 @@ export function coveredBlobs(records: readonly CrossReviewLedgerRecord[]): Map<s
 
 /**
  * 같은 저장소에서 통과한 resolve 기록이 덮은 blob → 그 blob을 덮은 (경로, 통과) 목록. 경로가 달라도 같은 바이트면 그 통과가 덮은 것으로 본다
- * (사용자 결정 2026-11-19: 통과 기록이 있는 같은 바이트만, HEAD에 있다는 것만으로는 아님). 저장소는 resolve 기록이 가리키는 라운드 기록의 root로 가르며,
- * 그 라운드 기록이 없거나 root가 다르면 덮지 않는다. 통과하지 못한 resolve는 아무것도 덮지 않는다.
+ * (사용자 결정 2026-11-19: 통과 기록이 있는 같은 바이트만, HEAD에 있다는 것만으로는 아님). 저장소 구분은 passedResolvesInRoot를 따른다.
  */
 export function passedBlobsInRoot(records: readonly CrossReviewLedgerRecord[], root: string): Map<string, { path: string; pass: CoveringPass }[]> {
-  // 한 reviewId가 서로 다른 root로 기록돼 있으면 어느 저장소의 통과인지 정할 수 없으므로 아무것도 덮지 않는다.
-  const rootOf = new Map<string, string | null>();
-  // 저장소 루트는 git이 돌려준 실제 경로 그대로 비교한다(철자만 다른 root는 같은 저장소로 합치지 않아 덮지 않는다: fail-closed).
-  for (const record of records) {
-    if (record.type !== "cross-review") continue;
-    const next = typeof record.root === "string" && record.root ? pathKey(record.root) : null;
-    rootOf.set(record.reviewId, rootOf.has(record.reviewId) && rootOf.get(record.reviewId) !== next ? null : next);
-  }
   const byBlob = new Map<string, { path: string; pass: CoveringPass }[]>();
-  for (const record of records) {
-    if (record.type !== "cross-review-resolve" || record.pass !== true) continue;
-    const recordRoot = rootOf.get(record.reviewId);
-    if (!recordRoot || recordRoot !== pathKey(root)) continue;
+  for (const record of passedResolvesInRoot(records, root)) {
     const pass: CoveringPass = { reviewId: record.reviewId, inputs: record.inputs ?? [] };
     for (const { path, blob } of record.files) byBlob.set(blob, [...(byBlob.get(blob) ?? []), { path, pass }]);
   }
@@ -1175,7 +1182,7 @@ function changedInputs(inputs: readonly CrossReviewFile[], now: ReadonlyMap<stri
  * 입력 없는 통과만 있으면 비어 있다.
  */
 export function boundInputPaths(changes: readonly ChangedFile[], records: readonly CrossReviewLedgerRecord[], anyBlob = false, root?: string): string[] {
-  const covered = coveredBlobs(records);
+  const covered = root === undefined ? new Map<string, Map<string, CoveringPass[]>>() : coveredBlobs(records, root);
   const elsewhere = root === undefined ? undefined : passedBlobsInRoot(records, root);
   const paths = new Set<string>();
   for (const change of changes) {
@@ -1270,7 +1277,8 @@ export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<s
     if (reasons.length > 0) required.push({ path: change.path, blob: change.blob, reasons });
   }
   if (required.length === 0) return { required, uncovered: [] };
-  const covered = coveredBlobs(records);
+  // root를 모르면 같은 경로의 통과도 어느 저장소의 것인지 알 수 없으므로 덮지 않는다(fail-closed).
+  const covered = root === undefined ? new Map<string, Map<string, CoveringPass[]>>() : coveredBlobs(records, root);
   // 같은 저장소에서 같은 바이트를 통과시킨 다른 경로의 기록(root를 모르면 쓰지 않는다). 같은 경로의 통과가 우선한다.
   const elsewhere = root === undefined ? new Map<string, { path: string; pass: CoveringPass }[]>() : passedBlobsInRoot(records, root);
   const current = new Map(changes.map((change) => [change.path, change.content] as const));
@@ -1345,7 +1353,7 @@ export async function earlyReviewNotice(cwd: string, absolutePath: string, exec:
     const hits = detectMarkers(change.path, change.changedLines);
     if (hits.length === 0) return undefined;
     const records = readRecords();
-    if (coveredBlobs(records).get(change.path)?.get(change.blob)?.length || passedBlobsInRoot(records, resolved.root).get(change.blob)?.length) return undefined;
+    if (coveredBlobs(records, resolved.root).get(change.path)?.get(change.blob)?.length || passedBlobsInRoot(records, resolved.root).get(change.blob)?.length) return undefined;
     const seen = new Set<string>();
     const shown = hits.filter((hit) => !seen.has(hit.trigger) && seen.add(hit.trigger)).slice(0, 3)
       .map((hit) => `${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}`);
@@ -1431,7 +1439,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열·주석만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
   const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
   if (older.length > 0) {
-    const covered = coveredBlobs(records);
+    const covered = coveredBlobs(records, resolved.root);
     const passedContent = new Map<string, string>();
     for (const file of older) {
       for (const blob of covered.get(file.path)?.keys() ?? []) {

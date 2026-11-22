@@ -30,6 +30,7 @@ describe("worktree prepare convention", () => {
   test("script present: starts bun run prepare:worktree detached in the worktree, logs outside the checkout", async () => {
     const t = tree({ "prepare:worktree": "node prep.js" }); const fake = fakeSpawner();
     expect(await startWorktreePrepare(t.worktree, t.gitDir, fake.spawner)).toBe(true);
+    expect(await startWorktreePrepare(t.worktree, t.gitDir, fake.spawner)).toBe(false);
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]).toMatchObject({ command: "bun", args: ["run", "prepare:worktree"], cwd: t.worktree, detached: true });
     expect(fake.calls[0].env?.[PREPARE_STATUS_ENV]).toBe(join(t.gitDir, PREPARE_STATUS));

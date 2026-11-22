@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 import {
   authorFamily,
@@ -20,6 +20,7 @@ import {
   type ReviewProgress,
   type ResolveInput,
 } from "./lib/cross-review";
+import { helperAttemptRecorder } from "./lib/helper-usage";
 import { beforeModelAbort } from "./lib/model-routes";
 import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledger";
 import { onSessionLifecycle } from "./lib/session-identity";
@@ -51,6 +52,7 @@ export async function completeReviewer(
   if (!ok) throw new ReviewerCallError(`modelRoles.${slot} resolved to ${name}, which is not a ${lane} model.`, name);
   const sessionId = ctx.sessionManager.getSessionId();
   const attempt = AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS)]);
+  const usage = helperAttemptRecorder(ctx, { purpose: options.purpose ?? "cross-review", role: slot, model });
   let response;
   try {
     response = await beforeModelAbort(attempt, async () => {
@@ -63,18 +65,15 @@ export async function completeReviewer(
         apiKey: ctx.modelRegistry.resolver(model, sessionId), sessionId, maxTokens: model.maxTokens ?? undefined,
         reasoning: "high" as never,
         ...(model.provider === "anthropic" ? { cacheRetention: "none" as const } : {}),
-        signal: attempt,
+        signal: attempt, onAttempt: usage.onAttempt,
       });
     });
   } catch (error) {
     if (error instanceof ReviewerCallError) throw error;
     throw new ReviewerCallError(error instanceof Error ? error.message : String(error), name, undefined, { cause: error });
   }
-  // 응답이 돌아온 시도는 오류·빈 답도 청구되므로 먼저 장부에 남긴다(skim completeRole과 같다).
-  (ctx.sessionManager as Partial<Pick<SessionManager, "appendModelUsage">>).appendModelUsage?.({
-    purpose: options.purpose ?? "cross-review", role: slot, api: model.api, provider: model.provider, model: model.id,
-    usage: response.usage, stopReason: response.stopReason, errorMessage: response.errorMessage,
-  }, { sessionId, parentId: ctx.sessionManager.getLeafId() });
+  // 응답이 돌아온 시도는 오류·빈 답도 청구되므로 시도마다 onAttempt가 장부에 남겼다. 저장 실패는 여기서 알린다.
+  usage.assertSaved();
   const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
   // Preserve partial output for diagnosis without treating it as a usable review.
   if (response.stopReason !== "stop") throw new ReviewerCallError(response.errorMessage ?? `Model stopped: ${response.stopReason}`, name, text || undefined, { cause: response });

@@ -14,6 +14,7 @@ import { adoptLegacyStateFile } from "../bin/web-auth-store.js";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { getSettingsForCwd } from "./omp-runtime";
 import type { ProjectTrustStatus } from "./api-types";
+import { hasPrepareScript } from "./session-worktree/prepare";
 
 /**
  * Project trust for CUELO.
@@ -180,6 +181,10 @@ function hasFinalizeChecks(root: string | undefined): boolean {
   return root !== undefined && existsSync(join(root, ".finalize-checks.json"));
 }
 
+function hasCheckoutTrustRequiringResources(root: string | undefined): boolean {
+  return root !== undefined && (hasFinalizeChecks(root) || hasPrepareScript(root));
+}
+
 /**
  * Whether `cwd` ships executable project resources, or settings that change
  * which user-level extensions omp loads.
@@ -201,17 +206,17 @@ function hasOtherTrustRequiringResources(cwd: string, settings: Settings): boole
 }
 
 export function hasTrustRequiringProjectResources(cwd: string, settings: Settings): boolean {
-  return Boolean(cwd) && (hasOtherTrustRequiringResources(cwd, settings) || hasFinalizeChecks(repositoryRootForChecks(cwd)));
+  return Boolean(cwd) && (hasOtherTrustRequiringResources(cwd, settings) || hasCheckoutTrustRequiringResources(repositoryRootForChecks(cwd)));
 }
 
 export function getProjectTrustStatus(cwd: string, agentDir: string, settings: Settings): ProjectTrustStatus {
   if (!cwd) return { requiresTrust: false, trusted: true };
   const otherResources = hasOtherTrustRequiringResources(cwd, settings);
   const root = otherResources ? undefined : repositoryRootForChecks(cwd);
-  if (!otherResources && !hasFinalizeChecks(root)) return { requiresTrust: false, trusted: true };
+  if (!otherResources && !hasCheckoutTrustRequiringResources(root)) return { requiresTrust: false, trusted: true };
   const trusted = readTrustedProjects(agentDir);
   const local = trusted[canonicalProjectKey(cwd)];
-  // Inherit a checkout approval for its root config only, not for nested extensions or tools.
+  // Inherit a checkout approval for checkout-wide resources only, not for nested extensions or tools.
   return { requiresTrust: true, trusted: local === true || (local === undefined && root !== undefined && trusted[root] === true) };
 }
 
@@ -237,18 +242,28 @@ export function setProjectTrust(cwd: string, agentDir: string, trusted: boolean)
   writeTrustedProjects(agentDir, decisions);
 }
 
+/** Unlike the session status, an absent decision is never approval to launch project code. */
+export function hasExplicitProjectTrust(cwd: string, agentDir: string): boolean {
+  return readTrustedProjects(agentDir)[canonicalProjectKey(cwd)] === true;
+}
+
 /**
- * Give a worktree the server just created from `checkout` that checkout's trust. Only an explicit
- * approval carries over, read the way {@link getProjectTrustStatus} reads it (the directory's own
- * decision, else its repository root's), so a session opened in a subdirectory of a trusted checkout
- * inherits too. Nothing is written for an untrusted or undecided checkout. Returns whether it did.
+ * Copy an explicit approval to a worktree, without replacing its existing decision.
+ * The default preserves checkout and repository-root inheritance for existing callers.
+ * A nested project needs its own approval; checkout-wide execution needs root approval.
  */
-export function inheritCheckoutTrust(checkout: string, worktree: string, agentDir: string): boolean {
+export function inheritCheckoutTrust(
+  checkout: string, worktree: string, agentDir: string, scope: "project" | "exact" | "checkout" = "project",
+): boolean {
   const decisions = readTrustedProjects(agentDir);
   const key = canonicalProjectKey(checkout);
-  const root = repositoryRootForChecks(key);
-  if ((decisions[key] ?? (root === undefined ? undefined : decisions[root])) !== true) return false;
-  decisions[canonicalProjectKey(worktree)] = true;
+  const root = scope === "exact" ? undefined : repositoryRootForChecks(key);
+  const rootDecision = root === undefined ? undefined : decisions[root];
+  if (scope === "checkout" && rootDecision !== true) return false;
+  if ((decisions[key] ?? rootDecision) !== true) return false;
+  const destination = canonicalProjectKey(worktree);
+  if (decisions[destination] !== undefined) return decisions[destination];
+  decisions[destination] = true;
   writeTrustedProjects(agentDir, decisions);
   return true;
 }

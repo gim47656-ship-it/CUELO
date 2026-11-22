@@ -1,11 +1,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Process } from "@oh-my-pi/pi-natives";
 import { FINALIZE_CHECKS_CONFIG, finalizeChecksNote, runFinalizeChecks } from "../lib/finalize-checks";
+import { spawnExec } from "../lib/cross-review";
 
 const roots: string[] = [];
 const appTrust = Symbol.for("cuelo.finalizeChecksProjectTrust");
@@ -25,18 +26,21 @@ async function fixture() {
   await mkdir(join(root, "src"), { recursive: true });
   await writeFile(join(root, "src", "main.txt"), "base\n");
   await writeFile(join(root, "peer.txt"), "base peer\n");
-  for (const args of [
-    ["init", "-q"], ["add", "src/main.txt", "peer.txt"],
-    ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base"],
-  ]) {
-    const git = Bun.spawnSync(["git", ...args], { cwd: root });
-    expect(git.exitCode, git.stderr.toString()).toBe(0);
-  }
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", ...args], { cwd: root });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    return result.stdout.toString().trim();
+  };
+  git("init", "-q");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.invalid");
+  git("add", "src/main.txt", "peer.txt");
+  git("commit", "-qm", "base");
   const sessionManager = { getArtifactManager: () => ({ dir: artifacts }) };
   return {
-    scratch, root, configPath, sessionManager,
+    scratch, root, configPath, sessionManager, git,
     config: (checks: unknown[]) => writeFile(configPath, JSON.stringify({ version: 1, checks })),
-    run: (options: { files?: string[]; waiver?: string; showDirtyTracked?: boolean } = {}) =>
+    run: (options: Partial<Pick<Parameters<typeof runFinalizeChecks>[0], "files" | "waiver" | "publicationCandidate" | "signal" | "git" | "exec">> = {}) =>
       runFinalizeChecks({ root, ledgerDir, files: ["src/main.txt"], ...options, sessionManager: sessionManager as never }),
   };
 }
@@ -60,6 +64,123 @@ test("matches only exact files and directory prefixes, keeps order, and passes l
     [f.root, "a | b && c; <d>", true], [f.root, "second", true],
   ]);
   expect(finalizeChecksNote(result)).toMatch(/exact ran \(.+s\); directory ran \(.+s\)/);
+});
+
+test("uses the checkout in place with only requested changes", async () => {
+  const f = await fixture();
+  const marker = join(f.scratch, "cwd.txt");
+  await f.config([{ name: "pwd", paths: ["src/"], command: bun(`require('node:fs').writeFileSync(process.argv[1], process.cwd())`, marker) }]);
+  await writeFile(join(f.root, "src", "main.txt"), "changed\n");
+  const result = await f.run({ publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"] });
+  expect(result?.checks[0]?.reused).toBe(false);
+  expect(await readFile(marker, "utf8")).toBe(f.root);
+  expect(result?.candidateTree).toBeUndefined();
+});
+
+test("the receipt follows candidate content across excluded edits, not the dirty checkout", async () => {
+  const f = await fixture();
+  const marker = join(f.scratch, "cwd.txt");
+  await f.config([{ name: "candidate", paths: ["src/"], command: bun(`
+    const fs = require('node:fs');
+    if (fs.existsSync('peer.txt') || fs.existsSync('src/unrequested.txt') || fs.existsSync('ignored-input.txt')) process.exit(7);
+    fs.writeFileSync(process.argv[1], process.cwd());
+  `, marker) }]);
+  await writeFile(join(f.root, ".gitignore"), "/ignored-input.txt\n");
+  f.git("add", FINALIZE_CHECKS_CONFIG, ".gitignore");
+  f.git("commit", "-qm", "configure candidate");
+  const worktrees = f.git("worktree", "list", "--porcelain");
+  await rm(join(f.root, "peer.txt"));
+  const unrequested = join(f.root, "src", "unrequested.txt");
+  await writeFile(unrequested, "first excluded edit\n");
+  await writeFile(join(f.root, "ignored-input.txt"), "not transferred\n");
+  const options = { publicationCandidate: true, files: ["src/main.txt", "peer.txt"] };
+  const first = await f.run(options);
+  const candidate = await readFile(marker, "utf8");
+  expect(first?.checks[0]?.reused).toBe(false);
+  expect(candidate).not.toBe(f.root);
+  expect(existsSync(candidate)).toBe(false);
+  expect(f.git("worktree", "list", "--porcelain")).toBe(worktrees);
+  await writeFile(unrequested, "second excluded edit\n");
+  expect((await f.run(options))?.checks[0]?.reused).toBe(true);
+  await writeFile(join(f.root, "src", "main.txt"), "new candidate content\n");
+  expect((await f.run(options))?.checks[0]?.reused).toBe(false);
+  expect(f.git("diff", "--cached", "--name-only")).toBe("");
+});
+
+test.skipIf(process.platform !== "linux")("WSL candidate stages with the source Git's CRLF policy", async () => {
+  const f = await fixture();
+  f.git("config", "core.autocrlf", "false");
+  await f.config([{ name: "line endings", paths: ["src/"], command: bun(`
+    if (require('node:fs').readFileSync('src/main.txt', 'utf8') !== 'changed\\n') process.exit(7)
+  `) }]);
+  await writeFile(join(f.root, "src", "main.txt"), "changed\r\n");
+  await writeFile(join(f.root, "peer.txt"), "local only\n");
+  const exec = spawnExec();
+  const result = await f.run({
+    publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"], git: "git.exe",
+    exec: (command, args, opts) => {
+      if (command === "wslpath") return Promise.resolve({ code: 0, stdout: args[1] });
+      return command === "git.exe" ? exec("git", ["-c", "core.autocrlf=true", ...args], opts) : exec(command, args, opts);
+    },
+  });
+  expect(result?.checks).toHaveLength(1);
+  expect(await readFile(join(f.root, "src", "main.txt"), "utf8")).toBe("changed\r\n");
+  expect(f.git("diff", "--cached", "--name-only")).toBe("");
+});
+
+test("allows generated untracked reports but does not cache a changed input view", async () => {
+  const f = await fixture();
+  await f.config([{ name: "report", paths: ["src/"], command: bun(`require('node:fs').appendFileSync('src/report.txt', 'x')`) }]);
+  const options = { publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"] };
+  const first = await f.run(options);
+  expect(first?.checks[0].reused).toBe(false);
+  expect(first?.candidateTree).toBeUndefined();
+  const second = await f.run(options);
+  expect(second?.checks[0].reused).toBe(false);
+  expect(second?.candidateTree).toBeDefined();
+  expect(await readFile(join(f.root, "src", "report.txt"), "utf8")).toBe("x");
+});
+
+test("cleans up the candidate after abort and retains the check's log", async () => {
+  const f = await fixture();
+  const marker = join(f.scratch, "started");
+  await f.config([{ name: "abortable", paths: ["src/"], command: bun(`
+    console.log('ready to cancel');
+    const fs = require('node:fs');
+    fs.watch('.');
+    fs.writeFileSync(process.argv[1] + '.tmp', process.cwd());
+    fs.renameSync(process.argv[1] + '.tmp', process.argv[1]);
+  `, marker) }]);
+  await writeFile(join(f.root, "peer.txt"), "dirty\n");
+  const before = f.git("worktree", "list", "--porcelain");
+  const controller = new AbortController();
+  const watcher = watch(f.scratch, (_, file) => { if (file === "started") controller.abort(); });
+  try {
+    await expect(f.run({ publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"], signal: controller.signal }))
+      .rejects.toThrow(/abortable was cancelled[\s\S]*ready to cancel[\s\S]*Full log:/);
+    const cwd = await readFile(marker, "utf8");
+    expect(cwd).not.toBe(f.root);
+    expect(existsSync(cwd)).toBe(false);
+    expect(f.git("worktree", "list", "--porcelain")).toBe(before);
+  } finally {
+    watcher.close();
+  }
+});
+
+test("rejects an unrequested config change, including deletion or an empty check list", async () => {
+  const f = await fixture();
+  const options = { publicationCandidate: true };
+  const expected = "differs from the publication candidate. Include it in the publication or restore its committed version.";
+  await f.config([{ name: "required", paths: ["src/"], command: bun("process.exit(7)") }]);
+  await expect(f.run(options)).rejects.toThrow(expected);
+  f.git("add", FINALIZE_CHECKS_CONFIG);
+  f.git("commit", "-qm", "configure required check");
+  await f.config([]);
+  await expect(f.run(options)).rejects.toThrow(expected);
+  await writeFile(f.configPath, "{");
+  await expect(f.run(options)).rejects.toThrow(expected);
+  await rm(f.configPath);
+  await expect(f.run(options)).rejects.toThrow(expected);
 });
 
 test("reuses an identical pass and reruns for covered untracked or tracked content changes", async () => {
@@ -151,10 +272,10 @@ test("failure reports the last 60 combined lines, full log, and other dirty path
     name: "failure", paths: ["src/"],
     command: bun(`for (let i = 0; i < 70; i++) require('node:fs').writeSync(i % 2 ? 1 : 2, 'line-' + i + '\\n'); process.exit(7);`),
   }]);
-  const message = await f.run({ showDirtyTracked: true }).then(() => "", (error: Error) => error.message);
+  const message = await f.run({ publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"] }).then(() => "", (error: Error) => error.message);
   expect(message).toContain("failure exited 7");
-  expect(message).toContain("working tree");
-  expect(message).toContain('Dirty tracked paths outside this publication: "peer.txt".');
+  expect(message).toContain("isolated publication candidate");
+  expect(message).toContain('Excluded dirty or index-hidden paths: "peer.txt".');
   expect(message).not.toContain("private peer content");
   expect(message).toContain("Last output:\nline-10\nline-11\n");
   expect(message).not.toContain("line-9\n");

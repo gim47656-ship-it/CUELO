@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
+import { hasExplicitProjectTrust, inheritCheckoutTrust } from "../project-trust";
 import { addWorktree, listWorktrees, removeWorktree, type WorktreeInfo } from "../worktree";
-import { startWorktreePrepare } from "./prepare";
+import { hasPrepareScript, holdWorktreePrepare, isWorktreePrepareHeld, startWorktreePrepare } from "./prepare";
 
 const exec = promisify(execFile);
 async function git(cwd: string, args: string[], timeout = 10_000): Promise<string> {
@@ -137,14 +138,38 @@ async function clearMissingRegistration(root: string, tree: WorktreeInfo, host: 
   } finally { reservation.release(); }
 }
 
-/** A freshly added checkout has no installed dependencies; start the repository's own preparation in the background. */
-async function prepareNew(path: string, host: WorktreeHost): Promise<void> {
-  try { await (host.prepare ?? startWorktreePrepare)(path, await optionalGit(path, ["rev-parse", "--absolute-git-dir"])); }
-  catch (error) { console.error("[session-worktree] prepare:worktree not started:", error); }
+// Git records both directions of the link when it creates the checkout. Verify both before writing metadata.
+function linkedWorktreeGitDir(worktree: string, expectedCommon?: string): string | undefined {
+  const gitFile = join(worktree, ".git");
+  try {
+    if (!lstatSync(gitFile).isFile()) return undefined;
+    const link = readFileSync(gitFile, "utf8").trimEnd();
+    if (!link.startsWith("gitdir: ")) return undefined;
+    const gitDir = realpathSync(resolve(worktree, link.slice("gitdir: ".length)));
+    const common = realpathSync(resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trimEnd()));
+    if (dirname(gitDir) !== join(common, "worktrees") || (expectedCommon && common !== expectedCommon)) return undefined;
+    const backlink = readFileSync(join(gitDir, "gitdir"), "utf8").trimEnd();
+    if (realpathSync(resolve(gitDir, backlink)) !== realpathSync(gitFile)) return undefined;
+    return gitDir;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** A grant for a nested project must never start the checkout root's script. */
+export async function resumeHeldWorktreePrepare(worktree: string, agentDir: string): Promise<void> {
+  try {
+    const gitDir = linkedWorktreeGitDir(worktree);
+    if (!gitDir || !isWorktreePrepareHeld(gitDir)) return;
+    if (hasExplicitProjectTrust(worktree, agentDir)) {
+      await startWorktreePrepare(worktree, gitDir);
+    }
+  } catch (error) { console.error("[session-worktree] held prepare:worktree not started:", error); }
 }
 
 /** Caller holds the repo lock through runtime registration, not just checkout creation. */
-export async function selectSessionWorktree(cwd: string, host: WorktreeHost, options: { issue?: unknown; autoWorktree?: boolean } = {}): Promise<Selection> {
+export async function selectSessionWorktree(cwd: string, host: WorktreeHost, options: { issue?: unknown; autoWorktree?: boolean; agentDir?: string } = {}): Promise<Selection> {
   const repo = await repository(cwd);
   if (!repo || repo.linked || options.autoWorktree === false) {
     if (options.issue !== undefined && options.issue !== "") throw new Error("Issue starts require a main Git checkout with automatic worktrees enabled");
@@ -160,6 +185,32 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
     if (existsSync(nested)) return { ...selected, cwd: nested };
     return { ...selected, worktree: selected.worktree ? { ...selected.worktree, missingSubdirectory: subdirectory } : undefined };
   };
+  const finishSelection = async (selection: Selection, fresh = false): Promise<Selection> => {
+    const root = selection.cwd;
+    const selected = inRequestedDirectory(selection);
+    const { agentDir } = options;
+    let gitDir: string | undefined;
+    if (fresh && hasPrepareScript(root)) {
+      try {
+        gitDir = linkedWorktreeGitDir(root, repo.common);
+        if (!gitDir) throw new Error(`Cannot locate private Git directory for ${root}`);
+        holdWorktreePrepare(gitDir);
+      } catch (error) {
+        gitDir = undefined;
+        console.error("[session-worktree] prepare:worktree status not recorded:", error);
+      }
+    }
+    if (agentDir) {
+      if (selected.cwd !== root) inheritCheckoutTrust(cwd, selected.cwd, agentDir, "exact");
+      const inherited = inheritCheckoutTrust(cwd, root, agentDir, "checkout");
+      if (!fresh && inherited && hasPrepareScript(root)) await resumeHeldWorktreePrepare(canonical(root), agentDir);
+    }
+    if (gitDir && agentDir && hasExplicitProjectTrust(root, agentDir)) {
+      try { await (host.prepare ?? startWorktreePrepare)(root, gitDir); }
+      catch (error) { console.error("[session-worktree] prepare:worktree not started:", error); }
+    }
+    return selected;
+  };
   const short = () => randomUUID().replaceAll("-", "").slice(0, 8);
   let branch = issue ? `wt/issue-${issue}` : `wt/s-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${short()}`;
   const trees = await listWorktrees(repo.main, { includeMissing: true });
@@ -168,15 +219,14 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
   if (existing && !reusable && await clearMissingRegistration(repo.main, existing, host) === "removed") existing = undefined;
   if (existing && reusable && !checkoutIsBusy(existing.path, host.live())) {
     const base = await optionalGit(repo.main, ["config", "--get", configKey(branch, "base")]);
-    return inRequestedDirectory({ cwd: existing.path, worktree: { branch, base: base ?? "existing branch", fallback: false } });
+    return finishSelection({ cwd: existing.path, worktree: { branch, base: base ?? "existing branch", fallback: false } });
   }
   if (existing) branch += `-${short()}`;
   while (await optionalGit(repo.main, ["show-ref", "--verify", `refs/heads/${branch}`])) {
     // A branch without a checkout can be reused for an issue, but never adopted as auto-owned.
     if (issue && !existing && branch === `wt/issue-${issue}`) {
       const tree = await addWorktree(repo.main, branch);
-      await prepareNew(tree.path, host);
-      return inRequestedDirectory({ cwd: tree.path, worktree: { branch, base: "existing branch", fallback: false } });
+      return finishSelection({ cwd: tree.path, worktree: { branch, base: "existing branch", fallback: false } }, true);
     }
     branch = issue ? `wt/issue-${issue}-${short()}` : `wt/s-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${short()}`;
   }
@@ -191,9 +241,8 @@ export async function selectSessionWorktree(cwd: string, host: WorktreeHost, opt
     await git(repo.main, ["config", configKey(branch, "base-ref"), created.baseRef]);
     await git(repo.main, ["config", configKey(branch, "path"), tree.path]);
     await git(repo.main, ["config", configKey(branch, "target"), base.target]);
-    await prepareNew(tree.path, host);
-    return inRequestedDirectory({ cwd: tree.path, worktree: { branch, base: base.fallback ? base.target : `origin/${base.target}`, fallback: base.fallback },
-      created });
+    return await finishSelection({ cwd: tree.path, worktree: { branch, base: base.fallback ? base.target : `origin/${base.target}`, fallback: base.fallback },
+      created }, true);
   } catch (error) {
     await rollbackUnstartedWorktree({ cwd: path, created });
     throw error;
