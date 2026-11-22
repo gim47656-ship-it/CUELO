@@ -578,7 +578,7 @@ function overdueMetric(items: UpkeepDueItem[], warnings: string[]): UpkeepMetric
 
 export function complaintSection(scan: ScanResult): UpkeepSection {
   const m = perTurnMetric("repeat-complaints", "다시 지적하는 표현", scan, (w) => w.complaints, COMPLAINT_COUNT_FLOOR);
-  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, 「또」는 위치와 상관없이 세되 「또는」「또한」은 빼며, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
+  m.note = `${m.note}. 정해 둔 표현 목록에 없는 지적은 놓치고, 「또」는 위치와 상관없이 세되 「또는」「또한」, 앞말을 잇는 「~고 또」, 따옴표나 전하는 말(「~라는데」) 또는 「~주세요」「~습니다」로 끝나는 붙여 넣은 문장 속 「또」는 빼며, ${COMPLAINT_MAX_CHARS}자 넘는 메시지(붙여 넣은 글·CUELO가 만든 지시문)는 세지 않습니다.`;
   return section("complaints", "사용자 지적 반복", [m]);
 }
 

@@ -50,13 +50,38 @@ export const EARLY_EXIT_REPORT_COUNT = 2;
 /**
  * 「또」는 메시지 어디에 있든 센다. 접속사 「또는」과 「또한」만 뺀다(2026-11-12 사용자 결정: 집 PC 11-05~11-12 표시 뒤 문장 중간·끝
  * 「또」 6건 중 5건이 실제 지적(「지금또 바탕화면에 안보이네독이」「f5 또안눌리는데」)이었는데 첫머리 규칙은 4건만 잡았다).
+ * 2026-11-22 사용자 결정: 앞말을 잇는 「~고 또」와 인용 속 「또」도 뺀다. 11-22 집 점검판 7건 중 오탐 4건이 「일하고 또」「하고 또」,
+ * 에이전트 문장 붙여 넣기(「다음에 또 멈추면 … 봐 주세요.」), 남의 말 전하기(「jev 또 5달러 리필됐네 라는데」)였다.
  */
-const AGAIN = /또(?![는한])/u;
+const AGAIN = /또(?![는한])/gu;
+const CONNECTIVE_BEFORE = /고\s*$/u;
+// 인용으로 보는 문장: 남의 말을 전하는 어미가 따르거나, 에이전트가 쓰는 공손한 요청과 서술로 끝나는 문장.
+const REPORTED_SPEECH = /(?:라는데|라고|라던데|라네|래서)/u;
+const POLITE_SENTENCE_END = /(?:주세요|습니다)\s*$/u;
+const OPEN_QUOTES: Record<string, string> = { "\"": "\"", "“": "”", "「": "」", "『": "』", "‘": "’" };
+
+function insideQuotes(before: string): boolean {
+  for (const [open, close] of Object.entries(OPEN_QUOTES)) {
+    if (open === close ? before.split(open).length % 2 === 0 : before.lastIndexOf(open) > before.lastIndexOf(close)) return true;
+  }
+  return false;
+}
+
+function complainsAgain(text: string): boolean {
+  for (const match of text.matchAll(AGAIN)) {
+    const before = text.slice(0, match.index);
+    if (CONNECTIVE_BEFORE.test(before) || insideQuotes(before)) continue;
+    const sentence = text.slice(match.index).split(/[.!?\n]/u)[0]!;
+    if (REPORTED_SPEECH.test(sentence) || POLITE_SENTENCE_END.test(sentence)) continue;
+    return true;
+  }
+  return false;
+}
 export const COMPLAINT_EXPRESSIONS = ["왜 안", "아까 말", "말했잖", "다시 말하", "몇 번", "그게 아니라", "안 되잖", "왜 이래", "아직도"];
 
 export function isComplaint(text: string): boolean {
   if (text.length > COMPLAINT_MAX_CHARS) return false;
-  return AGAIN.test(text) || COMPLAINT_EXPRESSIONS.some((x) => text.includes(x));
+  return complainsAgain(text) || COMPLAINT_EXPRESSIONS.some((x) => text.includes(x));
 }
 /**
  * 이보다 긴 사용자 메시지는 지적 표현으로 세지 않는다(2026-11-04 사용자 결정). 붙여 넣은 글(조사 결과·다른 PC 요청)과 CUELO가
