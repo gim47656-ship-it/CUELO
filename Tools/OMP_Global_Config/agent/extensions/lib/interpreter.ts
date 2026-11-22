@@ -12,6 +12,30 @@ export const INTERPRETER_ROLE = "interpreter";
 export const SECRET_PATTERN = /(?:^|[\s"'`:])(?:password|passwd|api[_ -]?key|bearer|secret|token|credential|client[_ -]?secret)\b|(?:비밀번호|자격증명|인증키|토큰)|(?:sk-[A-Za-z0-9_-]{12,})|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[opusr]_|github_pat_)[A-Za-z0-9_-]{12,}/i;
 
 /**
+ * 답변 통역 전용: 비밀 "값"처럼 생긴 글만 막는다. `token`, `credential` 같은 단어가 나오기만 해도 막던
+ * SECRET_PATTERN은 토큰 갱신을 설명하는 답까지 번역을 생략시켰다(2026-11-22 사용자 보고).
+ * 막는 모양(놓치는 쪽보다 가끔 번역을 생략하는 쪽을 택한다): 비밀 이름으로 끝나는 식별자(`password`, `idToken`,
+ * `APIKey`, `refresh_token`, `OPENAI_API_KEY`처럼 앞부분은 무엇이든) 뒤의 `:`/`=`와 비어 있지 않은 값.
+ * 값의 길이와 따옴표 안 내용(아포스트로피, 백슬래시, 줄바꿈)은 따지지 않고, 빈 따옴표(`""`, `''`)만 값으로 치지 않는다.
+ * 그래서 `monkey = banana`처럼 이름 꼬리가 같은 보통 대입도 번역을 생략한다. 그 밖에 `Bearer` 토큰(대소문자 무관),
+ * `sk-`·GitHub 토큰(앞에 영숫자가 없으면 `_` 같은 강조 기호 뒤도), 개인키 블록, `eyJ`로 시작하는 JWT(서명 없는 것 포함).
+ * 2026-11-22 교차 검토 4라운드가 길이·따옴표·camelCase 경계를 좁힐 때마다 새 빈틈을 찾아 이 모양으로 정했다.
+ */
+const SECRET_NAME = String.raw`[A-Za-z0-9_-]*(?:key|secret|token|passw(?:or)?d|pwd|credential|authorization)|비밀번호|토큰|인증키`;
+export const TRANSLATION_SECRET_PATTERN = new RegExp(
+  [
+    String.raw`(?:${SECRET_NAME})["']?\s*[:=]\s*(?!["']["'])["']?\S`,
+    String.raw`\bbearer\s+[A-Za-z0-9._~+/=-]{12,}`,
+    String.raw`(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}`,
+    String.raw`(?<![A-Za-z0-9])(?:gh[opusr]_|github_pat_)[A-Za-z0-9_-]{12,}`,
+    String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
+    String.raw`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{2,}\.(?:[A-Za-z0-9_-]{8,})?`,
+    String.raw`eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`,
+  ].join("|"),
+  "i",
+);
+
+/**
  * 통역 모델로 한 번 호출해 텍스트 답을 돌려준다. 출력 한도에서 끊기면 끊긴 답과 `truncated`를 함께 준다.
  * An explicit alternate takes over on a usage limit, within the caller's deadline.
  */

@@ -247,6 +247,46 @@ describe("korean reply guard", () => {
     expect(h.sent[1]!.content).toContain("번역 생략");
   });
 
+  // 가짜 값은 실행 중에 조립한다(원문에 키 모양이 있으면 프로필 반영 전 비밀값 검사가 막는다).
+  test.each([
+    ["JSON 필드", `The server returned this while renewing the session: {"refresh_token":"${"x".repeat(24)}"}.`],
+    ["key 대입", `The service configuration contains key = ${"x".repeat(16)} and is ready for the next deployment.`],
+    ["공백 든 따옴표 비밀번호", `The worker configuration sets password = "a long example passphrase" before starting the local service.`],
+    ["강조 기호로 감싼 sk 키", `The worker is currently using _${"sk" + "-" + "x".repeat(24)}_ to authenticate its requests.`],
+    ["짧은 payload JWT", `The worker opened the session using this signed JWT: ${["eyJhbGciOiJIUzI1NiJ9", "e30", "A".repeat(43)].join(".")}`],
+    ["이스케이프 따옴표 비밀번호", `The worker configuration sets password = ${JSON.stringify(`ab"${"x".repeat(12)}`)} before starting the local service.`],
+    ["여러 줄 따옴표 비밀번호", `The service reads this environment setting before starting the worker:\npassword="${"x".repeat(12)}\nsecond line"`],
+    ["서명 없는 JWT", `The worker returned the following JWT while opening the session: ${[Buffer.from('{"alg":"none"}').toString("base64url"), "e30", ""].join(".")}`],
+    ["OPENAI_API_KEY 대입", `The shell exports OPENAI_API_KEY=${"x".repeat(20)} before launching the worker process.`],
+    ["아포스트로피 든 JSON 비밀번호", `The worker loaded this configuration before startup: ${JSON.stringify({ password: "don't-share-this" })}`],
+    ["camelCase idToken", `The identity service returned this response during sign-in: ${JSON.stringify({ idToken: "x".repeat(32) })}`],
+    ["백슬래시 든 작은따옴표 비밀번호", String.raw`The shell starts the worker after running export password='a\bc\d' in its environment.`],
+    ["앞쪽 줄바꿈 든 비밀번호", "The worker reads this shell setting before starting the service:\nexport password='ab\ncdefgh'"],
+    ...["APIKey", "refreshtoken"].map((k) => [k, `The worker loaded this configuration before startup: ${JSON.stringify({ [k]: "x".repeat(20) })}`]),
+    ["대소문자 섞인 Bearer", `The outgoing request used the following authentication scheme and value: bEaReR ${"x".repeat(24)}`],
+  ])("비밀 값 모양은 번역을 보내지 않는다: %s", async (_name, reply) => {
+    let calls = 0;
+    const h = harness(async () => { calls++; return "x"; });
+    await h.assistant(reply);
+    expect(calls).toBe(0);
+    expect(h.sent[1]!.content).toContain("번역 생략");
+  });
+
+  test("토큰을 말로만 언급한 답은 번역한다", async () => {
+    let calls = 0;
+    const h = harness(async () => { calls++; return "번역문"; });
+    await h.assistant("The cld2 token now has 475 minutes left, and the other credentials were not touched by the refresh.");
+    expect(calls).toBe(1);
+    expect(h.sent.some((m) => String(m.content).includes("번역 생략"))).toBe(false);
+  });
+
+  test("빈 비밀번호 필드만 있는 답은 번역한다", async () => {
+    let calls = 0;
+    const h = harness(async () => { calls++; return "번역문"; });
+    await h.assistant('The worker allows anonymous access with this configuration: {"password":"","enabled":true}');
+    expect(calls).toBe(1);
+  });
+
   test("번역 실패는 실패 한 줄만 표시한다", async () => {
     const h = harness(async () => { throw new Error("no credentials"); });
     await h.assistant(ENGLISH);

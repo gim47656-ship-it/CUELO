@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { interpret, SECRET_PATTERN } from "./lib/interpreter";
+import { interpret, TRANSLATION_SECRET_PATTERN } from "./lib/interpreter";
 import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 
@@ -156,7 +156,7 @@ export function createKoreanReplyGuard(translate: TranslateReply = translateRepl
       translated.add(key);
       if (translated.size > SEEN_LIMIT) translated.delete(translated.values().next().value as string);
       const source = { sourceTimestamp: typeof message.timestamp === "number" ? message.timestamp : undefined, sourceHash: key };
-      if (SECRET_PATTERN.test(text)) {
+      if (TRANSLATION_SECRET_PATTERN.test(text)) {
         show(ctx, "[번역 생략] 민감 정보처럼 보이는 내용이 있어 외부 모델로 보내지 않았다. 원문만 표시된다.", source);
         return;
       }
