@@ -16,7 +16,9 @@ Main이나 Maker는 재현 방법을 실행한 뒤 `previousReviewId`와 `probeR
 
 코드 검토는 기본 한 번이다. 첫 코드 검토에서 blocker가 나온 체인만 두 번째 코드 검토를 할 수 있다. probe는 코드 검토 횟수에 넣지 않으므로 실행 순서에 따라 결과의 `round` 번호는 다를 수 있다. 첫 검토 뒤 새로 나온 지적은 심각도와 probe verdict에 관계없이 `roundCap.limitCandidates`로 안내하며, `resolve`에서 지적 id와 사유를 근거로 적어 `limit`로 닫는다. 자발적으로 고쳤다면 그 사실과 검사 근거도 적는다. 첫 검토의 지적에는 여전히 각각 `fixed|refuted|limit`와 근거가 필요하다.
 
-Main과 Maker는 바뀐 줄의 marker나 high-risk 선언이 있는 코드만 검토 대상으로 넘긴다.
+Main과 Maker는 바뀐 줄의 marker나 high-risk 선언이 있는 코드만 검토 대상으로 넘긴다. 그런 코드는 커밋이나 게시 여부와 관계없이 완료를 보고하기 전에 1라운드를 돌린다. 원격이 없거나 커밋 요청이 없다는 이유로 검토를 미루지 않는다(2026-11-22 약한 모델 `shop-service-b`에서 Haiku와 Sonnet이 조기 안내를 받고도 커밋하지 않는다며 건너뜀).
+
+명세가 다루지 않는 보안 기본값(다른 사용자의 데이터 접근 제어, 음수나 범위 밖 입력 검증, 로그와 쿼리 인젝션)에 대한 지적은 「명세가 요구하지 않는다」만으로 `refuted`나 `limit`로 닫지 않는다. 명세가 그 동작을 명시적으로 허용한 문구를 인용하거나, 고치거나, 사용자 결정으로 남긴다(2026-11-22 같은 비교에서 Terra와 DeepSeek 작성자가 접근 제어와 음수 수량 지적을 명세 침묵으로 반박함).
 
 references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존 또는 신규 파일(예: 작업 기록, 계약 파일)의 현재 내용을 변경 뒤에 읽기 전용으로 싣는다. 명시한 경로만이며 통과 지문을 덮지 않고 references만으로는 심사하지 않는다. 정책상 제외 경로(비밀을 담는 파일), gitignore, 심볼릭 링크, 바이너리, 파일당 200KiB 초과, inputs와 함께 쓰는 맥락 예산(합계 200KiB, inputs를 먼저 싣고 references는 남은 예산을 쓴다) 초과, 읽는 동안 열린 파일의 실제 경로가 고정한 저장소 루트 아래 요청 경로와 달라진 경우는 빠지고 skippedReferences에 이유가 나온다. 이 경로 확인은 Linux(WSL 포함)의 /proc/self/fd에 의존하므로 native Windows/macOS에서는 references를 읽지 않고 skippedReferences에 unsupported 이유를 남긴다(변경 파일 심사는 그대로). inputs(선택, 최대 10개)는 변경이 일관돼야 하는 명세, 계약, 스키마, 호출자 파일이며, references와 같은 읽기, 필터, 제한으로(맥락 예산은 inputs가 먼저 쓴다) 별도 블록에 싣고(심사 대상 아님, 빠진 것은 skippedInputs) files와 겹치면 거절한다. references와 달리 통과에 묶여서, resolve 뒤 입력이 바뀌거나 지워지면 git_finalize가 그 통과를 덮지 않는 것으로 보고 다시 검토를 요구한다(inputs 없는 검토는 그대로). 이어지는 라운드는 앞 라운드의 입력을 이어받고 더할 수 있으며, 이어받은 입력을 더 읽을 수 없으면 거절하므로 빼려면 previousReviewId 없이 새로 시작한다.
 

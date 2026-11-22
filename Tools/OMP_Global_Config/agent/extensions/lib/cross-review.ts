@@ -1357,7 +1357,7 @@ export async function earlyReviewNotice(cwd: string, absolutePath: string, exec:
     const seen = new Set<string>();
     const shown = hits.filter((hit) => !seen.has(hit.trigger) && seen.add(hit.trigger)).slice(0, 3)
       .map((hit) => `${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}`);
-    return `cross_review early notice: ${change.path} hits a review marker (${shown.join(", ")}), so it will need a passed cross_review before git_finalize. Review it once the file has settled, together with your other changed code files in one call, instead of at publish time (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.`;
+    return `cross_review early notice: ${change.path} hits a review marker (${shown.join(", ")}), so it needs a passed cross_review before you report the work as done, whether or not you commit (git_finalize also requires it). Review it once the file has settled, together with your other changed code files in one call (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.`;
   } catch {
     return undefined;
   }
