@@ -2,6 +2,8 @@ export const VOICE_COPY = {
   ko: {
     engineLabel: "통역 엔진", engineVoice: "음성 + 텍스트", engineCodex: "Codex Live",
     engineHint: "말하는 동안 원문이 표시되며, 등록된 목소리로 번역 방향을 고정합니다.",
+    engineFast: "빠른 통역",
+    fastHint: "말하는 동안 번역이 표시됩니다. 음성이 켜져 있고 통역 방향이 불분명하면 텍스트만 표시됩니다.",
     enrollTitle: "목소리 등록", enrollMe: "먼저 한 문장을 말해주세요.", enrollThem: "이제 상대방이 한 문장을 말해주세요.",
     enrollHint: "음성 샘플은 브라우저 메모리에만 남고 종료 시 삭제됩니다.",
     enrollRetry: "목소리가 또렷하게 들리지 않았습니다. 다른 한 문장을 다시 말씀해 주세요.",
@@ -13,6 +15,8 @@ export const VOICE_COPY = {
   en: {
     engineLabel: "Engine", engineVoice: "Voice + text", engineCodex: "Codex Live",
     engineHint: "Originals appear while speaking. Registered voices lock translation direction.",
+    engineFast: "Fast interpretation",
+    fastHint: "Translations appear as people speak. When voice is on and the interpretation direction is unclear, only text is shown.",
     enrollTitle: "Voice setup", enrollMe: "Say a sentence first.", enrollThem: "Now have the other person say a sentence.",
     enrollHint: "Voice samples stay in browser memory and are discarded when you stop.",
     enrollRetry: "Your voice sample was not clear. Please say another sentence.",

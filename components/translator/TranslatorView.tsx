@@ -18,7 +18,7 @@ import {
   type TranslatorLanguage,
 } from "@/lib/translator-languages";
 import { hasNumericMismatch, splitNumberSpans } from "@/lib/translator-numbers";
-import { mergeDisplay, type DisplayLine } from "@/lib/translator-draft";
+import { mergeDisplay, type DisplayLine, type DraftPair, type FastTurn } from "@/lib/translator-draft";
 import { Keyboard, MoreVertical, Settings2, Trash2 } from "lucide-react";
 import { useTranslatorText, type TranslatorTranslate } from "./i18n";
 import {
@@ -50,6 +50,7 @@ import { CameraIcon, MenuScan } from "./MenuScan";
 import { LineAssist } from "./LineAssist";
 import { useLineAssist } from "./useLineAssist";
 import { useVoiceInterpreter } from "./useVoiceInterpreter";
+import { useFastInterpreter } from "./useFastInterpreter";
 import { upsertVoiceUtterance } from "./voice-transcript";
 import type { VoiceUtterance } from "@/lib/interpreter-voice/session";
 import { VOICE_COPY, OVERLAP_COPY, ENROLL_COPY } from "./voice-copy";
@@ -90,8 +91,12 @@ interface Settings {
   noiseSuppression: boolean;
   /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
   fastDrafts: boolean;
-  engine: "voice" | "codex";
+  engine: "voice" | "codex" | "fast";
   assistMeaning: boolean;
+}
+
+function readEngine(value: unknown): Settings["engine"] {
+  return value === "codex" || value === "fast" ? value : "voice";
 }
 
 function readSettings(): Settings {
@@ -126,7 +131,7 @@ function readSettings(): Settings {
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
-      engine: saved.engine === "codex" ? "codex" : "voice",
+      engine: saved.engine === "fast" && (pair.mine.code === "th" || pair.theirs.code === "th") ? "voice" : readEngine(saved.engine),
       assistMeaning: saved.assistMeaning !== false,
     };
   } catch {
@@ -475,7 +480,21 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     setSegments(transcriptRef.current.segments);
   }, []);
   const voiceCall = useVoiceInterpreter({ onUtterance: handleVoiceUtterance, playVoice: voice, echoGuard });
-  const call = engine === "codex" ? codexCall : voiceCall;
+  const handleFastTurn = useCallback((turn: FastTurn, connection: string, clockBase: number, pair: DraftPair) => {
+    const side = !turn.source ? undefined : turn.source.code === pair.mine.code ? "me" : "them";
+    transcriptRef.current = upsertVoiceUtterance(transcriptRef.current, {
+      id: turn.id, text: turn.input, startMs: turn.startedAt, endMs: turn.startedAt, side,
+      translation: turn.output, closed: turn.final, final: turn.final,
+    }, connection, pair, clockBase, turn.target);
+    setSegments(transcriptRef.current.segments);
+  }, []);
+  const removeFastTurn = useCallback((utterance: string) => {
+    const kept = transcriptRef.current.segments.filter((segment) => segment.utterance !== utterance);
+    transcriptRef.current = { ...transcriptRef.current, segments: kept };
+    setSegments(kept);
+  }, []);
+  const fastCall = useFastInterpreter({ playVoice: voice, onTurn: handleFastTurn, onRemove: removeFastTurn });
+  const call = engine === "codex" ? codexCall : engine === "fast" ? fastCall : voiceCall;
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
 
   // 켠 동안 통화가 열려 있으면 전용 모델의 초안 자막을 받는다. 재연결·새 통화마다 처음부터 다시 연다.
@@ -494,18 +513,23 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   }, [reconcileDrafts]);
 
   const startCall = (next: Settings) => {
+    fastCall.stop();
     pairRef.current = next;
     transcriptRef.current = beginTranscriptCall(transcriptRef.current);
     setCurrentCall(transcriptRef.current.call);
     if (next.engine === "codex") { voiceCall.shutdown(); codexCall.start(next.mine, next.theirs, next.profile); }
-    else { codexCall.stop(); voiceCall.start(next.mine, next.theirs, next.profile); }
+    else {
+      codexCall.stop();
+      if (next.engine === "fast") { voiceCall.shutdown(); fastCall.start(next.mine, next.theirs); }
+      else voiceCall.start(next.mine, next.theirs, next.profile);
+    }
   };
 
   /** 통화 중에 언어나 분위기·화자를 바꾸면 새 설정으로 다시 연결한다. 이미 열린 통화의 지시는 바꿀 수 없다. */
   const changeCallSettings = (next: Settings) => {
     if (next.mine.code === next.theirs.code) return;
     setSettings(next);
-    if (active) startCall(next);
+    if (active && (engine !== "fast" || next.engine !== engine || next.mine !== mine || next.theirs !== theirs)) startCall(next);
   };
 
   const changeProfile = (patch: Partial<InterpreterProfile>) => {
@@ -597,9 +621,11 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
 
   // 지금 통화에서 가장 나중에 생긴 조각이 들은 말이면 아직 그 뒤 통역이 오지 않은 것이다.
   const latest = segments.at(-1);
-  const awaitingTranslation = active && (engine === "voice"
-    ? segments.some((segment) => segment.call === currentCall && segment.role === "user" && !segment.translationError && !segments.some((other) => other.utterance === segment.utterance && other.role === "assistant" && other.final))
-    : latest !== undefined && latest.call === currentCall && latest.role === "user");
+  const awaitingTranslation = active && (engine === "codex"
+    ? latest !== undefined && latest.call === currentCall && latest.role === "user"
+    : segments.some((segment) => segment.call === currentCall && segment.role === "user"
+      && (engine === "voice" ? !segment.translationError : !segment.final)
+      && !segments.some((other) => other.utterance === segment.utterance && other.role === "assistant" && (engine === "fast" || other.final))));
   const phase: Phase = call.state === "error"
     ? "error"
     : call.reconnecting ? "reconnecting"
@@ -619,7 +645,8 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const canStart = active || !(unsupported || insecure || call.supported === null);
   const displayLines = useMemo(() => mergeDisplay(segments.filter((segment) => segment.text.trim()), drafts.state), [segments, drafts.state]);
   // Voice streams have no reliable pairing: help only known other-person originals.
-  const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.text.trim() && segment.final && !segment.restored && segmentSpeaker(segment) === "them")
+  const voiceAssistLines = segments.filter((segment) => segment.role === "user" && segment.text.trim() && segment.final && !segment.restored
+    && !segment.utterance?.startsWith("fast-") && segmentSpeaker(segment) === "them")
     .slice(-HISTORY_MAX_LINES).map((segment) => ({ id: String(segment.id), mine: segment.mine.code, theirs: segment.theirs.code, speaker: "theirs" as const, text: segment.text }));
   const voiceAssists = useLineAssist(voiceAssistLines, { meaning: assistMeaning }, { profile, history: transcriptHistory(transcriptRef.current, HISTORY_MAX_LINES) }, visible && !face);
   const turns = useMemo(() => conversationTurns(displayLines, typed.turns, mine, typed.provisional), [displayLines, typed.turns, mine, typed.provisional]);
@@ -677,6 +704,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     transcriptRef.current = clearTranscripts(transcriptRef.current);
     setSegments([]);
     drafts.reset();
+    fastCall.clear();
     writeConversation([]);
     typed.clear();
   };
@@ -718,7 +746,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   };
 
   const languageOptions = (other: TranslatorLanguage) => TRANSLATOR_LANGUAGES.map((language) => (
-    <option key={language.code} value={language.code} disabled={language.code === other.code}>{language.nativeName}</option>
+    <option key={language.code} value={language.code} disabled={language.code === other.code || (engine === "fast" && language.code === "th")}>{language.nativeName}</option>
   ));
 
   const statusLine = (
@@ -845,12 +873,14 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
             <button type="button" className="translator-setup-close translator-icon-button" aria-label={tt("translator.cardClose")} onClick={() => setSetupOpen(false)}><CloseIcon /></button>
             <label className="translator-language">
               <span>{voiceCopy.engineLabel}</span>
-              <select value={engine} onChange={(event) => changeCallSettings({ ...settings, engine: event.target.value === "codex" ? "codex" : "voice" })}>
+              <select value={engine} aria-describedby={engine === "fast" ? "translator-fast-hint" : undefined}
+                onChange={(event) => changeCallSettings({ ...settings, engine: readEngine(event.target.value) })}>
                 <option value="voice">{voiceCopy.engineVoice}</option>
                 <option value="codex">{voiceCopy.engineCodex}</option>
+                <option value="fast" disabled={mine.code === "th" || theirs.code === "th"}>{voiceCopy.engineFast}</option>
               </select>
             </label>
-            <p className="translator-options-note">{voiceCopy.engineHint}</p>
+            <p className="translator-options-note" id={engine === "fast" ? "translator-fast-hint" : undefined}>{engine === "fast" ? voiceCopy.fastHint : voiceCopy.engineHint}</p>
             <div className="translator-languages">
               <label className="translator-language">
                 <span>{tt("translator.me")}</span>
@@ -957,13 +987,13 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <input
                   type="checkbox"
                   checked={voice}
-                  aria-describedby="translator-voice-hint"
+                  aria-describedby={engine === "fast" ? "translator-fast-hint" : "translator-voice-hint"}
                   onChange={(event) => setSettings({ ...settings, voice: event.target.checked })}
                 />
                 <span>{tt("translator.voice")}</span>
               </label>
-              <p id="translator-voice-hint" className="translator-options-note">{tt("translator.voiceHint")}</p>
-              {voice ? (
+              {engine !== "fast" ? <p id="translator-voice-hint" className="translator-options-note">{tt("translator.voiceHint")}</p> : null}
+              {voice && engine !== "fast" ? (
                 <>
                   <label className="translator-toggle">
                     <input

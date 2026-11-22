@@ -1,10 +1,9 @@
 import type { TranslatorLanguage } from "@/lib/translator-languages";
 
 /**
- * Browser side of the quick draft captions: two gpt-realtime-translate WebSocket sessions, one per
- * output language, fed the microphone audio the call sends. The model's audio output is never played.
- * Credentials come from `/api/live/draft-secret`; a secret is used once to open its socket and is
- * never logged or shown. Any failure only ends the drafts (Codex is unaffected).
+ * Two gpt-realtime-translate WebSockets, one per output language, with shared microphone capture.
+ * Codex drafts use only text. Fast interpretation can schedule the PCM released by its direction gate.
+ * Only short-lived browser credentials from `/api/live/draft-secret` reach the sockets.
  */
 
 const SOCKET_URL = "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate";
@@ -17,26 +16,37 @@ const CHUNK_SAMPLES = 2_400;
 /** Tries to open both sockets for one call after the first one failed or a socket dropped. */
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2_000;
+const CONNECT_TIMEOUT_MS = 15_000;
 
 interface SessionPlan {
   language: TranslatorLanguage;
   secret: string;
 }
 
-export interface DraftSessionOptions {
+export type DraftSessionOptions = {
   mine: TranslatorLanguage;
   theirs: TranslatorLanguage;
-  /** The echo guard blocks the microphone right now: the sessions hear silence, as Codex does. */
-  isBlocked: () => boolean;
-  /** The echo guard's changes, told the moment they happen. */
-  onBlockedChange: (listener: (blocked: boolean) => void) => () => void;
   onInput: (language: TranslatorLanguage, delta: string) => void;
   onOutput: (language: TranslatorLanguage, delta: string) => void;
-}
+} & ({
+  fast?: never;
+  /** The drafts hear the same silence as Codex while its echo guard blocks the mic. */
+  isBlocked: () => boolean;
+  onBlockedChange: (listener: (blocked: boolean) => void) => () => void;
+} | {
+  fast: {
+    onAudio: (language: TranslatorLanguage, delta: string) => void;
+    onReady: () => void;
+    onFailure: (reason: "auth" | "upstream" | "mic-unavailable") => void;
+  };
+});
 
 export interface DraftSession {
   /** The track the call sends; `null` while it has none. */
   setTrack: (track: MediaStreamTrack | null) => void;
+  /** Schedule audible PCM, returning false when the capture/playback graph is not running. */
+  play: (samples: Int16Array, turn: number) => boolean;
+  cancelPlayback: (turn?: number) => void;
   close: () => void;
 }
 
@@ -53,7 +63,7 @@ async function mintSecrets(mine: TranslatorLanguage, theirs: TranslatorLanguage,
     body: JSON.stringify({ mine: mine.code, theirs: theirs.code }),
     signal,
   });
-  if (!response.ok) throw new Error(`the secret request failed (${response.status})`);
+  if (!response.ok) throw new Error(response.status === 401 ? "auth" : "upstream");
   const body: unknown = await response.json();
   const sessions = body && typeof body === "object" && "sessions" in body && Array.isArray(body.sessions) ? body.sessions : [];
   const plans: SessionPlan[] = [];
@@ -66,25 +76,28 @@ async function mintSecrets(mine: TranslatorLanguage, theirs: TranslatorLanguage,
   return plans;
 }
 
-function openSocket(plan: SessionPlan, handlers: { onInput: DraftSessionOptions["onInput"]; onOutput: DraftSessionOptions["onOutput"]; onDown: () => void; register: (socket: WebSocket) => void }): Promise<WebSocket> {
+function openSocket(plan: SessionPlan, handlers: Pick<DraftSessionOptions, "onInput" | "onOutput" | "fast"> & { onDown: () => void; register: (socket: WebSocket) => void; signal?: AbortSignal }): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     // The browser cannot set headers on a WebSocket; the realtime API takes the secret as a subprotocol.
     const socket = new WebSocket(SOCKET_URL, ["realtime", `openai-insecure-api-key.${plan.secret}`]);
     // Registered at once so a retry or a close also reaches a socket whose partner failed to open.
     handlers.register(socket);
     let opened = false;
+    let ready = false;
+    const onAbort = () => reject(new Error("upstream"));
+    handlers.signal?.addEventListener("abort", onAbort, { once: true });
     socket.onopen = () => {
       opened = true;
       socket.send(JSON.stringify({
         type: "session.update",
         session: {
           audio: {
-            input: { transcription: { model: "gpt-realtime-whisper" }, noise_reduction: { type: "near_field" } },
+            input: { transcription: { model: "gpt-realtime-whisper" }, noise_reduction: handlers.fast ? null : { type: "near_field" } },
             output: { language: plan.language.code },
           },
         },
       }));
-      resolve(socket);
+      if (!handlers.fast) resolve(socket);
     };
     socket.onmessage = (event) => {
       let parsed: unknown;
@@ -95,8 +108,13 @@ function openSocket(plan: SessionPlan, handlers: { onInput: DraftSessionOptions[
       }
       if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
       const delta = "delta" in parsed && typeof parsed.delta === "string" ? parsed.delta : "";
-      if (parsed.type === "session.input_transcript.delta") handlers.onInput(plan.language, delta);
+      if (parsed.type === "session.updated" && handlers.fast && !ready) {
+        ready = true;
+        handlers.signal?.removeEventListener("abort", onAbort);
+        resolve(socket);
+      } else if (parsed.type === "session.input_transcript.delta") handlers.onInput(plan.language, delta);
       else if (parsed.type === "session.output_transcript.delta") handlers.onOutput(plan.language, delta);
+      else if (parsed.type === "session.output_audio.delta" && delta) handlers.fast?.onAudio(plan.language, delta);
       else if (parsed.type === "error") {
         // The API refused the configuration or the audio: the session is of no use, so it takes the retry path.
         console.warn("[interpreter] a draft session reported an error");
@@ -105,10 +123,11 @@ function openSocket(plan: SessionPlan, handlers: { onInput: DraftSessionOptions[
     };
     socket.onerror = () => {
       if (!opened) reject(new Error("the draft socket could not open"));
+      if (handlers.fast) handlers.onDown();
     };
     socket.onclose = () => {
       if (!opened) reject(new Error("the draft socket closed before it opened"));
-      else handlers.onDown();
+      if (opened || handlers.fast) handlers.onDown();
     };
   });
 }
@@ -129,6 +148,22 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
   let retries = 0;
   let closed = false;
   let captureStopped = false;
+  let playback: GainNode | null = null;
+  const playing = new Map<AudioBufferSourceNode, { turn: number; ends: number }>();
+  let playbackEnd = 0;
+  let connectTimeout: number | undefined;
+  let fastReady = false;
+  let socketsReady = false;
+
+  const cancelPlayback = (turn?: number) => {
+    for (const [node, queued] of playing) {
+      if (turn !== undefined && queued.turn !== turn) continue;
+      node.stop();
+      playing.delete(node);
+    }
+    playbackEnd = 0;
+    for (const queued of playing.values()) playbackEnd = Math.max(playbackEnd, queued.ends);
+  };
 
   const closeSockets = () => {
     for (const socket of sockets.splice(0)) {
@@ -146,14 +181,19 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
     try {
       source = context.createMediaStreamSource(new MediaStream([track]));
       source.connect(worklet);
+      if (options.fast && track.readyState !== "live") fail("mic-unavailable");
     } catch {
       console.warn("[interpreter] draft captions cannot read the microphone");
+      if (options.fast) fail("mic-unavailable");
     }
   };
 
   /** Release the microphone capture (also when the drafts give up: nothing is listening to it any more). */
   const stopCapture = () => {
     captureStopped = true;
+    cancelPlayback();
+    playback?.disconnect();
+    playback = null;
     unsubscribeBlocked?.();
     unsubscribeBlocked = undefined;
     source?.disconnect();
@@ -166,6 +206,10 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
   };
 
   const retryOrGiveUp = () => {
+    if (options.fast) {
+      fail("upstream");
+      return;
+    }
     closeSockets();
     if (closed || retryTimer !== undefined) return;
     if (retries >= MAX_RETRIES) {
@@ -191,19 +235,44 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
     abort.abort();
     window.clearTimeout(retryTimer);
     retryTimer = undefined;
+    window.clearTimeout(connectTimeout);
     closeSockets();
     stopCapture();
   };
 
+  const fail = (reason: Parameters<NonNullable<DraftSessionOptions["fast"]>["onFailure"]>[0]) => {
+    if (closed) return;
+    end();
+    options.fast?.onFailure(reason);
+  };
+
+  const checkReady = () => {
+    if (options.fast && !closed && !fastReady && source && socketsReady) {
+      fastReady = true;
+      window.clearTimeout(connectTimeout);
+      options.fast.onReady();
+    }
+  };
+
   const connect = async () => {
     if (closed) return;
+    if (options.fast) connectTimeout = window.setTimeout(() => fail("upstream"), CONNECT_TIMEOUT_MS);
     try {
       const plans = await mintSecrets(options.mine, options.theirs, abort.signal);
       if (closed) return;
       const register = (socket: WebSocket) => void sockets.push(socket);
-      await Promise.all(plans.map((plan) => openSocket(plan, { onInput: options.onInput, onOutput: options.onOutput, onDown: retryOrGiveUp, register })));
+      await Promise.all(plans.map((plan) => openSocket(plan, {
+        onInput: options.onInput, onOutput: options.onOutput, fast: options.fast, onDown: retryOrGiveUp, register,
+        signal: options.fast ? abort.signal : undefined,
+      })));
+      socketsReady = true;
       if (closed) closeSockets();
-    } catch {
+      else checkReady();
+    } catch (error) {
+      if (options.fast) {
+        fail(error instanceof Error && error.message === "auth" ? "auth" : "upstream");
+        return;
+      }
       // The reason can name the request; the drafts are optional, so the details stay out of the log.
       retryOrGiveUp();
     }
@@ -212,42 +281,77 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
   const startCapture = async () => {
     if (typeof AudioContext !== "function" || typeof AudioWorkletNode !== "function") {
       console.warn("[interpreter] draft captions need AudioWorklet");
-      end();
+      if (options.fast) fail("mic-unavailable");
+      else end();
       return;
     }
     try {
       const next = new AudioContext({ sampleRate: SAMPLE_RATE });
       context = next;
-      await next.audioWorklet.addModule(CAPTURE_MODULE);
+      // Fast starts from the button gesture, before permission or network awaits.
+      const resume = options.fast ? next.resume() : null;
+      await Promise.all([next.audioWorklet.addModule(CAPTURE_MODULE), resume]);
       if (closed || captureStopped) return;
-      await next.resume().catch(() => {});
+      if (!resume) await next.resume().catch(() => {});
       if (closed || captureStopped) return;
-      const node = new AudioWorkletNode(next, CAPTURE_PROCESSOR, { numberOfOutputs: 0, processorOptions: { chunkSamples: CHUNK_SAMPLES } });
+      const node = new AudioWorkletNode(next, CAPTURE_PROCESSOR, {
+        numberOfOutputs: 0,
+        numberOfInputs: options.fast ? 2 : 1,
+        processorOptions: { chunkSamples: CHUNK_SAMPLES, cancelPlayback: Boolean(options.fast) },
+      });
       node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+        if (options.fast && !fastReady) return;
         if (!sockets.some((socket) => socket.readyState === WebSocket.OPEN)) return;
         const message = JSON.stringify({ type: "session.input_audio_buffer.append", audio: toBase64(new Uint8Array(event.data)) });
         for (const socket of sockets) if (socket.readyState === WebSocket.OPEN) socket.send(message);
       };
       worklet = node;
-      // Muted at the moment the guard mutes Codex's microphone, and opened at the moment it opens.
-      node.port.postMessage({ muted: options.isBlocked() });
-      unsubscribeBlocked = options.onBlockedChange((blocked) => node.port.postMessage({ muted: blocked }));
+      if (options.fast) {
+        playback = next.createGain();
+        playback.connect(next.destination);
+        playback.connect(node, 0, 1);
+      } else {
+        // Muted at the moment the guard mutes Codex's microphone, and opened at the moment it opens.
+        node.port.postMessage({ muted: options.isBlocked() });
+        unsubscribeBlocked = options.onBlockedChange((blocked) => node.port.postMessage({ muted: blocked }));
+      }
       connectSource();
+      checkReady();
     } catch {
       console.warn("[interpreter] draft captions cannot capture the microphone");
       // Without a capture the drafts have nothing to translate: their sockets would stay open unused.
-      end();
+      if (options.fast) fail("mic-unavailable");
+      else end();
     }
   };
 
   void startCapture();
-  void connect();
+  if (!options.fast) void connect();
 
   return {
     setTrack: (next) => {
+      if (closed) return;
+      const startWithTrack = options.fast && next && !track;
       track = next;
       connectSource();
+      if (startWithTrack && !closed) void connect();
     },
+    play: (samples, turn) => {
+      if (context?.state !== "running" || !playback || !samples.length) return false;
+      const buffer = context.createBuffer(1, samples.length, SAMPLE_RATE);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) channel[i] = samples[i] / 32768;
+      const node = context.createBufferSource();
+      node.buffer = buffer;
+      node.connect(playback);
+      node.onended = () => { playing.delete(node); node.disconnect(); };
+      const begin = Math.max(playbackEnd, context.currentTime);
+      playbackEnd = begin + buffer.duration;
+      playing.set(node, { turn, ends: playbackEnd });
+      node.start(begin);
+      return true;
+    },
+    cancelPlayback,
     close: () => {
       end();
     },
