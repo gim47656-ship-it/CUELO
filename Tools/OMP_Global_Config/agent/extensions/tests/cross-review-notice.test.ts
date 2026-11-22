@@ -37,8 +37,9 @@ function setup() {
   sh(work, "commit", "-q", "-m", "base");
   const ledger = join(dir, "ledger.jsonl");
   process.env.OMP_CROSS_REVIEW_LEDGER = ledger;
-  const control = { failSend: false };
+  const control = { failSend: false, reviewTool: true };
   const handlers: Record<string, Handler[]> = {};
+  const busHandlers: Record<string, ((data: unknown) => void)[]> = {};
   const sent: { message: { customType: string; content: string; display: boolean }; options: unknown }[] = [];
   const ctx = { cwd: work, agent: { kind: "main" }, sessionManager: { getSessionId: () => "s1" } };
   crossReview({
@@ -46,11 +47,17 @@ function setup() {
     registerTool: () => {},
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
     sendMessage: (message: never, options: unknown) => { if (control.failSend) throw new Error("delivery failed"); sent.push({ message, options }); },
-    getActiveTools: () => ["edit", "write", "cross_review"],
+    getActiveTools: () => control.reviewTool ? ["edit", "write", "cross_review"] : ["edit", "write"],
+    events: { on: (name: string, handler: (data: unknown) => void) => { (busHandlers[name] ??= []).push(handler); }, emit: () => {} },
   } as unknown as ExtensionAPI);
   const emit = async (name: string, event: Record<string, unknown>) => { for (const handler of handlers[name] ?? []) await handler(event, ctx); };
   const edited = (toolName: string, path: string, isError = false) => emit("tool_result", { toolName, input: { path }, isError });
-  return { work, ledger, sent, emit, edited, control };
+  const turnEnd = () => {
+    const notices: string[] = [];
+    for (const handler of busHandlers["cuelo:turn-end-notices"] ?? []) handler({ ctx, notices });
+    return notices;
+  };
+  return { work, ledger, sent, emit, edited, control, turnEnd };
 }
 
 const MARKER_CODE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p: string) => rmSync(p, { recursive: true });\n";
@@ -136,6 +143,53 @@ describe("편집 직후 조기 알림", () => {
     env.control.failSend = false;
     await env.edited("write", "a.ts");
     expect(env.sent).toHaveLength(1);
+  });
+
+  test("턴 끝: 통과 기록 없는 marker 파일은 입력당 한 번 안내하고, 통과한 cross_review 뒤에는 안내하지 않는다", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    await env.edited("write", "a.ts");
+    const first = env.turnEnd();
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("a.ts");
+    expect(env.turnEnd()).toEqual([]);
+    await env.emit("input", { source: "interactive" });
+    expect(env.turnEnd()).toHaveLength(1);
+    await env.emit("input", { source: "interactive" });
+    writeFileSync(env.ledger, passLedger(realpathSync(env.work), "a.ts", MARKER_CODE));
+    await env.emit("tool_result", { toolName: "cross_review", input: { action: "resolve" }, isError: false });
+    expect(env.turnEnd()).toEqual([]);
+  });
+
+  test("턴 끝: marker가 없는 편집에는 안내하지 않는다", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "plain.ts"), "export const x = 1;\n");
+    await env.edited("write", "plain.ts");
+    expect(env.turnEnd()).toEqual([]);
+  });
+
+  test("턴 끝: 한 편집의 첫 파일 알림 전달이 실패해도 같은 편집의 다른 파일을 추적한다", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    writeFileSync(join(env.work, "b.ts"), MARKER_CODE);
+    env.control.failSend = true;
+    await env.emit("tool_result", { toolName: "edit", input: { input: "[a.ts#AAAA]\nPUT 1.=1:\n+x\n[b.ts#BBBB]\nPUT 1.=1:\n+y\n" }, isError: false });
+    const notice = env.turnEnd();
+    expect(notice).toHaveLength(1);
+    expect(notice[0]).toContain("a.ts");
+    expect(notice[0]).toContain("b.ts");
+  });
+
+  test("턴 끝: cross_review가 꺼진 동안의 편집도 추적에 반영하고, 꺼져 있으면 안내하지 않는다", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    await env.edited("write", "a.ts");
+    env.control.reviewTool = false;
+    expect(env.turnEnd()).toEqual([]);
+    writeFileSync(join(env.work, "a.ts"), "export const x = 1;\n");
+    await env.edited("write", "a.ts");
+    env.control.reviewTool = true;
+    expect(env.turnEnd()).toEqual([]);
   });
 });
 

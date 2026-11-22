@@ -1,5 +1,5 @@
 ---
-description: Before implementation, validation, cleanup or approval decisions.
+description: Matching section only, for existing Office files, deletion/cleanup, approvals, measurement comparisons or library docs.
 ---
 
 # Global Rules

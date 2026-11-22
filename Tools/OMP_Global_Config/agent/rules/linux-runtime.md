@@ -1,5 +1,5 @@
 ---
-description: Before Linux VM, browser, network, runtime or mounted-disk work.
+description: Before Linux VM, browser, network, CUELO runtime update/troubleshooting or mounted-disk work.
 ---
 
 # Runtime: native Linux CUELO

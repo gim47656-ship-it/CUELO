@@ -1,5 +1,5 @@
 ---
-description: Before new/rewritten prose, draft or slop_check.
+description: Before new/rewritten prose that lands in files, draft or slop_check; not chat replies.
 ---
 
 - **글씨가 들어가는 콘텐츠는 `draft`로 먼저 쓰고 AI 슬롭 점검을 거친다(2026-10-25 사용자 결정).** 새로 쓰거나 한 문단

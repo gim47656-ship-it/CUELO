@@ -1,5 +1,5 @@
 ---
-description: Before multi-file contracts, verdicts or efficiency comparisons.
+description: Before accepting Maker work, multi-owner contracts or efficiency comparisons.
 ---
 
 # 착수 계약과 최종 판정

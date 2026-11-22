@@ -1,5 +1,5 @@
 ---
-description: Before delegation, job monitoring, character routing or reports.
+description: Before delegation, job monitoring, character routing or reporting delegated work.
 ---
 
 # Global Agent Instructions

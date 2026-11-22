@@ -207,35 +207,22 @@ async function lane(text = "Check the output.", resolveJudge: NonNullable<Parame
 }
 
 test.each([
- ["a bounded solo implementation", "Implement the export fix in this repository, then run its tests.", "not-needed"],
- ["a delegated implementation", "Have a Maker implement the CSV export.", "frame-needed"],
- ["a risky deployment and deletion", "Deploy the new exporter and delete the old bucket.", "frame-needed"],
-] as const)("%s takes the appropriate goal-lane path", async (_name, text, choice) => {
- const questions: string[] = [];
- const { emit, ran, reminder } = await lane(text, async (_ctx, purpose) => ({
-  judge: async (request: { state: { excerpt: string }; questions: unknown }) => {
-   expect(purpose).toBe("goal-lane-frame");
-   expect(request.state.excerpt).toBe(text);
-   questions.push(JSON.stringify(request.questions));
-   return { answers: { frame: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } };
-  },
- }) as never);
+ ["a one-line bug report", "가끔 장바구니 수량이 이상하게 나와 고쳐줘"],
+ ["a risky deployment and deletion", "Deploy the new exporter and delete the old bucket."],
+] as const)("%s gets no frame reminder from local work; only a Maker dispatch draws one", async (_name, text) => {
+ const purposes: string[] = [];
+ const { emit, ran, reminder } = await lane(text, async (_ctx, purpose) => {
+  purposes.push(purpose);
+  return { judge: async () => ({ answers: {} }) } as never;
+ });
  await setImmediate();
  const notices = [];
  for (let i = 0; i < 8; i++) notices.push((await ran(`bun test case-${i}`, 0))[0]?.additionalContext);
  notices.push((await emit("tool_result", { toolName: "draft", input: {}, content: [], isError: false }))[0]?.additionalContext);
- expect(questions).toHaveLength(1);
- const actual = notices.filter(Boolean);
- if (choice === "not-needed") {
-  expect(actual).toEqual([]);
-  expect(await reminder()).toContain("lab_goal");
-  expect(await reminder()).toBeUndefined();
- } else {
-  expect(notices[0]).toContain("lab_goal");
-  expect(actual).toHaveLength(1);
- }
- expect(questions[0]).toContain("one person");
- expect(questions[0]).toContain("risk");
+ expect(notices.filter(Boolean)).toEqual([]);
+ expect(purposes).toEqual([]);
+ expect(await reminder()).toContain("lab_goal");
+ expect(await reminder()).toBeUndefined();
 });
 
 test("an unrelated solo request does not reframe existing work, but a changed deployment condition does", async () => {
