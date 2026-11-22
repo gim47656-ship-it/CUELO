@@ -11,13 +11,13 @@ function capture(holdMs = 0) {
   turns.holdMs = holdMs;
   return { turns, committed, sent };
 }
-test("400 ms silence commits once, flushes rolling audio and never commits idle silence", () => {
+test("700 ms silence commits once, flushes rolling audio and never commits idle silence", () => {
   const { turns, committed, sent } = capture(SPEAKER_BUFFER_MS);
   for (let i = 0; i < 10; i++) turns.push(voiced(), "me");
   expect(sent).toHaveLength(0);
-  for (let i = 0; i < 4; i++) turns.push(quiet());
+  for (let i = 0; i < 7; i++) turns.push(quiet());
   expect(committed).toEqual([{ id: 0, startMs: 0, endMs: 1000, side: "me" }]);
-  expect(sent.reduce((n, x) => n + x.samples, 0)).toBe(14 * 2400);
+  expect(sent.reduce((n, x) => n + x.samples, 0)).toBe(17 * 2400);
   for (let i = 0; i < 10; i++) turns.push(quiet());
   turns.finish();
   expect(committed).toHaveLength(1);
@@ -59,7 +59,7 @@ test("overlap uses powerset overlap frames and minimum support, not speaker chan
 test("new utterance's first confident voice replaces the provisional previous side without a phantom split", () => {
   const { turns, committed } = capture(SPEAKER_BUFFER_MS);
   for (let i = 0; i < 12; i++) turns.push(voiced(), "me");
-  for (let i = 0; i < 4; i++) turns.push(quiet());
+  for (let i = 0; i < 7; i++) turns.push(quiet());
   for (let i = 0; i < 12; i++) turns.push(voiced());
   turns.identify("them", turns.now - 500);
   expect(committed).toHaveLength(1);

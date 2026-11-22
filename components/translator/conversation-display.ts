@@ -28,12 +28,33 @@ export interface ConversationTurn {
  */
 export function conversationTurns(lines: readonly ConversationLine[], typed: readonly TypedTurn[], mine: TranslatorLanguage, provisional: TypedTurn | null = null): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
+  const byUtterance = new Map<string, ConversationTurn>();
+  const legacy = new Map<ConversationTurn["side"], { call: number; pending: number; ambiguous: boolean; received: boolean }>();
   const typedTurns = provisional ? [...typed, provisional] : typed;
   for (const line of conversationOrder(lines, (item) => item.segment.role, lineSpeaker)) {
     const side = lineSpeaker(line) ?? "them";
     const translation = line.segment.role === "assistant";
-    const paired = line.segment.utterance ? turns.find((item) => item.voiceLines.some((previous) => previous.segment.utterance === line.segment.utterance)) : undefined;
-    let turn = paired ?? turns.at(-1);
+    const id = line.segment.utterance;
+    const last = turns.at(-1);
+    const paired = id ? byUtterance.get(id) : undefined;
+    const adjacent = last?.voiceLines[0]?.segment;
+    let turn = id ? paired : adjacent?.call === line.segment.call && !adjacent.utterance ? last : undefined;
+    if (!id) {
+      let run = legacy.get(side);
+      if (!run || run.call !== line.segment.call) {
+        run = { call: line.segment.call, pending: 0, ambiguous: false, received: false };
+        legacy.set(side, run);
+      }
+      if (translation) {
+        if (run.ambiguous) { turn = undefined; run.received = true; }
+        run.pending = Math.max(0, run.pending - 1);
+      } else {
+        // Without source IDs even a merged interpretation cannot tell us which originals it covers.
+        if (run.received) { turn = undefined; run.ambiguous = run.pending > 0; run.received = false; }
+        if (!(turn?.side === side && turn.translations.length && !turn.originals.length)) run.pending++;
+        if (run.pending > 1) run.ambiguous = true;
+      }
+    }
     const previousAt = turn?.at;
     const startsAfterTyped = previousAt !== undefined && !translation && typedTurns.some((item) => item.at > previousAt && item.at <= line.segment.at);
     const full = turn !== undefined && (translation ? turn.translations : turn.originals).length > 0;
@@ -42,6 +63,7 @@ export function conversationTurns(lines: readonly ConversationLine[], typed: rea
       const at = Number.isFinite(line.segment.at) ? line.segment.at : (previousAt ?? 0);
       turn = { key: `voice-${line.key}`, at, side, originals: [], translations: [], voiceLines: [] };
       turns.push(turn);
+      if (id) byUtterance.set(id, turn);
     }
     turn.voiceLines.push(line);
     const text = { key: line.key, text: line.segment.text, language: lineLanguage(line), fallbackLanguage: line.segment.theirs, final: line.segment.final && !line.draft, loadReading: true };

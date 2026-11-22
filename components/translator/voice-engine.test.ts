@@ -6,7 +6,7 @@ function environment(media?: Promise<MediaStream>, moduleFailure?: Error) {
   const names = ["fetch", "navigator", "Worker", "WebSocket", "AudioContext", "AudioWorkletNode", "window", "SpeechSynthesisUtterance"];
   const descriptors = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const sockets: Socket[] = [], workers: LocalWorker[] = [], nodes: Node[] = [], states: { state: string; failure?: string }[] = [];
-  const spoken: { text: string; lang: string; onstart?: () => void }[] = [];
+  const spoken: { text: string; lang: string; onstart?: () => void; onend?: () => void }[] = [];
   const updates: string[] = [];
   const modelStates: string[] = [];
   const enrollmentStates: { side: string | null; seconds: number; failed?: boolean }[] = [];
@@ -46,7 +46,7 @@ function environment(media?: Promise<MediaStream>, moduleFailure?: Error) {
   const values: Record<string, unknown> = {
     Worker: LocalWorker, WebSocket: Socket, AudioContext: Context, AudioWorkletNode: Node,
     navigator: { mediaDevices: { getUserMedia: () => media ?? Promise.resolve(stream) } },
-    window: { setTimeout, clearTimeout, speechSynthesis: { speak: (utterance: typeof spoken[number]) => spoken.push(utterance), cancel: () => { cancels++; } } },
+    window: { setTimeout, clearTimeout, speechSynthesis: { getVoices: () => [{ lang: "ja-JP" }, { lang: "ko-KR" }], speak: (utterance: typeof spoken[number]) => spoken.push(utterance), cancel: () => { cancels++; } } },
     SpeechSynthesisUtterance: class { lang = ""; constructor(readonly text: string) {} },
     fetch: async (url: string) => {
       requests++;
@@ -65,7 +65,7 @@ function environment(media?: Promise<MediaStream>, moduleFailure?: Error) {
 async function tick() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 function speech(node: { port: { onmessage: ((event: { data: ArrayBuffer }) => void) | null } }) {
   for (let i = 0; i < 10; i++) node.port.onmessage?.({ data: new Int16Array(2400).fill(8000).buffer });
-  for (let i = 0; i < 4; i++) node.port.onmessage?.({ data: new Int16Array(2400).buffer });
+  for (let i = 0; i < 7; i++) node.port.onmessage?.({ data: new Int16Array(2400).buffer });
 }
 test("R1-ANT-4 / ADV-2: stop during socket handshake stays idle", async () => {
   const env = environment();
@@ -126,6 +126,8 @@ test("voice playback queues both final interpretations and never cancels the pre
     speech(env.nodes[0]); env.sockets[0].event({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "첫 문장" }); await tick();
     env.spoken[0]?.onstart?.();
     speech(env.nodes[0]); env.sockets[0].event({ type: "conversation.item.input_audio_transcription.completed", item_id: "b", transcript: "다음 문장" }); await tick();
+    expect(env.spoken).toHaveLength(1);
+    env.spoken[0].onend?.(); await tick();
     expect(env.spoken.map((utterance) => utterance.text)).toEqual(["translated", "translated"]); expect(env.cancels()).toBe(0);
   } finally { env.restore(); }
 });
@@ -213,7 +215,8 @@ test("R5-ANT-1: uncertain intermediate scores do not erase the last confident bo
     speech(env.nodes[0]); env.engine.nextEnrollment(); worker.onmessage?.({ data: { type: "enrolled", side: "me", ok: true } });
     env.sockets[0].event({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "등록 문장" }); await tick();
     env.engine.skipEnrollment();
-    for (let i = 0; i < 40; i++) env.nodes[0].port.onmessage?.({ data: new Int16Array(2400).fill(8000).buffer });
+    // Hold the original 5.4 s capture clock despite the extra 300 ms of endpoint silence.
+    for (let i = 0; i < 37; i++) env.nodes[0].port.onmessage?.({ data: new Int16Array(2400).fill(8000).buffer });
     worker.onmessage?.({ data: { type: "analysis", endMs: 4400, matches: [{ side: "me", score: .8 }] } });
     worker.onmessage?.({ data: { type: "analysis", endMs: 4650, matches: [{ side: "me", score: .35 }] } });
     worker.onmessage?.({ data: { type: "analysis", endMs: 4900, matches: [{ side: "me", score: .1 }] } });

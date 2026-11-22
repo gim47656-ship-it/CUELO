@@ -5,6 +5,7 @@ import { VoiceInterpreterSession, type VoiceUtterance } from "@/lib/interpreter-
 import type { TranslatorLanguage } from "@/lib/translator-languages";
 import type { InterpreterProfile } from "@/lib/translator-context";
 import { readInterpreterTextEvents } from "./read-text-stream";
+import { readAloud } from "./read-aloud";
 
 export interface VoiceEngineOptions {
   mine: TranslatorLanguage; theirs: TranslatorLanguage; profile: InterpreterProfile;
@@ -59,11 +60,10 @@ export class VoiceEngine {
   private confirmedSides = new Set<SpeakerSide>();
   private enrollmentFailed = false;
   private audio = new Map<number, { chunks: Int16Array[]; size: number }>();
-  private speech = new Set<SpeechSynthesisUtterance>();
+  private playbackQueue = Promise.resolve();
   private pendingFinals = new Set<number>();
   private finalWaiters: (() => void)[] = [];
   private guardTimer?: number;
-  private playing = 0;
   private stopFailure?: string;
   constructor(private options: VoiceEngineOptions) {
     this.session = new VoiceInterpreterSession({ ...options,
@@ -82,20 +82,23 @@ export class VoiceEngine {
         throw new Error("Incomplete interpretation");
       },
       onFinal: (item) => {
-        if (!this.disposed && item.translation && !item.translationError && options.playback().enabled && "speechSynthesis" in window) {
-          const utterance = new SpeechSynthesisUtterance(item.translation);
-          utterance.lang = (item.side === "me" ? options.theirs : options.mine).tag;
-          utterance.onstart = () => { if (this.disposed) return; this.playing++; if (options.playback().echoGuard) this.node?.port.postMessage({ muted: true }); };
-          const end = () => {
-            this.speech.delete(utterance);
-            if (this.disposed) return;
-            this.playing = Math.max(0, this.playing - 1); clearTimeout(this.guardTimer); this.guardTimer = window.setTimeout(() => { if (!this.playing) this.node?.port.postMessage({ muted: false }); }, 250);
-          };
-          utterance.onend = end; utterance.onerror = end;
-          this.speech.add(utterance);
-          // The browser queues utterances; never cancel a previous interpretation to play a new one.
-          window.speechSynthesis.speak(utterance);
-        }
+        const text = item.translation;
+        if (!text || item.translationError || !options.playback().enabled) return;
+        const language = item.side === "me" ? options.theirs : options.mine;
+        this.playbackQueue = this.playbackQueue.then(async () => {
+          if (this.disposed || !options.playback().enabled || !this.context) return;
+          let guarded = false;
+          try {
+            await readAloud(text, language, this.abort.signal, () => this.context!, () => {
+              clearTimeout(this.guardTimer);
+              guarded = options.playback().echoGuard;
+              this.node?.port.postMessage({ muted: guarded });
+            });
+          } catch { /* Keep the translation readable and allow the next utterance to play. */ }
+          finally {
+            if (guarded && !this.disposed) this.guardTimer = window.setTimeout(() => this.node?.port.postMessage({ muted: false }), 250);
+          }
+        });
       },
     });
     this.turns = new AudioTurns({
@@ -311,7 +314,7 @@ export class VoiceEngine {
     if (this.disposed) return;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.source?.disconnect(); this.node?.disconnect();
-    void this.context?.close().catch(() => {});
+    void this.playbackQueue.then(() => { if (!this.disposed) void this.context?.close().catch(() => {}); });
     this.socket?.close(1000); this.worker?.terminate(); clearTimeout(this.guardTimer);
     this.audio.clear(); this.enrollmentAudio = []; this.analysisRing.fill(0);
     this.options.onState(this.stopFailure ? "error" : "idle", this.stopFailure);
@@ -324,7 +327,6 @@ export class VoiceEngine {
     void this.context?.close().catch(() => {});
     if (this.socket) this.socket.onmessage = null;
     this.socket?.close(1000); this.worker?.terminate(); clearTimeout(this.guardTimer);
-    if (this.speech.size) { this.speech.clear(); window.speechSynthesis.cancel(); }
     this.audio.clear(); this.enrollmentAudio = []; this.analysisRing.fill(0);
     for (const resolve of this.finalWaiters.splice(0)) resolve();
   }

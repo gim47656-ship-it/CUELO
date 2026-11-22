@@ -75,7 +75,7 @@ export class VoiceInterpreterSession {
     if (!item || this.stopped || item.closed) return;
     item.text = final ? text : item.text + text;
     // First recognizable source locks this utterance; code switching cannot flip it later.
-    item.side ??= languageSide(item.text, this.options.mine, this.options.theirs) ?? this.previousSide(item.id);
+    item.side ??= languageSide(item.text, this.options.mine, this.options.theirs) ?? (final ? this.previousSide(item.id) : undefined);
     item.closed = final;
     this.options.onUpdate({ ...item });
     if (final) this.schedule(item);

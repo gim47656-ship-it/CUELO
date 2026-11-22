@@ -1,6 +1,6 @@
 import type { SpeakerSide } from "./speakers";
 export const AUDIO_RATE = 24000;
-export const ENDPOINT_MS = 400;
+export const ENDPOINT_MS = 700;
 export const SPEAKER_BUFFER_MS = 1500;
 export interface AudioTurn { id: number; startMs: number; endMs: number; side?: SpeakerSide }
 interface Frame { samples: Int16Array; startMs: number; endMs: number }
@@ -14,6 +14,7 @@ export class AudioTurns {
   private voiced = 0;
   private turn?: AudioTurn;
   private previous?: SpeakerSide;
+  private continuation?: SpeakerSide;
   private identified = false;
   private manualTurn?: number;
   holdMs = 0;
@@ -30,15 +31,17 @@ export class AudioTurns {
     let sum = 0;
     for (const sample of samples) sum += (sample / 32768) ** 2;
     const speech = Math.sqrt(sum / samples.length) >= 0.012;
-    if (!this.turn && !speech) return;
+    if (!this.turn && !speech) { this.continuation = undefined; return; }
     if (!this.turn) {
-      this.turn = { id: this.nextId++, startMs, endMs: this.clock, side: side ?? this.previous };
-      this.identified = side !== undefined;
+      const confirmed = side ?? this.continuation;
+      this.continuation = undefined;
+      this.turn = { id: this.nextId++, startMs, endMs: this.clock, side: confirmed ?? this.previous };
+      this.identified = confirmed !== undefined;
       this.sentUntil = startMs;
       this.voiced = 0;
-      this.callbacks.open(this.turn);
+      this.callbacks.open({ ...this.turn, side: confirmed });
     }
-    if (side && !this.turn.side) this.turn.side = side;
+    if (side && !this.identified) { this.turn.side = side; this.identified = true; }
     this.turn.endMs = this.clock;
     this.pending.push({ samples, startMs, endMs: this.clock });
     this.voiced += speech ? duration : 0;
@@ -58,7 +61,7 @@ export class AudioTurns {
     const old = this.turn;
     this.callbacks.commit({ ...old, endMs: boundary });
     this.previous = side;
-    if (!this.pending.length) { this.turn = undefined; this.silence = 0; return; }
+    if (!this.pending.length) { this.turn = undefined; this.continuation = side; this.silence = 0; return; }
     this.turn = { id: this.nextId++, startMs: boundary, endMs: this.clock, side };
     this.identified = true;
     this.sentUntil = boundary;
@@ -81,13 +84,14 @@ export class AudioTurns {
     if (!this.turn) return;
     this.flush(this.clock);
     this.previous = this.turn.side ?? this.previous;
-    if (this.voiced >= 100) this.callbacks.commit({ ...this.turn, endMs: this.clock - this.silence });
+    if (this.voiced >= 100) this.callbacks.commit({ ...this.turn, side: this.identified ? this.turn.side : undefined, endMs: this.clock - this.silence });
     this.turn = undefined;
     this.pending = [];
     this.silence = 0;
   }
   releaseIdentity() {
     this.previous = undefined;
+    this.continuation = undefined;
     if (this.turn && this.manualTurn !== this.turn.id) { this.turn.side = undefined; this.identified = false; }
   }
   correct(id: number, side: SpeakerSide) {

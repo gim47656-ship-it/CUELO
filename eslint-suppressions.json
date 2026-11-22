@@ -106,11 +106,6 @@
       "count": 3
     }
   },
-  "components/translator/useSpeech.ts": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
   "components/translator/useVoiceInterpreter.ts": {
     "react-hooks/refs": {
       "count": 1

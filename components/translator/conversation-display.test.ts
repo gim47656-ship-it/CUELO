@@ -27,11 +27,12 @@ test("an interpretation arriving before its heard words still splits per utteran
   ]);
 });
 
-test("lines are never moved or dropped: a merged interpretation stays where it arrived", () => {
+test("ambiguous legacy originals and their merged interpretation stay separate, with no lines lost", () => {
   const lines = [ja(1, "user", "쌀국수 주세요"), ja(2, "user", "고수는 빼 주세요"), ja(3, "assistant", "フォーをください、パクチー抜きで。")];
   expect(shape(lines)).toEqual([
     ["me", ["쌀국수 주세요"], [], true],
-    ["me", ["고수는 빼 주세요"], ["フォーをください、パクチー抜きで。"], false],
+    ["me", ["고수는 빼 주세요"], [], false],
+    ["me", [], ["フォーをください、パクチー抜きで。"], false],
   ]);
   expect(conversationTurns(lines, [], mine).flatMap((turn) => turn.voiceLines).length).toBe(lines.length);
 });
