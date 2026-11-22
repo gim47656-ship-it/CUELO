@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { setImmediate } from "node:timers/promises";
 import { z } from "zod";
 import goalLane, { judgeUnstated } from "../../cuelo-plugins/goal-lane/index";
 
@@ -102,6 +103,8 @@ test("a size:small frame needs no separate evidence call and draws no later remi
  await emit("session_start", {});
  const start = (await emit("before_agent_start", { reason: "prompt", prompt: "x", systemPrompt: ["base"] }))[0] as { systemPrompt: string[] };
  const block = start.systemPrompt.at(-1)!;
+ expect(block).toContain("skip `maker_route`, preflight and `lab_goal` frame");
+ expect(block).toContain("before a chosen Maker dispatch");
  expect(block).toContain("size:small frame is registered with the frame call alone: no separate `evidence` call");
  expect(block).toContain("For size normal/deep, before done/waiting, record evidence");
  await emit("input", { source: "rpc", text: "Fix the typo in the heading." });
@@ -181,7 +184,7 @@ test("an ending that waits on the user's decision or input draws no turn-end rem
 
 type Deliverable = { id: string; what: string; check: string; path?: string };
 
-async function lane() {
+async function lane(text = "Check the output.", resolveJudge: NonNullable<Parameters<typeof goalLane>[1]>["resolveJudge"] = async () => { throw new Error("No provider in this focused test"); }) {
  const handlers = new Map<string, Handler[]>();
  let tool: GoalTool;
  const entries: { type: string; customType: string; data: unknown }[] = [];
@@ -192,16 +195,72 @@ async function lane() {
   registerTool(value: GoalTool) { tool = value; },
   sendMessage() {},
   appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
- } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
+ } as never, { resolveJudge });
  const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
  const call = async (params: unknown) => (await tool.execute("goal-test", params, undefined, undefined, ctx)).content[0].text;
  await emit("session_start", {});
- await emit("input", { source: "rpc", text: "Check the output." });
+ await emit("input", { source: "rpc", text });
  const frame = (deliverables: Deliverable[]) => call({ op: "frame", goal: "Output", size: "normal", deliverables });
  const ran = (command: string, exitCode: number) => emit("tool_result", { toolName: "bash", input: { command }, details: { exitCode }, content: [], isError: exitCode !== 0 });
  const reminder = async () => ((await emit("tool_result", { toolName: "task", input: {}, content: [], isError: false }))[0] as ContextNotice)?.additionalContext;
- return { call, frame, ran, reminder, ctx };
+ return { call, emit, frame, ran, reminder, ctx };
 }
+
+test.each([
+ ["a bounded solo implementation", "Implement the export fix in this repository, then run its tests.", "not-needed"],
+ ["a delegated implementation", "Have a Maker implement the CSV export.", "frame-needed"],
+ ["a risky deployment and deletion", "Deploy the new exporter and delete the old bucket.", "frame-needed"],
+] as const)("%s takes the appropriate goal-lane path", async (_name, text, choice) => {
+ const questions: string[] = [];
+ const { emit, ran, reminder } = await lane(text, async (_ctx, purpose) => ({
+  judge: async (request: { state: { excerpt: string }; questions: unknown }) => {
+   expect(purpose).toBe("goal-lane-frame");
+   expect(request.state.excerpt).toBe(text);
+   questions.push(JSON.stringify(request.questions));
+   return { answers: { frame: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } };
+  },
+ }) as never);
+ await setImmediate();
+ const notices = [];
+ for (let i = 0; i < 8; i++) notices.push((await ran(`bun test case-${i}`, 0))[0]?.additionalContext);
+ notices.push((await emit("tool_result", { toolName: "draft", input: {}, content: [], isError: false }))[0]?.additionalContext);
+ expect(questions).toHaveLength(1);
+ const actual = notices.filter(Boolean);
+ if (choice === "not-needed") {
+  expect(actual).toEqual([]);
+  expect(await reminder()).toContain("lab_goal");
+  expect(await reminder()).toBeUndefined();
+ } else {
+  expect(notices[0]).toContain("lab_goal");
+  expect(actual).toHaveLength(1);
+ }
+ expect(questions[0]).toContain("one person");
+ expect(questions[0]).toContain("risk");
+});
+
+test("an unrelated solo request does not reframe existing work, but a changed deployment condition does", async () => {
+ const requests: { text: string; questions: unknown }[] = [];
+ const solo = "Separately, fix the README typo.";
+ const change = "Deploy to staging instead of production.";
+ const { call, emit, ran } = await lane("Deploy the exporter.", async (_ctx, purpose) => ({
+  judge: async (request: { state: { newMessage: string }; questions: unknown }) => {
+   if (purpose !== "goal-lane-reframe") return { answers: {} };
+   requests.push({ text: request.state.newMessage, questions: request.questions });
+   const choice = request.state.newMessage === change ? "goal-changed" : "same-goal";
+   return { answers: { reframe: { type: "choice", choice, probabilities: { [choice]: 0.9 } } } };
+  },
+ }) as never);
+ await call({ op: "frame", goal: "Deploy the exporter to production", deliverables: [{ id: "rollout", what: "Live exporter", check: "Check health" }] });
+ const steer = async (text: string) => {
+  await emit("message_start", { message: { role: "user", content: text } });
+  await setImmediate();
+  return (await ran("bun test", 0))[0]?.additionalContext;
+ };
+ expect(await steer(solo)).toBeUndefined();
+ expect(await steer(change)).toContain('`op: "frame"`');
+ expect(requests.map(({ text }) => text)).toEqual([solo, change]);
+ expect(JSON.stringify(requests[0]?.questions)).toContain("separate bounded solo task without risk");
+});
 
 test("a successful but unrelated command is reported as observed evidence, never as a met requirement", async () => {
  const { call, frame, ran, reminder } = await lane();

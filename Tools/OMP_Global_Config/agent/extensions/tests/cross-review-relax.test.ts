@@ -1,6 +1,5 @@
-// 2026-10-27 사용자 결정으로 완화한 교차검토 게이트(주석 증명·VB 주석·문자열 PLC·버전만 바뀐 diff·파일 단위 highRisk·표본 제외/상한·자문 비차단)의 계약 테스트.
+// 주석 증명, 문자열 PLC, 버전만 바뀐 diff, 파일 단위 highRisk, 옛 자문 기록을 지키는 교차검토 계약 테스트.
 import { afterEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +15,6 @@ import {
   runGate,
   runResolve,
   runReview,
-  sampleSelected,
   spawnExec,
   type GateOutcome,
   type Lane,
@@ -36,7 +34,6 @@ function sh(cwd: string, ...args: string[]): string {
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
 }
-const blobOf = (content: string) => createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0${content}`).digest("hex");
 
 interface RepoEnv { work: string; ledger: string; snapshots: string }
 function repo(): RepoEnv {
@@ -185,45 +182,17 @@ describe("A4 버전 문자열만 바뀐 diff는 대상이 아니다", () => {
   });
 });
 
-/** files 전체(path+content)의 표본 여부가 want가 되도록 vary 파일의 내용을 고른다. */
-function pickSample(files: Record<string, string>, vary: string, want: boolean): Record<string, string> {
-  for (let n = 0; n < 2000; n++) {
-    const next = { ...files, [vary]: files[vary]!.replace("/*v*/", `/*v${n}*/`) };
-    if (sampleSelected(Object.entries(next).map(([path, content]) => ({ path, blob: blobOf(content) }))) === want) return next;
-  }
-  throw new Error("no content found");
-}
 
 describe("A5 crossReviewHighRisk는 적은 파일에만 걸린다", () => {
   test("목록의 파일만 declared high-risk이고, files에 없는 경로는 거절한다", async () => {
     const env = repo();
-    const files = pickSample({ "a.ts": "export const a = 1; /*v*/\n", "b.ts": "export const b = 2;\n" }, "a.ts", false);
+    const files = { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" };
     for (const [path, content] of Object.entries(files)) writeFileSync(join(env.work, path), content);
     const error = await runGate({ cwd: env.work, files: ["a.ts", "b.ts"], ledgerPath: env.ledger, highRisk: ["a.ts"] }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(CrossReviewRefusal);
     expect((error as Error).message).toContain("- a.ts: declared high-risk");
     expect((error as Error).message).not.toContain("- b.ts:");
     await expect(runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger, highRisk: ["b.ts"] })).rejects.toThrow("crossReviewHighRisk");
-  });
-});
-
-describe("A6 표본은 프로젝트·스타일·디자이너 파일을 빼고 바뀐 줄이 많은 5개까지만 요구한다", () => {
-  test("뽑힌 커밋에서 상위 5개 코드 파일만 표본 이유를 받고, marker 파일은 상한 밖이어도 요구된다", async () => {
-    const env = repo();
-    const ts = (n: number) => Array.from({ length: n }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n";
-    const big = Array.from({ length: 40 }, (_, i) => `  <Item${i} />`).join("\n") + "\n";
-    const files = pickSample({
-      "s1.ts": "export const s = 1; /*v*/\n", "s2.ts": ts(2), "s3.ts": ts(3), "s4.ts": ts(4), "s5.ts": ts(5), "s6.ts": ts(6),
-      "App.csproj": `<Project>\n${big}</Project>\n`, "site.css": `.a {\n${big}}\n`, "Form1.Designer.vb": `Partial Class Form1\n${big}End Class\n`,
-      "m.ts": "rmSync(x);\n",
-    }, "s1.ts", true);
-    for (const [path, content] of Object.entries(files)) writeFileSync(join(env.work, path), content);
-    const error = await runGate({ cwd: env.work, files: Object.keys(files), ledgerPath: env.ledger }).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(CrossReviewRefusal);
-    const required = [...(error as Error).message.matchAll(/^- (\S+): (.*)$/gm)].map((match) => [match[1], match[2]] as const);
-    expect(required.filter(([, reason]) => reason.includes("sampled")).map(([path]) => path).sort()).toEqual(["s2.ts", "s3.ts", "s4.ts", "s5.ts", "s6.ts"]);
-    expect(required.map(([path]) => path).sort()).toEqual(["m.ts", "s2.ts", "s3.ts", "s4.ts", "s5.ts", "s6.ts"]);
-    expect(required.find(([path]) => path === "m.ts")?.[1]).toContain("marker deletion");
   });
 });
 
@@ -368,13 +337,12 @@ describe("#53 보간 문자열의 실행식은 device-io로 남는다", () => {
   });
 
   test.each([
-    ["ports.py", "def show(socket, data):\n    return f\"{socket.send(data)}\"\n# /*v*/\n"],
-    ["ports.cs", "class D {\n    static string Show(string p) => $\"{new SerialPort(p).PortName}\";\n}\n// /*v*/\n"],
-    ["ports.vb", "Module D\n    Function Show(p As String) As String\n        Return $\"{New SerialPort(p).PortName}\"\n    End Function\nEnd Module\n' /*v*/\n"],
-  ])("표본이 아니고 통과 원장이 비어도 runGate가 검토를 요구한다: %s", async (path, content) => {
+    ["ports.py", "def show(socket, data):\n    return f\"{socket.send(data)}\"\n"],
+    ["ports.cs", "class D {\n    static string Show(string p) => $\"{new SerialPort(p).PortName}\";\n}\n"],
+    ["ports.vb", "Module D\n    Function Show(p As String) As String\n        Return $\"{New SerialPort(p).PortName}\"\n    End Function\nEnd Module\n"],
+  ])("통과 원장이 비어 있으면 marker가 걸린 코드는 검토를 요구한다: %s", async (path, content) => {
     const env = repo();
-    const files = pickSample({ [path]: content }, path, false);
-    writeFileSync(join(env.work, path), files[path]!);
+    writeFileSync(join(env.work, path), content);
     const error = await runGate({ cwd: env.work, files: [path], ledgerPath: env.ledger }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(CrossReviewRefusal);
     expect((error as Error).message).toContain("device-io");
@@ -382,8 +350,7 @@ describe("#53 보간 문자열의 실행식은 device-io로 남는다", () => {
 
   test("순수 문자열 문구만 있는 파일은 같은 조건에서 검토를 요구하지 않는다", async () => {
     const env = repo();
-    const files = pickSample({ "label.py": "TEXT = \"SerialPort status\"\n# /*v*/\n" }, "label.py", false);
-    writeFileSync(join(env.work, "label.py"), files["label.py"]!);
+    writeFileSync(join(env.work, "label.py"), "TEXT = \"SerialPort status\"\n");
     const outcome = (await runGate({ cwd: env.work, files: ["label.py"], ledgerPath: env.ledger })) as GateOutcome;
     expect(outcome.decision?.required).toEqual([]);
   });

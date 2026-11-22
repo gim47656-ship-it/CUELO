@@ -335,6 +335,28 @@ describe("automatic preflight routing", () => {
     });
   });
 
+  test("solo work starts no preflight; a later risky frame still gets background advice", async () => {
+    await withPreflightRole(async () => {
+      const s = await mainSession();
+      await s.say("Fix the CSV header in this repository and run the tests.");
+      await s.call("bash", { command: "bun test" });
+      await s.call("lab_goal", { op: "frame", size: "small", goal: "Fix CSV header" });
+      expect(s.resolved).toEqual([]);
+      expect(served).toEqual([]);
+      expect(s.messages).toEqual([]);
+
+      await s.say("Deploy the new exporter and delete the old bucket.");
+      expect(await s.call("lab_goal", {
+        op: "frame", size: "normal", goal: "Deploy the new exporter and delete the old bucket",
+        deliverables: [{ id: "rollout", what: "Replacement exporter live", check: "Verify new exporter before deleting the approved bucket" }],
+      })).toBeUndefined();
+      await until(() => s.messages.length === 1);
+      expect(served).toEqual([FABLE_ID]);
+      expect(prompts[0]).toContain("Deploy the new exporter and delete the old bucket");
+      expect(s.messages[0]).toContain("[사전 점검]");
+    });
+  });
+
   test("a goal frame is never held: its advice arrives as an aside and a goal-sentence rewrite passes once", async () => {
     await withPreflightRole(async () => {
       const s = await mainSession();

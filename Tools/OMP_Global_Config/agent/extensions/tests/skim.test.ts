@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { callModel, skimQuestion, withFallback, DRAFT_FALLBACK, ROLE_PRIMARY, HelperCallError, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
+import { callModel, collect, secretFileName, skimQuestion, withFallback, DRAFT_FALLBACK, ROLE_PRIMARY, HelperCallError, FILE_BYTES, TOTAL_BYTES, type HelperAnswer, type SkimCompletion } from "../skim";
 
 const directories: string[] = [];
 const signal = new AbortController().signal;
@@ -47,16 +47,19 @@ describe("skim", () => {
     expect(answer).toContain("docs/note.md: 비밀 내용 제외");
   });
 
-  test("auth·token은 단어로 떨어진 이름만 비밀로 보고, 그 글자를 품은 일반 이름은 보낸다", async () => {
+  test("auth·token은 단어로 떨어진 이름만 비밀로 보고, 그 글자를 품은 일반 이름과 소스 코드는 보낸다", async () => {
     const cwd = fixture();
     mkdirSync(join(cwd, "docs"));
-    for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) writeFileSync(join(cwd, "docs", name), `PUBLIC ${name}`);
-    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) writeFileSync(join(cwd, "docs", name), "SECRET_NAME_MARKER");
+    for (const name of ["authentic-product.md", "tokenizer.md", "author.md", "auth-broker-config.ts", "oauth_token.py"]) writeFileSync(join(cwd, "docs", name), `PUBLIC ${name}`);
+    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md", ".env.ts"]) writeFileSync(join(cwd, "docs", name), "SECRET_NAME_MARKER");
+    // 소스 코드도 비밀 값 모양 내용이면 내용 검사가 뺀다. setup 비밀 검사를 피하려고 키 이름을 이어 붙인다.
+    writeFileSync(join(cwd, "docs", "auth-keys.ts"), `const ${["api", "Key"].join("")} = "not-a-real-key";`);
     let prompt = "";
     const answer = await skimText({ paths: ["docs"], question: "?" }, context(cwd), signal, async (input) => { prompt = input; return reply("ok"); });
-    for (const name of ["authentic-product.md", "tokenizer.md", "author.md"]) expect(prompt).toContain(`<file path="docs/${name}">`);
-    expect(prompt).not.toContain("SECRET_NAME_MARKER");
-    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md"]) expect(answer).toContain(`docs/${name}: 비밀 경로 제외`);
+    for (const name of ["authentic-product.md", "tokenizer.md", "author.md", "auth-broker-config.ts", "oauth_token.py"]) expect(prompt).toContain(`<file path="docs/${name}">`);
+    expect(prompt).not.toMatch(/SECRET_NAME_MARKER|not-a-real-key/);
+    for (const name of ["auth.json", "oauth-token.txt", "github-auth.yml", "tokens.md", ".env.ts"]) expect(answer).toContain(`docs/${name}: 비밀 경로 제외`);
+    expect(answer).toContain("docs/auth-keys.ts: 비밀 내용 제외");
   });
 
   test("비밀 이름은 파일 이름에만 걸고 폴더 이름은 보지 않으며, .omp/agent 같은 관리 위치는 그대로 뺀다", async () => {
@@ -148,17 +151,74 @@ describe("skim", () => {
     expect(result).toContain("Sonnet 실패: Sonnet original 403");
   });
 
-  test("cwd 밖 파일은 호출하지 않고, 모델 오류 원문을 반환한다", async () => {
+  test("cwd 밖 파일·폴더는 절대 경로 이름으로 보내되 인증 폴더와 비밀은 빼고, cwd 자체는 호출 없이 거절한다", async () => {
     const cwd = fixture();
+    const outside = fixture();
     writeFileSync(join(cwd, "guide.md"), "fact");
+    mkdirSync(join(outside, "lib"));
+    mkdirSync(join(outside, ".ssh"));
+    writeFileSync(join(outside, "lib", "core.ts"), "OUTSIDE_FACT");
+    writeFileSync(join(outside, "lib", "auth.json"), "OUTSIDE_SECRET_MARKER");
+    writeFileSync(join(outside, ".ssh", "config"), "SSH_MARKER");
+    let prompt = "";
+    const answer = await skimText({ paths: [join(outside, "lib"), join(outside, ".ssh", "config")], question: "?" }, context(cwd), signal,
+      async (input) => { prompt = input; return reply("ok"); });
+    expect(prompt).toContain(`<file path="${join(outside, "lib", "core.ts")}">`);
+    expect(prompt).toContain("OUTSIDE_FACT");
+    expect(prompt).not.toMatch(/OUTSIDE_SECRET_MARKER|SSH_MARKER/);
+    expect(answer).toContain(`${join(outside, "lib", "auth.json")}: 비밀 경로 제외`);
+    expect(answer).toContain(`${join(outside, ".ssh", "config")}: 비밀 경로 제외`);
     let calls = 0;
-    const outside = await skimText({ paths: ["../outside.md"], question: "?" }, context(cwd), signal,
-      async () => { calls++; return reply("unexpected"); });
-    expect(outside).toContain("cwd 밖");
+    const whole = await skimText({ paths: ["."], question: "?" }, context(cwd), signal, async () => { calls++; return reply("unexpected"); });
+    expect(whole).toContain("cwd 전체 경로");
     expect(calls).toBe(0);
     const failed = await skimText({ paths: ["guide.md"], question: "?" }, context(cwd), signal,
       async () => { throw new Error("provider original 429"); });
     expect(failed).toContain("provider original 429");
+  });
+
+  test("의존성 폴더는 탐색 중에는 건너뛰지만 이름을 댄 폴더·파일은 gitignore를 넘어 보낸다", async () => {
+    const repo = fixture();
+    expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+    writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+    mkdirSync(join(repo, "app", "node_modules", "pkg", "src"), { recursive: true });
+    writeFileSync(join(repo, "app", "main.ts"), "APP_FACT");
+    writeFileSync(join(repo, "app", "node_modules", "pkg", "src", "index.ts"), "PKG_FACT");
+    const cwd = fixture();
+    let prompt = "";
+    const traversed = await skimText({ paths: [join(repo, "app")], question: "?" }, context(cwd), signal,
+      async (input) => { prompt = input; return reply("ok"); });
+    expect(prompt).toContain("APP_FACT");
+    expect(prompt).not.toContain("PKG_FACT");
+    expect(traversed).not.toContain("PKG_FACT");
+    for (const path of [join(repo, "app", "node_modules", "pkg", "src"), join(repo, "app", "node_modules", "pkg", "src", "index.ts")]) {
+      prompt = "";
+      await skimText({ paths: [path], question: "?" }, context(cwd), signal, async (input) => { prompt = input; return reply("ok"); });
+      expect(prompt).toContain("PKG_FACT");
+    }
+  });
+
+  test("소스 예외는 auth·token 이름에만 적용되고, cwd에 걸친 인증 폴더·build라는 무시 파일·조상 폴더 입력의 이름을 바로 다룬다", async () => {
+    for (const name of ["credentials.py", "auth-password.ts", "api_key.ts", "auth.sh"]) expect(secretFileName(name)).toBe(true);
+    expect(secretFileName("auth-broker-config.ts")).toBe(false);
+    const home = fixture();
+    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    writeFileSync(join(home, ".config", "gh", "hosts.yml"), "GH_FIXTURE");
+    const gh = await collect({ paths: ["gh/hosts.yml"] }, join(home, ".config"), signal);
+    expect(gh.chunks.join("")).not.toContain("GH_FIXTURE");
+    const repo = fixture();
+    expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+    writeFileSync(join(repo, ".gitignore"), "/build\n");
+    writeFileSync(join(repo, "build"), "IGNORED_FIXTURE");
+    const ignored = await collect({ paths: ["build"] }, repo, signal);
+    expect(ignored.chunks.join("")).not.toContain("IGNORED_FIXTURE");
+    const parent = fixture();
+    mkdirSync(join(parent, "project"));
+    writeFileSync(join(parent, "project", "guide.md"), "GUIDE");
+    writeFileSync(join(parent, "other.md"), "OTHER");
+    const ancestor = await collect({ paths: [".."] }, join(parent, "project"), signal);
+    expect(ancestor.chunks.join("")).toContain("<file path=\"guide.md\">");
+    expect(ancestor.chunks.join("")).toContain(`<file path="${join(parent, "other.md")}">`);
   });
 
   test("응답이 돌아온 시도만 세션 비용 장부(model_usage)에 남기고 빈 답 실패 응답도 기록한다", async () => {

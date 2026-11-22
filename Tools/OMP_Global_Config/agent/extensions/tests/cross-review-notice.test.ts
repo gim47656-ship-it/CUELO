@@ -64,7 +64,6 @@ describe("편집 직후 조기 알림", () => {
     expect(env.sent[0]!.message).toMatchObject({ customType: "cross-review-notice", display: false });
     expect(env.sent[0]!.message.content).toContain("a.ts");
     expect(env.sent[0]!.message.content).toMatch(/deletion at L2/);
-    expect(env.sent[0]!.message.content).not.toContain("sampled");
     expect(env.sent[0]!.options).toEqual({ deliverAs: "aside" });
     appendFileSync(join(env.work, "a.ts"), "export const more = 1;\n");
     await env.edited("edit", "a.ts");

@@ -127,20 +127,17 @@
   `mainLane.workerReview.steeringCheckpoint` (with `composition` and `finalScope`) and
   `routing.high-risk.mainIntervention.preEditContract` are authoritative.
 - Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
-  completion report when the review is required for your slice: the brief's `# Acceptance` asks
-  for a cross-family review (Main asks for declared high-risk slices: code-nature triggers or
-  project material risk), a `git_finalize` trigger marker hits your changed lines (a path name alone never triggers), or
-  Main forwards a finalizer sample hit for your files. Any other code change is reviewed only when
-  the brief asks; Main decides that from the `maker_route` review-necessity advice, and a Maker
-  never starts a blanket review of every edit. `files` are your changed executable code and config
+  completion report only for risk-marked code: a material-risk declaration under `harness-policy`
+  (or the brief's `# Acceptance` requiring review for that risk), or a `git_finalize` trigger marker
+  on a changed line. A path name alone never triggers. `files` are your changed executable code and config
   files only (docs, tests, generated files, git-detected binary media/office assets and TS/JS edits
   the gate proves comment-only are excluded - the scope `git_finalize` gates); `acceptance` is the
   brief's acceptance; `authors` is your own model
   selector (the provider/model you run as - `"main"` is refused in a subagent session, and a first
   round whose authors list no model of your own session's family is refused); pass relevant
   unchanged callers, specs or contracts as `inputs` (bound to the pass) or `references` (context
-  only) instead of adding them as targets. Check each finding against
-  the code: fix it and re-run the affected check, or refute it with evidence, or document a limit.
+  only) instead of adding them as targets. For each first-round finding, fix it and re-run the
+  affected check, refute it with evidence, or document a limit.
   Order your expensive checks around the review: run the final check set (full run-all suites,
   mutant runs, navigation or launch sweeps) and any N-times stability repeat once, after the
   review chain has converged with no open findings, on the final build with diagnostic
@@ -149,15 +146,14 @@
   not the N-times repeat; repeat the stability runs only when product logic (communication,
   save, judgement, state) changed. Rework invalidates only its affected checks, inputs, callers
   and evidence; reuse everything unchanged.
-  A finding carrying a `probe` may get the chain's one probe round (`previousReviewId` +
-  `probeResults`); after fixes run a delta round with `previousReviewId` so the reviewer sees the
-  fix. Never call `action:"resolve"` - it is Main-only and the tool refuses it. Report the reviewId
-  chain (newest last) and, per finding id, a proposed status `fixed|refuted|limit` with its
-  evidence locator. The pass binds to the exact file blobs Main resolves, so do not touch a
-  reviewed file after your last round; if you must, run another round and report the new head.
-  A chain with no non-probe round left never ends your slice: fix or refute what remains, finish
-  the acceptance work, and provide focused-check evidence covering each changed code file's final
-  content, reusing valid results, so Main can resolve with `unreviewedAcknowledgements`.
+  A finding carrying a `probe` may get one verdict-only probe round on unchanged code
+  (`previousReviewId` + `probeResults`). Run one final delta review only if round 1 had a blocker
+  and you changed reviewed code. Propose `limit` with evidence for every finding first raised
+  after round 1, noting any voluntary fix. Never call `action:"resolve"`; it is Main-only.
+  Report the reviewId chain (newest last) and a proposed status and evidence locator for every
+  finding. If code changed and no delta round is available, finish the acceptance work and give
+  Main focused-check evidence for each changed code file's final content to record in
+  `unreviewedAcknowledgements`. Reuse checks with unchanged inputs.
   `rule://cross-review-procedure` is authoritative. Any model that reviews,
   verifies, or decides a gate in a feature or brief you write comes only from `config.yml`
   `modelRoles` `crossReviewOpenAI` and `crossReviewAnthropic`.

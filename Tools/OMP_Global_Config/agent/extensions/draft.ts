@@ -221,7 +221,7 @@ export default function draft(pi: ExtensionAPI): void {
     parameters: z.object({
       instruction: z.string().describe("Purpose, audience, structure, length, language, facts"),
       output: z.string().describe("Inside cwd: .md .txt .csv .xlsx .docx .pdf"),
-      paths: z.array(z.string()).optional().describe("cwd reference files/directories/globs"),
+      paths: z.array(z.string()).optional().describe("reference files/directories/globs: cwd-relative, absolute or ~/"),
       overwrite: z.boolean().optional().describe("Default false"),
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {

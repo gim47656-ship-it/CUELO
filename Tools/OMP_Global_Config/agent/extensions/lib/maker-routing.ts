@@ -1410,7 +1410,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const toolParameters = parameters as unknown as ToolDefinition["parameters"];
     pi.registerTool({
       name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main-only dispatch preparation: briefs+assessments. Candidate selector:auto; overrides and UNKNOWN need ROUTING_REASON. Keep owner/account pin. No dispatch of Main-returned work.",
+      description: "Main-only preparation immediately before a chosen Maker dispatch; never call to decide whether Main can finish alone. Candidate selector:auto; overrides and UNKNOWN need ROUTING_REASON. Keep owner/account pin. No dispatch of Main-returned work.",
       parameters: toolParameters,
       async execute(callId, params, signal, _onUpdate, ctx) {
         // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.

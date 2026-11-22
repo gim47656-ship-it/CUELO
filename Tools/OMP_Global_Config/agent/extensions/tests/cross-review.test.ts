@@ -32,7 +32,6 @@ import {
   readReferenceFile,
   type ReferenceRead,
   runReview,
-  sampleSelected,
   spawnExec,
   type HidingLead,
   type Lane,
@@ -60,7 +59,7 @@ function sh(cwd: string, ...args: string[]): string {
   return result.stdout.toString().trim();
 }
 
-/** 파일 내용에서 git이 계산하는 blob과 같은 값. 표본 여부를 파일 쓰기 전에 고르는 데 쓴다. */
+/** Git blob hash for these LF-only test fixtures. */
 const blobOf = (content: string) => createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0${content}`).digest("hex");
 
 interface RepoEnv { dir: string; work: string; ledger: string; snapshots: string }
@@ -77,15 +76,6 @@ function repo(): RepoEnv {
   sh(work, "add", "base.txt");
   sh(work, "commit", "-q", "-m", "base");
   return { dir, work, ledger: join(dir, "ledger.jsonl"), snapshots: join(dir, "snapshots") };
-}
-
-/** 한 파일 커밋이 표본에 걸리거나(want=true) 걸리지 않도록 줄 하나를 바꿔 가며 내용을 고른다. */
-function contentWhere(path: string, base: string, want: boolean): string {
-  for (let n = 0; n < 500; n++) {
-    const content = `${base}// v${n}\n`;
-    if (sampleSelected([{ path, blob: blobOf(content) }]) === want) return content;
-  }
-  throw new Error("no content found");
 }
 
 const MARKER_BASE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p: string) => rmSync(p, { recursive: true });\n";
@@ -167,19 +157,6 @@ describe("marker", () => {
     expect(detectMarkers("a.ts", lines)).toMatchObject([{ trigger: "deletion", line: 2, removed: true }]);
     const added = ["@@ -1,1 +4,2 @@", " ctx", "+fs.rmSync(new)"].join("\n");
     expect(parseChangedLines(added)).toEqual([{ line: 5, text: "fs.rmSync(new)" }]);
-  });
-});
-
-describe("표본", () => {
-  test("같은 path+blob 목록은 순서와 무관하게 언제나 같은 결과이고 약 10%만 뽑힌다", () => {
-    const files = [{ path: "a.ts", blob: "1".repeat(40) }, { path: "b.ts", blob: "2".repeat(40) }];
-    expect(sampleSelected(files)).toBe(sampleSelected([...files].reverse()));
-    expect(sampleSelected(files)).toBe(sampleSelected(files));
-    expect(sampleSelected([])).toBe(false);
-    let selected = 0;
-    for (let n = 0; n < 2000; n++) if (sampleSelected([{ path: `f${n}.ts`, blob: blobOf(String(n)) }])) selected++;
-    expect(selected).toBeGreaterThan(140);
-    expect(selected).toBeLessThan(260);
   });
 });
 
@@ -309,7 +286,7 @@ describe("runReview", () => {
   test("이어지는 라운드에서도 앞 라운드가 심사한 문서가 files로 되돌아오지 않고, 바뀐 코드가 없으면 문서를 그대로 심사한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "README.md"), "# v1\n");
-    const d = deps(env, {});
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")]);
     const first = await runReview(input({ files: ["README.md"] }), d, signal);
     writeFileSync(join(env.work, "README.md"), "# v2\n");
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
@@ -332,7 +309,7 @@ describe("runReview", () => {
   test("앞 라운드가 files로 심사한 문서를 이번에 inputs로 주면 files로 되돌아오지 않고, 참고로 옮기지 못한 문서는 옮겼다고 알리지 않는다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "README.md"), "# v1\n");
-    const d = deps(env, {});
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")]);
     const first = await runReview(input({ files: ["README.md"] }), d, signal);
     writeFileSync(join(env.work, "README.md"), "# v2\n");
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
@@ -532,11 +509,11 @@ describe("runReview", () => {
     await expect(runReview(input({ acceptance: " " }), deps(env, {}), signal)).rejects.toThrow("acceptance");
   });
 
-  test("2회차는 1회차 사본과 현재의 delta만 보낸다", async () => {
+  test("a1 smoke: an R1 blocker allows one delta review, then R3 is rejected", async () => {
     const env = repo();
     const far = Array.from({ length: 40 }, (_, index) => `export const filler${index} = ${index};\n`).join("");
     writeFileSync(join(env.work, "a.ts"), `export const two = 2;\n${far}export const three = 3;\n`);
-    const d = deps(env, { openai: finding("two is wrong") });
+    const d = deps(env, { openai: finding("two is wrong", "blocker") });
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), `export const two = 22;\n${far}export const three = 3;\n`);
     const calls: { family: Lane; prompt: string }[] = [];
@@ -548,7 +525,8 @@ describe("runReview", () => {
     expect(calls[0].prompt).not.toContain("export const three");
     expect(calls[0].prompt).not.toContain("filler30");
     expect(calls[0].prompt).toContain("two is wrong"); // 1회차 지적이 reviewer에게 전달된다
-    await expect(runReview(input({ previousReviewId: second.reviewId }), d, signal)).rejects.toThrow("Nothing to review");
+    writeFileSync(join(env.work, "a.ts"), `export const two = 222;\n${far}export const three = 3;\n`);
+    await expect(runReview(input({ previousReviewId: second.reviewId }), d, signal)).rejects.toThrow("already used its second code-review round");
     await expect(runReview(input({ previousReviewId: first.reviewId }), d, signal)).rejects.toThrow("already has a round 2");
     await expect(runReview(input({ previousReviewId: "nope" }), d, signal)).rejects.toThrow("unknown");
     // 1회차를 resolve하려 하면 2회차가 이어졌으므로 거절한다.
@@ -558,75 +536,53 @@ describe("runReview", () => {
   test("2회차에서 바뀐 것이 없으면 거절한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const d = deps(env, {});
+    const d = deps(env, { openai: finding("initial defect", "blocker") });
     const first = await runReview(input(), d, signal);
     await expect(runReview(input({ previousReviewId: first.reviewId }), d, signal)).rejects.toThrow("nothing changed since round 1");
   });
 
-  test("2회차부터 blocker와 앞 수정의 회귀만 고칠 대상이고 나머지는 limit 후보로 안내하며, 1회차와 통과 규칙은 그대로다(2026-11-22 「2번」)", async () => {
+  test("a1 smoke: no R1 blocker means resolve the tested fix without R2", async () => {
     const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const two = 2;\n");
+    writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     const calls: { family: Lane; prompt: string }[] = [];
-    const d = deps(env, { openai: JSON.stringify({ findings: [{ severity: "minor", file: "a.ts", claim: "two is wrong", why: "w", regressionOf: "R0-OAI-1" }], summary: "s" }) }, calls);
+    const d = deps(env, { openai: finding("fix me", "major") }, calls);
     const first = await runReview(input(), d, signal);
-    expect(calls[0]!.prompt).not.toContain("ROUND CAP");
-    expect(calls[0]!.prompt).not.toContain("regressionOf");
-    expect(first.findings[0]!.regressionOf).toBeUndefined();
-    expect(first.roundCap).toBeUndefined();
-    expect(first.nextStep).toContain("Fix or refute each finding.");
-    writeFileSync(join(env.work, "a.ts"), "export const two = 22;\n");
-    const answer = JSON.stringify({ findings: [
-      { severity: "major", file: "a.ts", claim: "the fix broke three", why: "w", regressionOf: "R1-OAI-1" },
-      { severity: "blocker", file: "a.ts", claim: "data loss", why: "w" },
-      { severity: "major", file: "a.ts", claim: "new non-blocker", why: "w" },
-      { severity: "minor", file: "a.ts", claim: "unknown regression id", why: "w", regressionOf: "R9-OAI-9" },
-    ], summary: "s" });
-    const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, { openai: answer }, calls), signal);
-    expect(calls[1]!.prompt).toContain("ROUND CAP");
-    expect(calls[1]!.prompt).toContain('"regressionOf"');
-    expect(second.findings.map((item) => item.regressionOf)).toEqual(["R1-OAI-1", undefined, undefined, undefined]);
-    expect(second.roundCap).toEqual({ fix: ["R2-OAI-1", "R2-OAI-2"], limitCandidates: ["R2-OAI-3", "R2-OAI-4"] });
-    expect(second.nextStep).toContain("Fix or refute R2-OAI-1, R2-OAI-2");
-    expect(second.nextStep).toContain("Do NOT fix R2-OAI-3, R2-OAI-4");
-    expect(second.nextStep).not.toContain("Fix or refute each finding.");
-    // 통과 규칙은 그대로다: limit 후보도 resolve가 닫아야 통과한다.
-    const resolveDeps = { exec: spawnExec(), readAll: d.readAll, append: d.append };
-    const fixed = ["R1-OAI-1", "R2-OAI-1", "R2-OAI-2"].map((id) => ({ id, status: "fixed", evidence: "test" }));
-    const partial = await runResolve({ reviewId: second.reviewId, resolutions: fixed }, resolveDeps);
-    expect(partial.pass).toBe(false);
-    expect(partial.open).toEqual(["R2-OAI-3", "R2-OAI-4"]);
-    const limits = ["R2-OAI-3", "R2-OAI-4"].map((id) => ({ id, status: "limit", evidence: `${id}: round 2+ non-blocker, not a regression of an earlier fix` }));
-    expect((await runResolve({ reviewId: second.reviewId, resolutions: [...fixed, ...limits] }, resolveDeps)).pass).toBe(true);
+    expect(first.nextStep).toContain("Round 1 had no blocker");
+    const fixed = `${MARKER_BASE}export const fixed = true;\n`;
+    writeFileSync(join(env.work, "a.ts"), fixed);
+    const resolutions = [{ id: "R1-OAI-1", status: "fixed", evidence: "tested the fix" }];
+    await expect(runReview(input({ previousReviewId: first.reviewId }), d, signal)).rejects.toThrow("Round 1 had no blocker");
+    expect(calls).toHaveLength(1);
+    const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
+    expect(await runResolve({ reviewId: first.reviewId, resolutions }, rd)).toMatchObject({ pass: false, unreviewedBlocking: ["a.ts"] });
+    expect(await runResolve({ reviewId: first.reviewId, resolutions, unreviewedAcknowledgements: [{ path: "a.ts", evidence: "focused test exit 0" }] }, rd)).toMatchObject({
+      pass: true, acknowledgedUnreviewed: [{ path: "a.ts", blob: blobOf(fixed), evidence: "focused test exit 0" }],
+    });
+    expect((await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).decision?.uncovered).toEqual([]);
   });
 
-  test("상한은 2회차부터 체인 전체에 적용돼 새 지적 없는 라운드와 probe 확인 뒤에도 limit 후보로 남고, 안내 문장이 서로 엇갈리지 않는다", async () => {
+  test("every new R2 finding needs a limit resolution, including blockers and regressions", async () => {
     const env = repo();
-    writeFileSync(join(env.work, "a.ts"), "export const two = 2;\n");
-    const first = await runReview(input(), deps(env, { openai: finding("two is wrong") }), signal);
-    writeFileSync(join(env.work, "a.ts"), "export const two = 22;\n");
-    const minorWithRecipe = JSON.stringify({ findings: [{ severity: "minor", file: "a.ts", claim: "naming nit", why: "w", proof: "needs-run", probe: { steps: "run t", expectIfReal: "fails" } }], summary: "s" });
-    const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, { openai: minorWithRecipe }), signal);
-    expect(second.roundCap).toEqual({ fix: [], limitCandidates: ["R2-OAI-1"] });
-    expect(second.nextStep).toContain("Do NOT fix R2-OAI-1");
-    expect(second.nextStep).toContain("a round-cap limit candidate needs no run");
-    expect(second.nextStep).not.toContain("one that shows the defect means fix it.");
-    expect(second.nextStep).not.toContain("run each recipe");
-    // 뒤 라운드의 probe가 2회차 비blocker를 확인해도 limit 후보로 남는다.
-    const third = await runReview(
-      input({ previousReviewId: second.reviewId, probeResults: probeOutput({ findingId: "R2-OAI-1" }) }),
-      deps(env, { openai: verdictAnswer([{ id: "R2-OAI-1", verdict: "confirmed", why: "it failed" }]) }), signal);
-    expect(third.roundCap).toEqual({ fix: [], limitCandidates: ["R2-OAI-1"] });
-    expect(third.nextStep).toContain("Fix only the confirmed findings that are not round-cap limit candidates");
-    expect(third.nextStep).toContain("except a round-cap limit candidate, which is closed as limit whatever its verdict");
-    // 새 지적 없는 2회차는 빈 roundCap을 싣고, 앞 지적이 남았으면 빈 resolve를 권하지 않는다.
-    const env2 = repo();
-    writeFileSync(join(env2.work, "a.ts"), "export const two = 2;\n");
-    const r1 = await runReview(input(), deps(env2, { openai: finding("two is wrong") }), signal);
-    writeFileSync(join(env2.work, "a.ts"), "export const two = 22;\n");
-    const r2 = await runReview(input({ previousReviewId: r1.reviewId }), deps(env2, {}), signal);
-    expect(r2.roundCap).toEqual({ fix: [], limitCandidates: [] });
-    expect(r2.nextStep).not.toContain("resolutions:[]");
-    expect(r2.nextStep).toContain("covering every finding of the whole chain");
+    writeFileSync(join(env.work, "a.ts"), versionOf(2));
+    const d = deps(env, { openai: finding("two is wrong", "blocker") });
+    const first = await runReview(input(), d, signal);
+    expect(first.roundCap).toBeUndefined();
+    writeFileSync(join(env.work, "a.ts"), versionOf(22));
+    const later = [
+      { severity: "major", file: "a.ts", claim: "regression", regressionOf: "R1-OAI-1" },
+      { severity: "blocker", file: "a.ts", claim: "a new blocker" },
+    ];
+    const second = await runReview(input({ previousReviewId: first.reviewId }), scripted(d, [JSON.stringify({ findings: later })]), signal);
+    expect(second.roundCap).toEqual({ limitCandidates: ["R2-OAI-1", "R2-OAI-2"] });
+    expect(second.nextStep).toContain("R2-OAI-1, R2-OAI-2");
+    const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
+    const fixed = { id: "R1-OAI-1", status: "fixed", evidence: "tested R1 fix" };
+    const wrong = { id: "R2-OAI-2", status: "fixed", evidence: "voluntary fix" };
+    expect(await runResolve({ reviewId: second.reviewId, resolutions: [fixed, wrong] }, rd)).toMatchObject({
+      pass: false, open: ["R2-OAI-1", "R2-OAI-2"], rejected: [{ id: "R2-OAI-2", reason: expect.stringContaining("limit") }],
+    });
+    const limits = second.findings.map(({ id }) => ({ id, status: "limit", evidence: `${id}: a1 round cap` }));
+    expect((await runResolve({ reviewId: second.reviewId, resolutions: limits }, rd)).pass).toBe(true);
   });
 
   test("1회차에 files와 acceptance가 함께 빠지면 한 번에 둘 다 알린다", async () => {
@@ -641,7 +597,7 @@ describe("runReview", () => {
 
 // ── probe 라운드: 의심 → 실험 → 판단 갱신 ─────────────────────────────────────
 
-const withProbe = (claim: string) => JSON.stringify({ findings: [{ severity: "major", file: "a.ts", line: 1, claim, why: "because", probe: { steps: "run the race test 20 times", expectIfReal: "at least one failure", expectIfNot: "all runs pass" } }], summary: "s" });
+const withProbe = (claim: string, severity = "major") => JSON.stringify({ findings: [{ severity, file: "a.ts", line: 1, claim, why: "because", probe: { steps: "run the race test 20 times", expectIfReal: "at least one failure", expectIfNot: "all runs pass" } }], summary: "s" });
 const verdictAnswer = (verdicts: unknown[], findings: unknown[] = []) => JSON.stringify({ findings, verdicts, summary: "s" });
 const probeOutput = (over: Record<string, unknown> = {}) => [{ findingId: "R1-OAI-1", command: "bun test race.test.ts", exitCode: 1, output: "FAIL race: expected 1 got 2", ...over }];
 const FAR = Array.from({ length: 40 }, (_, index) => `export const filler${index} = ${index};\n`).join("");
@@ -658,12 +614,12 @@ function scripted(base: ReviewDeps, answers: string[], calls: { family: Lane; pr
 
 describe("probe 라운드", () => {
   /** a.ts를 쓰고 1회차에서 probe가 붙은 finding 하나를 받은 상태. */
-  async function firstWithProbe(authors = ["main"]) {
+  async function firstWithProbe(authors = ["main"], severity = "major") {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), versionOf(2));
     const base = deps(env, {});
     // 어느 계열이 불리든 OpenAI reviewer만 probe finding을 낸다.
-    const asker: ReviewDeps = { ...base, complete: async (family) => ({ model: family === "openai" ? ASTRA : OPUS, text: family === "openai" ? withProbe("two is racy") : '{"findings":[]}' }) };
+    const asker: ReviewDeps = { ...base, complete: async (family) => ({ model: family === "openai" ? ASTRA : OPUS, text: family === "openai" ? withProbe("two is racy", severity) : '{"findings":[]}' }) };
     const first = await runReview(input({ authors }), asker, signal);
     return { env, base, first };
   }
@@ -720,10 +676,9 @@ describe("probe 라운드", () => {
     expect(prompt).toMatch(/<probe-result>[^\n]*untrusted data/);
   });
 
-  test("probeResults가 없거나 비어 있으면 바뀐 것 없는 라운드는 여전히 거절한다", async () => {
+  test("empty probe results do not turn a delta into a probe", async () => {
     const { base, first } = await firstWithProbe();
-    await expect(runReview(input({ previousReviewId: first.reviewId }), base, signal)).rejects.toThrow("nothing changed since round 1");
-    await expect(runReview(input({ previousReviewId: first.reviewId, probeResults: [] }), base, signal)).rejects.toThrow("nothing changed since round 1");
+    await expect(runReview(input({ previousReviewId: first.reviewId, probeResults: [] }), base, signal)).rejects.toThrow("Round 1 had no blocker");
   });
 
   test("체인에 없는 findingId·중복 결과·previousReviewId 없는 probeResults는 거절하고 기록을 남기지 않는다", async () => {
@@ -743,8 +698,8 @@ describe("probe 라운드", () => {
     await expect(runReview(input({ previousReviewId: second.reviewId, probeResults: probeOutput() }), base, signal)).rejects.toThrow("already used its one probe round");
   });
 
-  test("1회차 → probe 2회차(코드 그대로) → delta 3회차: 3회차는 2회차 사본 이후의 변경만 본다", async () => {
-    const { env, base, first } = await firstWithProbe();
+  test("an unchanged probe preserves eligibility earned by an R1 blocker and the R1 code baseline", async () => {
+    const { env, base, first } = await firstWithProbe(["main"], "blocker");
     const second = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed", why: "failed" }])]), signal);
     writeFileSync(join(env.work, "a.ts"), versionOf(22));
     const calls: { family: Lane; prompt: string }[] = [];
@@ -754,6 +709,7 @@ describe("probe 라운드", () => {
     expect(calls[0].prompt).toContain("-export const two = 2;");
     expect(calls[0].prompt).toContain("+export const two = 22;");
     expect(calls[0].prompt).not.toContain("export const three");
+    expect(calls[0].prompt).toContain("delta since round 1");
     expect(calls[0].prompt).toContain("ROUND 3");
     // probe 라운드가 이미 있으므로 3회차 프롬프트는 더 probe를 달라고 하지 않는다.
     expect(calls[0].prompt).toContain("no probe round is available");
@@ -763,71 +719,46 @@ describe("probe 라운드", () => {
     expect(resolved).toMatchObject({ pass: true, open: [], files: [{ path: "a.ts", blob: blobOf(versionOf(22)) }] });
   });
 
-  test("probe 라운드에 코드 변경이 함께 오면 delta도 싣고, 다음 delta는 그 라운드가 본 내용 기준이다", async () => {
+  test("a1 smoke: a probe cannot review changed code or add files, inputs, or references", async () => {
     const { env, base, first } = await firstWithProbe();
-    writeFileSync(join(env.work, "a.ts"), versionOf(22));
-    const probeCalls: { family: Lane; prompt: string }[] = [];
-    const second = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }])], probeCalls), signal);
-    expect(probeCalls[0].prompt).toContain('<probe-result finding="R1-OAI-1"');
-    expect(probeCalls[0].prompt).toContain("+export const two = 22;");
-    expect(probeCalls[0].prompt).toContain("The code also changed");
-    writeFileSync(join(env.work, "a.ts"), versionOf(222));
     const calls: { family: Lane; prompt: string }[] = [];
-    await runReview(input({ previousReviewId: second.reviewId }), scripted(base, [], calls), signal);
-    expect(calls[0].prompt).toContain("-export const two = 22;");
-    expect(calls[0].prompt).toContain("+export const two = 222;");
-    expect(calls[0].prompt).not.toContain("-export const two = 2;");
-  });
-
-  test("체인은 5회까지이고 6회차는 probe 여부와 관계없이 거절한다", async () => {
-    const { env, base, first } = await firstWithProbe();
-    let last = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }], [{ severity: "minor", claim: "new thing" }])]), signal);
-    for (const version of [22, 222, 2222]) {
-      writeFileSync(join(env.work, "a.ts"), versionOf(version));
-      last = await runReview(input({ previousReviewId: last.reviewId }), scripted(base, []), signal);
-    }
-    expect(last.round).toBe(5);
-    writeFileSync(join(env.work, "a.ts"), versionOf(22222));
-    await expect(runReview(input({ previousReviewId: last.reviewId }), base, signal)).rejects.toThrow("Round limit");
-    await expect(runReview(input({ previousReviewId: last.reviewId, probeResults: probeOutput() }), base, signal)).rejects.toThrow("Round limit");
-  });
-
-  test("probe가 아닌 라운드를 넷 쓴 체인도 마지막 5회차는 probe 라운드로 쓸 수 있고 다섯 번째 non-probe 라운드는 거절한다", async () => {
-    const { env, base, first } = await firstWithProbe();
-    let last = first;
-    for (const version of [22, 222, 2222]) {
-      writeFileSync(join(env.work, "a.ts"), versionOf(version));
-      last = await runReview(input({ previousReviewId: last.reviewId }), scripted(base, []), signal);
-    }
-    expect(last.round).toBe(4);
-    writeFileSync(join(env.work, "a.ts"), versionOf(22222));
-    const rejected = runReview(input({ previousReviewId: last.reviewId }), base, signal);
-    await expect(rejected).rejects.toThrow("Round limit");
-    await expect(rejected).rejects.toThrow("probe round is left");
-    const fifth = await runReview(input({ previousReviewId: last.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "withdrawn", why: "ok" }])]), signal);
-    expect(fifth).toMatchObject({ round: 5, verdicts: [{ id: "R1-OAI-1", verdict: "withdrawn" }] });
-    expect(fifth.nextStep).toContain("Round limit reached");
-  });
-
-  test("probe 라운드 뒤의 nextStep도 수정을 다음 라운드로 다시 보이라고 안내하고 남은 non-probe 라운드 수를 알린다", async () => {
-    const { base, first } = await firstWithProbe();
-    const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }])]), signal);
-    expect(probed.nextStep).toContain("so the fixes themselves are reviewed (3 non-probe round(s) left)");
-    expect(probed.nextStep).not.toContain("optionally");
-  });
-
-  test("한도 직전까지의 nextStep은 수정을 다음 라운드로 reviewer에게 다시 보이라고 안내하고, 옛 한도(2회)에서 끝난 체인도 이어진다", async () => {
-    const env = repo();
-    writeFileSync(join(env.work, "a.ts"), versionOf(2));
-    const d = deps(env, { openai: finding("two is wrong") });
-    const first = await runReview(input(), d, signal);
-    expect(first.nextStep).toContain("so the fixes themselves are reviewed (3 non-probe round(s) left)");
+    const next = scripted(base, [], calls);
+    const request = input({ previousReviewId: first.reviewId, probeResults: probeOutput() });
+    writeFileSync(join(env.work, "new.ts"), "export const newValue = 42;\n");
+    await expect(runReview({ ...request, files: ["new.ts"] }, next, signal)).rejects.toThrow("cannot add review files: new.ts");
+    await expect(runReview({ ...request, inputs: ["new.ts"] }, next, signal)).rejects.toThrow("Do not supply inputs or references");
+    await expect(runReview({ ...request, references: ["new.ts"] }, next, signal)).rejects.toThrow("Do not supply inputs or references");
     writeFileSync(join(env.work, "a.ts"), versionOf(22));
-    const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
+    await expect(runReview(request, next, signal)).rejects.toThrow("requires unchanged reviewed files and inputs: a.ts");
+    expect(calls).toHaveLength(0);
+    expect(readCrossReviewRecords(env.ledger)).toHaveLength(1);
+  });
+
+  test("a blocker first reported by a verdict-only probe does not earn a delta or a new code snapshot", async () => {
+    const { env, base, first } = await firstWithProbe();
+    const answer = verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }], [{ severity: "blocker", claim: "new race" }]);
+    const second = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [answer]), signal);
+    expect(second.roundCap).toEqual({ limitCandidates: ["R2-OAI-1"] });
+    expect(second.nextStep).toContain("Round 1 had no blocker");
+    expect(readCrossReviewRecords(env.ledger).at(-1)).toMatchObject({ files: [] });
+    writeFileSync(join(env.work, "a.ts"), versionOf(22));
+    await expect(runReview(input({ previousReviewId: second.reviewId }), base, signal)).rejects.toThrow("Round 1 had no blocker");
+    const resolutions = [{ id: "R1-OAI-1", status: "fixed", evidence: "tested" }, { id: "R2-OAI-1", status: "limit", evidence: "probe finding" }];
+    const rd = { exec: spawnExec(), readAll: base.readAll, append: base.append };
+    const result = await runResolve({ reviewId: second.reviewId, resolutions }, rd);
+    expect(result).toMatchObject({ pass: false, unreviewedBlocking: ["a.ts"] });
+    expect(result.unreviewedNote).toContain(first.reviewId);
+  });
+
+  test("a probe after the permitted delta does not reopen the code-review budget", async () => {
+    const { env, base, first } = await firstWithProbe(["main"], "blocker");
+    writeFileSync(join(env.work, "a.ts"), versionOf(22));
+    const delta = await runReview(input({ previousReviewId: first.reviewId }), base, signal);
+    const probed = await runReview(input({ previousReviewId: delta.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "unresolved" }])]), signal);
+    expect(probed).toMatchObject({ round: 3, verdicts: [{ id: "R1-OAI-1", verdict: "unresolved" }] });
+    expect(probed.nextStep).toContain("unreviewedAcknowledgements");
     writeFileSync(join(env.work, "a.ts"), versionOf(222));
-    const third = await runReview(input({ previousReviewId: second.reviewId }), d, signal);
-    expect(third).toMatchObject({ round: 3 });
-    expect(third.nextStep).toContain("(1 non-probe round(s) left)");
+    await expect(runReview(input({ previousReviewId: probed.reviewId }), base, signal)).rejects.toThrow("already used its second code-review round");
   });
 
   test("verdict를 읽어 기록·반환하고, 빠졌거나 모양이 틀린 판단은 unresolved로 채우며 모르는 id는 버린다", async () => {
@@ -976,7 +907,8 @@ describe("probe 라운드", () => {
     const finding = { id: "R1-OAI-1", severity: "major" as const, file: "a.ts", claim: "c", why: "w", reviewer: ASTRA };
     const probe = buildReviewPrompt({ acceptance: "A", round: 2, parts: [], previousFindings: [finding], probeResults: [{ finding, command: "x", exitCode: 0, output: "o", outputBytes: 1, truncated: false }] });
     expect(probe).toContain('"verdicts":[{"id":"R1-OAI-1","verdict":"confirmed|withdrawn|unresolved"');
-    expect(probe).toContain("(no change since the previous round)");
+    expect(probe).toContain("Judge only the PROBE RESULTS");
+    expect(probe).not.toContain("===== CHANGE =====");
     expect(probe).toContain("- R1-OAI-1 a.ts");
     const plain = buildReviewPrompt({ acceptance: "A", round: 3, parts: [{ path: "a.ts", kind: "delta", text: "@@" }], previousFindings: [finding], probeAvailable: false });
     expect(plain).toContain("no probe round is available");
@@ -1069,21 +1001,6 @@ describe("probe 라운드", () => {
     expect(resolved).toMatchObject({ pass: false, open: ["R1-OAI-1"] });
   });
 
-  test("probe 라운드나 마지막 라운드가 새로 낸 needs-run 지적도 세어, probe 라운드가 없으니 재현 방법을 직접 돌려 근거로 쓰라고 안내한다", async () => {
-    const { env, base, first } = await firstWithProbe();
-    // 2라운드부터 비blocker는 limit 후보라 실행 안내가 없으므로(2026-11-22 「2번」) 실행이 필요한 blocker로 이 경로를 본다.
-    const fresh = [{ severity: "blocker", file: "a.ts", claim: "new race", why: "w", proof: "needs-run", probe: recipe("bun test race.test.ts") }];
-    const probed = await runReview(input({ previousReviewId: first.reviewId, probeResults: probeOutput() }), scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "confirmed" }], fresh)]), signal);
-    expect(probed.nextStep).toContain("1 finding(s) need a run to settle but this chain has no probe round left");
-    let last = probed;
-    for (const version of [22, 222, 2222]) {
-      writeFileSync(join(env.work, "a.ts"), versionOf(version));
-      last = await runReview(input({ previousReviewId: last.reviewId }), scripted(base, version === 2222 ? [JSON.stringify({ findings: fresh })] : []), signal);
-    }
-    expect(last.round).toBe(5);
-    expect(last.nextStep).toContain("Round limit reached");
-    expect(last.nextStep).toContain("1 finding(s) need a run to settle but this chain has no probe round left");
-  });
 });
 
 describe("runResolve", () => {
@@ -1130,13 +1047,13 @@ describe("runResolve", () => {
   test("2회차 체인은 1회차 finding까지 모두 닫아야 통과한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
-    const d = deps(env, { openai: finding("first") });
+    const d = deps(env, { openai: finding("first", "blocker") });
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const fixed = true;\n`);
     const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async (family) => ({ model: modelOf(family), text: family === "openai" ? finding("second") : '{"findings":[]}' }) }, signal);
     const rd = { exec: spawnExec(), readAll: d.readAll, append: d.append };
     expect(second.findings.map((item) => item.id)).toEqual(["R2-OAI-1"]);
-    const partial = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R2-OAI-1", status: "refuted", evidence: "e" }] }, rd);
+    const partial = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R2-OAI-1", status: "limit", evidence: "e" }] }, rd);
     expect(partial).toMatchObject({ pass: false, open: ["R1-OAI-1"] });
     const full = await runResolve({ reviewId: second.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "e" }] }, rd);
     expect(full).toMatchObject({ pass: true, open: [] });
@@ -1153,13 +1070,10 @@ describe("게이트", () => {
     return runResolve({ reviewId: review.reviewId, resolutions: [] }, { exec: spawnExec(), readAll: d.readAll, append: d.append });
   }
 
-  test("문서만, 또는 표본·marker에 걸리지 않는 코드는 검토를 요구하지 않는다", async () => {
+  test("documents do not require code review", async () => {
     const env = repo();
     writeFileSync(join(env.work, "notes.md"), "# markdown with rm -rf and password\n");
     expect((await runGate(gateOptions(env, { files: ["notes.md"] }))).decision?.required).toEqual([]);
-    const plain = contentWhere("a.ts", PLAIN_BASE, false);
-    writeFileSync(join(env.work, "a.ts"), plain);
-    expect((await runGate(gateOptions(env))).decision).toEqual({ required: [], uncovered: [] });
   });
 
   test("테스트 파일은 marker가 있어도 제외한다", async () => {
@@ -1212,14 +1126,14 @@ describe("게이트", () => {
 
   test("crossReviewHighRisk 선언은 marker가 없어도 검토를 요구한다", async () => {
     const env = repo();
-    writeFileSync(join(env.work, "a.ts"), contentWhere("a.ts", PLAIN_BASE, false));
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     await expect(runGate(gateOptions(env, { highRisk: ["a.ts"] }))).rejects.toThrow("declared high-risk");
   });
 
-  test("결정적 10% 표본에 뽑힌 코드는 marker가 없어도 검토를 요구한다", async () => {
+  test("a1 smoke: an unmarked, undeclared code change needs no review even if the old gate sampled it", async () => {
     const env = repo();
-    writeFileSync(join(env.work, "a.ts"), contentWhere("a.ts", PLAIN_BASE, true));
-    await expect(runGate(gateOptions(env))).rejects.toThrow("sampled");
+    writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}// v4\n`);
+    expect((await runGate(gateOptions(env))).decision).toEqual({ required: [], uncovered: [] });
   });
 
   test("이미 커밋돼 바뀐 것이 없는 파일(resume-push)은 검사하지 않는다", async () => {
@@ -1365,7 +1279,7 @@ describe("게이트 보강", () => {
 
   test("코드 파일이 있으면 요청한 모든 경로(안 바뀐 코드 파일 포함)의 blob을 돌려주고, 문서만이면 주지 않는다", async () => {
     const env = repo();
-    const content = contentWhere("a.ts", PLAIN_BASE, false);
+    const content = PLAIN_BASE;
     writeFileSync(join(env.work, "a.ts"), content);
     writeFileSync(join(env.work, "notes.md"), "docs\n");
     writeFileSync(join(env.work, "clean.ts"), PLAIN_BASE);
@@ -1388,7 +1302,7 @@ describe("게이트 보강", () => {
   test("2회차는 1회차와 다른 저장소의 파일을 같은 이름으로 비교하지 않는다", async () => {
     const first = repo();
     writeFileSync(join(first.work, "a.ts"), PLAIN_BASE);
-    const d = deps(first, {});
+    const d = deps(first, { openai: finding("initial defect", "blocker") });
     const review = await runReview(input(), d, signal);
     const second = repo();
     writeFileSync(join(second.work, "a.ts"), `${PLAIN_BASE}// other repo\n`);
@@ -1704,7 +1618,7 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
 
   test("2회차도 명시한 참고만 싣고, 참고 파일의 변화는 delta가 아니라 현재 내용으로만 보낸다", async () => {
     const env = withReference();
-    const d = deps(env, { openai: finding("x") });
+    const d = deps(env, { openai: finding("x", "blocker") });
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
     writeFileSync(join(env.work, "ref.ts"), "export const contract = { retries: 4 };\n");
@@ -1720,7 +1634,7 @@ describe.skipIf(process.platform !== "linux")("참고 증거(references)", () =>
     expect(record.files.map((file) => file.path)).toEqual(["a.ts"]);
     // 참고를 주지 않은 2회차에는 참고가 없다.
     const env2 = withReference();
-    const d3 = deps(env2, { openai: finding("x") });
+    const d3 = deps(env2, { openai: finding("x", "blocker") });
     const first2 = await runReview(input({ references: ["ref.ts"] }), d3, signal);
     writeFileSync(join(env2.work, "a.ts"), `${PLAIN_BASE}export const more = 1;\n`);
     const calls2: { family: Lane; prompt: string }[] = [];
@@ -1874,7 +1788,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
 
   test("이어지는 라운드는 앞 라운드의 입력을 이어받아 현재 내용으로 다시 읽고 새 입력을 더할 수 있으며, resolve는 마지막 라운드의 입력을 묶는다", async () => {
     const env = withInputs();
-    const d = deps(env, { openai: finding("tighten it") });
+    const d = deps(env, { openai: finding("tighten it", "blocker") });
     const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
     const revised = `${SPEC}retries are now 5\n`;
@@ -1897,7 +1811,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
 
   test("입력을 주지 않은 후속 라운드도 앞 라운드의 입력을 그대로 이어받는다", async () => {
     const env = withInputs();
-    const d = deps(env, { openai: finding("tighten it") });
+    const d = deps(env, { openai: finding("tighten it", "blocker") });
     const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
     const second = await runReview(input({ previousReviewId: first.reviewId }), { ...d, complete: async () => ({ model: ASTRA, text: '{"findings":[]}' }) }, signal);
@@ -1906,10 +1820,29 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     expect(secondRecord.inputs).toEqual([{ path: "spec.md", blob: blobOf(SPEC) }]);
   });
 
+  test("a probe preserves input bindings without sending input contents, and refuses input drift", async () => {
+    const env = withInputs();
+    const base = deps(env, { openai: withProbe("race") });
+    const first = await runReview(input({ inputs: ["spec.md"] }), base, signal);
+    const calls: Prompts = [];
+    const d = scripted(base, [verdictAnswer([{ id: "R1-OAI-1", verdict: "withdrawn" }])], calls);
+    const request = input({ previousReviewId: first.reviewId, probeResults: probeOutput() });
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}new contract\n`);
+    await expect(runReview(request, d, signal)).rejects.toThrow("requires unchanged reviewed files and inputs: spec.md");
+    expect(calls).toHaveLength(0);
+    writeFileSync(join(env.work, "spec.md"), SPEC);
+    const probe = await runReview(request, d, signal);
+    expect(calls[0].prompt).not.toContain('<input path="spec.md">');
+    const result = await runResolve({ reviewId: probe.reviewId, resolutions: [{ id: "R1-OAI-1", status: "refuted", evidence: "reviewed test output" }] }, resolveWith(d));
+    expect(result).toMatchObject({ pass: true, inputs: [{ path: "spec.md", blob: blobOf(SPEC) }] });
+    writeFileSync(join(env.work, "spec.md"), `${SPEC}new contract\n`);
+    expect(await gateMessage(env)).toContain("spec.md (changed)");
+  });
+
   test("이어받은 입력을 더 읽을 수 없으면 조용히 빼지 않고, 어느 입력인지와 새로 시작하라는 안내로 거절한다", async () => {
     const env = withInputs();
     const calls: Prompts = [];
-    const d = deps(env, { openai: finding("x") }, calls);
+    const d = deps(env, { openai: finding("x", "blocker") }, calls);
     const first = await runReview(input({ inputs: ["spec.md"] }), d, signal);
     rmSync(join(env.work, "spec.md"));
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const more = 1;\n`);
@@ -1985,7 +1918,7 @@ describe.skipIf(process.platform !== "linux")("의존 입력(inputs)", () => {
     const names = Array.from({ length: 11 }, (_, index) => `i${index}.md`);
     for (const name of names) writeFileSync(join(env.work, name), `# ${name}\n`);
     const calls: Prompts = [];
-    const d = deps(env, { openai: finding("x") }, calls);
+    const d = deps(env, { openai: finding("x", "blocker") }, calls);
     await expect(runReview(input({ inputs: names }), d, signal)).rejects.toThrow("at most 10");
     expect(calls).toEqual([]);
     const first = await runReview(input({ inputs: names.slice(0, 6) }), d, signal);
@@ -2034,7 +1967,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
     writeFileSync(join(env.work, "b.ts"), `${MARKER_BASE}export const b = 1;\n`);
-    const d = deps(env, { openai: finding("fix me") });
+    const d = deps(env, { openai: finding("fix me", "blocker") });
     const review = await runReview(input({ files: ["a.ts", "b.ts"] }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
     rmSync(join(env.work, "b.ts"));
@@ -2065,7 +1998,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges)", () => {
   test("수정을 새 라운드로 보이면 같은 체인이 통과한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
-    const d = deps(env, { openai: finding("fix me") });
+    const d = deps(env, { openai: finding("fix me", "blocker") });
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
     const blocked = await runResolve({ reviewId: first.reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "edited" }] }, rd(d));
@@ -2081,23 +2014,21 @@ describe("라운드를 다 쓴 체인의 미검토 코드 수정(unreviewedAckno
   const rd = (d: ReviewDeps) => ({ exec: spawnExec(), readAll: d.readAll, append: d.append });
   const a = (n: number) => `${MARKER_BASE}export const a = ${n};\n`;
 
-  /** non-probe 4회를 모두 써서 더 라운드를 돌 수 없는 체인과, 마지막 라운드 뒤에 바뀐 a.ts. */
+  /** Both code-review rounds have run and a.ts has changed again. */
   async function exhausted() {
     const env = repo();
-    const d = deps(env, {});
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")]);
     writeFileSync(join(env.work, "a.ts"), a(1));
-    let review = await runReview(input(), d, signal);
-    for (const n of [2, 3, 4]) {
-      writeFileSync(join(env.work, "a.ts"), a(n));
-      review = await runReview(input({ previousReviewId: review.reviewId }), d, signal);
-    }
+    const first = await runReview(input(), d, signal);
+    writeFileSync(join(env.work, "a.ts"), a(2));
+    const review = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
     writeFileSync(join(env.work, "a.ts"), a(5));
     return { env, d, review };
   }
 
   test("라운드가 남았으면 근거를 붙여도 확인 응답은 거절되고 통과하지 못한다", async () => {
     const env = repo();
-    const d = deps(env, {});
+    const d = deps(env, { openai: finding("initial defect", "blocker") });
     writeFileSync(join(env.work, "a.ts"), a(1));
     const first = await runReview(input(), d, signal);
     writeFileSync(join(env.work, "a.ts"), a(2));
@@ -2108,9 +2039,10 @@ describe("라운드를 다 쓴 체인의 미검토 코드 수정(unreviewedAckno
 
   test("라운드를 다 썼으면 경로별 근거가 있는 확인 응답으로 통과하고 resolve 기록에 남는다", async () => {
     const { d, review } = await exhausted();
-    const blocked = await runResolve({ reviewId: review.reviewId, resolutions: [] }, rd(d));
+    const resolutions = [{ id: "R1-OAI-1", status: "fixed", evidence: "tested in final delta" }];
+    const blocked = await runResolve({ reviewId: review.reviewId, resolutions }, rd(d));
     expect(blocked).toMatchObject({ pass: false, unreviewedChanges: [{ path: "a.ts", state: "changed" }] });
-    const passed = await runResolve({ reviewId: review.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "a.ts", evidence: "  bun test a.test.ts 5/5 exit 0  " }] }, rd(d));
+    const passed = await runResolve({ reviewId: review.reviewId, resolutions, unreviewedAcknowledgements: [{ path: "a.ts", evidence: "  bun test a.test.ts 5/5 exit 0  " }] }, rd(d));
     expect(passed).toMatchObject({ pass: true, rejectedAcknowledgements: [], acknowledgedUnreviewed: [{ path: "a.ts", blob: blobOf(a(5)), evidence: "bun test a.test.ts 5/5 exit 0" }] });
     const record = d.readAll().filter((item) => item.type === "cross-review-resolve").at(-1) as unknown as { pass: boolean; unreviewedAcknowledgements: unknown };
     expect(record).toMatchObject({ pass: true, unreviewedAcknowledgements: [{ path: "a.ts", blob: blobOf(a(5)), evidence: "bun test a.test.ts 5/5 exit 0" }] });
@@ -2126,7 +2058,7 @@ describe("라운드를 다 쓴 체인의 미검토 코드 수정(unreviewedAckno
 
   test("검토 라운드가 다시 볼 수 없는 파일(바이너리가 된 코드)은 라운드가 남아도 근거로 확인할 수 있다", async () => {
     const env = repo();
-    const d = deps(env, {});
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")]);
     writeFileSync(join(env.work, "a.ts"), a(1));
     writeFileSync(join(env.work, "bin.ts"), `${MARKER_BASE}// bin\n`);
     const first = await runReview(input({ files: ["a.ts", "bin.ts"] }), d, signal);
@@ -2134,8 +2066,9 @@ describe("라운드를 다 쓴 체인의 미검토 코드 수정(unreviewedAckno
     writeFileSync(join(env.work, "bin.ts"), Buffer.from([0, 1, 2]));
     const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
     expect(second.skipped.map((item) => item.path)).toEqual(["bin.ts"]);
-    expect(await runResolve({ reviewId: second.reviewId, resolutions: [] }, rd(d))).toMatchObject({ pass: false });
-    const passed = await runResolve({ reviewId: second.reviewId, resolutions: [], unreviewedAcknowledgements: [{ path: "bin.ts", evidence: "generated binary, hashed by build" }] }, rd(d));
+    const resolutions = [{ id: "R1-OAI-1", status: "fixed", evidence: "tested in delta" }];
+    expect(await runResolve({ reviewId: second.reviewId, resolutions }, rd(d))).toMatchObject({ pass: false, unreviewedBlocking: ["bin.ts"] });
+    const passed = await runResolve({ reviewId: second.reviewId, resolutions, unreviewedAcknowledgements: [{ path: "bin.ts", evidence: "generated binary, hashed by build" }] }, rd(d));
     expect(passed).toMatchObject({ pass: true, acknowledgedUnreviewed: [{ path: "bin.ts" }] });
   });
 });
@@ -2146,7 +2079,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
   test("마지막 라운드가 본 내용 그대로면 알리지 않고, 수정을 다음 라운드로 보이면 알림이 사라진다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
-    const d = deps(env, { openai: finding("fix me") });
+    const d = deps(env, { openai: finding("fix me", "blocker") });
     const first = await runReview(input(), d, signal);
     const untouched = await runResolve({ reviewId: first.reviewId, resolutions: [{ id: "R1-OAI-1", status: "refuted", evidence: "no" }] }, rd(d));
     expect(untouched).not.toHaveProperty("unreviewedChanges");
@@ -2158,11 +2091,11 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
     expect(reviewed).not.toHaveProperty("unreviewedChanges");
   });
 
-  test("이미 검토한 삭제는 다른 파일만 바뀐 3·4회차 뒤에도 알리지 않고, 마지막 검토 뒤 실제로 바뀐 파일(수정·되살림·삭제)은 계속 알린다", async () => {
+  test("reviewed deletions stay reviewed, while later edits, restorations and deletions are reported", async () => {
     const env = repo();
     const calls: { family: Lane; prompt: string }[] = [];
-    const d = deps(env, {}, calls);
-    const resolve = (reviewId: string) => runResolve({ reviewId, resolutions: [] }, rd(d));
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")], calls);
+    const resolve = (reviewId: string) => runResolve({ reviewId, resolutions: [{ id: "R1-OAI-1", status: "fixed", evidence: "tested" }] }, rd(d));
     const a = (n: number) => `${MARKER_BASE}export const a = ${n};\n`;
     const b = `${MARKER_BASE}export const b = 1;\n`;
     writeFileSync(join(env.work, "a.ts"), a(1));
@@ -2171,29 +2104,23 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
     rmSync(join(env.work, "b.ts"));
     const second = await runReview(input({ previousReviewId: first.reviewId }), d, signal);
     expect(calls[1].prompt).toContain("<deleted path=\"b.ts\">"); // 삭제를 reviewer가 봤다(1회차 호출 1개 뒤)
-    expect(await resolve(second.reviewId)).not.toHaveProperty("unreviewedChanges");
-    writeFileSync(join(env.work, "a.ts"), a(3));
-    const third = await runReview(input({ previousReviewId: second.reviewId }), d, signal);
-    expect(await resolve(third.reviewId)).not.toHaveProperty("unreviewedChanges");
-    writeFileSync(join(env.work, "a.ts"), a(4));
-    const fourth = await runReview(input({ previousReviewId: third.reviewId }), d, signal);
-    const settled = await resolve(fourth.reviewId);
+    const settled = await resolve(second.reviewId);
     expect(settled.pass).toBe(true);
     expect(settled).not.toHaveProperty("unreviewedChanges");
     expect(settled).not.toHaveProperty("unreviewedNote");
     // 마지막 검토 뒤 실제로 바뀐 것은 계속 알린다: 수정, 지운 파일을 되살림(검토 때 본 원래 내용 그대로여도), 검토한 파일의 새 삭제.
     writeFileSync(join(env.work, "a.ts"), a(5));
-    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }]);
+    expect((await resolve(second.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }]);
     writeFileSync(join(env.work, "b.ts"), b);
-    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }, { path: "b.ts", state: "changed" }]);
+    expect((await resolve(second.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "changed" }, { path: "b.ts", state: "changed" }]);
     rmSync(join(env.work, "a.ts"));
-    expect((await resolve(fourth.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "deleted" }, { path: "b.ts", state: "changed" }]);
+    expect((await resolve(second.reviewId)).unreviewedChanges).toEqual([{ path: "a.ts", state: "deleted" }, { path: "b.ts", state: "changed" }]);
   });
 
   test("1회차에 이미 지워진 파일로 검토한 삭제도 뒤 라운드가 그 경로를 건너뛰면 다시 알리지 않는다", async () => {
     const env = repo();
     const calls: { family: Lane; prompt: string }[] = [];
-    const d = deps(env, {}, calls);
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")], calls);
     writeFileSync(join(env.work, "gone.ts"), `${MARKER_BASE}export const gone = 1;\n`);
     sh(env.work, "add", "gone.ts");
     sh(env.work, "commit", "-q", "-m", "gone");
@@ -2208,7 +2135,7 @@ describe("마지막 라운드 뒤의 수정(unreviewedChanges) 안내", () => {
 
   test("검토한 뒤 바이너리가 되거나 개인키 블록이 든 파일은 뒤 라운드가 건너뛰어도 검토 완료로 보지 않고 계속 알린다", async () => {
     const env = repo();
-    const d = deps(env, {});
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")]);
     for (const name of ["a.ts", "bin.ts", "key.ts"]) writeFileSync(join(env.work, name), `${MARKER_BASE}// ${name}\n`);
     const first = await runReview(input({ files: ["a.ts", "bin.ts", "key.ts"] }), d, signal);
     writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fixed = 1;\n`);
@@ -2259,7 +2186,7 @@ describe("이미 커밋된 변경(base)", () => {
 
   test("base 기준의 심사 체인도 이어지고, 이어지는 라운드는 커밋 여부와 무관하게 사본 대비 delta를 본다", async () => {
     const { env } = committed();
-    const d = deps(env, { openai: finding("retries too high") });
+    const d = deps(env, { openai: finding("retries too high", "blocker") });
     const first = await runReview(input({ base: "HEAD~1" }), d, signal);
     writeFileSync(join(env.work, "a.ts"), "export const retries = 4;\n");
     sh(env.work, "commit", "-q", "-am", "fix");
@@ -2632,16 +2559,14 @@ describe("Maker(subagent) 세션", () => {
   test("Maker의 nextStep은 Main 전용 resolve 대신 보고를 안내하고, non-probe 라운드를 다 쓴 체인에서도 남은 수정을 끝내고 보고하라고 한다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), versionOf(2));
-    const maker = as(env, "maker-1", { openai: finding("two is wrong") });
+    const maker = as(env, "maker-1", { openai: finding("two is wrong", "blocker") });
     type Next = Reviewed & { round: number; nextStep: string };
-    let last = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, maker) as Next;
-    expect(last.nextStep).toContain("resolve is Main-only");
-    expect(last.nextStep).not.toContain("action:\"resolve\"");
-    for (const version of [22, 222, 2222]) {
-      writeFileSync(join(env.work, "a.ts"), versionOf(version));
-      last = await executeCrossReview({ action: "review", previousReviewId: last.reviewId }, sub, signal, maker) as Next;
-    }
-    expect(last.round).toBe(4);
+    const first = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, maker) as Next;
+    expect(first.nextStep).toContain("resolve is Main-only");
+    expect(first.nextStep).not.toContain("action:\"resolve\"");
+    writeFileSync(join(env.work, "a.ts"), versionOf(22));
+    const last = await executeCrossReview({ action: "review", previousReviewId: first.reviewId }, sub, signal, as(env, "maker-1")) as Next;
+    expect(last).toMatchObject({ round: 2, findings: [] });
     expect(last.nextStep).not.toContain("action:\"resolve\"");
     expect(last.nextStep).toContain("unreviewedAcknowledgements");
     const clean = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, as(env, "maker-1")) as Next;
@@ -2649,10 +2574,6 @@ describe("Maker(subagent) 세션", () => {
     expect(clean.nextStep).toContain("resolve is Main-only");
     expect(clean.nextStep).toContain("report the reviewId chain");
     expect(clean.nextStep).not.toContain("action:\"resolve\"");
-    writeFileSync(join(env.work, "a.ts"), versionOf(22222));
-    const quietDelta = await executeCrossReview({ action: "review", previousReviewId: clean.reviewId }, sub, signal, as(env, "maker-1")) as Next;
-    expect(quietDelta.findings).toHaveLength(0);
-    expect(quietDelta.nextStep).toContain("report the reviewId chain");
     const mainReview = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, main, signal, as(env, "main-1")) as Next;
     expect(mainReview.nextStep).toContain("action:\"resolve\"");
   });
@@ -2703,14 +2624,15 @@ describe("보조 자문 제거 뒤의 reviewer 자리", () => {
   test("옛 체인의 늦은 자문 finding은 그대로 열린 지적이라 resolve가 닫아야 통과하고, 다음 라운드는 필수 자리만 부른다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), versionOf(2));
-    const base = deps(env, {});
+    const base = deps(env, { openai: finding("initial defect", "blocker") });
     const first = await runReview(input(), base, signal);
     base.append({
       type: "cross-review-advisory", ts: new Date().toISOString(), reviewId: first.reviewId, round: 1,
       reviewer: { family: "advisory", model: FABLE, status: "ok", elapsedMs: 1, advisory: true },
       findings: [{ id: "R1-ADV-1", severity: "major", claim: "late fable objection", why: "w", reviewer: FABLE }],
     } as CrossReviewLedgerRecord);
-    expect(await runResolve({ reviewId: first.reviewId, resolutions: [] }, rd(base))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
+    const fixed = { id: "R1-OAI-1", status: "fixed", evidence: "tested" };
+    expect(await runResolve({ reviewId: first.reviewId, resolutions: [fixed] }, rd(base))).toMatchObject({ pass: false, open: ["R1-ADV-1"] });
     writeFileSync(join(env.work, "a.ts"), `${versionOf(2)}export const more = 1;\n`);
     const calls: { family: Lane; prompt: string }[] = [];
     const second = await runReview(input({ previousReviewId: first.reviewId }), deps(env, {}, calls), signal);
@@ -2779,7 +2701,7 @@ describe("DeepSeek 저자의 코드 검토 경로(2026-11-08 사용자 결정)",
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), versionOf(2));
     // 변경 전 매핑이 남긴 1회차 기록을 그대로 만든다: DeepSeek 저자, Anthropic reviewer.
-    const first = await runReview(input({ authors: [ASTRA] }), deps(env, {}), signal);
+    const first = await runReview(input({ authors: [ASTRA] }), deps(env, { anthropic: finding("initial defect", "blocker") }), signal);
     const text = readFileSync(env.ledger, "utf8").trim().split("\n").map((line) => {
       const record = JSON.parse(line);
       record.authors = [DEEPSEEK];
@@ -3077,7 +2999,7 @@ describe("숨김 단서(C1)", () => {
     sh(env.work, "commit", "-q", "-m", "lint fixture");
     writeFileSync(join(env.work, "eslint.config.js"), 'export default {\n  rules: {\n    eqeqeq: "warn",\n  },\n};\n');
     const calls: { family: Lane; prompt: string }[] = [];
-    const d = deps(env, {}, calls);
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")], calls);
     const first = await runReview(input({ files: ["eslint.config.js"] }), d, signal);
     expect(first.hidingLeads).toMatchObject([{ kind: "threshold-lowered", path: "eslint.config.js", line: 3 }]);
     expect(calls[0].prompt).toContain("[threshold-lowered] eslint.config.js:3:");
@@ -3109,11 +3031,11 @@ describe("숨김 단서(C1)", () => {
     sh(env.work, "commit", "-q", "-m", "tests");
     rmSync(join(env.work, "a.test.ts"));
     const calls: { family: Lane; prompt: string }[] = [];
-    const d = deps(env, {}, calls);
+    const d = scripted(deps(env, {}), [finding("initial defect", "blocker")], calls);
     const first = await runReview(input({ files: ["a.test.ts", "b.ts"] }), d, signal);
     expect(first.hidingLeads).toMatchObject([{ kind: "test-file-deleted", path: "a.test.ts" }]);
     expect(calls[0].prompt).toMatch(/<hiding-leads[^>]*>\n\[test-file-deleted\] a\.test\.ts/);
-    // 테스트만 바꾼 커밋은 단서가 있어도 검토를 요구하지 않는다(게이트·표본은 그대로).
+    // 테스트만 바꾼 커밋은 숨김 단서가 있어도 게이트 대상이 아니다.
     expect((await runGate({ cwd: env.work, files: ["a.test.ts"], ledgerPath: env.ledger })).decision?.required).toEqual([]);
     writeFileSync(join(env.work, "b.ts"), `${PLAIN_BASE}// @ts-ignore\n`);
     calls.length = 0;

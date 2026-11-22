@@ -1,12 +1,11 @@
 // 2026-10-28 사용자 결정으로 줄인 교차검토·슬롭 게이트의 회귀 테스트. 사례는 doc/history/2026/10/28-guard-audit 감사에서 실제로 거절·오류가 난 호출이다.
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { CrossReviewRefusal, detectMarkers, MAX_INPUT_BYTES, ReviewerCallError, runGate, runResolve, runReview, sampleSelected, spawnExec, type Lane, type ReviewDeps } from "../lib/cross-review";
+import { CrossReviewRefusal, detectMarkers, MAX_INPUT_BYTES, ReviewerCallError, runGate, runResolve, runReview, spawnExec, type Lane, type ReviewDeps } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../lib/routing-ledger";
 import { appendSlopRecord, MAX_REPORT_CSV_BYTES, pendingArtifacts, rawDataReason, readSlopRecords, runSlopGate, sha256, SlopGateRefusal } from "../lib/slop-gate";
 import { buildReviewRequest, commaOnlyRule, reviewFiles, type Complete, type SlopDeps } from "../slop-gate/review";
@@ -27,7 +26,6 @@ function sh(cwd: string, ...args: string[]): string {
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
 }
-const blobOf = (content: string) => createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0${content}`).digest("hex");
 const put = (root: string, path: string, content: string) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), content); };
 
 interface RepoEnv { work: string; ledger: string; snapshots: string }
@@ -59,7 +57,7 @@ function deps(env: RepoEnv, reply: (prompt: string) => string = () => '{"finding
     },
   } as ReviewDeps;
 }
-const finding = (claim: string) => JSON.stringify({ findings: [{ severity: "major", file: "a.ts", line: 1, claim, why: "because" }], summary: "s" });
+const finding = (claim: string, severity = "major") => JSON.stringify({ findings: [{ severity, file: "a.ts", line: 1, claim, why: "because" }], summary: "s" });
 
 // ── 1. marker는 바뀐 줄에서만 ────────────────────────────────────────────────
 
@@ -76,13 +74,9 @@ describe("경로 이름만으로는 marker가 걸리지 않는다", () => {
     expect(hits.map((hit) => hit.trigger)).toEqual(["deletion"]);
   });
 
-  test("git_finalize 게이트: 표본에 뽑히지 않은 deploy-verify 일반 줄 수정은 통과 기록 없이 지나간다", async () => {
+  test("git_finalize 게이트: marker와 위험 선언이 없는 deploy-verify 수정은 검토 없이 지나간다", async () => {
     const before = "export const name = \"deploy_verify\";\n";
-    let after = "";
-    for (let n = 0; n < 500 && !after; n++) {
-      const candidate = `export const name = "deploy_verify ${n}";\n`;
-      if (!sampleSelected([{ path: DEPLOY_VERIFY, blob: blobOf(candidate) }])) after = candidate;
-    }
+    const after = "export const name = \"deploy_verify_read_only\";\n";
     const env = repo({ [DEPLOY_VERIFY]: before });
     put(env.work, DEPLOY_VERIFY, after);
     const outcome = await runGate({ cwd: env.work, files: [DEPLOY_VERIFY], ledgerPath: env.ledger });
@@ -122,11 +116,13 @@ describe("통과 뒤 TS/JS 주석·공백만 바뀐 파일은 그 통과가 덮�
 // ── 3. 이어지는 라운드는 files·acceptance를 이어받는다 ───────────────────────
 
 describe("이어지는 라운드에서 files·acceptance를 생략하면 체인에서 이어받는다", () => {
+  const blocker = () => finding("contract violation", "blocker");
+
   test("files:[]·acceptance:\"\"인 2회차가 거절되지 않고 같은 파일의 delta를 같은 기준으로 심사한다", async () => {
     const env = repo();
     put(env.work, "a.ts", "export const a = 1;\n");
     const prompts: string[] = [];
-    const d = deps(env, undefined, prompts);
+    const d = deps(env, blocker, prompts);
     const first = await runReview({ files: ["a.ts"], acceptance: "Keep the add contract.", authors: ["main"] }, d, signal);
     put(env.work, "a.ts", "export const a = 2;\n");
     const second = await runReview({ files: [], acceptance: "", authors: [], previousReviewId: first.reviewId }, d, signal);
@@ -139,7 +135,7 @@ describe("이어지는 라운드에서 files·acceptance를 생략하면 체인�
     const env = repo();
     put(env.work, "a.ts", "export const a = 1;\n");
     const prompts: string[] = [];
-    const d = deps(env, undefined, prompts);
+    const d = deps(env, blocker, prompts);
     const first = await runReview({ files: ["a.ts"], acceptance: "Old criteria.", authors: ["main"] }, d, signal);
     unlinkSync(join(env.snapshots, first.reviewId, "acceptance.txt"));
     put(env.work, "a.ts", "export const a = 2;\n");
@@ -149,17 +145,19 @@ describe("이어지는 라운드에서 files·acceptance를 생략하면 체인�
     expect(prompts.at(-1)).toContain("New criteria.");
   });
 
-  test("R1-OAI-2: 바로 앞 라운드의 기준을 읽지 못하면 더 앞 라운드의 다른 기준으로 바꾸지 않는다", async () => {
+  test("probe가 직전 코드 검토의 기준을 읽지 못하면 그보다 앞선 기준으로 바꾸지 않는다", async () => {
     const env = repo();
     put(env.work, "a.ts", "export const a = 1;\n");
     const prompts: string[] = [];
-    const d = deps(env, undefined, prompts);
+    const d = deps(env, blocker, prompts);
     const first = await runReview({ files: ["a.ts"], acceptance: "Criteria A.", authors: ["main"] }, d, signal);
     put(env.work, "a.ts", "export const a = 2;\n");
     const second = await runReview({ files: [], acceptance: "Criteria B.", authors: [], previousReviewId: first.reviewId }, d, signal);
     unlinkSync(join(env.snapshots, second.reviewId, "acceptance.txt"));
-    put(env.work, "a.ts", "export const a = 3;\n");
-    await expect(runReview({ files: [], acceptance: "", authors: [], previousReviewId: second.reviewId }, d, signal)).rejects.toThrow("no stored acceptance to carry over");
+    await expect(runReview({
+      files: [], acceptance: "", authors: [], previousReviewId: second.reviewId,
+      probeResults: [{ findingId: first.findings[0]!.id, command: "bun test a.test.ts", exitCode: 0, output: "passed" }],
+    }, d, signal)).rejects.toThrow("no stored acceptance to carry over");
     expect(prompts).toHaveLength(2);
   });
 });
@@ -215,7 +213,7 @@ describe("한 호출 상한을 넘는 변경은 거절하지 않고 나눠 같�
     const env = repo();
     put(env.work, "a.ts", "export const a = 1;\n");
     const prompts: string[] = [];
-    const first = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, () => finding("x".repeat(MAX_INPUT_BYTES)), prompts), signal);
+    const first = await runReview({ files: ["a.ts"], acceptance: "A", authors: ["main"] }, deps(env, () => finding("x".repeat(MAX_INPUT_BYTES), "blocker"), prompts), signal);
     put(env.work, "a.ts", "export const a = 2;\n");
     await expect(runReview({ files: [], acceptance: "", authors: [], previousReviewId: first.reviewId }, deps(env, undefined, prompts), signal)).rejects.toThrow(/Largest pieces: earlier findings \(1\) \d+ bytes/);
     expect(prompts).toHaveLength(1);

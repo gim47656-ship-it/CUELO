@@ -264,10 +264,10 @@ Task Guard lock·budget·소유권·`FINDING_ID`, exit status, 파일·권한·�
   원인·구현 방향을 확정 사실처럼 적었는가 ③ 요구하지 않은 작업을 넣거나 수용 조건을 바꿨는가.
   정본은 `harness-policy.json`의 `briefContextRelay.preDispatchCrossCheck`다. 수용 조건을 낮추는
   것은 사용자만 할 수 있고, 조각을 쉽게 만들려고 낮추지 않는다.
-- Maker의 보고 전 `cross_review`는 모든 코드 조각이 아니라 정본 네 조건(high-risk 선언, `# Acceptance`의 교차검증 줄,
-  변경 줄의 게이트 트리거 marker, Main이 넘긴 finalizer 표본 적중)에서만 돌린다. 검토가 필요한 조각이면 그 줄을
+- Maker의 보고 전 `cross_review`는 high-risk 선언, `# Acceptance`의 교차검증 요구, 변경 줄의 게이트 트리거
+  marker 중 하나에 해당할 때만 돌린다. 브리프의 선언과 교차검증 요구는 `rule://cross-review-procedure`의 위험 범위를 따른다. 검토가 필요한 조각이면 그 줄을
   지시서에 빠뜨리지 않는다(2026-10-26 사용자 지적: 줄을 빠뜨려 Main이 직접 검토를 돌렸고, 그동안 대화가 멈췄다).
-  `git_finalize` 게이트는 그대로이며 Maker 보고 전 검토의 정본은 `rule://cross-review-procedure`다.
+  `git_finalize`의 게이트 대상과 검토 라운드는 `rule://cross-review-procedure`가 정본이다.
 - 수용 조건은 **관측 경로가 실재하는 것만** 적는다. 통과 경로가 없는 조건은 조건이 아니라 미확인
   항목이다. 새 계약을 정본·발주문에 단정으로 쓰기 전에 그 계약을 **소비하는 경로**(도구 스키마·
   설정 키·코드)를 증거로 확인하고, 확인하지 못했으면 미확인으로 표시한다. 이 확인을 건너뛴 결과가

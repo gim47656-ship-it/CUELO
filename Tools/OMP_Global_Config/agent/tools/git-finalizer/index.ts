@@ -437,7 +437,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     if (regeneratedManifest && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, regeneratedManifest.file))) {
       requested = [...requested, regeneratedManifest.file];
     }
-    // 계열 교차검증 게이트: 새로 커밋할 코드가 trigger·표본에 걸리면 통과한 검토 기록이 있어야 한다.
+    // 계열 교차검증 게이트는 바뀐 줄에 marker가 있거나 crossReviewHighRisk로 선언한 코드만 통과 기록을 요구한다.
     // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
     let gateBlobs: Record<string, string> | undefined;
     try {

@@ -1,4 +1,4 @@
-<!-- source-fingerprint: 6f1c1628ebd70b5e -->
+<!-- source-fingerprint: 45684da825c9a961 -->
 # Global Agent Instructions
 
 Tool descriptions/runtime notices are canonical for enforced procedures. Before delegation, job monitoring, character routing or detailed reporting, read `rule://agent-workflow`.
@@ -13,7 +13,7 @@ Continue actionable work/live jobs after answering. End only for required user a
 
 Only Main and maker implement. Main owns requirements/design/contracts/approval/routing/interim-final acceptance and undelegated work; Maker owns investigation through implementation, focused checks and surface verification of its slice. Do not change user-chosen/running models without instruction or revive retired roles.
 
-Immediately before dispatch read `rule://task-guard` and `rule://subagent` for canonical TASK_GUARD, TASK_TITLE, TODO_TASKS and Skill handoff. Main keeps small single-owner tasks; delegate genuinely independent slices in parallel. `harness-policy.json` determines code-nature/consequence risk, never lowered by size or fixture status. High-risk triggers need Main approval before editing and serial drift review. Read `rule://subagent` and `rule://verdict` for review/acceptance.
+Main keeps small single-owner tasks; delegate genuinely independent slices in parallel. For small tasks Main can finish alone with no risk marker, skip `maker_route`, preflight and `lab_goal frame`. Immediately before an actual dispatch read `rule://task-guard` and `rule://subagent` for canonical TASK_GUARD, TASK_TITLE, TODO_TASKS and Skill handoff. `harness-policy.json` determines code-nature/consequence risk, never lowered by size or fixture status. High-risk triggers need Main approval before editing and serial drift review. Read `rule://subagent` and `rule://verdict` for review/acceptance.
 
 Every owner verifies its changes; Main owns shared environments/full builds/integration acceptance. Main never edits live Maker paths or repeats their focused checks. While Makers work, finish Main's independent preparation and settled-delta review before waiting.
 

@@ -12,7 +12,7 @@
 
 구현 역할은 Main과 maker 둘이다. Main은 요구, 설계, 계약, 승인, 라우팅, 중간 검수와 최종 수용 및 미위임 실행을 맡는다. Maker는 자기 조각을 조사부터 구현, 집중 검사와 표면 확인까지 소유한다. 사용자 선택 모델과 실행 모델을 지시 없이 바꾸거나 폐지된 역할을 되살리지 않는다.
 
-발주 직전 `rule://task-guard`와 `rule://subagent`를 읽고 정본 TASK_GUARD, TASK_TITLE, TODO_TASKS와 Skill 인계를 따른다. 작은 단일 owner 작업은 Main, 진짜 독립 조각은 Maker로 병렬 배분한다. 코드 성질과 결과 위험은 `harness-policy.json`이 정하며 크기나 fixture라는 이유로 낮추지 않는다. high-risk 트리거는 편집 전 Main 승인과 직렬 drift 검수가 필요하다. 검수와 수용 때 `rule://subagent`, `rule://verdict`를 읽는다.
+작은 단일 owner 작업은 Main, 진짜 독립 조각은 Maker로 병렬 배분한다. Main이 직접 끝내고 위험 표시가 없는 작은 작업은 `maker_route`, 사전 점검, `lab_goal frame` 없이 진행한다. 실제 발주 직전 `rule://task-guard`와 `rule://subagent`를 읽고 정본 TASK_GUARD, TASK_TITLE, TODO_TASKS와 Skill 인계를 따른다. 코드 성질과 결과 위험은 `harness-policy.json`이 정하며 크기나 fixture라는 이유로 낮추지 않는다. high-risk 트리거는 편집 전 Main 승인과 직렬 drift 검수가 필요하다. 검수와 수용 때 `rule://subagent`, `rule://verdict`를 읽는다.
 
 각 owner가 자기 변경을 검증하고 Main은 공통 환경, 전체 빌드와 통합 수용을 맡는다. Main은 살아 있는 Maker 경로를 고치거나 같은 집중 검사를 반복하지 않는다. Maker 작업 중에는 Main의 독립 준비와 확정 delta 검수를 끝낸 뒤에만 기다린다.
 

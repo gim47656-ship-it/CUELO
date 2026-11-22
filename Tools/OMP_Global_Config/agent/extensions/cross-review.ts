@@ -174,7 +174,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Read rule://cross-review-procedure first. action: review|resolve only. review: files(cwd-relative), acceptance, authors(model selectors; subagents own family, not main). Delta: previousReviewId; probe: add probeResults (action stays review). base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}] for all findings.",
+    description: "Read rule://cross-review-procedure first. action: review|resolve. review: risk-marked files, acceptance, authors (model selectors; subagents own family, not main). Delta: previousReviewId only for an R1 blocker. One verdict-only probe on unchanged code: previousReviewId + probeResults. base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}].",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),

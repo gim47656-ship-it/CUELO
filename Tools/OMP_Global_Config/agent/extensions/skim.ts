@@ -1,5 +1,6 @@
 import { lstat, open, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { modelRoleSelector, operationalFailure, sameModelRoutes } from "./lib/model-routes";
@@ -18,7 +19,11 @@ const TIMEOUT_MS = 180_000;
 export const SECRET_NAME = /^(?:\.env.*|id_[^/\\]*|.*(?:credential|secret|password|passwd|api[-_]?key).*|(?:.*[^a-z])?(?:auth|tokens?)(?:[^a-z].*)?|agent\.db|\.npmrc|\.netrc|\.pypirc|\.git-credentials)$/i;
 export const SECRET_EXTENSION = /\.(?:pem|key|p12|pfx|jks|keystore|kdbx|gpg|pgp|tfvars(?:\.json)?|tfstate(?:\.backup)?)$/i;
 const BINARY_EXTENSION = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svg|pdf|zip|gz|tgz|tar|bz2|xz|zst|7z|rar|mp[34]|mov|avi|mkv|wav|ogg|woff2?|ttf|otf|eot|wasm|dll|exe|so|db|sqlite3?|lock|map|onnx|parquet|arrow)$/i;
-const SKIP_DIR: Record<string, true> = { ".git": true, node_modules: true, ".next": true, ".cache": true, dist: true, build: true, coverage: true };
+// 폴더·glob 탐색에서 건너뛰는 생성물·의존성 폴더. 파일을 이름으로 직접 주면 이 폴더 아래여도 보낸다
+// (설치된 코어 소스를 skim으로 훑지 못하던 문제, 2026-11-22 사용자 요청 「제약조건좀풀어줘라」).
+const GENERATED_DIR: Record<string, true> = { node_modules: true, ".next": true, ".cache": true, dist: true, build: true, coverage: true };
+// 명시해도 보내지 않는 인증·저장소 내부 폴더. cwd 밖 경로를 받으면서 홈의 인증 폴더를 함께 막는다.
+const CREDENTIAL_DIR: Record<string, true> = { ".git": true, ".ssh": true, ".gnupg": true, ".aws": true, ".kube": true, ".docker": true };
 export const SECRET_CONTENT = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9_-]{12,}|github_pat_[A-Za-z0-9_-]{12,})\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|private[_-]?key)\s*[:=]\s*["']?\S+/i;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const ROLE_PRIMARY = "@primary";
@@ -65,22 +70,58 @@ export interface Collected { chunks: string[]; notes: string[] }
 function slash(path: string): string { return path.replaceAll("\\", "/"); }
 function inside(rel: string): boolean { return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel); }
 /** 비밀 이름·확장자는 파일 이름(마지막 경로 조각)에서만 본다. 폴더 이름까지 보면 `29-token-saving/` 같은 기록 폴더가
- *  `token`에 걸려 통째로 빠졌다(2026-10-30 사용자 결정). skim·draft·slop-gate가 같은 판정을 쓴다. */
+ *  `token`에 걸려 통째로 빠졌다(2026-10-30 사용자 결정). skim·draft·slop-gate가 같은 판정을 쓴다.
+ *  소스 코드 파일은 이름의 auth·token 단어만으로는 빼지 않고 SECRET_CONTENT 내용 검사에 맡긴다. 코어의
+ *  `auth-broker-config.ts`가 이름만으로 빠져 skim으로 읽지 못했다(2026-11-22). credential·secret·password·api-key
+ *  이름, `.env*`·`id_*`는 확장자와 무관하게 뺀다. 셸 스크립트는 토큰을 담는 일이 잦아 예외에 넣지 않는다. */
 export function secretFileName(path: string): boolean {
   const name = slash(path).split("/").at(-1) ?? "";
-  return SECRET_NAME.test(name) || SECRET_EXTENSION.test(name);
+  if (SECRET_EXTENSION.test(name) || !SECRET_NAME.test(name)) return SECRET_EXTENSION.test(name);
+  const sourceFile = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|cs|rb|php|swift|c|h|cc|cpp|hpp)$/i.test(name);
+  return !sourceFile || /^(?:\.env|id_)|credential|secret|password|passwd|api[-_]?key/i.test(name);
 }
-/** 경로 어디에 있어도 보내지 않는 위치: 생성물·의존성 폴더와 인증 저장소 ~/.omp/agent. */
-function protectedLocation(rel: string): boolean {
-  const parts = slash(rel).toLowerCase().split("/");
-  return parts.some((part, index) => Object.hasOwn(SKIP_DIR, part) || (part === ".omp" && parts[index + 1] === "agent"));
+/** 어디에 있어도 보내지 않는 위치: 인증 폴더와 인증 저장소 ~/.omp/agent, ~/.config/gh. */
+function credentialLocation(path: string): boolean {
+  const parts = slash(path).toLowerCase().split("/");
+  return parts.some((part, index) => Object.hasOwn(CREDENTIAL_DIR, part)
+    || (part === ".omp" && parts[index + 1] === "agent") || (part === ".config" && parts[index + 1] === "gh"));
 }
-function globPattern(input: string, cwd: string): { pattern: string; explicit: boolean; absolute: string } {
-  const absolute = resolve(cwd, input);
+/** 탐색이 새로 내려간 경로에 생성물·의존성 폴더가 있는지. 입력이 직접 가리킨 부분은 보지 않는다. */
+function generatedLocation(path: string): boolean {
+  return slash(path).toLowerCase().split("/").some((part) => Object.hasOwn(GENERATED_DIR, part));
+}
+const GLOB_CHARS = /[?*\[\]{}]/;
+interface ResolvedInput { base: string; pattern: string; named: string; label: string; explicit: boolean; absolute: string }
+/**
+ * 입력 하나를 탐색 기준 폴더(base)와 그 아래 glob pattern으로 나눈다. cwd 안이면 base는 cwd이고 label은 cwd 상대
+ * 경로다. cwd 밖(절대 경로, `../`, `~/`)이면 base는 glob 문자가 없는 앞부분 폴더의 실제 경로이고 label은 절대 경로다.
+ * named는 pattern 가운데 사용자가 직접 이름을 댄 앞부분(glob 문자 앞)이다.
+ * cwd 자체는 저장소 전체를 상한까지 아무렇게나 자르게 되어 받지 않는다.
+ */
+async function resolveInput(input: string, cwd: string): Promise<ResolvedInput> {
+  const expanded = input === "~" || input.startsWith("~/") ? join(homedir(), input.slice(1)) : input;
+  const absolute = resolve(cwd, expanded);
+  const explicit = !GLOB_CHARS.test(input);
   const rel = relative(cwd, absolute);
-  if (!inside(rel)) throw new Error(`프로젝트 cwd 밖 또는 cwd 전체 경로는 사용할 수 없습니다: ${input}`);
-  const pattern = slash(rel);
-  return { pattern, explicit: !/[?*\[\]{}]/.test(input), absolute };
+  if (rel === "") throw new Error(`cwd 전체 경로는 사용할 수 없습니다. 폴더나 파일을 좁혀 주세요: ${input}`);
+  let base = cwd;
+  let pattern = slash(rel);
+  if (!inside(rel)) {
+    const segments = slash(absolute).split("/");
+    let split = explicit ? segments.length : segments.findIndex((segment) => GLOB_CHARS.test(segment));
+    // 명시 파일은 그 폴더를, 명시 폴더는 자기 자신을 기준으로 삼는다. 없는 경로는 collect의 stat이 알린다.
+    if (explicit) {
+      try { if (!(await stat(absolute)).isDirectory()) split--; } catch { split--; }
+    }
+    const prefix = segments.slice(0, split).join("/") || "/";
+    try { base = await realpath(prefix); } catch { base = prefix; }
+    pattern = segments.slice(split).join("/");
+  }
+  const parts = pattern.split("/");
+  const firstGlob = parts.findIndex((part) => GLOB_CHARS.test(part));
+  const named = explicit ? pattern : parts.slice(0, firstGlob).join("/");
+  const label = base === cwd ? pattern : slash(pattern ? join(base, pattern) : base);
+  return { base, pattern, named, label, explicit, absolute };
 }
 
 async function hasSymlink(cwd: string, rel: string): Promise<boolean> {
@@ -101,7 +142,16 @@ function textPrefix(bytes: Uint8Array, max: number): string {
   throw new Error("UTF-8이 아닙니다.");
 }
 
-/** cwd 위쪽 저장소의 gitignore 규칙에 걸리는 경로만 돌려준다. 판정하지 못하면 전송하지 않도록 실패한다. */
+/** 기준 폴더 위쪽에 git 저장소가 있는지. native glob은 기준 폴더 위쪽 .gitignore를 보지 못한다. */
+async function underRepo(base: string): Promise<boolean> {
+  for (let dir = dirname(base); ; dir = dirname(dir)) {
+    try { await lstat(resolve(dir, ".git")); return true; }
+    catch { /* 상위 저장소 경계를 계속 탐색 */ }
+    if (dirname(dir) === dir) return false;
+  }
+}
+
+/** 기준 폴더 위쪽 저장소의 gitignore 규칙에 걸리는 경로만 돌려준다. 판정하지 못하면 전송하지 않도록 실패한다. */
 async function gitIgnored(cwd: string, paths: readonly string[], signal: AbortSignal): Promise<Set<string>> {
   if (paths.length === 0) return new Set();
   // --no-index: native glob처럼 추적 여부와 무관하게 규칙만 본다.
@@ -114,88 +164,104 @@ async function gitIgnored(cwd: string, paths: readonly string[], signal: AbortSi
   return new Set(out.split("\0").filter(Boolean).map(slash));
 }
 
-/** skim·draft가 함께 쓰는 전송 전 안전 필터. cwd 밖·비밀·gitignore·바이너리·큰 파일을 걸러 낸다. */
+/**
+ * skim·draft가 함께 쓰는 전송 전 안전 필터. cwd 밖 경로도 받되 인증 위치·비밀 이름과 내용·gitignore·바이너리·큰 파일을
+ * 걸러 낸다. 생성물·의존성 폴더(node_modules 등)는 폴더·glob 탐색에서만 건너뛰고, 파일을 직접 주면 그 폴더의
+ * gitignore와 함께 넘어 보낸다(의존성 폴더의 무시는 비밀 보호가 아니라 관례라서).
+ */
 export async function collect(input: Pick<SkimInput, "paths">, cwd: string, signal: AbortSignal, tool = "skim"): Promise<Collected> {
   // legacy-pi 확장 loader는 이 host SDK 경로를 설치된 runtime으로 치환한다.
   const { glob, FileType } = await import("@oh-my-pi/pi-natives");
   const root = await realpath(resolve(cwd));
   if (slash(root).toLowerCase().includes("/.omp/agent")) throw new Error(`인증 저장소 ~/.omp/agent 아래에서는 ${tool}을 사용할 수 없습니다.`);
-  // 탐색은 cwd에서만 한다. 저장소 루트부터 걸으면 명시 파일 하나에도 저장소 전체를 훑어, 원격
-  // 드라이브의 큰 저장소에서 native glob 10초 제한을 넘긴다. native glob은 cwd 위쪽 .gitignore를
-  // 보지 못하므로 cwd가 저장소 안쪽이면 찾은 경로만 git check-ignore로 다시 거른다.
-  let parentRepo = false;
-  for (let dir = dirname(root); ; dir = dirname(dir)) {
-    try { await lstat(resolve(dir, ".git")); parentRepo = true; break; }
-    catch { /* 상위 저장소 경계를 계속 탐색 */ }
-    if (dirname(dir) === dir) break;
-  }
+  // 탐색은 입력마다 그 기준 폴더에서만 한다. 저장소 루트부터 걸으면 명시 파일 하나에도 저장소 전체를 훑어, 원격
+  // 드라이브의 큰 저장소에서 native glob 10초 제한을 넘긴다. native glob은 기준 폴더 위쪽 .gitignore를
+  // 보지 못하므로 기준 폴더가 저장소 안쪽이면 찾은 경로만 git check-ignore로 다시 거른다.
+  const repoCache = new Map<string, boolean>();
   const notes: string[] = [];
-  const found = new Set<string>();
+  // 실제 파일 경로 → 표시 이름과 그 파일을 찾은 기준 폴더(심볼릭 링크 검사의 시작점).
+  const found = new Map<string, { label: string; base: string }>();
   let capped = false;
   for (const raw of input.paths) {
     if (signal.aborted) throw signal.reason;
     const value = raw.trim();
     if (!value) continue;
-    const target = globPattern(value, root);
-    // 입력은 폴더·glob일 수 있어 위치만 먼저 보고, 파일 이름 검사는 아래에서 찾은 파일마다 한다.
-    if (protectedLocation(target.pattern)) { notes.push(`${target.pattern}: 비밀 경로 제외`); continue; }
+    const target = await resolveInput(value, root);
+    const { base, named, label } = target;
+    if (credentialLocation(slash(target.absolute)) || credentialLocation(base)) { notes.push(`${label}: 비밀 경로 제외`); continue; }
     let pattern = target.pattern;
     if (target.explicit) {
       let info;
       try { info = await stat(target.absolute); } catch (error) {
-        notes.push(`${target.pattern}: ${error instanceof Error ? error.message : String(error)}`);
+        notes.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-      if (info.isDirectory()) pattern += "/**/*";
-      else if (!info.isFile()) { notes.push(`${target.pattern}: 일반 파일이 아님`); continue; }
-      if (await hasSymlink(root, target.pattern)) {
-        notes.push(`${target.pattern}: 심볼릭 링크 제외`); continue;
+      if (info.isDirectory()) pattern = pattern ? `${pattern}/**/*` : "**/*";
+      else if (!info.isFile()) { notes.push(`${label}: 일반 파일이 아님`); continue; }
+      if (target.pattern && await hasSymlink(base, target.pattern)) {
+        notes.push(`${label}: 심볼릭 링크 제외`); continue;
       }
     }
+    // 이름을 댄 폴더가 생성물·의존성 폴더 안이면 그 폴더의 gitignore를 넘는다(무시가 관례일 뿐 비밀 보호가 아니라서).
+    // 파일을 직접 댔으면 그 파일이 든 폴더만 본다. `build`라는 일반 파일 이름은 폴더가 아니다.
+    const namedDir = target.explicit && pattern === target.pattern ? dirname(named) : named;
+    const skipIgnore = generatedLocation(base === root ? namedDir : slash(join(base, namedDir)));
     let matches: string[];
     try {
-      const result = await glob({ pattern, path: root, fileType: FileType.File, hidden: true,
-        recursive: false, gitignore: true, maxResults: MAX_MATCHES + 1, signal, timeoutMs: 10_000 });
+      const result = await glob({ pattern, path: base, fileType: FileType.File, hidden: true,
+        recursive: false, gitignore: !skipIgnore, maxResults: MAX_MATCHES + 1, signal, timeoutMs: 10_000 });
       if (result.matches.length > MAX_MATCHES) capped = true;
-      matches = result.matches.slice(0, MAX_MATCHES).map((item) => slash(relative(root, resolve(root, item.path))));
+      matches = result.matches.slice(0, MAX_MATCHES).map((item) => slash(relative(base, resolve(base, item.path))));
     } catch (error) {
       // 이 경로만 건너뛰고 나머지 경로는 계속 조사한다.
       if (signal.aborted || !(error instanceof Error && error.message.includes("Aborted: Timeout"))) throw error;
-      notes.push(`${target.pattern}: 파일 탐색이 10초를 넘어 건너뜀`);
+      notes.push(`${label}: 파일 탐색이 10초를 넘어 건너뜀`);
       continue;
     }
-    if (parentRepo && matches.length > 0) {
-      const ignored = await gitIgnored(root, matches, signal);
+    let repo = repoCache.get(base);
+    if (repo === undefined) repoCache.set(base, repo = await underRepo(base));
+    if (repo && !skipIgnore && matches.length > 0) {
+      const ignored = await gitIgnored(base, matches, signal);
       matches = matches.filter((rel) => !ignored.has(rel));
     }
     if (target.explicit && matches.length === 0) {
-      if (pattern === target.pattern) notes.push(`${target.pattern}: gitignore로 건너뜀`);
-      else {
-        const directory = await glob({ pattern: target.pattern, path: root, fileType: FileType.Dir,
-          hidden: true, recursive: false, gitignore: true, maxResults: 1, signal, timeoutMs: 10_000 });
-        if (directory.matches.length === 0 || (parentRepo && (await gitIgnored(root, [target.pattern], signal)).size > 0)) {
-          notes.push(`${target.pattern}: gitignore로 건너뜀`);
+      if (pattern === target.pattern) notes.push(`${label}: gitignore로 건너뜀`);
+      else if (target.pattern) {
+        const directory = await glob({ pattern: target.pattern, path: base, fileType: FileType.Dir,
+          hidden: true, recursive: false, gitignore: !skipIgnore, maxResults: 1, signal, timeoutMs: 10_000 });
+        if (directory.matches.length === 0 || (repo && !skipIgnore && (await gitIgnored(base, [target.pattern], signal)).size > 0)) {
+          notes.push(`${label}: gitignore로 건너뜀`);
         }
       }
     }
-    for (const rel of matches) if (inside(rel)) found.add(rel);
+    let generated = 0;
+    for (const rel of matches) {
+      if (!inside(rel)) continue;
+      // 입력이 가리킨 앞부분 아래로 탐색이 새로 내려간 부분만 생성물·의존성 폴더 검사 대상이다.
+      const traversed = named === "" ? rel : rel === named ? "" : rel.startsWith(`${named}/`) ? rel.slice(named.length + 1) : rel;
+      if (generatedLocation(traversed)) { generated++; continue; }
+      const full = resolve(base, rel);
+      const inRoot = relative(root, full);
+      if (!found.has(full)) found.set(full, { label: inside(inRoot) ? slash(inRoot) : slash(full), base });
+    }
+    if (generated) notes.push(`${label}: 생성물·의존성 폴더 아래 파일 ${generated}개 제외(그 폴더를 직접 지정하면 보냄)`);
   }
   if (capped) notes.push(`발견 파일이 입력당 ${MAX_MATCHES}개를 초과해 나머지는 탐색하지 않음`);
   const chunks: string[] = [];
   let used = 0;
-  for (const rel of [...found].sort()) {
+  for (const [full, { label, base }] of [...found].sort(([, a], [, b]) => a.label.localeCompare(b.label))) {
     if (signal.aborted) throw signal.reason;
-    if (protectedLocation(rel) || secretFileName(rel)) { notes.push(`${rel}: 비밀 경로 제외`); continue; }
-    if (BINARY_EXTENSION.test(basename(rel))) { notes.push(`${rel}: 바이너리 제외`); continue; }
-    const full = resolve(root, rel);
+    if (secretFileName(label) || credentialLocation(slash(full))) { notes.push(`${label}: 비밀 경로 제외`); continue; }
+    if (BINARY_EXTENSION.test(basename(label))) { notes.push(`${label}: 바이너리 제외`); continue; }
     try {
-      if (await hasSymlink(root, rel) || !inside(relative(root, await realpath(full)))) {
-        notes.push(`${rel}: 심볼릭 링크 또는 cwd 밖 제외`);
+      const rel = relative(base, full);
+      if (await hasSymlink(base, rel) || !inside(relative(base, await realpath(full)))) {
+        notes.push(`${label}: 심볼릭 링크 제외`);
         continue;
       }
       const size = (await stat(full)).size;
-      if (used >= TOTAL_BYTES) { notes.push(`${rel}: 총량 상한으로 빠짐`); continue; }
-      if (size > MAX_FILE_SIZE) { notes.push(`${rel}: 거대 파일 제외 (${size}바이트)`); continue; }
+      if (used >= TOTAL_BYTES) { notes.push(`${label}: 총량 상한으로 빠짐`); continue; }
+      if (size > MAX_FILE_SIZE) { notes.push(`${label}: 거대 파일 제외 (${size}바이트)`); continue; }
       const allowance = Math.min(FILE_BYTES, TOTAL_BYTES - used);
       const buffer = Buffer.allocUnsafe(allowance);
       const file = await open(full, "r");
@@ -204,15 +270,15 @@ export async function collect(input: Pick<SkimInput, "paths">, cwd: string, sign
       finally { await file.close(); }
       const raw = textPrefix(buffer.subarray(0, bytesRead), allowance).replace(/^\uFEFF/, "");
       if (!raw.trim() || /\0|[\x01-\x08\x0B\x0C\x0E-\x1F]/.test(raw)) {
-        notes.push(`${rel}: 바이너리 또는 빈 파일 제외`); continue;
+        notes.push(`${label}: 바이너리 또는 빈 파일 제외`); continue;
       }
-      if (SECRET_CONTENT.test(raw)) { notes.push(`${rel}: 비밀 내용 제외`); continue; }
+      if (SECRET_CONTENT.test(raw)) { notes.push(`${label}: 비밀 내용 제외`); continue; }
       const numbered = raw.split(/\r?\n/).map((line, index) => `${index + 1}: ${line}`).join("\n");
-      chunks.push(`<file path="${rel}">\n${numbered}\n</file>`);
+      chunks.push(`<file path="${label}">\n${numbered}\n</file>`);
       used += bytesRead;
-      if (size > bytesRead) notes.push(`${rel}: ${size}바이트 중 ${bytesRead}바이트까지만 전송(잘림)`);
+      if (size > bytesRead) notes.push(`${label}: ${size}바이트 중 ${bytesRead}바이트까지만 전송(잘림)`);
     } catch (error) {
-      notes.push(`${rel}: 읽기 실패 (${error instanceof Error ? error.message : String(error)})`);
+      notes.push(`${label}: 읽기 실패 (${error instanceof Error ? error.message : String(error)})`);
     }
   }
   return { chunks, notes };
@@ -480,7 +546,7 @@ export default function skim(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "skim", label: "Skim", loadMode: "essential", approval: "read",
-    description: "Survey filtered text files/directories/globs with skim; sent to model provider. paths inside session cwd, not cwd itself. Read exact lines before editing.",
+    description: "Survey filtered text files/directories/globs with skim; sent to model provider. paths: cwd-relative, absolute or ~/, not cwd itself; directory/glob scans skip node_modules/dist, named files do not. Read exact lines before editing.",
     parameters: z.object({ paths: z.array(z.string()), question: z.string() }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       return toolResult(await skimQuestion(params as SkimInput, ctx, signal ?? new AbortController().signal));
