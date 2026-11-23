@@ -38,7 +38,7 @@ export interface ProjectTrustSession {
   watchBackgroundWork(): void;
   beginClose(options: { onlyWhenIdle?: boolean }): boolean;
   cancelClose(): void;
-  shutdown(): Promise<void>;
+  shutdown(reason?: string): Promise<void>;
 }
 
 export interface ProjectTrustHost {
@@ -101,7 +101,7 @@ function reconcileKey(host: ProjectTrustHost, key: string, change: TrustChange):
   for (const session of sessions) {
     if (stored.trusted || !session.projectCodeLoaded) continue;
     if (session.isSafelyIdle() && session.beginClose({ onlyWhenIdle: true })) {
-      void session.shutdown().catch(logShutdownFailure);
+      void session.shutdown("project-trust-revoked").catch(logShutdownFailure);
     } else {
       loadedLeft = true;
       session.watchBackgroundWork();
@@ -137,7 +137,7 @@ function reconcileKey(host: ProjectTrustHost, key: string, change: TrustChange):
     }
     void resumeHeldWorktreePrepare(key, change.agentDir);
     invalidateModelsCache();
-    for (const session of reserved) void session.shutdown().catch(logShutdownFailure);
+    for (const session of reserved) void session.shutdown("project-trust-granted").catch(logShutdownFailure);
     return;
   }
 

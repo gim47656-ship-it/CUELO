@@ -1266,7 +1266,7 @@ export class AgentSessionWrapper {
 
   private async shutdownAfterCommittedFork(newSessionId: string): Promise<void> {
     try {
-      await this.shutdown();
+      await this.shutdown("fork");
     } catch (error) {
       // The forked session is already persisted. Cleanup failures must not
       // hide its id from the browser and strand the committed transition.
@@ -1465,7 +1465,7 @@ export class AgentSessionWrapper {
         this.resetIdleTimer();
         return;
       }
-      void this.shutdown().catch((error) => {
+      void this.shutdown("idle").catch((error) => {
         console.error("[pi-web] failed to shut down idle session:", error instanceof Error ? error.message : error);
       });
     }, 10 * 60 * 1000);
@@ -1557,7 +1557,7 @@ export class AgentSessionWrapper {
     // shutdown() clears the keep-alive set, so remember it first. The handover is parked before
     // the start: if this start fails, the next request that revives the id still picks the streams up.
     getListenerHandovers().set(sessionId, { from: this, keepAlive: new Set(this.keepAliveListeners) });
-    await this.shutdown();
+    await this.shutdown("plugin-lab-restart");
     await startRpcSession(sessionId, sessionFile, undefined, this.restrictTools === undefined ? {} : { restrictTools: [...this.restrictTools] });
     return true;
   }
@@ -2241,9 +2241,14 @@ export class AgentSessionWrapper {
     return setComputerTakeover(this.inner.settings, this.sharesRuntimeSettings, enabled);
   }
 
-  destroy(): void {
+  /**
+   * `reason` names the caller in the server log. A session that ends without this line was disposed
+   * by something other than the wrapper; an unnamed caller also logs its stack, taken where it called.
+   */
+  destroy(reason = "unspecified", caller = reason === "unspecified" ? new Error("close caller").stack : undefined): void {
     if (!this._alive) return;
     this._alive = false;
+    console.info(`[cuelo] session closed ${this.sessionId} reason=${reason}`, caller?.split("\n").slice(1, 7).join(" | ") ?? "");
     // Back to the configured `refuse`; this Settings instance is also what revived children read.
     revokeComputerTakeover(this.inner.settings);
     if (this.idleTimer) clearTimeout(this.idleTimer);
@@ -2276,7 +2281,8 @@ export class AgentSessionWrapper {
     }
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(reason = "unspecified"): Promise<void> {
+    const caller = reason === "unspecified" ? new Error("close caller").stack : undefined;
     if (this.shutdownPromise) return this.shutdownPromise;
     if (!this._alive) return;
 
@@ -2292,7 +2298,7 @@ export class AgentSessionWrapper {
         }
         await this.inner.extensionRunner?.emit?.({ type: "session_shutdown", reason: "quit" });
       } finally {
-        this.destroy();
+        this.destroy(reason, caller);
       }
     })();
     return this.shutdownPromise;
@@ -2753,7 +2759,7 @@ function getListenerHandovers(): Map<string, ListenerHandover> {
 function getRegistry(): Map<string, AgentSessionWrapper> {
   if (!globalThis.__ompSessions) {
     globalThis.__ompSessions = new Map();
-    const cleanup = () => globalThis.__ompSessions?.forEach((s) => s.destroy());
+    const cleanup = () => globalThis.__ompSessions?.forEach((s) => s.destroy("process-exit"));
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
@@ -3223,12 +3229,12 @@ export async function startRpcSession(
         // 지정하지 않았으면 기본 모델이 정해져 있고, 그 provider의 목록에서 자리를 해석한다.
         const pinProvider = session.model?.provider;
         if (!pinProvider) {
-          wrapper.destroy();
+          wrapper.destroy("start-aborted");
           throw new Error("이 세션의 provider를 알 수 없어 OAuth 계정을 지정하지 못했습니다.");
         }
         const pinned = await pinProviderAccount(session, pinProvider, accountOauthPosition);
         if (!pinned.ok) {
-          wrapper.destroy();
+          wrapper.destroy("start-aborted");
           throw new Error(pinned.reason);
         }
       }
@@ -3245,13 +3251,13 @@ export async function startRpcSession(
       // 남지 않게 한다.
       const closing = getClosingSessionIds();
       if (closing.has(sessionId) || closing.has(realSessionId)) {
-        wrapper.destroy();
+        wrapper.destroy("start-aborted");
         throw new Error("Session is closing");
       }
       // 이 세션이 신뢰를 읽은 뒤 해제가 저장됐다면 프로젝트 코드를 실은 채로 등록하지 않는다.
       // 해제 직후의 변경 기록이 있을 때만 저장소를 다시 읽는다.
       if (wrapper.projectCodeLoaded && isProjectTrustRevokedFor(sessionCwd)) {
-        wrapper.destroy();
+        wrapper.destroy("start-aborted");
         throw new Error("Project trust was revoked while this session was starting. Please try again.");
       }
       wrapper.start(() => inner.startHintCompression());

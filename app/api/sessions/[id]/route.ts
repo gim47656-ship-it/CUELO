@@ -191,7 +191,7 @@ export async function DELETE(
         }
       } catch { /* skip if dir unreadable */ }
 
-      await getRpcSession(id)?.shutdown();
+      await getRpcSession(id)?.shutdown("session-deleted");
       unlinkSync(filePath);
       invalidateSessionPathCache(id);
       invalidateSessionListCache();

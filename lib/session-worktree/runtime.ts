@@ -34,10 +34,16 @@ export async function startSessionWithWorktree(
       requests.delete(requestId);
     }
   }
+  const requestedAt = Date.now();
   const result = withRepositoryLock(cwd, async () => {
+    const lockedAt = Date.now();
     const selected = await selectSessionWorktree(cwd, host, { ...selection, agentDir: getAgentDir() });
+    const selectedAt = Date.now();
     try {
       const started = await startNewRpcSession(requestId, selected.cwd, options);
+      // lockMs covers the repository lookup and waiting behind another holder of this repository's lock.
+      console.info("[session-worktree] start timing", { cwd: started.session.cwd, lockMs: lockedAt - requestedAt,
+        selectMs: selectedAt - lockedAt, startMs: Date.now() - selectedAt, createdWorktree: selected.created !== undefined });
       return { ...started, ...selected, cwd: started.session.cwd };
     } catch (error) {
       await rollbackUnstartedWorktree(selected);
@@ -59,9 +65,11 @@ export async function prepareResumedWorktree(manager: Pick<SessionManager, "getR
   const root = removedAutoWorktreeRoot(recorded);
   if (!root) return undefined;
   return withRepositoryLock(root, async () => {
+    const relocatedAt = Date.now();
     const suffix = recorded.slice(`${root}-worktrees${sep}`.length).split(sep).slice(1).join(sep);
     const requested = suffix && existsSync(join(root, suffix)) ? join(root, suffix) : root;
     const selected = await selectSessionWorktree(requested, host, { agentDir: getAgentDir() });
+    console.info("[session-worktree] resume relocated", { from: recorded, to: selected.cwd, selectMs: Date.now() - relocatedAt });
     const id = `resume:${randomUUID()}`;
     pending.set(id, selected.cwd);
     try { manager.setCwdWithoutRelocation(selected.cwd); }

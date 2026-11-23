@@ -151,7 +151,7 @@ async function planAndRun(dryRun: boolean, skills: string[], nightlyResult: Nigh
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 프롬프트를 받기 전에 실패한 세션은 일을 맡지 않았으므로 닫는다. 받은 뒤(기록 실패)에는 일하는 세션을 끊지 않는다.
-    if (session && !accepted) await session.shutdown().catch(() => {});
+    if (session && !accepted) await session.shutdown("upkeep-start-failed").catch(() => {});
     log(`failed ${accepted ? "to record an accepted run" : "to start"}: ${message}`);
     return NextResponse.json({ error: message, ...(accepted ? { accepted, sessionId } : {}) }, { status: 500 });
   }

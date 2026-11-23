@@ -194,7 +194,7 @@ async function planAndRun(dryRun: boolean, recovery: string | null) {
     const message = error instanceof Error ? error.message : String(error);
     // 프롬프트를 받기 전에 실패한 세션은 일을 맡지 않았으므로 닫는다. 받은 뒤(기록 실패)에는 일하는 세션을 끊지 않는다.
     // worktree는 지우지 않는다(삭제는 사용자 승인). 경로를 로그와 응답에 남긴다.
-    if (session && !accepted) await session.shutdown().catch(() => {});
+    if (session && !accepted) await session.shutdown("upkeep-start-failed").catch(() => {});
     log(`failed ${accepted ? "to record an accepted run" : "to start"}${worktree ? ` in ${worktree}` : ""}: ${message}`);
     // 받은 세션은 계속 돌므로 id를 함께 돌려준다. 클라우드 실행 스크립트가 그 세션을 위해 활동 lease를 잡는다.
     return NextResponse.json({ error: message, ...(worktree ? { worktree } : {}), ...(accepted ? { accepted, sessionId } : {}) }, { status: 500 });
