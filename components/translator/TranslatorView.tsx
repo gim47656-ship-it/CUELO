@@ -131,7 +131,7 @@ function readSettings(): Settings {
       echoGuard: saved.echoGuard !== false,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
-      engine: saved.engine === "fast" && (pair.mine.code === "th" || pair.theirs.code === "th") ? "voice" : readEngine(saved.engine),
+      engine: readEngine(saved.engine),
       assistMeaning: saved.assistMeaning !== false,
     };
   } catch {
@@ -746,7 +746,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   };
 
   const languageOptions = (other: TranslatorLanguage) => TRANSLATOR_LANGUAGES.map((language) => (
-    <option key={language.code} value={language.code} disabled={language.code === other.code || (engine === "fast" && language.code === "th")}>{language.nativeName}</option>
+    <option key={language.code} value={language.code} disabled={language.code === other.code}>{language.nativeName}</option>
   ));
 
   const statusLine = (
@@ -877,7 +877,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 onChange={(event) => changeCallSettings({ ...settings, engine: readEngine(event.target.value) })}>
                 <option value="voice">{voiceCopy.engineVoice}</option>
                 <option value="codex">{voiceCopy.engineCodex}</option>
-                <option value="fast" disabled={mine.code === "th" || theirs.code === "th"}>{voiceCopy.engineFast}</option>
+                <option value="fast">{voiceCopy.engineFast}</option>
               </select>
             </label>
             <p className="translator-options-note" id={engine === "fast" ? "translator-fast-hint" : undefined}>{engine === "fast" ? voiceCopy.fastHint : voiceCopy.engineHint}</p>

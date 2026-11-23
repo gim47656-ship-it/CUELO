@@ -61,6 +61,14 @@ test("mints one secret per language, mine first, with the right output language"
   assert.ok(calls.every((call) => call.url === "https://api.openai.com/v1/realtime/translations/client_secrets"));
 });
 
+test("Taiwan Chinese is minted with the lowercase identifier the OpenAI API accepts", async () => {
+  const { handler, calls } = setup(ok);
+  const response = await handler(request({ mine: "ko", theirs: "zh-tw" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).sessions.map((session) => session.language), ["ko", "zh-tw"]);
+  assert.deepEqual(calls.map((call) => call.language).sort(), ["ko", "zh-tw"]);
+});
+
 test("one credential lookup serves both mints", async () => {
   const { handler, tokens } = setup(ok);
   await handler(request({ mine: "en", theirs: "ja" }));

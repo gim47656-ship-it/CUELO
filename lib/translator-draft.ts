@@ -1,4 +1,4 @@
-import { guessTranslatorLanguage, type TranslatorLanguage } from "./translator-languages";
+import { guessTranslatorLanguage, isChineseCode, type TranslatorLanguage } from "./translator-languages";
 
 /**
  * Quick draft captions for the interpreter: the dedicated translation model (gpt-realtime-translate)
@@ -145,8 +145,10 @@ export function echoSimilarity(output: string, input: string): number {
 }
 
 /** Pairs whose languages share letters: the script tells nothing, so a delta cannot prove a language switch. */
-const AMBIGUOUS_PAIRS = [["en", "vi"], ["ja", "zh"]];
-const isAmbiguousPair = (pair: DraftPair) => AMBIGUOUS_PAIRS.some((codes) => codes.includes(pair.mine.code) && codes.includes(pair.theirs.code));
+function isAmbiguousPair({ mine, theirs }: DraftPair): boolean {
+  return (mine.code === "en" && theirs.code === "vi") || (mine.code === "vi" && theirs.code === "en")
+    || (mine.code === "ja" && isChineseCode(theirs.code)) || (theirs.code === "ja" && isChineseCode(mine.code));
+}
 
 function switchesLanguage(pair: DraftPair, text: string, delta: string): boolean {
   if (isAmbiguousPair(pair)) return false;
@@ -384,12 +386,23 @@ interface StreamingFastTurn extends FastTurn {
   outputAt: number;
   echo: boolean;
   shown: boolean;
+}
+
+// PCM is a separate stream: it can start seconds before the first translated word and outlast the last.
+interface FastAudioRun {
+  at: number;
+  turn?: StreamingFastTurn;
+  blocked: boolean;
   held: { pcm: Int16Array; at: number }[];
+  samples: number;
 }
 
 interface FastStream {
   input?: StreamingFastTurn;
   output?: StreamingFastTurn;
+  audio?: FastAudioRun;
+  /** An input not consumed by a previous PCM run. Never reuse a finished run's source. */
+  nextAudioInput?: StreamingFastTurn;
   unattributed?: StreamingFastTurn;
   turns: Set<StreamingFastTurn>;
 }
@@ -397,6 +410,8 @@ interface FastStream {
 // Source and output trace clocks have different rates. Pair text within each stream by arrival and
 // never promote old audio to a new speaker. Wait a little longer to finalize than to separate speech.
 const FAST_SETTLE_MS = TURN_GAP_MS + OUTPUT_RUN_GAP_MS;
+// Two seconds of 24 kHz PCM per socket; the recorded pre-roll before source detection was under one second.
+const MAX_HELD_SAMPLES = 2 * 24_000;
 
 export class FastTranslationTurns {
   private streams = new Map<string, FastStream>();
@@ -423,7 +438,7 @@ export class FastTranslationTurns {
 
   private newTurn(stream: FastStream, target: TranslatorLanguage, now: number): StreamingFastTurn {
     const turn: StreamingFastTurn = { id: this.nextId++, startedAt: now, target, input: "", output: "", final: false,
-      inputAt: -Infinity, outputAt: -Infinity, echo: false, shown: false, held: [] };
+      inputAt: -Infinity, outputAt: -Infinity, echo: false, shown: false };
     stream.turns.add(turn);
     return turn;
   }
@@ -450,7 +465,29 @@ export class FastTranslationTurns {
       this.events.remove(late.id);
       stream.unattributed = undefined;
     }
-    this.update(stream, turn, now);
+    this.update(turn, now);
+    const run = stream.audio;
+    if (!run || run.blocked || now - run.at > OUTPUT_RUN_GAP_MS) {
+      stream.nextAudioInput = turn;
+      return;
+    }
+    // Multiple sentences from the same source can share one continuous audio run. Only a
+    // different or unknown source invalidates it; never move held packets to another input.
+    if (run.turn && run.turn !== turn && (!turn.source || run.turn.source?.code !== turn.source.code)) {
+      stream.nextAudioInput = turn;
+      run.blocked = true;
+      run.held.length = run.samples = 0;
+      return;
+    }
+    run.turn = turn;
+    if (turn.echo || turn.source) {
+      if (!turn.echo && turn.source?.code !== target.code) {
+        for (const packet of run.held) {
+          if (now - packet.at <= FAST_SETTLE_MS) this.events.play(packet.pcm, turn.id);
+        }
+      }
+      run.held.length = run.samples = 0;
+    }
   }
 
   output(target: TranslatorLanguage, delta: string, now: number) {
@@ -466,40 +503,41 @@ export class FastTranslationTurns {
     turn.output += delta;
     turn.outputAt = now;
     stream.output = turn;
-    this.update(stream, turn, now);
+    this.update(turn, now);
+    if (stream.audio?.blocked && turn === input) stream.audio = undefined;
   }
 
   audio(target: TranslatorLanguage, pcm: Int16Array, now: number) {
-    if (!this.voice || !pcm.length) return;
+    if (!this.voice || !pcm.length || isAmbiguousPair(this.pair)) return;
     const stream = this.stream(target);
-    const turn = stream.output;
-    if (turn && now - turn.outputAt <= OUTPUT_RUN_GAP_MS) {
-      // After a speaker switch the old run can still be sending packets. Do not feed them to either
-      // speaker; only a firmly attributed new run can resume playback.
-      if (stream.input && stream.input !== turn) return;
-      if (this.canPlay(stream, turn, now)) this.events.play(pcm, turn.id);
-      else if (!turn.echo && now - turn.startedAt <= OUTPUT_FIRST_HOLD_MS) this.hold(turn, pcm, now);
-    } else if (stream.input && !stream.input.echo && !stream.input.output) this.hold(stream.input, pcm, now);
+    let run = stream.audio;
+    if (!run || now - run.at > OUTPUT_RUN_GAP_MS) {
+      const input = stream.nextAudioInput;
+      stream.nextAudioInput = undefined;
+      const turn = input && now - input.inputAt <= FAST_SETTLE_MS ? input : undefined;
+      stream.audio = run = { at: now, turn, blocked: false, held: [], samples: 0 };
+    }
+    run.at = now;
+    if (run.blocked || run.turn?.echo) return;
+    if (run.turn?.source) {
+      if (run.turn.source.code !== target.code) this.events.play(pcm, run.turn.id);
+      return;
+    }
+    while (run.held.length && (run.samples + pcm.length > MAX_HELD_SAMPLES || now - run.held[0].at > FAST_SETTLE_MS)) {
+      run.samples -= run.held.shift()!.pcm.length;
+    }
+    if (pcm.length <= MAX_HELD_SAMPLES) {
+      run.held.push({ pcm, at: now });
+      run.samples += pcm.length;
+    }
   }
 
-  private hold(turn: StreamingFastTurn, pcm: Int16Array, now: number) {
-    while (turn.held.length && (now - turn.held[0].at > OUTPUT_FIRST_HOLD_MS || turn.held.length >= 3)) turn.held.shift();
-    turn.held.push({ pcm, at: now });
-  }
-
-  private canPlay(stream: FastStream, turn: StreamingFastTurn, now: number) {
-    return this.voice && !turn.echo && stream.input === turn && stream.output === turn
-      && turn.source !== undefined && turn.source.code !== turn.target.code && !isAmbiguousPair(this.pair)
-      && letterCount(turn.input) >= 2 && Boolean(turn.output.trim()) && now - turn.outputAt <= OUTPUT_RUN_GAP_MS;
-  }
-
-  private update(stream: FastStream, turn: StreamingFastTurn, now: number) {
+  private update(turn: StreamingFastTurn, now: number) {
     const echo = isAmbiguousPair(this.pair)
       ? echoSimilarity(turn.output, turn.input) >= ECHO_SIMILARITY
       : isEcho(this.pair, turn.target, turn);
     if (echo && !turn.echo) {
       turn.echo = true;
-      turn.held.length = 0;
       this.events.cancel(turn.id);
       if (turn.shown) this.events.remove(turn.id);
     }
@@ -509,34 +547,38 @@ export class FastTranslationTurns {
       this.events.update({ id: turn.id, startedAt: turn.startedAt, target: turn.target, source: turn.source,
         input: turn.input, output: turn.output, final: turn.final });
     }
-    if (turn.held.length && this.canPlay(stream, turn, now)) {
-      for (const { pcm, at } of turn.held) if (now - at <= OUTPUT_FIRST_HOLD_MS) this.events.play(pcm, turn.id);
-      turn.held.length = 0;
-    }
   }
 
   tick(now: number) {
     for (const stream of this.streams.values()) {
+      if (stream.audio && now - stream.audio.at > OUTPUT_RUN_GAP_MS) stream.audio = undefined;
       if (stream.unattributed && now - stream.unattributed.outputAt > FAST_SETTLE_MS * 2) stream.unattributed = undefined;
       for (const turn of stream.turns) {
         if (now - Math.max(turn.inputAt, turn.outputAt) > FAST_SETTLE_MS) this.finalize(stream, turn, now);
-        else if (!turn.shown && turn.output.trim() && now - turn.startedAt >= OUTPUT_FIRST_HOLD_MS) this.update(stream, turn, now);
+        else if (!turn.shown && turn.output.trim() && now - turn.startedAt >= OUTPUT_FIRST_HOLD_MS) this.update(turn, now);
       }
     }
   }
 
   private finalize(stream: FastStream, turn: StreamingFastTurn, now: number) {
-    turn.held.length = 0;
+    if (stream.audio && !stream.audio.turn?.source && (stream.audio.turn === turn || (!stream.audio.turn && stream.output === turn))) {
+      stream.audio.blocked = true;
+      stream.audio.held.length = stream.audio.samples = 0;
+    }
     turn.final = true;
-    this.update(stream, turn, now);
+    this.update(turn, now);
     if (!turn.source && turn.shown && !turn.echo) stream.unattributed = turn;
+    if (stream.nextAudioInput === turn) stream.nextAudioInput = undefined;
     if (stream.input === turn) stream.input = undefined;
     if (stream.output === turn) stream.output = undefined;
     stream.turns.delete(turn);
   }
 
   stop(now: number) {
-    for (const stream of this.streams.values()) for (const turn of stream.turns) this.finalize(stream, turn, now);
+    for (const stream of this.streams.values()) {
+      stream.audio = undefined;
+      for (const turn of stream.turns) this.finalize(stream, turn, now);
+    }
   }
 
   clear() {
@@ -547,7 +589,7 @@ export class FastTranslationTurns {
   setVoice(on: boolean) {
     this.voice = on;
     if (!on) {
-      for (const stream of this.streams.values()) for (const turn of stream.turns) turn.held.length = 0;
+      for (const stream of this.streams.values()) stream.audio = undefined;
       this.events.cancel();
     }
   }

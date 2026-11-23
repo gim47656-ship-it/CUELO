@@ -31,6 +31,7 @@ export const OVERLAP_COPY: Record<string, string> = {
   ja: "一度に一人ずつ話してください。声が重なるとすべては通訳されず、認識された言葉だけが順に訳されます。",
   vi: "Vui lòng nói từng người một. Nếu nói chồng lên nhau, chỉ những từ nhận diện được mới được dịch theo thứ tự.",
   zh: "请一次一个人说话。声音重叠时无法全部翻译，仅按顺序翻译识别到的内容。",
+  "zh-tw": "請一次一個人說話。聲音重疊時無法全部翻譯，僅按順序翻譯辨識到的內容。",
   th: "กรุณาพูดทีละคน หากพูดซ้อนกันระบบจะแปลเฉพาะคำที่จับได้ตามลำดับเท่านั้น",
 };
 export const ENROLL_COPY: Record<string, string> = {
@@ -39,5 +40,6 @@ export const ENROLL_COPY: Record<string, string> = {
   ja: "声を登録するため、日本語で一文話してください。",
   vi: "Vui lòng nói một câu bằng tiếng Việt để đăng ký giọng nói.",
   zh: "请用中文说一句话以登记您的声音。",
+  "zh-tw": "請用中文說一句話以登記您的聲音。",
   th: "กรุณาพูดภาษาไทยหนึ่งประโยคเพื่อลงทะเบียนเสียงของคุณ",
 };

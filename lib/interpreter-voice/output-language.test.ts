@@ -7,8 +7,8 @@ const language = (code: string) => findTranslatorLanguage(code)!;
 test("the observed Japanese answer with a Korean closing is rejected for a Korean target", () => {
   expect(wrongVoiceLanguage("辛くしないでください。감사합니다.", language("ja"), language("ko"))).toBe(true);
 });
-test("all six target scripts accept translated speech and reject the Korean source", () => {
-  const values = { en: "Do not add peanuts.", vi: "Không cho đậu phộng.", ja: "ピーナッツを入れないでください。", th: "ไม่ใส่ถั่วลิสง", zh: "请不要放花生。" };
+test("all seven target scripts accept translated speech and reject the Korean source", () => {
+  const values = { en: "Do not add peanuts.", vi: "Không cho đậu phộng.", ja: "ピーナッツを入れないでください。", th: "ไม่ใส่ถั่วลิสง", zh: "请不要放花生。", "zh-tw": "請不要放花生。" };
   for (const [target, text] of Object.entries(values)) {
     expect(wrongVoiceLanguage(text, language("ko"), language(target))).toBe(false);
     expect(wrongVoiceLanguage("땅콩은 넣지 마세요.", language("ko"), language(target))).toBe(true);
@@ -19,6 +19,7 @@ test("numbers, names and genuinely shared short Latin or Han text remain ambiguo
   for (const text of ["1,200", "USD 10", "Uber"]) expect(wrongVoiceLanguage(text, language("ko"), language("ja"))).toBe(false);
   for (const text of ["Hilton", "New York", "USD 10"]) expect(wrongVoiceLanguage(text, language("en"), language("vi"))).toBe(false);
   expect(wrongVoiceLanguage("東京", language("zh"), language("ja"))).toBe(false);
+  expect(wrongVoiceLanguage("東京", language("zh-tw"), language("ja"))).toBe(false);
   expect(wrongVoiceLanguage("Xin cảm ơn.", language("vi"), language("en"))).toBe(true);
 });
 test("a wrong prefix stops the first attempt before completion and retries only once", async () => {

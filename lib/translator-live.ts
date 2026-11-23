@@ -115,6 +115,7 @@ const LANGUAGE_NOTES: Partial<Record<string, string>> = {
   th: "Thai: end polite sentences with the particle of the person speaking: \"ครับ\" for a man, \"ค่ะ\" for a woman's statements and \"คะ\" for her questions.",
   ja: "Japanese: use polite です/ます forms with strangers, and never call the other person \"あなた\".",
   zh: "Chinese: speak Mandarin and write Simplified Chinese characters. Address strangers with 您 in formal or service talk and 你 in casual talk. Spoken \"块\" and \"元\" are Chinese yuan (Korean \"위안\") and \"毛\" or \"角\" is a tenth of a yuan, so \"八十七块五\" is \"87.5위안\"; never turn yuan into dollars or won.",
+  "zh-tw": "Traditional Chinese (Taiwan): speak Taiwan Mandarin and write Traditional Chinese characters (繁體字) in Taiwan usage, NEVER Simplified characters (這、們、說、國、點、錢, not 这、们、说、国、点、钱), and use Taiwan vocabulary (計程車, 捷運, 便利商店, 行動電源) rather than mainland terms (出租车, 地铁, 便利店, 充电宝). Address strangers with 您 in formal or service talk and 你 in casual talk. Spoken \"塊\" and \"元\" are New Taiwan dollars (Korean \"대만 달러\"); never turn them into won, US dollars or yuan.",
   ko: "Korean: use polite 해요체 by default. Drop the other language's kinship pronouns and polite particles rather than translating them literally: \"anh\" or \"em\" said to the user is \"you\" (or left out), NEVER 오빠, 형 or 동생.",
 };
 
