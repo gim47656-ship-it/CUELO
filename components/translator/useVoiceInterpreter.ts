@@ -7,7 +7,7 @@ import type { TranslatorLanguage } from "@/lib/translator-languages";
 import type { InterpreterProfile } from "@/lib/translator-context";
 import type { LiveState } from "@/lib/live-types";
 
-export function useVoiceInterpreter(options: { onUtterance(item: VoiceUtterance, connection: string, startedAt: number, pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage }): void; playVoice: boolean; echoGuard: boolean }) {
+export function useVoiceInterpreter(options: { onUtterance(item: VoiceUtterance, connection: string, startedAt: number, pair: { mine: TranslatorLanguage; theirs: TranslatorLanguage }): void; playVoice: boolean; echoGuard: boolean; naturalVoice: boolean }) {
   const latest = useRef(options); latest.current = options;
   const engine = useRef<VoiceEngine | null>(null);
   const [state, setState] = useState<LiveState>("idle");
@@ -29,7 +29,7 @@ export function useVoiceInterpreter(options: { onUtterance(item: VoiceUtterance,
       onModels: (nextState, percent) => setModels({ state: nextState, percent }),
       onEnrollment: (side, seconds, failed) => setEnrollment({ side, seconds, failed }),
       onOverlap: () => { setOverlap(true); window.clearTimeout(overlapTimer.current); overlapTimer.current = window.setTimeout(() => setOverlap(false), 5000); },
-      playback: () => ({ enabled: latest.current.playVoice, echoGuard: latest.current.echoGuard }),
+      playback: () => ({ enabled: latest.current.playVoice, echoGuard: latest.current.echoGuard, natural: latest.current.naturalVoice }),
     });
     engine.current = next; void next.start();
   }, []);

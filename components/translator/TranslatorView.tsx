@@ -87,6 +87,8 @@ interface Settings {
   voice: boolean;
   /** 음성을 켰을 때 통역 음성이 나오는 동안 마이크를 막는다(`lib/interpreter-echo-gate.ts`). 폰 스피커로 쓰는 것이 보통이라 처음 값은 켬이다. */
   echoGuard: boolean;
+  /** 읽어 주기를 서버의 ElevenLabs 음성(`lib/elevenlabs-tts.ts`)으로 먼저 한다. 크레딧을 쓰니 처음 값은 끔이다. */
+  naturalVoice: boolean;
   /** 마이크 소리를 RNNoise로 거른 뒤 통역에 보낸다(`lib/interpreter-noise-suppressor.ts`). 목소리가 뭉개질 수 있어 처음 값은 끔이다. */
   noiseSuppression: boolean;
   /** 전용 번역 모델의 초안 자막을 먼저 띄운다(`lib/translator-draft.ts`). 켠 동안 추가 요금이 들 수 있어 처음 값은 끔이다. */
@@ -108,6 +110,7 @@ function readSettings(): Settings {
     size: DEFAULT_TEXT_SIZE,
     voice: false,
     echoGuard: true,
+    naturalVoice: false,
     noiseSuppression: false,
     fastDrafts: false,
     engine: "voice",
@@ -129,6 +132,7 @@ function readSettings(): Settings {
       size,
       voice: saved.voice === true,
       echoGuard: saved.echoGuard !== false,
+      naturalVoice: saved.naturalVoice === true,
       noiseSuppression: saved.noiseSuppression === true,
       fastDrafts: saved.fastDrafts === true,
       engine: readEngine(saved.engine),
@@ -413,7 +417,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const { tt, locale } = useTranslatorText();
   const [settings, setSettings] = useState(readSettings);
   const [typingOpen, setTypingOpen] = useState(false);
-  const { mine, theirs, profile, face, size, voice, echoGuard, noiseSuppression, fastDrafts, assistMeaning, engine } = settings;
+  const { mine, theirs, profile, face, size, voice, echoGuard, naturalVoice, noiseSuppression, fastDrafts, assistMeaning, engine } = settings;
   const voiceCopy = VOICE_COPY[locale === "ko" ? "ko" : "en"];
   const typed = useTypedInterpreter({ mine, theirs, profile, visible, open: typingOpen, assistSettings: { meaning: assistMeaning } });
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -451,12 +455,13 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
       size,
       voice,
       echoGuard,
+      naturalVoice,
       noiseSuppression,
       fastDrafts,
       engine,
       assistMeaning,
     }));
-  }, [assistMeaning, echoGuard, engine, face, fastDrafts, mine, noiseSuppression, profile, size, theirs, voice]);
+  }, [assistMeaning, echoGuard, engine, face, fastDrafts, mine, naturalVoice, noiseSuppression, profile, size, theirs, voice]);
 
   const reconcileDraftsRef = useRef<(segments: TranscriptSegment[]) => void>(() => {});
 
@@ -479,7 +484,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     transcriptRef.current = upsertVoiceUtterance(transcriptRef.current, item, connection, pair, startedAt);
     setSegments(transcriptRef.current.segments);
   }, []);
-  const voiceCall = useVoiceInterpreter({ onUtterance: handleVoiceUtterance, playVoice: voice, echoGuard });
+  const voiceCall = useVoiceInterpreter({ onUtterance: handleVoiceUtterance, playVoice: voice, echoGuard, naturalVoice });
   const handleFastTurn = useCallback((turn: FastTurn, connection: string, clockBase: number, pair: DraftPair) => {
     const side = !turn.source ? undefined : turn.source.code === pair.mine.code ? "me" : "them";
     transcriptRef.current = upsertVoiceUtterance(transcriptRef.current, {
@@ -653,7 +658,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
   const layoutKey = `${size}|${typingOpen}|${active}`;
 
   const faceOn = face;
-  const speech = useSpeech();
+  const speech = useSpeech(naturalVoice);
   const { recordFace } = useStallLog({ visible, phase, face: faceOn, segmentCount: segments.length });
 
   // 덮개마다 기록 칸을 하나씩 얹어 폰의 뒤로가기가 맨 위 덮개부터 닫게 한다.
@@ -1007,6 +1012,16 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                   <p id="translator-echo-guard-hint" className="translator-options-note">{tt("translator.echoGuardHint")}</p>
                 </>
               ) : null}
+              <label className="translator-toggle">
+                <input
+                  type="checkbox"
+                  checked={naturalVoice}
+                  aria-describedby="translator-natural-voice-hint"
+                  onChange={(event) => setSettings({ ...settings, naturalVoice: event.target.checked })}
+                />
+                <span>{tt("translator.naturalVoice")}</span>
+              </label>
+              <p id="translator-natural-voice-hint" className="translator-options-note">{tt(engine === "voice" ? "translator.naturalVoiceHint" : "translator.naturalVoiceButtonHint")}</p>
               {engine === "codex" ? <>
               <label className="translator-toggle">
                 <input

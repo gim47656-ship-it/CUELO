@@ -56,7 +56,7 @@ function environment(media?: Promise<MediaStream>, moduleFailure?: Error) {
   for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   const engine = new VoiceEngine({ mine: TRANSLATOR_LANGUAGES[0], theirs: TRANSLATOR_LANGUAGES[3], profile: {},
     onUpdate: (item) => updates.push(item.text), onState: (state, failure) => states.push({ state, failure }),
-    onModels: (state) => modelStates.push(state), onEnrollment: (side, seconds, failed) => enrollmentStates.push({ side, seconds, failed }), onOverlap() {}, playback: () => ({ enabled: true, echoGuard: true }),
+    onModels: (state) => modelStates.push(state), onEnrollment: (side, seconds, failed) => enrollmentStates.push({ side, seconds, failed }), onOverlap() {}, playback: () => ({ enabled: true, echoGuard: true, natural: false }),
   });
   return { engine, sockets, workers, nodes, states, updates, spoken, stream, modelStates, enrollmentStates, requests: () => requests, stops: () => stops, cancels: () => cancels,
     restore() { engine.dispose(); for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } },

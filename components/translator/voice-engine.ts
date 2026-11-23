@@ -14,7 +14,7 @@ export interface VoiceEngineOptions {
   onModels(state: "loading" | "ready" | "failed", percent: number): void;
   onEnrollment(side: SpeakerSide | null, seconds: number, failed?: boolean): void;
   onOverlap(): void;
-  playback(): { enabled: boolean; echoGuard: boolean };
+  playback(): { enabled: boolean; echoGuard: boolean; natural: boolean };
 }
 function pcmBase64(samples: Int16Array) {
   const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
@@ -93,7 +93,7 @@ export class VoiceEngine {
               clearTimeout(this.guardTimer);
               guarded = options.playback().echoGuard;
               this.node?.port.postMessage({ muted: guarded });
-            });
+            }, options.playback().natural);
           } catch { /* Keep the translation readable and allow the next utterance to play. */ }
           finally {
             if (guarded && !this.disposed) this.guardTimer = window.setTimeout(() => this.node?.port.postMessage({ muted: false }), 250);

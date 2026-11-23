@@ -13,7 +13,10 @@ export interface Speech {
   cancel: () => void;
 }
 
-export function useSpeech(): Speech {
+/** `natural`: read with the server's ElevenLabs voice first (falls back to the native voice). */
+export function useSpeech(natural = false): Speech {
+  const naturalRef = useRef(natural);
+  naturalRef.current = natural;
   const [supported, setSupported] = useState(false);
   const active = useRef<AbortController | null>(null);
   const context = useRef<AudioContext | null>(null);
@@ -49,7 +52,7 @@ export function useSpeech(): Speech {
       try { context.current ??= new AudioContext(); void context.current.resume().catch(() => {}); }
       catch { /* A working native voice does not require WebAudio. */ }
     }
-    void readAloud(text, language, controller.signal, () => context.current ??= new AudioContext()).catch(() => {
+    void readAloud(text, language, controller.signal, () => context.current ??= new AudioContext(), undefined, naturalRef.current).catch(() => {
       if (!controller.signal.aborted) setFailed(true);
     }).finally(() => { if (!controller.signal.aborted) setSpeaking(false); });
   }, []);

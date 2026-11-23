@@ -4,6 +4,7 @@ import { configuredLiveVoice } from "@/lib/live-session";
 import { getOmpRuntime } from "@/lib/omp-runtime";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { INTERPRETER_TEXT_OUTPUT_MAX_CHARS } from "@/lib/translator-context";
+import { readElevenLabsKey, synthesizeElevenLabs } from "@/lib/elevenlabs-tts";
 import { synthesize } from "./synthesize";
 
 const provider = "openai-codex";
@@ -14,6 +15,18 @@ export async function POST(req: Request) {
   const input = await req.json().catch(() => null);
   if (typeof input?.text !== "string" || !input.text.trim() || input.text.length > INTERPRETER_TEXT_OUTPUT_MAX_CHARS) return Response.json({ error: "bad-request" }, { status: 400 });
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(60000)]);
+  if (input.engine === "elevenlabs") {
+    const key = await readElevenLabsKey();
+    if (!key) return Response.json({ error: "elevenlabs-unavailable" }, { status: 503 });
+    try {
+      const upstream = await synthesizeElevenLabs(input.text, key, signal);
+      if (!upstream.ok || !upstream.body || !upstream.headers.get("content-type")?.startsWith("audio/")) {
+        await upstream.body?.cancel().catch(() => {});
+        return Response.json({ error: "speech-unavailable" }, { status: 502 });
+      }
+      return new Response(upstream.body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" } });
+    } catch { return Response.json({ error: "speech-unavailable" }, { status: 502 }); }
+  }
   try {
     const { authStorage } = await getOmpRuntime();
     const configured = await configuredLiveVoice(undefined);
