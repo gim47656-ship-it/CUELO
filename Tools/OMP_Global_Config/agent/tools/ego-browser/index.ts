@@ -82,19 +82,26 @@ export function buildPrelude(name: string, profile: EgoProfile, host: EgoHost = 
     // Linux 전역 page(ego index.js createPageFacade)에는 Windows TaskPage에 있는 click(selector, options)·fill(selector, value, options)이 없어
     // 11-15 집 PC에서 page.click 6세션, page.fill 4세션이 스크립트 중간에 깨졌다. 둘 다 locator(selector)의 같은 내부 함수로 잇는다.
     // 본문이 `const page = ...`를 선언하면 바인딩 `page`는 TDZ라 전역 객체로만 접근한다. 얼었거나 쓸 수 없는 page면 할당을 건너뛰어 예전과 같게 둔다.
+    // finish는 공간을 한 번만 닫고 다음 호출에는 첫 결과를 돌려준다. 본문 task.finish 뒤 finish:true의 finally가 다시 닫아
+    // 11-19~11-23 집과 사무실에서 `task space not found`로 호출이 실패했다.
+    // waitForTimeout(ms)도 Windows TaskPage에만 있어 11-23까지 사무실 3세션이 그 호출을 잃고 setTimeout으로 다시 불렀다. 같은 대기로 잇는다.
     return `const __egoSpace = await taskSpaces.useOrCreate(${quoted});
+let __egoFinished;
 const task = {
   id: __egoSpace.id,
   name: __egoSpace.name,
   page: () => page,
   handOff: () => taskSpaces.handOff(__egoSpace.id),
   takeOver: () => taskSpaces.takeOver(__egoSpace.id),
-  finish: (options = {}) => taskSpaces.complete(__egoSpace.id, { keep: Array.isArray(options.keep) ? options.keep.length > 0 : Boolean(options.keep) }),
+  finish: (options = {}) => (__egoFinished ??= taskSpaces.complete(__egoSpace.id, { keep: Array.isArray(options.keep) ? options.keep.length > 0 : Boolean(options.keep) })),
 };
 const __egoPage = globalThis.page;
 if (__egoPage && typeof __egoPage.locator === "function") {
   try { if (typeof __egoPage.click !== "function") __egoPage.click = (selector, options) => __egoPage.locator(selector).click(options); } catch {}
   try { if (typeof __egoPage.fill !== "function") __egoPage.fill = (selector, value, options) => __egoPage.locator(selector).fill(value, options); } catch {}
+}
+if (__egoPage) {
+  try { if (typeof __egoPage.waitForTimeout !== "function") __egoPage.waitForTimeout = (ms) => { const { promise, resolve } = Promise.withResolvers(); setTimeout(resolve, ms); return promise; }; } catch {}
 }
 `;
   }

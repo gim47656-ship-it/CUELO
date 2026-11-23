@@ -15,6 +15,10 @@ const { default: full } = await import(`${core}/prompts/system/computer-use.md`,
 const mac = "- macOS app that may be closed or windowless?";
 const win = "- Classic Win32 windows (WinForms, VB6, MFC)";
 assert.ok(full.includes(mac) && full.includes(win), "upstream guide still carries both host-only bullets");
+// 코어 19.1.0부터 xd:// 처리기가 없다. 패치된 안내는 help:// 주소만 가리켜야 한다(11-23까지 사무실 3세션이 xd://eval/computer에서 실패).
+assert.ok(full.includes("help://eval/computer") && !full.includes("xd://"), "computer guide links help://eval/computer");
+const { default: bashDoc } = await import(`${core}/prompts/tools/bash.md`, { with: { type: "text" } });
+assert.ok(bashDoc.includes("help://bash/builtins") && !bashDoc.includes("xd://"), "bash guide links help://bash/builtins");
 
 const native = computerUseGuidanceForHost(full, "linux", {});
 assert.ok(!native.includes(mac) && !native.includes(win), "native linux omits macOS-only and Windows-only bullets");

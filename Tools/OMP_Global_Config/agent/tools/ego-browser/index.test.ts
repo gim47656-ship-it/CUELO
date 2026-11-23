@@ -299,7 +299,32 @@ describe("native Linux host", () => {
     expect(open.log).toEqual(["use:n"]);
   });
 
-  test("the Linux global page gets the Windows page.click and page.fill shapes through its locator, without touching a script's own page", async () => {
+  test("a script that finishes its own space under finish:true closes it once instead of failing on the second close", async () => {
+    // 11-19~11-23 집과 사무실의 `task space not found`: 본문 task.finish 뒤 finish:true의 finally가 같은 공간을 다시 닫았다.
+    const sdk = linuxSdk();
+    const closed = new Set<unknown>();
+    const complete = async (id: unknown, options: { keep: boolean }) => {
+      if (closed.has(id)) throw new Error(`task space not found: ${id}`);
+      closed.add(id);
+      sdk.log.push(`complete:${id}:${options.keep}`);
+      return { done: true };
+    };
+    const run = (source: string) =>
+      new Function("taskSpaces", "page", "console", `return (async () => { ${source} })()`)(
+        { useOrCreate: async (name: string) => ({ id: 3, name }), complete },
+        sdk.page,
+        { log: (...parts: unknown[]) => sdk.log.push(parts.join(" ")) },
+      ).then(() => "ok", (error: Error) => error.message);
+    expect(await run(buildScript("n", "user", "console.log(JSON.stringify(await task.finish({ keep: [] })));", true, "linux"))).toBe("ok");
+    expect(sdk.log).toEqual(["complete:3:false", '{"done":true}']);
+    // 닫는 중에 두 번째로 부른 쪽도 같은 약속을 받아야 한다(async 감싸기면 서로 다른 약속이 된다).
+    closed.clear();
+    sdk.log.length = 0;
+    expect(await run(buildScript("n", "user", "const first = task.finish(); if (task.finish() !== first) throw new Error('different promises'); await first;", true, "linux"))).toBe("ok");
+    expect(sdk.log).toEqual(["complete:3:false"]);
+  });
+
+  test("the Linux global page gets the Windows page.click, page.fill and page.waitForTimeout shapes, without touching a script's own page", async () => {
     // ego index.js와 같은 실행 모양: helper는 globalThis에만 있고 본문은 "use strict" async 함수다.
     const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
     const calls: unknown[][] = [];
@@ -329,6 +354,12 @@ describe("native Linux host", () => {
     calls.length = 0;
     expect(await run({ locator }, "const page = { click: async () => 'mine' }; if (await page.click() !== 'mine') throw new Error('shadowed');")).toBe("ok");
     expect(await run(Object.freeze({ locator }), "if (page.click !== undefined) throw new Error('changed a frozen page');")).toBe("ok");
+    // 11-23까지 사무실 3세션: Windows처럼 page.waitForTimeout(ms)를 불렀다가 「is not a function」으로 그 호출을 잃었다.
+    const started = Date.now();
+    expect(await run({ locator }, "const waited = await page.waitForTimeout(20); if (waited !== undefined) throw new Error('returned a value');")).toBe("ok");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(15);
+    expect(await run({}, "await page.waitForTimeout(0);")).toBe("ok");
+    expect(await run({ locator, waitForTimeout: async () => 71 }, "if (await page.waitForTimeout(0) !== 71) throw new Error('replaced');")).toBe("ok");
   });
 
   test("verify is refused before launching anything; an unreachable ego browser points at browser.open", async () => {

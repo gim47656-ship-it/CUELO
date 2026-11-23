@@ -2943,7 +2943,7 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 	},
 	{
 		// 2026-11-11 사용자 요청: 작업 시작 입력 낭비를 줄인다. Main에도 Maker와 같은
-		// xd://eval/computer 안내를 쓰되 전문과 read-disabled inline 대체는 그대로 둔다.
+		// help://eval/computer 안내(18.x는 xd://eval/computer)를 쓰되 전문과 read-disabled inline 대체는 그대로 둔다.
 		file: "src/tools/computer.ts",
 		marker: "inlineDocumentation: false",
 		anchor: "\t\tdocumentation: computerPreludeAssets.documentation,\n\t\tinlineDocumentation: true,",
@@ -24300,10 +24300,13 @@ for (const { file, extra, anchor } of [
 		anchor: "Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately (phased/numbered/bulleted/N); NEVER omit or remember leftovers.",
 		patched: "Init before 3+ steps/task sets/new instructions; EVERY user item, NEVER omit.",
 	}, {
+		// 19.1.0부터 코어 문서 주제는 `help://<tool>/<topic>`이다(`xd://`는 없어져 MCP 자원으로 읽혀 실패한다).
+		// 옛 `xd://` 본문이 실린 설치본은 legacyPatched로 새 본문에 올라간다.
 		file: "src/prompts/tools/bash.md",
-		marker: "Builtins override PATH:",
+		marker: "Builtins override PATH: help://bash/builtins.",
 		anchor: 'In-process builtins, ahead of PATH: {{join builtins ", "}}.',
-		patched: '{{#if hasRead}}Builtins override PATH: xd://bash/builtins.{{else}}In-process builtins override PATH: {{join builtins ", "}}.{{/if}}',
+		legacyPatched: '{{#if hasRead}}Builtins override PATH: xd://bash/builtins.{{else}}In-process builtins override PATH: {{join builtins ", "}}.{{/if}}',
+		patched: '{{#if hasRead}}Builtins override PATH: help://bash/builtins.{{else}}In-process builtins override PATH: {{join builtins ", "}}.{{/if}}',
 	});
 	compactOwned("src/prompts/tools/todo.md", "Dependencies: `depend`", owner =>
 		owner.anchor + "depend(task,after): [] clears; ALL done, else waits (also missing/renamed/abandoned). Auto-start skips waits; reopening waits. Display NOT permission.\n");
@@ -24463,10 +24466,12 @@ for (const { file, extra, anchor } of [
 		anchor: "- NEVER fabricate output; unobserved claims = `[INFERENCE]`; report only verification you ran.\n- Solve the real ask: no extra scope (retries, validation, abstraction \"while you're at it\"), no symptom fixes (suppressed errors, special-cased input).\n- Clean cutover: migrate every caller; remove obsolete code, comments, aliases, re-exports; no shims.\n- Done = every requested behavior, end to end. NEVER stubs, placeholders, mocks, no-ops, fake fallbacks, `TODO`s, \"follow-up\"/\"MVP\" deferrals, narrowed tests, or silently narrowed scope; shrink only with explicit user approval.\n- Blocked only when tools can't reach the info; a failed check is not a blocker. Finish reachable work, then state what's missing and what you tried. NEVER ask for info tools can find.\n- Match the requested output format.",
 		patched: "- NEVER fabricate; unobserved `[INFERENCE]`; actual checks only.\n- Requested scope ONLY; no suppressed-error/special-case symptom fixes.\n- Migrate ALL callers; remove obsolete code/comments/aliases/re-exports; no shims.\n- Done = ALL behavior end-to-end. NEVER stubs/placeholders/mocks/no-ops/fake fallbacks/TODOs/deferrals/narrowed tests or scope; shrink ONLY with explicit approval.\n- Only unreachable info blocks, NOT failed checks. Finish reachable work; report missing/attempted. NEVER ask for tool-findable info.\n- Match requested format.",
 	}, {
+		// 사무실 3세션(가장 최근 11-23)이 이 안내의 `xd://eval/computer`를 읽다 「No MCP server has resource」로 실패하고 `help://eval/computer`로 넘어갔다.
 		file: "src/prompts/system/computer-use.md",
-		marker: "- API: xd://eval/computer;",
+		marker: "- API: help://eval/computer;",
 		anchor: "- Direct helpers from JavaScript or Python Eval: `computer.window(…)`, `win.screenshot()`, `win.ax()`, `el.press()`, …; `computer.run(fnOrCode, options)` for multi-step sequences. Use `computer.capabilities()` and `computer.close()` as needed.",
-		patched: "- API: xd://eval/computer; computer.run groups actions.",
+		legacyPatched: "- API: xd://eval/computer; computer.run groups actions.",
+		patched: "- API: help://eval/computer; computer.run groups actions.",
 	}, {
 		file: "src/prompts/system/computer-use.md",
 		marker: "- Host desktop: NEVER substitute",
