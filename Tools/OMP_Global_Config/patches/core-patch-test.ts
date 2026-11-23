@@ -3482,6 +3482,7 @@ console.log("\n[29] computer — 숫자 창 id는 그 창을 찾고, 문자열�
 console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale ref 는 지문이 한 요소만 가리킬 때만 재획득한다");
 {
 	const { ComputerWorkerCore } = await import(`${CORE}/tools/computer/worker.ts`);
+	const modernTakeover = "modelChoosesTakeover" in await import(`${CORE}/tools/computer/protocol.ts`);
 	const realConsole = globalThis.console;
 	type Item = { id: string; role: string; title?: string; parent?: string; x: number; y: number; automationId?: string; runtimeId?: string; value?: string; ignoresValue?: boolean };
 	const items = new Map<string, Item>();
@@ -3501,6 +3502,8 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	let readbackBroken = false;
 	let breakReadbackAfterAction = false;
 	let backgroundUnavailable = false;
+	let windowFocused = false;
+	const keyRoutes: Array<{ target: "window" | "element"; takeover: boolean }> = [];
 	const onSnapshot: Array<() => void> = [];
 	const acted: string[] = [];
 	const performed: string[] = [];
@@ -3525,14 +3528,14 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		return item;
 	};
 	const session = {
-		capabilities: {},
+		capabilities: { takeover: false },
 		escapeStops: 0,
 		screenState: { screenLocked: false, displayAsleep: false },
 		setRunDeadline: () => {},
 		holdDisplayUntilReleased: () => {},
 		releaseDisplayAwake: () => {},
 		listDisplays: async () => [],
-		listWindows: async () => [{ id: "w1", app: "Fixture", title: "Fixture", x: 0, y: 0, width: 400, height: 300, focused: false }],
+		listWindows: async () => [{ id: "w1", app: "Fixture", title: "Fixture", x: 0, y: 0, width: 400, height: 300, focused: windowFocused }],
 		close: async () => {},
 		cancel: () => {},
 		retire: () => {},
@@ -3586,8 +3589,12 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		},
 		axClick: async (ref: string) => void act(ref),
 		axFocus: async (ref: string) => void act(ref),
-		keyChord: async () => {
+		axKeyChord: async (_ref: string, _keys: string[], options: { takeover?: boolean }) => {
+			keyRoutes.push({ target: "element", takeover: options.takeover === true });
+		},
+		keyChord: async (_window: string, _keys: string[], options: { takeover?: boolean }) => {
 			if (backgroundUnavailable) throw new Error("BackgroundUnavailable: window keyboard input needs takeover");
+			keyRoutes.push({ target: "window", takeover: options.takeover === true });
 			acted.push("keys");
 		},
 	};
@@ -3608,7 +3615,7 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 		close: () => {},
 	};
 	new ComputerWorkerCore(transport, () => session);
-	const snapshot = { cwd: fixtureRoot, sessionId: "computer-action", captureMaxWidth: 100, captureMaxHeight: 100, display: "", readOnly: false };
+	const snapshot = { cwd: fixtureRoot, sessionId: "computer-action", captureMaxWidth: 100, captureMaxHeight: 100, display: "", readOnly: false, ...(modernTakeover ? { takeover: "fallback" } : {}) };
 	let runs = 0;
 	const keepAlive = setInterval(() => {}, 1000);
 	const run = (code: string, session: Record<string, unknown> = snapshot) =>
@@ -3718,8 +3725,29 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	const performedBefore = performed.length;
 	const performPlain = await run(`const [toggle] = await (await desktop.window("w1")).find({ role: "button", title: "Toggle" }); return await toggle.perform("press");`);
 	const performedNames = performed.slice(performedBefore);
-	const refuseSnapshot = { ...snapshot, backgroundFallback: "refuse" };
+	const setting = modernTakeover ? "takeover" : "backgroundFallback";
+	const refuseSnapshot = { ...snapshot, [setting]: "refuse" };
 	const performRefused = await run(`const [toggle] = await (await desktop.window("w1")).find({ role: "button", title: "Toggle" }); try { await toggle.perform("AXraise"); return { ok: true }; } ${caught}`, refuseSnapshot);
+	const modeRuns: Array<{ mode: string; focused: boolean; result: RunResult; routes: typeof keyRoutes }> = [];
+	let modelTakeover: RunResult | undefined;
+	let explicitInputCount = 0;
+	if (modernTakeover) {
+		session.capabilities.takeover = true;
+		for (const [mode, focused] of [["fallback", true], ["foreground", false], ["foreground", true], ["always", false]] as const) {
+			windowFocused = focused;
+			const before = keyRoutes.length;
+			const result = await run(`
+				const win = await desktop.window("w1");
+				const result = await win.press("ctrl+s");
+				const [toggle] = await win.find({ role: "button", title: "Toggle" });
+				await toggle.press("enter");
+				return result;`, { ...snapshot, takeover: mode });
+			modeRuns.push({ mode, focused, result, routes: keyRoutes.slice(before) });
+		}
+		const before = keyRoutes.length;
+		modelTakeover = await run(`try { await (await desktop.window("w1")).press("ctrl+s", { takeover: false }); return { ok: true }; } ${caught}`, { ...snapshot, takeover: "always" });
+		explicitInputCount = keyRoutes.length - before;
+	}
 	clearInterval(keepAlive);
 	globalThis.console = realConsole;
 
@@ -3752,7 +3780,23 @@ console.log("\n[30] computer — 행동은 표준 결과를 돌려주고, stale 
 	else check("18.18.2: native drag 의 { selection } 은 버려지지 않고 행동 결과에 실린다", dragSelected.ok && (dragSelected.payload?.returnValue as { selection?: { text?: string }; action?: string } | undefined)?.selection?.text === "hello" && (dragSelected.payload?.returnValue as { action?: string }).action === "drag", JSON.stringify(dragSelected));
 	check("호환: perform(action) 은 요소 ref 와 받은 이름 그대로 native 에 닿는다", performPlain.ok && performedNames.length === 1 && performedNames[0] === "press", JSON.stringify({ performPlain, performedNames }));
 	if (!modernNative) console.log("  (이 판은 AXraise 철자를 같은 raise 로 보지 않는다: 철자 검사는 세지 않는다)");
-	else check("18.18.2: refuse 설정은 raise 의 어떤 철자도 보내기 전에 막는다", (performRefused.payload?.returnValue as Refused | undefined)?.ok === false && /backgroundFallback/.test((performRefused.payload?.returnValue as Refused | undefined)?.message ?? "") && performed.length === performedBefore + 1, JSON.stringify(performRefused));
+	else check("18.18.2: refuse 설정은 raise 의 어떤 철자도 보내기 전에 막는다", (performRefused.payload?.returnValue as Refused | undefined)?.ok === false && (performRefused.payload?.returnValue as Refused | undefined)?.message.includes(`computer.${setting}`) === true && performed.length === performedBefore + 1, JSON.stringify(performRefused));
+	for (const { mode, focused, result, routes } of modeRuns) {
+		const windowTakeover = mode === "always" || (mode === "foreground" && focused);
+		const elementTakeover = mode === "always";
+		const action = result.payload?.returnValue as ActionOut | undefined;
+		check(`19.1.1: ${mode}, focused=${focused}, selects native window and element routes`,
+			result.ok && action?.status === "unverified" && action.evidence?.includes(windowTakeover ? "via the takeover route" : "via the background route") === true &&
+				routes.length === 2 && routes[0]?.target === "window" && routes[0].takeover === windowTakeover &&
+				routes[1]?.target === "element" && routes[1].takeover === elementTakeover,
+			JSON.stringify({ result, routes }));
+	}
+	if (modernTakeover) {
+		const rejected = modelTakeover?.payload?.returnValue as Refused | undefined;
+		check("19.1.1: always refuses a model-supplied takeover option before native input",
+			rejected?.ok === false && rejected.message.includes('computer.takeover setting is "always"') && explicitInputCount === 0,
+			JSON.stringify({ modelTakeover, explicitInputCount }));
+	}
 }
 
 console.log("\n[31] async-result 자동 전달 — schema 없는 실패도 그 실행의 실제 terminal status 를 싣는다");

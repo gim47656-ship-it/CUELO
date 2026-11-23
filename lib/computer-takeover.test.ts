@@ -3,15 +3,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent";
-import { cfgComputerBackgroundFallback } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgComputerTakeover } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { ComputerTakeoverError } from "./computer-takeover";
 import { AgentSessionWrapper } from "./rpc-manager";
 
 /**
  * `runtime` stands for the server's shared Settings (cwd = server cwd). Like lib/omp-runtime.ts
  * `getSettingsForCwd`, a session in another cwd gets its own `cloneForCwd` copy and a session in the
- * runtime cwd gets the shared instance itself. The persisted global config says `refuse`, as the live
- * profile does.
+ * runtime cwd gets the shared instance itself. The persisted global config says `refuse`, as an install
+ * that opted out of the profile's `takeover: fallback` does; only then is the per-session control offered.
  */
 let root = "";
 let agentDir = "";
@@ -28,7 +28,7 @@ function wrapperFor(settings: Settings, shared = false) {
   return wrapper;
 }
 
-const fallback = (settings: Settings) => cfgComputerBackgroundFallback.get(settings);
+const takeoverMode = (settings: Settings) => cfgComputerTakeover.get(settings);
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "cuelo-takeover-"));
@@ -39,15 +39,22 @@ beforeEach(async () => {
   mkdirSync(join(root, "a"));
   mkdirSync(join(root, "b"));
   configPath = join(agentDir, "config.yml");
-  writeFileSync(configPath, "computer:\n  backgroundFallback: refuse\n");
+  writeFileSync(configPath, "computer:\n  takeover: refuse\n");
   runtime = await Settings.loadReadOnly({ cwd: serverCwd, agentDir });
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 test("the configured refuse is what every session starts from", async () => {
-  expect(fallback(runtime)).toBe("refuse");
-  expect(fallback(await sessionSettings(join(root, "a")))).toBe("refuse");
+  expect(takeoverMode(runtime)).toBe("refuse");
+  expect(takeoverMode(await sessionSettings(join(root, "a")))).toBe("refuse");
+});
+
+test("a config.yml still carrying the old backgroundFallback: refuse key starts from refuse", async () => {
+  writeFileSync(configPath, "computer:\n  backgroundFallback: refuse\n");
+  const settings = await Settings.loadReadOnly({ cwd: join(root, "a"), agentDir });
+  expect(takeoverMode(settings)).toBe("refuse");
+  expect(wrapperFor(settings).computerTakeover()).toEqual({ enabled: false, configured: "refuse", available: true });
 });
 
 test("allowing one session switches only that session to takeover, and off restores refuse", async () => {
@@ -59,15 +66,15 @@ test("allowing one session switches only that session to takeover, and off resto
   expect(wrapper.computerTakeover()).toEqual({ enabled: false, configured: "refuse", available: true });
   expect(wrapper.setComputerTakeover(true)).toEqual({ enabled: true, configured: "refuse", available: false });
 
-  expect(fallback(mine)).toBe("takeover");
-  expect(fallback(sameCwd)).toBe("refuse");
-  expect(fallback(otherCwd)).toBe("refuse");
-  expect(fallback(runtime)).toBe("refuse");
+  expect(takeoverMode(mine)).toBe("fallback");
+  expect(takeoverMode(sameCwd)).toBe("refuse");
+  expect(takeoverMode(otherCwd)).toBe("refuse");
+  expect(takeoverMode(runtime)).toBe("refuse");
   // A session created while this one is on also starts from refuse.
-  expect(fallback(await sessionSettings(join(root, "a")))).toBe("refuse");
+  expect(takeoverMode(await sessionSettings(join(root, "a")))).toBe("refuse");
 
   expect(wrapper.setComputerTakeover(false)).toEqual({ enabled: false, configured: "refuse", available: true });
-  expect(fallback(mine)).toBe("refuse");
+  expect(takeoverMode(mine)).toBe("refuse");
 });
 
 test("on and off are idempotent and never touch config.yml", () => {
@@ -85,17 +92,17 @@ test("a session that shares the runtime Settings is refused and the shared insta
   const wrapper = wrapperFor(runtime, true);
   expect(wrapper.computerTakeover()).toEqual({ enabled: false, configured: "refuse", available: false });
   expect(() => wrapper.setComputerTakeover(true)).toThrow(ComputerTakeoverError);
-  expect(fallback(runtime)).toBe("refuse");
+  expect(takeoverMode(runtime)).toBe("refuse");
   expect(wrapper.setComputerTakeover(false).enabled).toBe(false);
 });
 
 test("when the configuration already allows takeover there is nothing to switch and the control is not offered", async () => {
-  writeFileSync(configPath, "computer:\n  backgroundFallback: takeover\n");
+  writeFileSync(configPath, "computer:\n  takeover: fallback\n");
   const settings = await Settings.loadReadOnly({ cwd: join(root, "a"), agentDir });
   const wrapper = wrapperFor(settings);
-  expect(wrapper.computerTakeover()).toEqual({ enabled: false, configured: "takeover", available: false });
+  expect(wrapper.computerTakeover()).toEqual({ enabled: false, configured: "fallback", available: false });
   expect(() => wrapper.setComputerTakeover(true)).toThrow("already allowed");
-  expect(fallback(settings)).toBe("takeover");
+  expect(takeoverMode(settings)).toBe("fallback");
 });
 
 test("destroying the wrapper returns its settings to refuse and a new wrapper for the same project starts from refuse", async () => {
@@ -104,12 +111,12 @@ test("destroying the wrapper returns its settings to refuse and a new wrapper fo
   const wrapper = wrapperFor(first);
   wrapper.setComputerTakeover(true);
   wrapper.destroy();
-  expect(fallback(first)).toBe("refuse");
+  expect(takeoverMode(first)).toBe("refuse");
 
   const restarted = await sessionSettings(cwd);
   const second = wrapperFor(restarted);
   expect(second.computerTakeover()?.enabled).toBe(false);
-  expect(fallback(restarted)).toBe("refuse");
+  expect(takeoverMode(restarted)).toBe("refuse");
   expect(() => wrapper.setComputerTakeover(true)).toThrow("not running");
 });
 

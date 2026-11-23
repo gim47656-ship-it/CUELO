@@ -36,13 +36,31 @@ for (const [label, platform, env] of [
 assert.equal(computerUseGuidanceForHost(full, "linux", { CUELO_WINDOWS_COMPUTER_HOST: "  " }), native, "blank helper variable counts as native linux");
 
 // The prelude renders the host-scoped guidance for the real process.
+let takeover = "fallback";
+const settings = createSettingsTestScope(key => key === "computer.enabled" ? true : key === "computer.takeover" ? takeover : undefined);
 const session = {
 	cwd: process.cwd(),
-	settings: createSettingsTestScope(key => (key === "computer.enabled" ? true : undefined)),
+	settings,
 	getEvalKernelOwnerId: () => "computer-guidance-host",
 };
 const prelude = createComputerPrelude(session, () => ({ close: async () => {} }));
-assert.equal(prelude.guidance, computerUseGuidanceForHost(full), "prelude guidance is the host-scoped guide");
+if (full.includes("{{#if ompTakeover}}")) {
+	assert.doesNotMatch(prelude.guidance, /omp decides from the user's setting|\{\{[#/]/, "fallback renders only the model-driven guidance");
+	assert.match(prelude.guidance, /fallback permits per-call takeover:true/);
+	assert.match(prelude.documentation, /Pass `takeover` only in the one case below/);
+	for (const mode of ["foreground", "always"]) {
+		takeover = mode;
+		settings.revision++;
+		assert.match(prelude.guidance, /omp decides from the user's setting/, `${mode}: the prelude picks up the changed setting`);
+		assert.match(prelude.documentation, /input helpers take no `takeover` option/, `${mode}: the guide leaves the route to omp`);
+		assert.doesNotMatch(prelude.documentation, /Pass `takeover` only in the one case below|\{\{[#/]/);
+	}
+	if (process.platform === "linux" && !process.env.WSL_DISTRO_NAME && !process.env.CUELO_WINDOWS_COMPUTER_HOST?.trim()) {
+		assert.ok(!prelude.guidance.includes(mac) && !prelude.guidance.includes(win), "rendered guidance still omits both host-only bullets on native Linux");
+	}
+} else {
+	assert.equal(prelude.guidance, computerUseGuidanceForHost(full), "prelude guidance is the host-scoped guide");
+}
 
 console.log(JSON.stringify({ chars: { full: full.length, nativeLinux: native.length }, bytes: { full: Buffer.byteLength(full), nativeLinux: Buffer.byteLength(native) } }));
 console.log("PASS: native linux guide drops host-only bullets; win32, darwin, WSL and Windows helper unchanged");

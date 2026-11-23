@@ -1,20 +1,23 @@
 import type { Settings } from "@oh-my-pi/pi-coding-agent";
-import { cfgComputerBackgroundFallback } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgComputerTakeover } from "@oh-my-pi/pi-coding-agent/tools/settings";
+
+/** The core's `computer.takeover` modes; `fallback` is the old `backgroundFallback: takeover`. */
+export type ComputerTakeoverMode = "fallback" | "foreground" | "always" | "refuse";
 
 /**
- * Session-scoped, user-granted `computer.backgroundFallback: takeover`.
+ * Session-scoped, user-granted `computer.takeover: fallback`.
  *
- * The user's configured value is `refuse` (takeover input once leaked into the CUELO input box), so a
- * session may only be switched to `takeover` for one AnyDesk-style job at a time, on that session's own
+ * When the user's configured value is `refuse` (takeover input once leaked into the CUELO input box), a
+ * session may only be switched to `fallback` for one AnyDesk-style job at a time, on that session's own
  * `Settings` instance and never in config.yml. The core builds its computer snapshot from
- * `cfgComputerBackgroundFallback.get(session.settings)` on every call, so the override takes effect on the
- * next call and `clearOverride` returns the session to the configured value.
+ * `cfgComputerTakeover.get(session.settings)` on every call, so the override takes effect on the next
+ * call and `clearOverride` returns the session to the configured value.
  */
 export interface ComputerTakeoverState {
   /** This session currently runs with takeover granted by the user. */
   enabled: boolean;
   /** The configured value without our override. */
-  configured: "refuse" | "takeover";
+  configured: ComputerTakeoverMode;
   /** The control may be offered: configured is `refuse` and this session owns its Settings. */
   available: boolean;
 }
@@ -38,7 +41,7 @@ const granted = new WeakSet<Settings>();
  */
 export function computerTakeoverState(settings: Settings, shared: boolean): ComputerTakeoverState {
   if (granted.has(settings)) return { enabled: true, configured: "refuse", available: false };
-  const configured = cfgComputerBackgroundFallback.get(settings);
+  const configured = cfgComputerTakeover.get(settings);
   return { enabled: false, configured, available: configured === "refuse" && !shared };
 }
 
@@ -54,10 +57,10 @@ export function setComputerTakeover(settings: Settings, shared: boolean, enabled
       "This session shares the server's settings, so takeover cannot be allowed for it alone. Open the project in its own folder.",
     );
   }
-  if (cfgComputerBackgroundFallback.get(settings) !== "refuse") {
+  if (cfgComputerTakeover.get(settings) !== "refuse") {
     throw new ComputerTakeoverError("already_takeover", "Takeover is already allowed by the configuration.");
   }
-  cfgComputerBackgroundFallback.override(settings, "takeover");
+  cfgComputerTakeover.override(settings, "fallback");
   granted.add(settings);
   return computerTakeoverState(settings, shared);
 }
@@ -65,5 +68,5 @@ export function setComputerTakeover(settings: Settings, shared: boolean, enabled
 /** Back to the configured value. Safe to call when nothing was granted. */
 export function revokeComputerTakeover(settings: Settings): void {
   if (!granted.delete(settings)) return;
-  cfgComputerBackgroundFallback.clearOverride(settings);
+  cfgComputerTakeover.clearOverride(settings);
 }

@@ -25794,6 +25794,149 @@ export type FromNativeHost =
 	addWindowMethod(sharedAx, stableAx, "return foundElements(await issueElements(this.#session, this.#getContext, nodes, this.id));");
 }
 
+// 19.1.1 (ADAPT): keep 19.1.0 rollback bodies; carry the upstream changes into the CUELO overlays.
+{
+	const one = (file, marker) => {
+		const entries = EDITS.filter(entry => entry.file === file && entry.marker.startsWith(marker));
+		if (entries.length !== 1) throw new Error(`19.1.1 candidate ${file}: ${entries.length}/1 entries for ${JSON.stringify(marker)}`);
+		return entries[0];
+	};
+	const alternate = (entry, discriminator, anchor, patched = anchor, marker = patched) => {
+		const exclude = candidate => [...[candidate.excludes ?? []].flat(), discriminator];
+		entry.excludes = exclude(entry);
+		// A discriminator is file-local; the relay entries share an older cross-file alternate.
+		entry.alternates = (entry.alternates ?? []).map(old =>
+			old.file === entry.file ? { ...old, excludes: exclude(old) } : old);
+		entry.alternates.push({ file: entry.file, requires: discriminator, anchor, patched, marker });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`19.1.1 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const prior = entry => entry.alternates?.at(-1) ?? entry;
+	const port = (entry, discriminator, edit, editPatched = edit) => {
+		const old = prior(entry);
+		alternate(entry, discriminator, edit(old.anchor), editPatched(old.patched), old.marker);
+	};
+
+	const computer = "src/tools/computer.ts";
+	const render = "function renderComputerPrompt(";
+	const inline = one(computer, "inlineDocumentation: false");
+	port(inline, render, text => swap(text, "\t\tdocumentation: computerPreludeAssets.documentation,",
+		"\t\tget documentation() {\n\t\t\treturn renderComputerPrompt(computerPreludeAssets.documentation, cfgComputerTakeover.get(session.settings));\n\t\t},"));
+	const guidance = one(computer, "guidance: computerUseGuidanceForHost(computerUsePrompt)");
+	const getter = "\t\tget guidance() {\n\t\t\treturn renderComputerPrompt(computerUsePrompt, cfgComputerTakeover.get(session.settings));\n\t\t},";
+	const scoped = swap(getter, "renderComputerPrompt(computerUsePrompt,", "renderComputerPrompt(computerUseGuidanceForHost(computerUsePrompt),");
+	alternate(guidance, render, getter, scoped, "renderComputerPrompt(computerUseGuidanceForHost(computerUsePrompt),");
+
+	const takeoverGuide = one("src/prompts/system/computer-use.md", "- After `BackgroundUnavailable`, follow the setting the error names");
+	const updatedGuide = swap(takeoverGuide.patched, "takeover permits per-call takeover:true", "fallback permits per-call takeover:true");
+	alternate(takeoverGuide, "{{#if ompTakeover}}", takeoverGuide.anchor, updatedGuide, updatedGuide);
+
+	const worker = "src/tools/computer/worker.ts";
+	const inputTarget = "type InputTarget = ";
+	const element = one(worker, "class RefBook {");
+	const oldElement = prior(element);
+	let elementAnchor = oldElement.anchor;
+	let elementPatched = oldElement.patched;
+	for (const [action, method, args] of [
+		["press", "axKeyChord", "keys, { ...native, ...fallback }"],
+		["type", "axType", "text, { ...native, ...fallback }"],
+		["click", "axClick", "{ ...native, ...fallback }"],
+		["doubleClick", "axClick", "{ ...native, ...fallback }"],
+	]) {
+		const helper = action === "type" ? "sendType" : "sendInput";
+		const label = action === "type" ? "" : `"${action}", `;
+		const labelLine = action === "type" ? "" : `\t\t\t${label.trimEnd()}\n`;
+		elementAnchor = swap(elementAnchor,
+			`\t\tawait ${helper}(this.#session, context, ${label}native.takeover, fallback =>\n\t\t\tthis.#session.${method}(this.ref, ${args}),\n\t\t);`,
+			`\t\tawait ${helper}(\n\t\t\tthis.#session,\n\t\t\tcontext,\n${labelLine}\t\t\tnative.takeover,\n\t\t\tfallback => this.#session.${method}(this.ref, ${args}),\n\t\t\t"element",\n\t\t);`);
+		elementPatched = swap(elementPatched,
+			`\t\t\t\t${helper}(this.#session, context, ${label}native.takeover, fallback =>\n\t\t\t\t\tthis.#session.${method}(ref, ${args}),\n\t\t\t\t),`,
+			`\t\t\t\t${helper}(\n\t\t\t\t\tthis.#session,\n\t\t\t\t\tcontext,\n${labelLine.replace("\t\t\t", "\t\t\t\t\t")}\t\t\t\t\tnative.takeover,\n\t\t\t\t\tfallback => this.#session.${method}(ref, ${args}),\n\t\t\t\t\t"element",\n\t\t\t\t),`);
+	}
+	elementPatched = swap(elementPatched,
+		'/** `tookOver`: the tool itself reran a refused background call in takeover (`computer.backgroundFallback`). */',
+		'/** `tookOver`: the tool chose takeover for the initial call or a refused background call. */');
+	alternate(element, inputTarget, elementAnchor, elementPatched, oldElement.marker);
+
+	const windowInput = one(worker, "return windowInputResult(action, this.id, options);");
+	const updateWindowTarget = text => text.replaceAll("\n\t\t\tthis.pid,\n", "\n\t\t\tthis.#target(),\n");
+	const updateMoveNote = text => swap(text, [
+		'\t\t\tconst refuse = context.snapshot.backgroundFallback === "refuse";',
+		"\t\t\tcontext.output.push({ type: \"text\", text: prompt.render(backgroundMoveNote, { refuse }).trim() });",
+	].join("\n"), [
+		"\t\t\tconst mode = context.snapshot.takeover;",
+		"\t\t\tconst note = prompt.render(backgroundMoveNote, {",
+		'\t\t\t\trefuse: mode === "refuse",',
+		'\t\t\t\tforeground: mode === "foreground",',
+		"\t\t\t});",
+		'\t\t\tcontext.output.push({ type: "text", text: note.trim() });',
+	].join("\n"));
+	const adaptWindow = text => updateMoveNote(updateWindowTarget(text));
+	port(windowInput, inputTarget, adaptWindow, text => swap(swap(swap(adaptWindow(text),
+		"\n\t\t\t\tthis.pid,\n", "\n\t\t\t\tthis.#target(),\n"),
+		"}, this.pid);", "}, this.#target());"),
+		"the setting decides a takeover rerun of a refused background route.",
+		"the setting decides when to take over."));
+
+	const session = "src/session/agent-session.ts";
+	const pending = "const releasePending = (flushIfIdle: boolean): void =>";
+	const nest = text => text.replace(/^\t/gm, "\t\t");
+	const begin = "\t\t\t\t\tconst inFlightEpoch = this.#beginInFlight();";
+	port(one(session, "const steerObservation = this.#beginIrcSteerContinuationObservation()"), pending,
+		text => swap(nest(text), begin, `${begin}\n\t\t\t\t\treleasePending(false);`));
+	const finish = one(session, "IRC steer continuation observer failed to finish");
+	const finishObservation = "\t\t\t\t\t\tvoid this.#finishTurnObservation(observation, outcome?.status === \"failed\" ? outcome.error : undefined);";
+	port(finish, pending, text => {
+		const closing = "\n\t\t\t\t}\n\t\t\t},\n\t\t\t{\n\t\t\t\tdelayMs: options.delayMs,";
+		return swap(nest(swap(text, closing, "")), finishObservation, [
+			"\t\t\t\t\t\tvoid this.#finishTurnObservation(",
+			"\t\t\t\t\t\t\tobservation,",
+			'\t\t\t\t\t\t\toutcome?.status === "failed" ? outcome.error : undefined,',
+			"\t\t\t\t\t\t);",
+		].join("\n"));
+	});
+
+	const phasesChanged = "\t\tthis.#host.phasesChanged?.();";
+	port(one("src/session/todo-tracker.ts", 'type: "todo_changed"'), phasesChanged,
+		text => swap(text, "\t\tthis.#midRunNudgeCount = 0;", `\t\tthis.#midRunNudgeCount = 0;\n${phasesChanged}`));
+	port(one("src/session/turn-recovery.ts", "${exactAccountLabel}의 지정 OAuth 계정이 계정 한도 또는 차단 상태입니다."),
+		"import { routedModelsAreEqual }", text => swap(text, "!modelsAreEqual(this.#host.model(),", "!routedModelsAreEqual(this.#host.model(),"));
+
+	const read = one("src/prompts/tools/read.md", "Ranges ONLY in path");
+	const raw = "- :raw verbatim without anchors/prefixes";
+	const rawSuffix = "; combine :2-4:raw or :raw:2-4 for exactly those lines.";
+	const rawLimit = "skips folding";
+	const limit = ` (${rawLimit} and the display-width limit)${rawSuffix}`;
+	alternate(read, rawLimit, swap(prior(read).anchor, raw + rawSuffix, [
+		"{{#if IS_HL_MODE}}",
+		raw + limit,
+		"{{else if HAS_LINE_NUMBERS}}",
+		"- :raw verbatim without line prefixes" + limit,
+		"{{else}}",
+		"- :raw verbatim" + limit,
+		"{{/if}}",
+	].join("\n")), swap(prior(read).patched, ":raw exact/unanchored (:N:raw single);",
+		`:raw exact/unanchored (:N:raw single), ${rawLimit}/display-width limit;`), read.marker);
+
+	// RETIRE on 19.1.1: upstream defines the native messaging protocol locally and all three consumers use it.
+	// Use the new surrounding context, not the import alone: 19.1.0 applied files already have the local imports.
+	const relayDir = "src/tools/browser/relay/";
+	const types = 'import type { FromNativeHost, ToNativeHost } from "./protocol";';
+	const hostName = 'import { NATIVE_HOST } from "./protocol";';
+	for (const [file, marker, upstream] of [
+		["protocol.ts", 'export const NATIVE_HOST = "sh.omp.browser";',
+			'/** Native messaging host name registered by `omp browser-relay install`. */\nexport const NATIVE_HOST = "sh.omp.browser";'],
+		["native-host-manifest.ts", hostName, `import { chromiumUserDataDirs } from "./chromium-profiles";\n${hostName}`],
+		["native-host.ts", types, `import { serveRelayLink } from "./native-relay";\n${types}`],
+		["native-relay.ts", types, 'import { type FromNativeHost, isOlderOmpVersion, type ToNativeHost } from "./protocol";'],
+	]) alternate(one(relayDir + file, marker), upstream, upstream);
+	// The bundled advisor session filter still excludes advisors unless explicitly included; only its minified name changed.
+	const advisor = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&o9e(c))continue';
+	alternate(one("dist/cli.js", 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), advisor, advisor);
+}
+
 /** All possible targets, including files reached only by a version alternate. */
 export function corePatchTargetFiles() {
 	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];
