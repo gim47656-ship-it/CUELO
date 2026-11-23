@@ -498,7 +498,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
     transcriptRef.current = { ...transcriptRef.current, segments: kept };
     setSegments(kept);
   }, []);
-  const fastCall = useFastInterpreter({ playVoice: voice, onTurn: handleFastTurn, onRemove: removeFastTurn });
+  const fastCall = useFastInterpreter({ playVoice: voice, echoGuard, onTurn: handleFastTurn, onRemove: removeFastTurn });
   const call = engine === "codex" ? codexCall : engine === "fast" ? fastCall : voiceCall;
   const active = call.state === "connecting" || call.state === "live" || call.state === "working";
 
@@ -998,7 +998,7 @@ export function TranslatorView({ visible = true, onBack }: TranslatorViewProps) 
                 <span>{tt("translator.voice")}</span>
               </label>
               {engine !== "fast" ? <p id="translator-voice-hint" className="translator-options-note">{tt("translator.voiceHint")}</p> : null}
-              {voice && engine !== "fast" ? (
+              {voice ? (
                 <>
                   <label className="translator-toggle">
                     <input

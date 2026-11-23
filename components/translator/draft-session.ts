@@ -47,6 +47,8 @@ export interface DraftSession {
   /** Schedule audible PCM, returning false when the capture/playback graph is not running. */
   play: (samples: Int16Array, turn: number) => boolean;
   cancelPlayback: (turn?: number) => void;
+  /** Fast only: close the microphone while the interpretation plays and briefly after (`capture.js` guard). */
+  setEchoGuard: (on: boolean) => void;
   close: () => void;
 }
 
@@ -154,6 +156,7 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
   let connectTimeout: number | undefined;
   let fastReady = false;
   let socketsReady = false;
+  let echoGuard = false;
 
   const cancelPlayback = (turn?: number) => {
     for (const [node, queued] of playing) {
@@ -310,6 +313,7 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
         playback = next.createGain();
         playback.connect(next.destination);
         playback.connect(node, 0, 1);
+        node.port.postMessage({ guard: echoGuard });
       } else {
         // Muted at the moment the guard mutes Codex's microphone, and opened at the moment it opens.
         node.port.postMessage({ muted: options.isBlocked() });
@@ -352,6 +356,10 @@ export function openDraftSession(options: DraftSessionOptions): DraftSession {
       return true;
     },
     cancelPlayback,
+    setEchoGuard: (on) => {
+      echoGuard = on;
+      if (options.fast) worklet?.port.postMessage({ guard: on });
+    },
     close: () => {
       end();
     },

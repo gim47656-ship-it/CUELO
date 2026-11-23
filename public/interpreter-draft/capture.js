@@ -4,12 +4,15 @@
 // them when the echo guard blocks the microphone, so the drafts hear exactly what Codex hears.
 // Browser AEC handles the room. Fast interpretation also supplies the exact output mix, so a
 // delayed copy that survives AEC can be subtracted without closing the mic during double-talk.
+// Where a loud or slow speaker defeats that, `{ guard }` closes the mic while the mix plays and
+// for `GUARD_HOLD` after it, like the Codex echo guard (`lib/interpreter-echo-gate.ts`).
 const REFERENCE_RING = 8192;
 const REFERENCE_MASK = REFERENCE_RING - 1;
 const MAX_DELAY = 5760; // 240 ms at 24 kHz
 const FIT_WINDOW = 512;
 const FIT_MASK = FIT_WINDOW - 1;
 const MATCH_SCORE = 0.81;
+const GUARD_HOLD = 12000; // 500 ms at 24 kHz, `ECHO_HOLD_MS`
 
 class PlaybackReference {
   constructor() {
@@ -82,8 +85,12 @@ class InterpreterDraftCapture extends AudioWorkletProcessor {
     this.chunk = new Int16Array(this.size);
     this.filled = 0;
     this.muted = false;
+    this.guard = false;
+    // Counted even while the guard is off, so turning it on mid-call keeps the hold after playback.
+    this.sincePlayback = GUARD_HOLD;
     this.port.onmessage = (event) => {
       if (event.data && typeof event.data.muted === "boolean") this.muted = event.data.muted;
+      if (event.data && typeof event.data.guard === "boolean") this.guard = event.data.guard;
     };
   }
 
@@ -91,8 +98,10 @@ class InterpreterDraftCapture extends AudioWorkletProcessor {
     const input = inputs[0] && inputs[0][0];
     // Without input (the track ended) the frame counts as silence, so the chunk clock keeps running.
     const frames = input ? input.length : 128;
-    const mic = this.muted ? null : input;
-    const start = this.playback?.push(mic, inputs[1]?.[0], frames) ?? 0;
+    const reference = inputs[1]?.[0];
+    this.sincePlayback = reference?.some((sample) => sample !== 0) ? 0 : this.sincePlayback + frames;
+    const mic = this.muted || (this.guard && this.sincePlayback < GUARD_HOLD) ? null : input;
+    const start = this.playback?.push(mic, reference, frames) ?? 0;
     const cancel = mic && this.playback?.gain ? this.playback : null;
     for (let i = 0; i < frames; i += 1) {
       const raw = mic?.[i] ?? 0;

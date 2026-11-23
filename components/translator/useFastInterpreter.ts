@@ -39,6 +39,8 @@ const hasFastAudio = () => typeof WebSocket === "function" && typeof AudioContex
 
 export function useFastInterpreter(options: {
   playVoice: boolean;
+  /** Close the mic while the interpretation plays, for a loud speaker the playback cancelling misses. */
+  echoGuard: boolean;
   onTurn(turn: FastTurn, connection: string, clockBase: number, pair: DraftPair): void;
   onRemove(utterance: string): void;
 }) {
@@ -101,6 +103,7 @@ export function useFastInterpreter(options: {
         onFailure: (reason) => { if (current.current === call) end(reason); },
       },
     });
+    call.session.setEchoGuard(latest.current.echoGuard);
     if (current.current !== call) return;
     void navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } }).then((stream) => {
       if (current.current !== call) {
@@ -119,6 +122,7 @@ export function useFastInterpreter(options: {
   }, [end]);
 
   useLayoutEffect(() => { current.current?.turns.setVoice(options.playVoice); }, [options.playVoice]);
+  useLayoutEffect(() => { current.current?.session?.setEchoGuard(options.echoGuard); }, [options.echoGuard]);
   const stop = useCallback(() => end(), [end]);
   const clear = useCallback(() => current.current?.turns.clear(), []);
   return { state, failure, detail: null, supported, start, stop, clear, reconnecting: false, ended: null, skipped: false, prepare: undefined };
