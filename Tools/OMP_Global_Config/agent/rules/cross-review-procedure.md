@@ -2,7 +2,7 @@
 description: Before any cross_review call.
 ---
 
-계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 high-risk 코드의 review 체인을 돌린 뒤 reviewId 체인과 finding별 제안 status와 근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 필수 reviewer가 acceptance 기준으로 적대적으로 읽고 reviewId, reviewer 모델, round, triggers, findings를 돌려준다. Anthropic과 DeepSeek 저자는 OpenAI 슬롯 `crossReviewOpenAI`, OpenAI와 그 밖의 저자는 Anthropic 슬롯 `crossReviewAnthropic`으로 보낸다(2026-11-08 사용자 결정으로 DeepSeek 작성분도 GPT가 검토한다).
+계열 교차검증. review는 Main과 Maker가 부를 수 있고 resolve는 Main 전용이다(Maker는 자기 코드의 필수 검토를 돌린 뒤 reviewId 체인과 finding별 제안 status와 근거를 보고하고, Main이 확인해 resolve한다). action=review: files(cwd 기준 상대 경로)의 변경을 필수 reviewer가 acceptance 기준으로 적대적으로 읽고 reviewId, reviewer 모델, round, triggers, findings를 돌려준다. Anthropic과 DeepSeek 저자는 OpenAI 슬롯 `crossReviewOpenAI`, OpenAI와 그 밖의 저자는 Anthropic 슬롯 `crossReviewAnthropic`으로 보낸다(2026-11-08 사용자 결정으로 DeepSeek 작성분도 GPT가 검토한다).
 
 2026-11-21 사용자 결정(「보조검토자는 아이에 자리를 폐지해야할것」): 새 라운드는 필수 자리만 호출한다. 옛 원장의 R*-ADV-*와 R*-GGL-* 지적은 그대로 읽고 resolve에서 모두 닫는다. 옛 라운드에 늦게 붙은 별도 원장 지적은 `earlierAdvisoryFindings`에도 표시한다.
 
@@ -12,11 +12,13 @@ reviewer는 모든 finding에 재현 방법 `probe{steps, expectIfReal, expectIf
 
 Main이나 Maker는 재현 방법을 실행한 뒤 `previousReviewId`와 `probeResults[{findingId, command, exitCode, output}]`로 체인당 한 번 판단을 받을 수 있다. probe는 검토 파일과 묶인 입력이 그대로일 때만 실행 결과를 심사한다. 새 검토 파일이나 inputs/references를 받지 않고 검토한 코드의 지문도 바꾸지 않는다. reviewer는 결과마다 `confirmed|withdrawn|unresolved`를 돌려준다(판단이 빠지면 `unresolved`). 체인에 없는 id, 중복 결과, 두 번째 probe, 개인키 블록이 든 결과는 거절한다. 출력은 건당 8KB(넘으면 앞뒤만 남김), 합계 40KB(넘으면 거절)로 제한하고 비밀 값을 가린다. verdict는 자문이며 finding을 자동으로 닫지 않는다. probe를 쓰지 못해도 직접 실행한 명령과 출력으로 1라운드 지적을 반박하거나 수정할 수 있다.
 
-2026-11-22 사용자 결정(a1): 「제안대로. 위험 표시(바뀐 줄의 gate marker, 또는 harness-policy 위험 범주에 맞는 highRisk 선언)가 있는 코드만 1라운드를 돌리고, 1/10 결정론 표본 검토는 없앱니다. 1라운드에 blocker가 있을 때만 2라운드를 돌리고, 그 뒤 지적은 limit로 닫아요. blocker가 없으면 1라운드 지적을 고친 뒤 새 라운드 없이 resolve할 수 있습니다(수정 근거를 기록).」
+신고 증상 재현(2026-11-23 사용자 결정: 「과제에 신고된 증상이 있으면 검수자가 그 증상을 직접 재현해 보는 단계를 넣는다」): 저자는 구체적으로 신고된 증상을 수정 전후에 같은 조건으로 재현하고, 사용한 명령과 출력을 `acceptance` 또는 통과에 묶이는 `inputs`에 넣는다. 첫 라운드의 reviewer는 출력이 수정 전에는 바로 그 증상이 나왔고 수정 후에는 사라졌음을 보여 주는지 확인한다. 증거가 없거나 실행한 시나리오가 다르면 `major` finding으로 증명되지 않은 점을 적고, 신고 증상을 정확히 재현하는 `probe`를 직접 설계한다. 저자가 그 방법을 그대로 실행해 `previousReviewId`와 `probeResults`로 제출하면 reviewer가 `confirmed|withdrawn|unresolved` 중 하나로 판정한다. 저자가 먼저 제출한 수정 전후 로그와 reviewer가 설계한 재현 방법 및 그 실행 결과는 별개 근거다.
+
+2026-11-23 사용자 결정(「두개의장점을 합쳐야할거아니야」): 「위험 표시가 있거나, 변경이 일정 크기 이상(여러 파일 또는 수십 줄)이면 검수」. 2026-11-22 결정(a1)의 발동 범위를 넓힌다. 1/10 결정론 표본 검토는 되살리지 않고 코드 라운드 상한은 유지한다.
 
 코드 검토는 기본 한 번이다. 첫 코드 검토에서 blocker가 나온 체인만 두 번째 코드 검토를 할 수 있다. probe는 코드 검토 횟수에 넣지 않으므로 실행 순서에 따라 결과의 `round` 번호는 다를 수 있다. 첫 검토 뒤 새로 나온 지적은 심각도와 probe verdict에 관계없이 `roundCap.limitCandidates`로 안내하며, `resolve`에서 지적 id와 사유를 근거로 적어 `limit`로 닫는다. 자발적으로 고쳤다면 그 사실과 검사 근거도 적는다. 첫 검토의 지적에는 여전히 각각 `fixed|refuted|limit`와 근거가 필요하다.
 
-Main과 Maker는 바뀐 줄의 marker나 high-risk 선언이 있는 코드만 검토 대상으로 넘긴다. 그런 코드는 커밋이나 게시 여부와 관계없이 완료를 보고하기 전에 1라운드를 돌린다. 원격이 없거나 커밋 요청이 없다는 이유로 검토를 미루지 않는다(2026-11-22 약한 모델 `shop-service-b`에서 Haiku와 Sonnet이 조기 안내를 받고도 커밋하지 않는다며 건너뜀).
+Main과 Maker는 변경 줄의 marker, 해당 위험 범주의 high-risk 선언, 변경 크기 기준 중 하나에 해당하면 완료를 보고하기 전에 1라운드를 돌린다. 초기 크기 기준은 게이트 대상 코드 파일 3개 이상 또는 게이트 대상 코드에서 추가와 삭제를 합쳐 50줄 이상이다. 크기 기준을 넘으면 그 변경의 게이트 대상 코드 파일 전체를 검토한다. 원격이 없거나 커밋 요청이 없다는 이유로 검토를 미루지 않는다(2026-11-22 약한 모델 `shop-service-b`에서 Haiku와 Sonnet이 조기 안내를 받고도 커밋하지 않는다며 건너뜀).
 
 명세가 다루지 않는 보안 기본값(다른 사용자의 데이터 접근 제어, 음수나 범위 밖 입력 검증, 로그와 쿼리 인젝션)에 대한 지적은 「명세가 요구하지 않는다」만으로 `refuted`나 `limit`로 닫지 않는다. 명세가 그 동작을 명시적으로 허용한 문구를 인용하거나, 고치거나, 사용자 결정으로 남긴다(2026-11-22 같은 비교에서 Terra와 DeepSeek 작성자가 접근 제어와 음수 수량 지적을 명세 침묵으로 반박함).
 
@@ -26,12 +28,13 @@ references(선택, 최대 10개)는 심사 대상이 아닌 맥락용 기존 또
 
 `action=resolve`는 Main 전용이며 다른 세션이 시작한 체인도 닫을 수 있다. 체인의 모든 finding에 `{id, status, evidence}`가 있어야 하며, 통과 지문은 resolve 시점의 git blob으로 기록한다. 마지막으로 코드 검토를 받은 내용과 다른 파일은 `unreviewedChanges`로 알린다. 문서, 테스트, 생성물만 다르면 안내에 그친다. 코드가 바뀌었고 두 번째 코드 검토를 할 수 있으면 `previousReviewId`로 delta를 검토한 뒤 resolve한다. 첫 검토에 blocker가 없거나 두 번째 코드 검토를 마친 경우에는 `unreviewedAcknowledgements[{path, evidence}]`에 달라진 코드 파일마다 그 내용에 실행한 검사를 적는다. 이 근거가 없으면 `unreviewedBlocking`에 남고 통과하지 않는다. 안전 필터 때문에 다음 검토에서도 보일 수 없는 파일은 기존 예외를 적용한다. 받아들인 확인 응답은 경로, blob, 근거를 남긴다.
 
-`git_finalize`는 `crossReviewHighRisk`로 선언한 파일과 바뀐 줄에 trigger marker가 있는 코드 파일에만 통과 기록을 요구한다. 경로 이름만으로는 marker가 되지 않는다. `crossReviewHighRisk`, `cross_review`의 `highRisk`와 브리프의 high-risk 선언은 `harness-policy.json`의 `routing.high-risk.materialRiskDefinition`에 해당할 때만 쓴다. HEAD나 통과한 내용과 비교해 TypeScript 파서로 주석만 바뀐 것이 증명된 TS/JS 수정이나 버전 문자열만 바뀐 수정, git이 바이너리로 보는 미디어, 문서, 글꼴 자산은 대상이 아니다(통과 뒤 그런 수정만 더한 파일은 그 통과가 그대로 덮는다). reviewer의 PASS 표현은 근거가 아니다.
+`git_finalize`는 `crossReviewHighRisk`로 선언했거나 바뀐 줄에 trigger marker가 있는 코드 파일의 통과 기록을 요구한다. 이번 커밋의 `files` 목록 안에서 크기 기준에 이르면 그 목록의 변경된 게이트 대상 코드 파일 전부에 통과 기록을 요구한다. 경로 이름만으로는 marker가 되지 않는다. `crossReviewHighRisk`, `cross_review`의 `highRisk`와 브리프의 high-risk 선언은 `harness-policy.json`의 `routing.high-risk.materialRiskDefinition`에 해당할 때만 쓴다. 테스트, 문서, 생성물, git이 바이너리로 보는 미디어나 오피스 파일 및 글꼴, TypeScript 파서로 주석만 바뀐 것이 증명된 TS/JS 수정, 버전 문자열만 바뀐 수정은 게이트와 크기 집계에서 빠진다. 통과한 내용에서 주석이나 버전 문자열만 바뀌었다면 기존 통과가 그대로 덮는다. reviewer의 PASS 표현은 근거가 아니다.
 
 2026-10-29 문서 처리: files에 섞인 문서와 작업 기록 데이터는 코드와 함께 심사할 때 references로 옮기고 게이트 통과가 덮지 않는다.
 결과의 docsMovedToReferences와 nextStep이 이를 알리며 reviewer는 문서에 지적을 내지 않는다. 문서뿐인 요청은 그대로 심사하고 기존 inputs/references는 유지한다.
 참조 한도를 넘으면 skippedReferences로 알린다. marker의 블록 주석 처리와 early notice의 세부는 `extensions/lib/cross-review.ts`가 정본이다.
-early notice는 gate가 아니며 통과가 현재 blob을 이미 덮으면 오지 않는다. 파일이 정착되면 관련 코드를 함께 검토한다.
+조기 알림과 턴 끝 안내는 게이트가 아니다. 변경 크기는 편집한 저장소의 미커밋 변경 전체를 기준으로 보므로, `git_finalize`의 `files` 목록보다 넓을 수 있다. 조기 알림은 아직 통과가 덮지 않는 파일당 세션에서 한 번 보낸다. 턴 끝에는 아직 통과가 없는 파일을 안내한다. 파일이 정착되면 관련 코드를 함께 검토한다.
+`bash`, `eval`, 적용된 `ast_edit`처럼 편집 경로를 직접 받지 않는 도구의 성공 결과도 저장소 전체를 크기 기준으로 확인한다. 짧은 간격으로 끝난 호출은 조회를 합친다. 도구 결과는 조회를 최대 1초 기다린다. 조회가 더 오래 걸리면 나중에 조기 알림과 미통과 목록을 갱신하며, 그전에 턴이 끝났다면 해당 턴 안내에는 마지막 변경이 빠질 수 있다.
 
 믿기 어려운 작은 diff(되돌리기 어려운 상태 변경, 여러 호출자가 기대는 계약, 실행 순서·시점에 기대는 수정)는 저자가 cross_review 전에 `blast-radius` 스킬로 사전 점검한다: 그 변경이 안전한 근거가 되는 사실 하나를 찾아 실제 코드에 돌리는 스크립트로 증명하고, 증명이 멈춘 단계와 남은 위험·확인한 항목을 작업 기록에 남긴다. 그 스크립트와 출력은 acceptance·resolve 근거로 쓸 수 있지만 review·resolve를 대신하지 않는다.
 
@@ -39,7 +42,7 @@ early notice는 gate가 아니며 통과가 현재 blob을 이미 덮으면 오�
 
 ## Maker의 보고 전 검토
 
-Maker는 지시서의 high-risk 선언, `# Acceptance`의 교차검토 요구, 바뀐 줄의 gate marker 중 하나에 해당하는 코드만 맡은 검사를 마친 뒤 보고 전에 review한다. 교차검토 요구를 브리프에 적을 때도 위 위험 범위를 따른다.
+Maker는 지시서의 high-risk 선언, 그 위험에 대한 `# Acceptance`의 교차검토 요구, 바뀐 줄의 gate marker, 변경 크기 기준 중 하나에 해당하면 맡은 검사를 마친 뒤 보고 전에 review한다.
 Main은 Maker 소유 코드를 직접 review하지 않고 지적과 다음 라운드를 owner에게 전달한 뒤 증거를 확인해 resolve한다.
 owner를 다시 깨울 수 없을 때만 Main이 대신한다. authors는 Maker 자신의 selector이고 Main-only resolve는 호출하지 않는다.
 Maker는 finding별 제안 status와 근거, reviewId 체인을 보고한다. 마지막 코드 검토 뒤 코드를 바꿨다면 두 번째 코드 검토가 허용되는 경우에만 delta로 다시 보인다. 새 라운드를 열 수 없으면 바뀐 파일마다 실행한 검사를 Main에 넘겨 `unreviewedAcknowledgements`에 남긴다.

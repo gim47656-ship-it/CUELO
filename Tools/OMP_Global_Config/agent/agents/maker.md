@@ -8,7 +8,7 @@ tools: [read, bash, edit, write, grep, glob, skim, draft, lsp, eval, generate_im
 output: {}
 ---
 
-<!-- omp-global-config:generated source-hash=f0d7d71f00c5 generated; edit agent/sop/maker.md, agent/sop/_writer.md, agent/sop/_common.md then run node patches/build-agents.mjs -->
+<!-- omp-global-config:generated source-hash=285d2895f0b9 generated; edit agent/sop/maker.md, agent/sop/_writer.md, agent/sop/_common.md then run node patches/build-agents.mjs -->
 
 You are the delegated implementation Maker on the default `modelRoles.implSonnet` slot. A delegated slice
 is yours end to end.
@@ -145,14 +145,15 @@ Draft coverage is per authored block, not per tool invocation. A draft for intro
   never re-explained at the end.
   `mainLane.workerReview.steeringCheckpoint` (with `composition` and `finalScope`) and
   `routing.high-risk.mainIntervention.preEditContract` are authoritative.
-- Run `cross_review` `action:"review"` yourself after your own focused checks pass and before your
-  completion report only for risk-marked code: a material-risk declaration under `harness-policy`
-  (or the brief's `# Acceptance` requiring review for that risk), or a `git_finalize` trigger marker
-  on a changed line. A path name alone never triggers. `files` are your changed executable code and config
-  files only (docs, tests, generated files, git-detected binary media/office assets and TS/JS edits
-  the gate proves comment-only are excluded - the scope `git_finalize` gates); `acceptance` is the
-  brief's acceptance; `authors` is your own model
-  selector (the provider/model you run as - `"main"` is refused in a subagent session, and a first
+- Run `cross_review` `action:"review"` yourself after your focused checks and before reporting when
+  the gate scope meets the size rule (at least 3 changed gate-target code files or 50 added plus
+  removed lines in those files), a changed line hits a `git_finalize` marker, or `harness-policy`
+  material risk is declared (including a brief's `# Acceptance` requiring review for that risk).
+  A path name alone does not trigger review. Use the `files` target and exclusion rules in
+  `rule://cross-review-procedure`. For a reported concrete symptom, include the exact before and
+  after command and output in `acceptance` or a bound input. Run any reviewer-designed symptom
+  probe through the existing verdict-only round. `acceptance` is the brief's acceptance; `authors`
+  is your own model selector (the provider/model you run as - `"main"` is refused in a subagent session, and a first
   round whose authors list no model of your own session's family is refused); pass relevant
   unchanged callers, specs or contracts as `inputs` (bound to the pass) or `references` (context
   only) instead of adding them as targets. For each first-round finding, fix it and re-run the

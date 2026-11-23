@@ -437,7 +437,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     if (regeneratedManifest && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, regeneratedManifest.file))) {
       requested = [...requested, regeneratedManifest.file];
     }
-    // 계열 교차검증 게이트는 바뀐 줄에 marker가 있거나 crossReviewHighRisk로 선언한 코드만 통과 기록을 요구한다.
+    // 계열 교차검증 게이트는 바뀐 줄에 marker가 있거나, crossReviewHighRisk로 선언했거나, 커밋의 게이트 대상 코드가
+    // 크기 기준(3파일 또는 50줄 이상, 2026-11-23 사용자 결정)을 넘는 코드에 통과 기록을 요구한다(판정 정본: lib/cross-review.ts).
     // 기억 transport(memory.file)는 생성물이라 요청 파일에만 적용한다.
     let gateBlobs: Record<string, string> | undefined;
     try {

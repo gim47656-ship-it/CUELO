@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -27,7 +27,7 @@ import { beforeModelAbort, operationalFailure } from "./model-routes";
 /**
  * 계열 교차검증. Anthropic·DeepSeek 모델이 쓴 코드는 OpenAI reviewer(Astra)가, OpenAI 모델이 쓴 코드는 Anthropic reviewer(Opus)가,
  * 그 밖의 저자는 Anthropic reviewer가 보고, 지적이 모두 닫혀야 git_finalize가 커밋한다
- * (2026-11-08 사용자 결정: DeepSeek 작성분도 GPT 검토; 2026-11-22 a1: marker 또는 high-risk 선언).
+ * (발동 조건은 cross-review-procedure.md를 따른다).
  *
  * 이 파일은 순수 논리(계열 매핑, marker, 체인/통과 판정, 게이트 판정)와 git 수집 helper를 담는다. 모델 호출과
  * 소스 및 규칙 연결은 cross-review.ts와 cross-review-procedure.md를 따른다.
@@ -65,6 +65,10 @@ export const DELETED_BLOB = "deleted";
 const RAW_EXCERPT_CHARS = 20_000;
 /** 도구 결과로 Main에 돌려주는 발췌 길이. 더 필요하면 rawFile을 읽는다(긴 답을 매번 컨텍스트에 싣지 않는다). */
 const RESULT_EXCERPT_CHARS = 2_000;
+
+// 2026-11-23 사용자 결정: 「여러 파일 또는 수십 줄」. 초기 기준은 3파일 또는 50줄이다.
+const REVIEW_SIZE_FILES = 3;
+const REVIEW_SIZE_LINES = 50;
 
 // ── 계열 매핑 ────────────────────────────────────────────────────────────────
 
@@ -928,6 +932,8 @@ export interface ChangedFile {
   versionOnly?: true;
   /** marker 판정에 쓰는 바뀐 줄. 새 파일은 전체, 수정은 추가·삭제 줄, 파일 삭제는 HEAD 내용이 삭제 줄이다. */
   changedLines: ChangedLine[];
+  /** Advisory inventory can count a file without materializing its marker lines. */
+  changedLineCount?: number;
   /** 검토 본문: 수정·삭제는 통합 diff, 새 파일은 줄 번호를 붙인 전체 내용. */
   text: string;
   /** blob·본문·2회차 사본이 모두 이 한 번 읽은 바이트에서 나온다. 삭제는 null. */
@@ -941,10 +947,15 @@ function numbered(content: string): string {
 /**
  * 지정 파일 중 HEAD 대비 바뀐 것을 모은다. 안 바뀐 파일은 unchanged로 따로 돌려준다(이미 커밋된 파일을 다시 보내는
  * resume-push 경로가 게이트에 걸리지 않게 하는 근거다). 경로는 literal로 다룬다.
+ * 조기 알림의 저장소 전체 조회는 status와 numstat를 묶어서 읽고, marker를 볼 파일에서만 줄 내용을 남긴다.
  */
-export async function collectChanges(exec: Exec, git: string, root: string, paths: string[]): Promise<{ changed: ChangedFile[]; unchanged: string[] }> {
-  const run = (args: string[]) => exec(git, ["--literal-pathspecs", ...args], { cwd: root });
-  const status = await run(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", ...paths]);
+export function collectChanges(exec: Exec, git: string, root: string, paths: string[]): Promise<{ changed: ChangedFile[]; unchanged: string[] }> {
+  return collectWorkingChanges(exec, git, root, paths);
+}
+
+async function collectWorkingChanges(exec: Exec, git: string, root: string, paths?: string[], markerPaths?: ReadonlySet<string>): Promise<{ changed: ChangedFile[]; unchanged: string[] }> {
+  const run = (args: string[], stdin?: Buffer) => exec(git, ["--literal-pathspecs", ...args], { cwd: root, ...(stdin ? { stdin } : {}) });
+  const status = await run(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", ...(paths ?? [])]);
   if (status.code !== 0) throw new Error(`git status failed: ${(status.stderr || status.stdout).trim()}`);
   const states = new Map<string, string>();
   for (const entry of status.stdout.split("\0")) if (entry.length > 3) states.set(entry.slice(3), entry.slice(0, 2));
@@ -952,7 +963,8 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
 
   const unchanged: string[] = [];
   const pending: { path: string; kind: ChangedFile["status"] }[] = [];
-  for (const path of paths) {
+  for (const path of paths ? new Set(paths) : states.keys()) {
+    if (!paths && (!isCodeFile(path) || hardSecretPath(path))) continue;
     const state = states.get(path);
     if (!state) { unchanged.push(path); continue; }
     const deleted = state.includes("D");
@@ -960,60 +972,138 @@ export async function collectChanges(exec: Exec, git: string, root: string, path
     pending.push({ path, kind: deleted ? "deleted" : added ? "added" : "modified" });
   }
 
+  const diffOptions = ["--no-color", "--no-ext-diff", "--no-renames", "--no-textconv"];
+  const stats = new Map<string, { binary: boolean; lines: number }>();
+  if (markerPaths && pending.some(({ kind }) => kind !== "added")) {
+    const result = await run(["diff", "HEAD", ...diffOptions, "--numstat", "-z", "--"]);
+    if (result.code !== 0) throw new Error(`git diff --numstat failed: ${(result.stderr || result.stdout).trim()}`);
+    for (const entry of result.stdout.split("\0")) {
+      const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(entry);
+      if (match) stats.set(match[3]!, { binary: match[1] === "-", lines: match[1] === "-" ? 0 : Number(match[1]) + Number(match[2]) });
+    }
+  }
+  const attributes = new Map<string, string>();
+  if (markerPaths) {
+    const added = pending.filter(({ kind }) => kind === "added").map(({ path }) => path);
+    if (added.length > 0) {
+      const result = await run(["check-attr", "-z", "--stdin", "diff"], Buffer.from(`${added.join("\0")}\0`));
+      if (result.code !== 0) throw new Error(`git check-attr failed: ${(result.stderr || result.stdout).trim()}`);
+      const fields = result.stdout.split("\0");
+      for (let i = 0; i + 2 < fields.length; i += 3) attributes.set(fields[i]!, fields[i + 2]!);
+    }
+  }
+  const driverBinary = new Map<string, boolean | undefined>();
+  const forcedBinary = async (attr: string): Promise<boolean | undefined> => {
+    if (attr === "set") return false;
+    if (attr === "unset") return true;
+    if (attr === "unspecified") return undefined;
+    if (!driverBinary.has(attr)) {
+      const driver = await exec(git, ["config", "--type=bool", "--get", `diff.${attr}.binary`], { cwd: root });
+      if (driver.code !== 0 && driver.code !== 1) throw new Error(`git config diff.${attr}.binary failed: ${(driver.stderr || driver.stdout).trim()}`);
+      driverBinary.set(attr, driver.code === 0 ? driver.stdout.trim() === "true" : undefined);
+    }
+    return driverBinary.get(attr);
+  };
+
   const changed: ChangedFile[] = [];
   for (const { path, kind } of pending) {
+    const scanMarkers = !markerPaths || markerPaths.has(path);
+    const summary = stats.get(path);
+    if (markerPaths && kind !== "added" && !summary) continue;
+    if (markerPaths && ((!scanMarkers && kind === "deleted") || summary?.binary)) {
+      changed.push({ path, status: kind, blob: kind === "deleted" ? DELETED_BLOB : "", binary: summary!.binary, changedLines: [], changedLineCount: summary!.lines, text: "", content: null });
+      continue;
+    }
     if (kind === "deleted") {
-      // 지운 파일도 HEAD 내용이 삭제 줄로 나오므로 marker 판정에 쓴다.
-      const diff = await run(["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path]);
+      const diff = await run(["diff", "HEAD", ...diffOptions, "-U12", "--", path]);
       if (diff.code !== 0) throw new Error(`git diff failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
       const binary = /^Binary files /m.test(diff.stdout);
       changed.push({ path, status: kind, blob: DELETED_BLOB, binary, changedLines: binary ? [] : await markComments(exec, git, root, path, parseChangedLines(diff.stdout), null, `HEAD:${path}`), text: diff.stdout, content: null });
       continue;
     }
-    // 내용은 한 번만 읽는다. blob은 그 바이트에서 내고, 검토 본문(새 파일은 전체, 수정은 diff)도 같은 내용인지 확인한다.
-    const content = await readFile(join(root, ...path.split("/")));
-    const blob = await hashBytes(exec, git, root, path, content);
+    const diffAttr = attributes.get(path);
+    const forced = diffAttr === undefined ? undefined : await forcedBinary(diffAttr);
+    if (markerPaths && forced === true) {
+      changed.push({ path, status: kind, blob: "", binary: true, changedLines: [], text: "", content: null });
+      continue;
+    }
+    // 내용은 한 번 읽는다. 알림은 통과 후보가 있는 경우에만 뒤에서 blob을 읽는다.
+    const fullPath = join(root, ...path.split("/"));
+    const content = markerPaths ? await readNoticeFile(fullPath, kind === "added" && forced === undefined && BINARY_ASSET.test(path)) : await readFile(fullPath);
+    if (!content) continue;
+    const blob = markerPaths ? "" : await hashBytes(exec, git, root, path, content);
     if (kind === "added") {
       // 바이너리 판정은 수정·삭제처럼 git 규칙을 따르되 이미 읽은 바이트로 한다(다시 읽으면 그 사이에 바뀐 내용을 볼 수 있다).
       // git 규칙: diff 속성이 꺼져 있으면(-diff·binary) 바이너리, 켜져 있으면 텍스트, 드라이버 이름이면 diff.<이름>.binary 설정을 따르고,
       // 그 설정도 속성도 없으면 앞 8000바이트에 NUL이 있을 때 바이너리다.
-      const attr = await run(["check-attr", "diff", "--", path]);
-      if (attr.code !== 0) throw new Error(`git check-attr failed for ${path}: ${(attr.stderr || attr.stdout).trim()}`);
-      const diffAttr = attr.stdout.trim().split(": ").at(-1) ?? "unspecified";
-      let forced: boolean | undefined = diffAttr === "unset" ? true : diffAttr === "set" ? false : undefined;
-      if (forced === undefined && diffAttr !== "unspecified") {
-        const driver = await exec(git, ["config", "--type=bool", "--get", `diff.${diffAttr}.binary`], { cwd: root });
-        if (driver.code === 0) forced = driver.stdout.trim() === "true";
-        else if (driver.code !== 1) throw new Error(`git config diff.${diffAttr}.binary failed for ${path}: ${(driver.stderr || driver.stdout).trim()}`);
+      let binaryOverride = forced;
+      if (!markerPaths) {
+        const attr = await run(["check-attr", "-z", "diff", "--", path]);
+        if (attr.code !== 0) throw new Error(`git check-attr failed for ${path}: ${(attr.stderr || attr.stdout).trim()}`);
+        binaryOverride = await forcedBinary(attr.stdout.split("\0")[2] ?? "unspecified");
       }
-      const binary = forced ?? content.subarray(0, 8000).includes(0);
-      const text = binary ? "" : content.toString("utf8").replace(/^\uFEFF/, "");
-      changed.push({ path, status: kind, blob, binary, changedLines: binary ? [] : markBlockComments(path, text.replace(/\r\n/g, "\n").split("\n").map((line, index) => ({ line: index + 1, text: line })), text, null), text: binary ? "" : numbered(text), content });
+      const binary = binaryOverride ?? content.subarray(0, 8000).includes(0);
+      let changedLines: ChangedLine[] = [];
+      let changedLineCount = 0;
+      let text = "";
+      if (!binary) {
+        if (scanMarkers) {
+          text = content.toString("utf8").replace(/^\uFEFF/, "");
+          const lines = text.length === 0 ? [] : text.replace(/\r\n/g, "\n").split("\n");
+          if (text.endsWith("\n")) lines.pop();
+          changedLines = markBlockComments(path, lines.map((line, index) => ({ line: index + 1, text: line })), text, null);
+          changedLineCount = changedLines.length;
+        } else {
+          // LF counts additions; a nonempty final line need not have a terminating LF.
+          const start = content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf ? 3 : 0;
+          for (let i = start; i < content.length; i++) if (content[i] === 10) changedLineCount++;
+          if (content.length > start && content[content.length - 1] !== 10) changedLineCount++;
+        }
+      }
+      changed.push({ path, status: kind, blob, binary, changedLines, changedLineCount, text: markerPaths || binary ? "" : numbered(text), content: markerPaths ? null : content });
       continue;
     }
-    const diff = await run(["diff", "HEAD", "--full-index", "--no-color", "--no-ext-diff", "--no-renames", "--no-textconv", "-U12", "--", path]);
+    const diff = await run(["diff", "HEAD", "--full-index", ...diffOptions, "-U12", "--", path]);
     if (diff.code !== 0) throw new Error(`git diff failed for ${path}: ${(diff.stderr || diff.stdout).trim()}`);
+    if (!diff.stdout) { unchanged.push(path); continue; }
     // diff의 새 blob(index 줄)이 읽은 바이트의 blob과 다르면 diff를 만드는 동안 파일이 바뀐 것이다.
     const diffBlobs = /^index ([0-9a-f]+)\.\.([0-9a-f]+)/m.exec(diff.stdout);
     const diffBlob = diffBlobs?.[2];
-    if (diffBlob && diffBlob !== blob) throw new Error(`${path} changed while it was being read for the review; run it again once the file is stable.`);
+    if (!markerPaths && diffBlob && diffBlob !== blob) throw new Error(`${path} changed while it was being read for the review; run it again once the file is stable.`);
     const isBinary = /^Binary files /m.test(diff.stdout);
-    const changedLines = await markComments(exec, git, root, path, parseChangedLines(diff.stdout), isBinary ? null : content.toString("utf8"), diffBlobs?.[1]);
+    const lines = parseChangedLines(diff.stdout);
+    const changedLines = scanMarkers ? await markComments(exec, git, root, path, lines, isBinary ? null : content.toString("utf8"), diffBlobs?.[1]) : [];
     // 주석만 바뀐 TS/JS인지, 버전 문자열만 바뀌었는지는 HEAD blob(diff index 줄의 이전 blob)과 지금 바이트로 증명한다. 읽지 못하면 코드로 남는다.
     // 버전 비교는 바뀐 줄이 모두 semver 문자열을 품을 때만 HEAD 내용을 읽는다.
     let commentOnly = false;
     let versionOnly = false;
     const script = /\.[cm]?[jt]sx?$/i.test(path);
-    const versionCandidate = changedLines.length > 0 && changedLines.every(({ text }) => SEMVER_PRESENT.test(text));
+    const versionCandidate = lines.length > 0 && lines.every(({ text }) => SEMVER_PRESENT.test(text));
     if (!isBinary && diffBlobs?.[1] && (script || versionCandidate)) {
       const head = await exec(git, ["cat-file", "blob", diffBlobs[1]], { cwd: root });
       const now = content.toString("utf8");
       commentOnly = head.code === 0 && script && commentOnlyEdit(path, head.stdout, now, changedLines);
       versionOnly = head.code === 0 && !commentOnly && versionCandidate && versionOnlyChange(head.stdout, now);
     }
-    changed.push({ path, status: kind, blob, binary: isBinary, ...(commentOnly ? { commentOnly: true as const } : {}), ...(versionOnly ? { versionOnly: true as const } : {}), changedLines, text: diff.stdout, content });
+    changed.push({ path, status: kind, blob, binary: isBinary, ...(commentOnly ? { commentOnly: true as const } : {}), ...(versionOnly ? { versionOnly: true as const } : {}), changedLines, changedLineCount: lines.length, text: markerPaths ? "" : diff.stdout, content: markerPaths ? null : content });
   }
   return { changed, unchanged };
+}
+
+/** The advisory skips links and special files; unknown media needs only Git's binary sniff. */
+async function readNoticeFile(path: string, sniffMedia = false): Promise<Buffer | null> {
+  const file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch(() => undefined);
+  if (!file) return null;
+  try {
+    if (!(await file.stat()).isFile()) return null;
+    if (sniffMedia) {
+      const prefix = Buffer.allocUnsafe(8000);
+      const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+      const head = prefix.subarray(0, bytesRead);
+      if (head.includes(0)) return head;
+    }
+    return await file.readFile();
+  } finally { await file.close(); }
 }
 
 /** 지금 작업 트리 내용의 git blob. 파일이 없으면 "deleted". */
@@ -1259,23 +1349,33 @@ export function trivialSincePass(path: string, before: string, after: string, pa
   return undefined;
 }
 
-/**
- * 검토가 필요한 파일과 덮이지 않은 파일을 정한다. highRisk는 high-risk로 선언한 저장소 상대 경로다. passedContent는 `${path}\0${blob}` → 그 경로의
- * 통과한 옛 내용이며, 지금 내용이 그 내용에서 사소한 수정(trivialSincePass)만 다르고 그 통과에 묶인 입력이 그대로면 그 통과가 지금 내용을 덮는다(carried).
- * root(저장소 루트)를 주면 같은 저장소에서 통과한 다른 경로의 같은 바이트도 덮는 것으로 본다(reused). HEAD에 있다는 것만으로는 덮지 않는다.
- */
-export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map(), root?: string): GateDecision & { carried?: CarriedPass[]; reused?: ReusedPass[] } {
+function reviewRequirements(changes: readonly ChangedFile[], highRisk: Iterable<string>): RequiredFile[] {
+  const targets = changes.filter(isGateTarget);
+  const lines = targets.reduce((sum, change) => sum + (change.changedLineCount ?? change.changedLines.length), 0);
+  const fileCount = targets.length;
+  const size = fileCount >= REVIEW_SIZE_FILES || lines >= REVIEW_SIZE_LINES
+    ? `size: ${fileCount} code file${fileCount === 1 ? "" : "s"}, ${lines} changed lines`
+    : undefined;
   const declared = new Set(highRisk);
   const required: RequiredFile[] = [];
-  for (const change of changes) {
-    if (!isGateTarget(change)) continue;
+  for (const change of targets) {
     const reasons: string[] = [];
     if (declared.has(change.path)) reasons.push("declared high-risk (crossReviewHighRisk)");
     for (const hit of detectMarkers(change.path, change.changedLines).slice(0, 3)) {
       reasons.push(`marker ${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}: ${hit.text}`);
     }
+    if (size) reasons.push(size);
     if (reasons.length > 0) required.push({ path: change.path, blob: change.blob, reasons });
   }
+  return required;
+}
+
+/** Decide which required files are covered by recorded passes for the current content. */
+export function decideGate(changes: readonly ChangedFile[], highRisk: Iterable<string>, records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string> = new Map(), passedContent: ReadonlyMap<string, string> = new Map(), root?: string): GateDecision & { carried?: CarriedPass[]; reused?: ReusedPass[] } {
+  return decideCoverage(changes, reviewRequirements(changes, highRisk), records, inputBlobs, passedContent, root);
+}
+
+function decideCoverage(changes: readonly ChangedFile[], required: RequiredFile[], records: readonly CrossReviewLedgerRecord[], inputBlobs: ReadonlyMap<string, string>, passedContent: ReadonlyMap<string, string>, root?: string): GateDecision {
   if (required.length === 0) return { required, uncovered: [] };
   // root를 모르면 같은 경로의 통과도 어느 저장소의 것인지 알 수 없으므로 덮지 않는다(fail-closed).
   const covered = root === undefined ? new Map<string, Map<string, CoveringPass[]>>() : coveredBlobs(records, root);
@@ -1334,33 +1434,52 @@ async function passedBlobContent(exec: Exec, git: string, root: string, path: st
   return undefined;
 }
 
-/**
- * 편집 직후 조기 알림 문구: 이 파일이 지금 내용 그대로 커밋되면 marker 때문에 cross_review가 필요한지 본다. 저장소 안의 게이트 대상 코드 파일이고, 바뀐 줄이 marker에
- * 맞고, 지금 내용을 덮는 통과가 아직 없을 때만 문구를 돌려준다(아니면 undefined). 알림일 뿐 게이트가 아니다.
- * 원장은 marker가 맞은 뒤에만 읽는다(readRecords). git이 읽히지 않는 등 어떤 실패도 알림을 내지 않는 쪽으로 끝난다.
- */
-export async function earlyReviewNotice(cwd: string, absolutePath: string, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[]): Promise<string | undefined> {
-  try {
-    const input = relative(cwd, absolutePath);
-    if (!input || isAbsolute(input)) return undefined;
-    const resolved = await resolveRepoTargets(cwd, [input], exec);
-    if ("failure" in resolved) return undefined;
-    const path = resolved.targets[0]!.path;
-    if (!isCodeFile(path) || hardSecretPath(path)) return undefined;
-    const { changed } = await collectChanges(exec, "git", resolved.root, [path]);
-    const change = changed[0];
-    if (!change || change.status === "deleted" || !isGateTarget(change)) return undefined;
-    const hits = detectMarkers(change.path, change.changedLines);
-    if (hits.length === 0) return undefined;
-    const records = readRecords();
-    if (coveredBlobs(records, resolved.root).get(change.path)?.get(change.blob)?.length || passedBlobsInRoot(records, resolved.root).get(change.blob)?.length) return undefined;
-    const seen = new Set<string>();
-    const shown = hits.filter((hit) => !seen.has(hit.trigger) && seen.add(hit.trigger)).slice(0, 3)
-      .map((hit) => `${hit.trigger}${hit.line ? ` at ${hit.removed ? "removed " : ""}L${hit.line}` : ""}`);
-    return `cross_review early notice: ${change.path} hits a review marker (${shown.join(", ")}), so it needs a passed cross_review before you report the work as done, whether or not you commit (git_finalize also requires it). Review it once the file has settled, together with your other changed code files in one call (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.`;
-  } catch {
-    return undefined;
+async function decideCurrentCoverage(exec: Exec, git: string, root: string, changes: readonly ChangedFile[], required: RequiredFile[], records: readonly CrossReviewLedgerRecord[]): Promise<GateDecision> {
+  if (required.length === 0) return { required, uncovered: [] };
+  let inputBlobs = await currentInputBlobs(exec, git, root, boundInputPaths(changes, records, false, root));
+  const decision = decideCoverage(changes, required, records, inputBlobs, new Map(), root);
+  const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
+  if (older.length === 0) return decision;
+  const covered = coveredBlobs(records, root);
+  const passedContent = new Map<string, string>();
+  for (const file of older) {
+    for (const blob of covered.get(file.path)?.keys() ?? []) {
+      const content = await passedBlobContent(exec, git, root, file.path, blob, records);
+      if (content !== undefined) passedContent.set(`${file.path}\0${blob}`, content);
+    }
   }
+  if (passedContent.size === 0) return decision;
+  inputBlobs = await currentInputBlobs(exec, git, root, boundInputPaths(changes, records, true, root));
+  return decideCoverage(changes, required, records, inputBlobs, passedContent, root);
+}
+
+/** Advisory-only: use repository-wide size, but only look for markers on paths edited this session. */
+export async function earlyReviewNotice(root: string, edited: ReadonlySet<string>, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[]): Promise<{ path: string; text: string }[]> {
+  const git = "git";
+  const { changed } = await collectWorkingChanges(exec, git, root, undefined, edited);
+  const required = reviewRequirements(changed, []);
+  if (required.length === 0) return [];
+  const records = readRecords();
+  const passes = coveredBlobs(records, root);
+  let uncovered = required;
+  if (passes.size > 0) {
+    const paths = new Set(required.map(({ path }) => path));
+    const candidates = changed.filter(({ path }) => paths.has(path));
+    const blobs = await currentBlobs(exec, git, root, candidates.filter(({ status }) => status !== "deleted").map(({ path }) => path));
+    for (const file of required) file.blob = blobs.get(file.path) ?? file.blob;
+    for (const change of candidates) {
+      change.blob = blobs.get(change.path) ?? change.blob;
+      if (change.status !== "deleted" && passes.has(change.path) && !passes.get(change.path)!.has(change.blob)) {
+        change.content = await readNoticeFile(join(root, change.path));
+      }
+    }
+    ({ uncovered } = await decideCurrentCoverage(exec, git, root, candidates, required, records));
+  }
+  return uncovered.map(({ path, reasons }) => {
+    const markers = [...new Set(reasons.filter((reason) => reason.startsWith("marker ")).map((reason) => reason.slice(7).split(": ", 1)[0]))];
+    const trigger = markers.length ? `hits a review marker (${markers.join(", ")})` : `crosses the review threshold (${reasons[0]})`;
+    return { path, text: `cross_review early notice: ${path} ${trigger}, so it needs a passed cross_review before you report the work as done, whether or not you commit. Review it once the file has settled, together with your other changed code files in one call (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.` };
+  });
 }
 
 export const DEFAULT_CROSS_REVIEW_DIR = join(dirname(dirname(import.meta.dir)), "cross-review");
@@ -1432,26 +1551,8 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   }
   if (changed.length === 0) return { checked: true, decision: { required: [], uncovered: [] }, gateBlobs };
 
-  const records = readCrossReviewRecords(options.ledgerPath);
-  // 통과에 묶인 의존 입력은 그 통과가 이 변경을 덮을 때만 지금 blob을 읽는다. 입력 없는 통과만 있으면 아무것도 읽지 않는다.
-  let inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, false, resolved.root));
-  let decision = decideGate(changed, highRiskPaths, records, inputBlobs, new Map(), resolved.root);
-  // 옛 내용에만 통과가 있는 파일은 그 옛 내용을 찾아(git 객체, 없으면 검토 사본) 버전 문자열·주석만 바뀌었는지 본다. 찾지 못하면 이어받지 않는다.
-  const older = decision.uncovered.filter((file) => file.note?.startsWith("a passed review exists for an older version"));
-  if (older.length > 0) {
-    const covered = coveredBlobs(records, resolved.root);
-    const passedContent = new Map<string, string>();
-    for (const file of older) {
-      for (const blob of covered.get(file.path)?.keys() ?? []) {
-        const content = await passedBlobContent(exec, git, resolved.root, file.path, blob, records);
-        if (content !== undefined) passedContent.set(`${file.path}\0${blob}`, content);
-      }
-    }
-    if (passedContent.size > 0) {
-      inputBlobs = await currentInputBlobs(exec, git, resolved.root, boundInputPaths(changed, records, true, resolved.root));
-      decision = decideGate(changed, highRiskPaths, records, inputBlobs, passedContent, resolved.root);
-    }
-  }
+  const required = reviewRequirements(changed, highRiskPaths);
+  const decision = await decideCurrentCoverage(exec, git, resolved.root, changed, required, readCrossReviewRecords(options.ledgerPath));
   if (decision.uncovered.length === 0) return { checked: true, decision, gateBlobs };
 
   const reason = options.waiver?.trim();
@@ -1503,6 +1604,7 @@ const CHECKLIST = [
   "5. Boundaries and encodings: empty/huge input, CRLF, BOM, non-UTF-8, Windows vs WSL paths, case sensitivity, path traversal, quoting.",
   "6. Callers and contracts: changed or removed behaviour that other code still relies on; tests or docs that now lie.",
   "7. Cleanup: files, processes, locks, timers or temp state left behind on failure and abort.",
+  "8. Reported symptom (initial review): if the acceptance criteria or bound inputs describe a concrete symptom, require commands and output showing that exact symptom occurring before the change and gone afterward. Unless the evidence demonstrates both, emit a major finding about the missing proof, not a speculative claim that the bug still exists. Design a probe that runs the same reported scenario against the baseline and the reviewed code without editing the reviewed files. The author submits the command and output in the verdict-only probe round for your confirmed/withdrawn/unresolved verdict.",
 ];
 
 /** 도구가 다듬은 probe 결과(비밀 가림·발췌 상한 적용 뒤)와 그 결과가 가리키는 finding. */
@@ -1582,7 +1684,7 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pr
   const probeGuide = input.probeAvailable === false
     ? "PROBES: no probe round is available any more in this chain, so you will not judge any run. Report only what the code itself supports."
     : input.round === 1
-      ? "PROBES: when a claim cannot be settled from the code alone, mark it needs-run and do NOT report it as a speculative major/blocker. The author may run the needs-run recipes on unchanged code and submit the results. A finding settled by quoted code still gets a recipe but needs no run."
+      ? "PROBES: except for the major finding about missing reported-symptom evidence in item 8, do not report a speculative major/blocker. Mark claims that require execution needs-run. The author may run the needs-run recipes on unchanged code and submit the results. A finding settled by quoted code still gets a recipe but needs no run."
       : "PROBES: new findings from this delta require no probe. Report only what the code itself supports.";
   const findingShape = '{"severity":"blocker|major|minor","file":"path","line":123,"claim":"what is wrong","why":"how it fails in a realistic run, quoting the code","proof":"cited-line|reasoned|needs-run","probe":{"steps":"...","expectIfReal":"...","expectIfNot":"..."}}';
   const outputShape = probeRound
@@ -1599,7 +1701,7 @@ export function buildReviewPrompt(input: { acceptance: string; round: number; pr
     "",
     ...previous,
     ...(!probeRound ? [
-      "CHECKLIST (apply each; report only real problems you can support with a quote from the code):",
+      "CHECKLIST (apply each; support code findings with a code quote, and check reported-symptom evidence as required below):",
       ...CHECKLIST,
       "",
       "Severity: blocker = the change can do real harm or breaks a hard requirement; major = an acceptance criterion is not met or a realistic failure is unhandled; minor = low-impact. No style comments.",

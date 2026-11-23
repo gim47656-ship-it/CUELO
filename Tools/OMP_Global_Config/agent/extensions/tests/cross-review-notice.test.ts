@@ -1,5 +1,5 @@
-// 편집 직후 조기 알림: marker에 맞는 게이트 대상 코드 파일은 git_finalize 전에 cross_review가 필요하다고 파일당 세션에 한 번만 알린다(게이트 아님).
-import { afterEach, describe, expect, test } from "bun:test";
+// 편집 직후 조기 알림과 턴 끝 안내: 게이트 대상 코드의 marker와 변경 크기를 추적한다.
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import crossReview, { editedPaths } from "../cross-review";
+import { earlyReviewNotice, spawnExec } from "../lib/cross-review";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 
@@ -37,7 +38,7 @@ function setup() {
   sh(work, "commit", "-q", "-m", "base");
   const ledger = join(dir, "ledger.jsonl");
   process.env.OMP_CROSS_REVIEW_LEDGER = ledger;
-  const control = { failSend: false, reviewTool: true };
+  const control: { failSend: boolean; reviewTool: boolean; onNotice?: () => void } = { failSend: false, reviewTool: true };
   const handlers: Record<string, Handler[]> = {};
   const busHandlers: Record<string, ((data: unknown) => void)[]> = {};
   const sent: { message: { customType: string; content: string; display: boolean }; options: unknown }[] = [];
@@ -46,7 +47,11 @@ function setup() {
     zod: { object: () => ({}), string: () => ({ optional: () => ({}) }), array: () => ({ optional: () => ({}) }), boolean: () => ({ optional: () => ({}) }), number: () => ({}) },
     registerTool: () => {},
     on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
-    sendMessage: (message: never, options: unknown) => { if (control.failSend) throw new Error("delivery failed"); sent.push({ message, options }); },
+    sendMessage: (message: never, options: unknown) => {
+      if (control.failSend) throw new Error("delivery failed");
+      sent.push({ message, options });
+      control.onNotice?.();
+    },
     getActiveTools: () => control.reviewTool ? ["edit", "write", "cross_review"] : ["edit", "write"],
     events: { on: (name: string, handler: (data: unknown) => void) => { (busHandlers[name] ??= []).push(handler); }, emit: () => {} },
   } as unknown as ExtensionAPI);
@@ -161,11 +166,161 @@ describe("편집 직후 조기 알림", () => {
     expect(env.turnEnd()).toEqual([]);
   });
 
-  test("턴 끝: marker가 없는 편집에는 안내하지 않는다", async () => {
+  test("턴 끝: marker 없는 1파일 10줄 편집에는 조기 알림과 턴 끝 안내가 없다", async () => {
     const env = setup();
-    writeFileSync(join(env.work, "plain.ts"), "export const x = 1;\n");
+    writeFileSync(join(env.work, "plain.ts"), "void 0;\n".repeat(10));
     await env.edited("write", "plain.ts");
+    expect(env.sent).toEqual([]);
     expect(env.turnEnd()).toEqual([]);
+  });
+
+  test("bash-only shell writes announce the size cohort and make it visible at turn end", async () => {
+    const env = setup();
+    const shell = Bun.spawnSync(["bash", "-c", "for file in a b c; do printf 'package example\\n' > \"$file.go\"; done"], { cwd: env.work });
+    expect(shell.exitCode).toBe(0);
+    await env.emit("tool_result", { toolName: "bash", input: { command: "shell writes" }, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toHaveLength(3);
+    const [reminder] = env.turnEnd();
+    for (const file of ["a.go", "b.go", "c.go"]) {
+      expect(env.sent.some(({ message }) => message.content.includes(`${file} crosses the review threshold (size: 3 code files, 3 changed lines)`))).toBe(true);
+      expect(reminder).toContain(file);
+    }
+    await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toHaveLength(3);
+  });
+
+  test("bash-only changes below the size threshold do not trigger marker notices", async () => {
+    const env = setup();
+    await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toEqual([]);
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toEqual([]);
+    expect(env.turnEnd()).toEqual([]);
+  });
+
+  test.each([
+    ["eval", {}],
+    ["ast_edit", { applied: true }],
+    ["resolve", { sourceToolName: "ast_edit", sourceResultDetails: { applied: true } }],
+  ] as const)("%s refreshes size after writing", async (toolName, details) => {
+    const env = setup();
+    for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package example\n");
+    await env.emit("tool_result", { toolName: "ast_edit", input: {}, details: { applied: false }, isError: false });
+    expect(env.sent).toHaveLength(0);
+    await env.emit("tool_result", { toolName, input: {}, details, isError: false });
+    expect(env.sent).toHaveLength(3);
+  });
+
+  test("rapid bash results in the same window share one repository inventory", async () => {
+    const env = setup();
+    const spawn = Bun.spawn;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => spawn(...args)) as typeof spawn);
+    try {
+      await Promise.all(Array.from({ length: 8 }, () => env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false })));
+      expect(hook.mock.calls.filter(([args]) => Array.isArray(args) && args.includes("status"))).toHaveLength(1);
+    } finally { hook.mockRestore(); }
+  });
+
+  test("bash results outside a Git repository never start the inventory", async () => {
+    const env = setup();
+    const spawn = Bun.spawn;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => spawn(...args)) as typeof spawn);
+    try {
+      await env.emit("tool_result", { toolName: "bash", input: { cwd: ".." }, details: { exitCode: 0 }, isError: false });
+      expect(hook.mock.calls.some(([args]) => Array.isArray(args) && args.includes("status"))).toBe(false);
+    } finally { hook.mockRestore(); }
+  });
+
+  test("a slow inventory releases the tool result and still publishes later", async () => {
+    const env = setup();
+    for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package example\n");
+    const hold = Promise.withResolvers<void>();
+    const sent = Promise.withResolvers<void>();
+    env.control.onNotice = () => { if (env.sent.length === 3) sent.resolve(); };
+    const spawn = Bun.spawn;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      if (!Array.isArray(args[0]) || !args[0].includes("status")) return child;
+      return new Proxy(child, { get: (target, key) => key === "exited"
+        ? hold.promise.then(() => target.exited) : Reflect.get(target, key, target) });
+    }) as typeof spawn);
+    try {
+      const start = performance.now();
+      await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });
+      expect(performance.now() - start).toBeLessThan(2_000);
+      expect(env.sent).toHaveLength(0);
+      hold.resolve();
+      await sent.promise;
+      expect(env.turnEnd()[0]).toContain("a.go, b.go, c.go");
+    } finally {
+      hold.resolve();
+      hook.mockRestore();
+    }
+  });
+
+  test("세 번째 파일에서 크기 기준에 닿으면 세 파일을 모두 한 번씩 알리고 턴 끝에도 안내한다", async () => {
+    const env = setup();
+    const files = ["a.ts", "b.ts", "c.ts"];
+    for (const [index, file] of files.entries()) {
+      writeFileSync(join(env.work, file), `export const x = ${index};\n`);
+      await env.edited("write", file);
+      expect(env.sent).toHaveLength(index < 2 ? 0 : 3);
+    }
+    await env.edited("edit", "c.ts");
+    expect(env.sent).toHaveLength(3);
+    const [reminder] = env.turnEnd();
+    for (const file of files) {
+      expect(env.sent.filter(({ message }) => message.content.includes(`${file} `))).toHaveLength(1);
+      expect(reminder).toContain(file);
+    }
+    expect(env.sent.every(({ message }) => message.content.includes("size: 3 code files, 3 changed lines"))).toBe(true);
+    expect(env.turnEnd()).toEqual([]);
+  });
+
+  test("a concurrent review refresh does not discard an edit's pending early notice", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    await env.edited("write", "a.ts");
+    writeFileSync(join(env.work, "b.ts"), "void 1;\n");
+    writeFileSync(join(env.work, "c.ts"), "void 2;\n");
+    const spawn = Bun.spawn;
+    let review: Promise<void> | undefined;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
+      if (!review && Array.isArray(args[0]) && args[0].includes("status")) {
+        review = Promise.resolve();
+        review = env.emit("tool_result", { toolName: "cross_review", input: { action: "review" }, isError: false });
+      }
+      return spawn(...args);
+    }) as typeof spawn);
+    try {
+      await env.edited("write", "c.ts");
+      expect(review).toBeDefined();
+      await review;
+      expect(env.sent.map(({ message }) => message.content.match(/notice: (.*?) /)?.[1])).toEqual(["a.ts", "b.ts", "c.ts"]);
+    } finally { hook.mockRestore(); }
+  });
+
+  test("repository notice batches attributes and tracked numstat and needs no file hashing without passes", async () => {
+    const env = setup();
+    const tracked = join(env.work, "tracked.ts");
+    writeFileSync(tracked, "export const x = 0;\n");
+    sh(env.work, "add", "tracked.ts");
+    sh(env.work, "commit", "-q", "-m", "tracked");
+    writeFileSync(tracked, "export const x = 1;\n");
+    writeFileSync(join(env.work, "new-a.ts"), "void 0;\n");
+    writeFileSync(join(env.work, "new-b.ts"), "void 0;\n");
+    writeFileSync(join(env.work, "README.md"), "notes\n".repeat(60));
+    const calls: string[][] = [];
+    const exec = spawnExec();
+    const notice = await earlyReviewNotice(env.work, new Set(["new-b.ts"]), (command, args, options) => {
+      calls.push(args);
+      return exec(command, args, options);
+    }, () => []);
+    expect(notice).toHaveLength(3);
+    expect(notice.every(({ text }) => text.includes("size: 3 code files, 4 changed lines"))).toBe(true);
+    for (const arg of ["status", "--numstat", "check-attr"]) expect(calls.filter((args) => args.includes(arg))).toHaveLength(1);
+    expect(calls.some((args) => args.includes("hash-object"))).toBe(false);
   });
 
   test("턴 끝: 한 편집의 첫 파일 알림 전달이 실패해도 같은 편집의 다른 파일을 추적한다", async () => {

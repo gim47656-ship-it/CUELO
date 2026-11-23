@@ -920,6 +920,11 @@ describe("probe 라운드", () => {
     expect(plain).toContain("you will not judge any run");
   });
 
+  test("initial review asks for an exact symptom probe when before/after reproduction is missing", () => {
+    const prompt = buildReviewPrompt({ acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff", text: "@@" }] });
+    expect(prompt).toMatch(/reported symptom.*before.*after.*major.*probe/i);
+  });
+
   // ── 재현 방법·증명 수준(2026-11-03): 지적마다 저자가 돌릴 재현 방법과 증명 수준을 받는다 ──
   const recipe = (steps: string, expectIfReal = "FAIL") => ({ steps, expectIfReal, expectIfNot: "PASS" });
   const provenAnswer = JSON.stringify({ findings: [
@@ -1132,10 +1137,36 @@ describe("게이트", () => {
     await expect(runGate(gateOptions(env, { highRisk: ["a.ts"] }))).rejects.toThrow("declared high-risk");
   });
 
-  test("a1 smoke: an unmarked, undeclared code change needs no review even if the old gate sampled it", async () => {
+  test("a small unmarked, undeclared code change needs no review even if the old gate sampled it", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), `${PLAIN_BASE}// v4\n`);
     expect((await runGate(gateOptions(env))).decision).toEqual({ required: [], uncovered: [] });
+  });
+
+  test("size gate uses only changed code in this commit and requires a pass for each file", async () => {
+    const env = repo();
+    const files = ["a.ts", "b.ts", "c.ts"];
+    for (const [index, file] of files.entries()) writeFileSync(join(env.work, file), `export const x = ${index};\n`);
+    writeFileSync(join(env.work, "notes.md"), "# notes\n".repeat(60));
+    writeFileSync(join(env.work, "a.test.ts"), "void 0;\n".repeat(60));
+    expect((await runGate(gateOptions(env, { files: ["a.ts", "b.ts", "notes.md", "a.test.ts"] }))).decision?.required).toEqual([]);
+    await passReview(env, ["a.ts"]);
+    const error = await runGate(gateOptions(env, { files })).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CrossReviewRefusal);
+    expect((error as Error).message).not.toContain("- a.ts:");
+    expect((error as Error).message).toContain("- b.ts: size: 3 code files, 3 changed lines");
+    expect((error as Error).message).toContain("- c.ts: size: 3 code files, 3 changed lines");
+    await passReview(env, ["b.ts", "c.ts"]);
+    expect((await runGate(gateOptions(env, { files }))).decision?.required.map(({ path }) => path)).toEqual(files);
+  });
+
+  test("size gate stays open with 2 files/49 lines and requires review at 50 lines", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), "void 0;\n".repeat(25));
+    writeFileSync(join(env.work, "b.ts"), "void 0;\n".repeat(24));
+    expect((await runGate(gateOptions(env, { files: ["a.ts", "b.ts"] }))).decision?.required).toEqual([]);
+    writeFileSync(join(env.work, "a.ts"), "void 0;\n".repeat(50));
+    await expect(runGate(gateOptions(env))).rejects.toThrow("size: 1 code file, 50 changed lines");
   });
 
   test("이미 커밋돼 바뀐 것이 없는 파일(resume-push)은 검사하지 않는다", async () => {
@@ -1413,7 +1444,7 @@ describe("게이트 대상: 주석만 바뀐 TS/JS와 바이너리 자산", () =
       return real(command, args, options);
     };
     const { changed } = await collectChanges(racing, "git", env.work, ["new.ts"]);
-    expect(changed).toMatchObject([{ path: "new.ts", status: "added", binary: false, changedLines: [{ line: 1, text: "export const x = 1;" }, { line: 2, text: "" }] }]);
+    expect(changed).toMatchObject([{ path: "new.ts", status: "added", binary: false, changedLines: [{ line: 1, text: "export const x = 1;" }] }]);
   });
 
   test("diff 드라이버 속성은 diff.<이름>.binary 설정이 있을 때만 판정을 정하고, 없으면 git처럼 NUL로 정한다", async () => {

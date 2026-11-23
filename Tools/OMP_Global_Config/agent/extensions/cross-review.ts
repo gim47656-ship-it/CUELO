@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 import {
@@ -10,6 +11,7 @@ import {
   earlyReviewNotice,
   SLOT,
   ledgerPath,
+  resolveRepoTargets,
   runResolve,
   runReview,
   snapshotRoot,
@@ -34,6 +36,13 @@ import type { TurnEndNotices } from "./turn-end-guard";
  */
 
 const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: true };
+
+const NOTICE_BATCH_MS = 25;
+const NOTICE_RESULT_WAIT_MS = 1_000;
+
+function appliedAstEdit(details: unknown): details is { applied: true } {
+  return !!details && typeof details === "object" && "applied" in details && details.applied === true;
+}
 
 /** slot이 가리키는 모델을 해석해 한 번 부른다(reasoning high, 10분 제한). 응답이 돌아온 시도는 비용 장부에 남긴다. */
 /** system and purpose let slop_check reuse the role resolution, call, and usage ledger. */
@@ -174,7 +183,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Read rule://cross-review-procedure first. action: review|resolve. review: risk-marked files, acceptance, authors (model selectors; subagents own family, not main). Delta: previousReviewId only for an R1 blocker. One verdict-only probe on unchanged code: previousReviewId + probeResults. base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}].",
+    description: "Read rule://cross-review-procedure first. action: review|resolve. review: marker, high-risk, or size-triggered changes; acceptance and authors (model selectors; subagents own family, not main). Delta: previousReviewId only for an R1 blocker. One verdict-only probe on unchanged code: previousReviewId + probeResults. base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}].",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -196,59 +205,118 @@ export default function crossReview(pi: ExtensionAPI): void {
     },
   });
 
-  // 편집 직후 조기 알림(게이트 아님): marker에 맞는 코드 파일은 git_finalize 전에 cross_review가 필요하다는 것을 파일당 세션에 한 번 알린다.
-  // 알림을 낸 파일만 기록하므로, 처음에는 marker가 없다가 나중에 걸리는 파일도 그때 한 번 알린다.
-  // 2026-11-23 사용자 결정(「둘이 같이말한것들은 해보자」): 검토를 모델의 기억에 맡기지 않는다. 11-22 약한 모델 비교에서 조기 알림을 받고도
-  // 검토 없이 끝낸 실행이 있었다. 그래서 통과 기록이 아직 없는 파일을 기억해 두고, 턴이 끝날 때 남아 있으면 turn-end-guard의 한 번짜리
-  // 안내에 문구를 붙인다(입력당 한 번). 상태는 편집과 cross_review 결과 때만 다시 계산한다(턴 끝 연결점이 동기라서).
-  // 추적은 도구가 꺼져 있어도 갱신하고, 같은 경로의 조회가 겹치면 마지막 조회만, 세션이 바뀌면 옛 조회는 버린다.
+  // 경로가 있는 편집은 marker와 변경 크기를 본다. 경로를 모르는 도구는 저장소의 변경 크기만 본다.
+  // 턴 종료 연결점은 동기다. 같은 저장소의 조회가 겹치면 마지막 조회만, 세션이 바뀌면 옛 조회는 버린다.
+  type RepoNoticeState = { edited: Set<string>; uncovered: string[]; lookup: number; sendPending: boolean };
+  const repos = new Map<string, RepoNoticeState>();
+  const inventoryBatches = new Map<string, { active?: Promise<void>; queued?: Promise<void> }>();
   const noticed = new Set<string>();
-  const uncovered = new Set<string>();
-  const latestLookup = new Map<string, number>();
-  let lookupSeq = 0;
   let epoch = 0;
   let remindedThisInput = false;
-  onSessionLifecycle(pi, { start: () => { epoch++; noticed.clear(); uncovered.clear(); latestLookup.clear(); remindedThisInput = false; } });
+  const reset = () => { epoch++; noticed.clear(); repos.clear(); inventoryBatches.clear(); remindedThisInput = false; };
+  onSessionLifecycle(pi, { start: reset });
+  pi.on("session_shutdown", reset);
   pi.on("input", (event) => {
     if (event.source === "interactive" || event.source === "rpc") remindedThisInput = false;
   });
-  /** 지금 내용의 알림 문구를 돌려준다. 더 새 조회나 세션 교체에 밀린 조회는 상태를 건드리지 않고 undefined다. */
-  const refresh = async (path: string, cwd: string): Promise<string | undefined> => {
-    const mine = ++lookupSeq;
-    const startedEpoch = epoch;
-    latestLookup.set(path, mine);
-    const text = await earlyReviewNotice(cwd, path, spawnExec(), () => readCrossReviewRecords(ledgerPath()));
-    if (startedEpoch !== epoch || latestLookup.get(path) !== mine) return undefined;
-    if (text) uncovered.add(path);
-    else uncovered.delete(path);
-    return text;
+  const refresh = async (root: string, state: RepoNoticeState, startedEpoch: number, send: boolean) => {
+    state.sendPending ||= send;
+    const lookup = ++state.lookup;
+    try {
+      const notices = await earlyReviewNotice(root, state.edited, spawnExec(), () => readCrossReviewRecords(ledgerPath()));
+      if (startedEpoch !== epoch || lookup !== state.lookup) return;
+      state.uncovered = notices.map(({ path }) => resolve(root, path));
+      if (!state.sendPending || !(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
+      state.sendPending = false;
+      for (const { path, text } of notices) {
+        const absolute = resolve(root, path);
+        if (noticed.has(absolute)) continue;
+        try {
+          pi.sendMessage({ customType: "cross-review-notice", content: text, display: false, attribution: "agent" }, { deliverAs: "aside" });
+          noticed.add(absolute);
+        } catch { /* 전달에 실패해도 다음 편집에서 다시 보낼 수 있다. */ }
+      }
+    } catch { /* 보조 알림 실패를 편집이나 검토 결과로 전파하지 않는다. */ }
+  };
+  const stateFor = (root: string): RepoNoticeState => {
+    let state = repos.get(root);
+    if (!state) repos.set(root, state = { edited: new Set(), uncovered: [], lookup: 0, sendPending: false });
+    return state;
+  };
+  const refreshAfterOpaqueWrite = async (cwd: string, startedEpoch: number) => {
+    if (startedEpoch !== epoch) return;
+    let inventory = inventoryBatches.get(cwd);
+    if (!inventory) inventoryBatches.set(cwd, inventory = {});
+    const queue = inventory;
+    queue.queued ??= delay(NOTICE_BATCH_MS).then(async () => {
+      // If the previous scan outlived its tool result, join one follow-up for writes during that scan.
+      await queue.active?.catch(() => {});
+      if (startedEpoch !== epoch) return;
+      queue.queued = undefined;
+      queue.active = (async () => {
+        const git = await spawnExec()("git", ["rev-parse", "--show-toplevel"], { cwd });
+        if (startedEpoch !== epoch || git.code !== 0) return;
+        const root = git.stdout.replace(/\r?\n$/, "");
+        if (isAbsolute(root)) await refresh(root, stateFor(root), startedEpoch, true);
+      })();
+      try { await queue.active; }
+      finally {
+        queue.active = undefined;
+        if (startedEpoch === epoch && !queue.queued) inventoryBatches.delete(cwd);
+      }
+    });
+    await queue.queued;
   };
   pi.on("tool_result", async (event, ctx) => {
-    // 알림은 보조다: 경로 읽기·git·원장·전달 어느 단계의 실패도 편집 흐름으로 번지지 않고, 전달에 실패한 파일은 다음 편집에서 다시 알릴 수 있다.
     if (event.isError) return;
+    const startedEpoch = epoch;
     if (event.toolName === "cross_review") {
-      for (const path of [...uncovered]) {
-        try { await refresh(path, ctx.cwd); } catch { /* 다음 편집이나 검토 결과에서 다시 본다. */ }
-      }
+      await Promise.all([...repos].filter(([, state]) => state.uncovered.length > 0).map(([root, state]) => refresh(root, state, startedEpoch, false)));
+      return;
+    }
+    const details = event.details;
+    const appliedResolve = event.toolName === "resolve" && details && typeof details === "object"
+      && "sourceToolName" in details && details.sourceToolName === "ast_edit"
+      && "sourceResultDetails" in details && appliedAstEdit(details.sourceResultDetails);
+    if (event.toolName === "bash" || event.toolName === "eval" || appliedResolve || (event.toolName === "ast_edit" && appliedAstEdit(details))) {
+      // The runner awaits tool_result. Bound the whole check, including cwd resolution, but leave a slow scan running.
+      const deadline = new AbortController();
+      const check = async () => {
+        let cwd = ctx.cwd;
+        const input = event.input;
+        if (event.toolName === "bash" && input && typeof input === "object" && "cwd" in input && typeof input.cwd === "string") {
+          const { resolveToCwd } = await import("@oh-my-pi/pi-coding-agent/tools/path-utils");
+          cwd = resolve(resolveToCwd(input.cwd, cwd));
+        }
+        await refreshAfterOpaqueWrite(cwd, startedEpoch);
+      };
+      try { await Promise.race([check(), delay(NOTICE_RESULT_WAIT_MS, undefined, { signal: deadline.signal })]); }
+      catch { /* 실패한 보조 조회는 도구 출력을 바꾸지 않는다. */ }
+      finally { deadline.abort(); }
       return;
     }
     if (event.toolName !== "edit" && event.toolName !== "write") return;
-    let paths: string[];
-    try { paths = editedPaths(event.toolName, event.input, ctx.cwd); } catch { return; }
-    for (const path of paths) {
-      try {
-        const text = await refresh(path, ctx.cwd);
-        if (!text || noticed.has(path) || !(pi.getActiveTools?.().includes("cross_review") ?? true)) continue;
-        pi.sendMessage({ customType: "cross-review-notice", content: text, display: false, attribution: "agent" }, { deliverAs: "aside" });
-        noticed.add(path);
-      } catch { /* 알림 실패는 편집 결과와 다른 파일의 추적에 영향을 주지 않는다. */ }
-    }
+    const touched = new Map<string, RepoNoticeState>();
+    try {
+      const exec = spawnExec();
+      for (const absolute of editedPaths(event.toolName, event.input, ctx.cwd)) {
+        const target = await resolveRepoTargets(ctx.cwd, [relative(ctx.cwd, absolute)], exec);
+        if (startedEpoch !== epoch) return;
+        if ("failure" in target) continue;
+        const state = stateFor(target.root);
+        state.edited.add(target.targets[0]!.path);
+        touched.set(target.root, state);
+      }
+    } catch { /* 경로를 찾지 못해도 편집 결과는 유지한다. */ }
+    await Promise.all([...touched].map(([root, state]) => refresh(root, state, startedEpoch, true)));
   });
   pi.events.on("cuelo:turn-end-notices", (data) => {
     const { ctx, notices } = data as TurnEndNotices;
-    if (ctx.agent?.kind === "sub" || remindedThisInput || uncovered.size === 0 || !(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
+    if (ctx.agent?.kind === "sub" || remindedThisInput || !(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
+    const uncovered = [...repos.values()].flatMap((state) => state.uncovered);
+    if (uncovered.length === 0) return;
     remindedThisInput = true;
-    const names = [...uncovered].map((path) => relative(ctx.cwd, path) || path).slice(0, 5);
-    notices.push(`cross_review: ${names.join(", ")}${uncovered.size > names.length ? ` 외 ${uncovered.size - names.length}개` : ""}는 review marker가 걸렸는데 지금 내용을 덮는 통과 기록이 없다. 완료를 보고하기 전에 함께 한 번 cross_review하라(rule://cross-review-procedure). 이 안내는 입력당 한 번이며 승인이 아니다.`);
+    const names = uncovered.slice(0, 5).map((path) => relative(ctx.cwd, path) || path);
+    notices.push(`cross_review: ${names.join(", ")}${uncovered.length > names.length ? ` 외 ${uncovered.length - names.length}개` : ""}는 review marker 또는 변경 크기 기준에 해당하는데 지금 내용을 덮는 통과 기록이 없다. 완료를 보고하기 전에 필요한 파일을 함께 한 번 cross_review하라(rule://cross-review-procedure). 이 안내는 입력당 한 번이며 승인이 아니다.`);
   });
 }
