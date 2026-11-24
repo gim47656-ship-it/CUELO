@@ -1,4 +1,7 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useContext, type CSSProperties, type ReactNode } from "react";
+import { ActionButton, Icon } from "@seed-design/react";
+import { useI18n } from "@/hooks/useI18n";
+import { ToolCallRevealContext } from "../tool-call-reveal";
 import {
   isCompoundFailure,
   latestChecks,
@@ -149,6 +152,36 @@ const NEXT_BY_REASON: Record<UnknownReason, AnswerStatusMessageKey> = {
   interrupted: "flow.next.again",
 };
 
+/** 작업 과정에서 보기: 기록 줄 셋과 그중 한 줄을 가리키는 화살표. */
+const REVEAL_IN_LOG_ICON = (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M6.5 3.5h7M6.5 8h7M6.5 12.5h7M2 5.5 4.5 8 2 10.5" />
+  </svg>
+);
+
+/**
+ * 펼친 명령 아래에서 작업 과정 패널의 같은 실행(출력 전체)으로 간다. 채팅이 이동 통로를 줄 때만 보인다.
+ * 펼침 줄(summary) 안에 두면 펼치기와 키보드 순서가 깨지므로 펼친 본문에 둔다.
+ */
+function RevealInLog({ toolCallId }: { toolCallId: string }) {
+  const reveal = useContext(ToolCallRevealContext);
+  const { t } = useI18n();
+  if (!reveal) return null;
+  return (
+    <ActionButton
+      className="flow-reveal"
+      variant="ghost"
+      size="xsmall"
+      layout="withText"
+      onClick={() => reveal(toolCallId)}
+      style={{ marginTop: 6, marginInlineStart: -8 }}
+    >
+      <Icon size="14px" svg={REVEAL_IN_LOG_ICON} />
+      {t("processLog.revealInLog")}
+    </ActionButton>
+  );
+}
+
 /**
  * 펼친 검사 행: 판정 미확인이면 무엇이 확인됐고 무엇이 없는지, 그리고 원래 명령과 셸 종료 코드. 여러 단계를 한 명령으로
  * 돌려 실패했으면 명령 전체의 실패만 확인됐고, 어느 단계의 실패인지는 없다. 기다린 실행이 이 커밋의 CI가 아니었으면 그 실행이
@@ -191,6 +224,7 @@ function CommandDetail({ step, label, st }: { step: CommandStep; label: string; 
         : <p className="flow-why">{st("flow.commandOmitted")}</p>}
       <div className="flow-exit">{exit}</div>
       {step.evidence && <div className="flow-exit">{st("flow.evidence")} <code className="flow-evidence">{step.evidence}</code></div>}
+      <RevealInLog toolCallId={step.toolCallId} />
     </div>
   );
 }

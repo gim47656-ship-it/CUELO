@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, forwardRef, KeyboardEvent } from "react";
-import { ActionButton } from "@seed-design/react";
+import { ActionButton, Menu } from "@seed-design/react";
+import { getFileName } from "@/lib/file-paths";
 import type { BuiltinSlashCommandResult, CompactResultInfo } from "@/hooks/useAgentSession";
 import type { DeliveryRow } from "@/lib/answer-status/delivery";
 import { DeliveryRows } from "./answer-status/DeliveryRows";
@@ -254,6 +255,8 @@ interface Props {
   onEnsureSession?: () => Promise<string | null>;
   /** Reloads the chat after a finalized live voice turn is durably stored. */
   onLiveTranscriptPersisted?: (sessionId: string) => void | Promise<void>;
+  /** Shown above the input on the empty new-session screen: where the first message starts. */
+  startPlace?: React.ReactNode;
 }
 
 export interface ChatInputHandle {
@@ -673,6 +676,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   sessionId,
   onEnsureSession,
   onLiveTranscriptPersisted,
+  startPlace,
 }: Props, ref) {
   const { t } = useI18n();
   // 사무실 모드에서는 openai-codex 자리의 이름과 얼굴이 바뀐다.
@@ -3381,6 +3385,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             );
           })()}
+          {startPlace}
           <div
             className={`chat-composer-field${bashMode ? " is-bash" : ""}${isStreaming ? " is-streaming" : ""}`}
             style={{
@@ -4101,3 +4106,88 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     </div>
   );
 });
+
+export interface StartPlaceProject {
+  path: string;
+  name: string;
+}
+
+/**
+ * 「시작할 곳」 on the new-session composer: the project the first message starts in, a picker of the
+ * projects the app already knows, and that project's current branch.
+ */
+export function ComposerStartPlace({ cwd, projects, onChoose }: {
+  cwd: string;
+  projects: readonly StartPlaceProject[];
+  onChoose: (path: string) => void;
+}) {
+  const { t } = useI18n();
+  const [branch, setBranch] = useState<{ cwd: string; label: string | null } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`/api/git/summary?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((summary: { isGitRepository?: unknown; branch?: unknown; detached?: unknown } | null) => {
+        const label = summary?.isGitRepository === true
+          ? (summary.detached === true
+            ? t("projectOverview.detachedHead")
+            : typeof summary.branch === "string" ? summary.branch : null)
+          : null;
+        setBranch({ cwd, label });
+      })
+      .catch(() => {
+        // Aborted or unreachable: the chip shows the project without a branch.
+      });
+    return () => controller.abort();
+  }, [cwd, t]);
+  const name = getFileName(cwd) || cwd;
+  const branchLabel = branch?.cwd === cwd ? branch.label : null;
+  return (
+    <div className="composer-start-place">
+      <span className="composer-start-place-label">{t("composer.startIn")}</span>
+      <Menu.Root placement="top-start" strategy="fixed">
+        <Menu.Trigger asChild>
+          <button
+            type="button"
+            className="composer-start-place-project"
+            title={cwd}
+            aria-label={t("composer.chooseProject", { name })}
+          >
+            <span>{name}</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+        </Menu.Trigger>
+        <Menu.Positioner>
+          <Menu.Content aria-label={t("composer.startIn")}>
+            <Menu.ScrollArea>
+              <Menu.Group>
+                {projects.map((project) => (
+                  <Menu.Item
+                    key={project.path}
+                    role="menuitemradio"
+                    aria-checked={project.path === cwd}
+                    onClick={() => {
+                      if (project.path !== cwd) onChoose(project.path);
+                    }}
+                  >
+                    <Menu.ItemBody>
+                      <Menu.ItemLabel>{project.name}</Menu.ItemLabel>
+                      <Menu.ItemDescription>{project.path}</Menu.ItemDescription>
+                    </Menu.ItemBody>
+                  </Menu.Item>
+                ))}
+              </Menu.Group>
+            </Menu.ScrollArea>
+          </Menu.Content>
+        </Menu.Positioner>
+      </Menu.Root>
+      {branchLabel && (
+        <span className="composer-start-place-branch" title={t("projectOverview.branch")}>
+          {/* deslop-ignore-next-line 24 -- the same branch glyph the session list draws for worktrees */}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></svg>
+          <span>{branchLabel}</span>
+        </span>
+      )}
+    </div>
+  );
+}

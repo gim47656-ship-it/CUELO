@@ -11,6 +11,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useNow } from "@/hooks/useNow";
 import { toolProgressKey, useToolProgress } from "@/hooks/useToolProgress";
 import { ActionButton, Badge } from "@seed-design/react";
+import { ToolCallFocusContext } from "./tool-call-reveal";
 import { ComposerAttachContext } from "./ComposerAttachContext";
 import { ImageRegionMarker, renderRegionImages } from "./ImageRegionMarker";
 import type { Region, Size } from "@/lib/image-regions";
@@ -1273,6 +1274,15 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
   // 결과가 없을 때 경과를 셀 기준. 생성 종료 시각이 없으면 이 줄이 처음 그려진 때로 대신한다.
   const [mountedAt] = useState(() => Date.now());
   const [toggled, setToggled] = useState<boolean | null>(null);
+  // 작업 과정 패널이 이 실행을 찾아오면(채팅의 작업 흐름에서 이동) 출력을 펼치고 잠시 강조한다.
+  const focus = useContext(ToolCallFocusContext);
+  const focusNonce = focus?.toolCallId === block.toolCallId ? focus.nonce : null;
+  const [openedForNonce, setOpenedForNonce] = useState<number | null>(null);
+  if (focusNonce !== null && focusNonce !== openedForNonce) {
+    // 패널이 이 실행을 찾아왔다: 요청마다 한 번 출력을 펼친다. 그 뒤에는 사용자가 다시 접을 수 있다.
+    setOpenedForNonce(focusNonce);
+    setToggled(true);
+  }
   // 실행 중 도구가 알린 최근 진행 한 줄. 이 화면의 세션 것만 읽고, 결과가 오면 읽지 않으므로 결과가 진행을 대신한다.
   const progress = useToolProgress(result ? null : toolProgressKey(sessionId, block.toolCallId));
   const normalizedToolName = block.toolName.toLowerCase();
@@ -1320,7 +1330,8 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
 
   return (
     <div
-      className={`tool-call-card ${isError ? "is-error" : state === "running" ? "is-running" : "is-done"}${isBashTool ? " is-shell" : ""}`}
+      className={`tool-call-card ${isError ? "is-error" : state === "running" ? "is-running" : "is-done"}${isBashTool ? " is-shell" : ""}${focusNonce !== null ? " is-reveal-target" : ""}`}
+      data-tool-call-id={block.toolCallId}
       aria-busy={state === "running" ? true : undefined}
       style={{ overflow: "hidden", fontSize: 12 }}
     >

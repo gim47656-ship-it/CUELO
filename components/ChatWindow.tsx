@@ -28,6 +28,7 @@ import { isRunInterrupted } from "@/lib/run-interruption";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { selectCurrentTodo } from "@/lib/todo-state";
 import { getFileName } from "@/lib/file-paths";
+import { ToolCallRevealContext } from "./tool-call-reveal";
 import { MessageView } from "./MessageView";
 import { AnswerStatusContext, type AnswerStatusContextValue } from "./answer-status/AnswerStatusContext";
 import "./answer-status/answer-status.css";
@@ -123,6 +124,10 @@ interface Props {
   onOpenWorkspaceView?: (view: "subagents" | "process") => void;
   /** Opens the existing session navigator; passed only while it is hidden, so the empty screen can offer it. */
   onOpenSessionList?: () => void;
+  /** Shows a bash run of the transcript in the work log; bash cards offer it only while this is set. */
+  onRevealToolCall?: (toolCallId: string) => void;
+  /** The composer's "start in" project control on the empty new-session screen; it replaces the centre project block. */
+  composerStartPlace?: ReactNode;
   /** Opens one Maker's detail in the deck from an in-answer dispatch card; passed through to the cards unchanged. */
   onOpenMaker?: AnswerStatusContextValue["onOpenMaker"];
   /** The Maker the deck shows now; the matching card row is marked. */
@@ -520,7 +525,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -1284,6 +1289,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         draftKey={session?.id ?? (newSessionCwd ? `new:${newSessionCwd}` : undefined)}
         cwd={session?.cwd ?? newSessionCwd}
         sessionTitle={session?.name}
+        startPlace={isEmptyNew && !transcriptReplacement ? composerStartPlace : undefined}
       />
     </div>
   );
@@ -1381,15 +1387,17 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
   // The compacted dispatches belong to the request the compaction cut into, which is the latest turn.
   const latestShown = shownTurn === null || shownTurn === "live" || shownTurn === latestTurn;
   const turnInspectorPortal = turnInspectorTarget && createPortal(
-    <AnswerStatusContext.Provider value={answerStatus}>
-      <TurnInspector
-        summary={shownSummary}
-        live={shownTurn === "live"}
-        folded={turnInspectorFolded}
-        compactedCalls={latestShown ? compactedDispatch?.calls : undefined}
-        onOpenFile={onOpenFile}
-      />
-    </AnswerStatusContext.Provider>,
+    <ToolCallRevealContext.Provider value={onRevealToolCall ?? null}>
+      <AnswerStatusContext.Provider value={answerStatus}>
+        <TurnInspector
+          summary={shownSummary}
+          live={shownTurn === "live"}
+          folded={turnInspectorFolded}
+          compactedCalls={latestShown ? compactedDispatch?.calls : undefined}
+          onOpenFile={onOpenFile}
+        />
+      </AnswerStatusContext.Provider>
+    </ToolCallRevealContext.Provider>,
     turnInspectorTarget,
   );
   const progressStarted = agentRunning && (
@@ -1571,7 +1579,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
                 </span>
               </div>
             </div>
-            {messageCwd && (
+            {messageCwd && !composerStartPlace && (
               <section className="empty-workspace-context" aria-label={t("chat.emptyProjectLabel")}>
                 <div className="empty-workspace-context-text">
                   <span className="empty-workspace-context-kicker">{t("chat.emptyProjectLabel")}</span>
@@ -1638,6 +1646,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
+            <ToolCallRevealContext.Provider value={onRevealToolCall ?? null}>
             <AnswerStatusContext.Provider value={answerStatus}>
             <TurnSelectionContext.Provider value={turnSelection}>
             <InlineUtterancesProvider utterances={inlineUtterances}>
@@ -1684,6 +1693,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             {!detached && liveSummary && <TurnStreamRow summary={liveSummary} turnKey="live" live />}
             </TurnSelectionContext.Provider>
             </AnswerStatusContext.Provider>
+            </ToolCallRevealContext.Provider>
             {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}
 
             <div ref={messagesEndRef} />

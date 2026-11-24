@@ -142,6 +142,8 @@ html.dark {
   --w-rail: 60px;
   --w-inspector: 372px;
   --reading-measure: 720px;
+  /* Running prose inside the reading column stops here; code, tables and tool cards use the full measure. */
+  --prose-measure: 800px;
   --dur-fast: 120ms;
   --dur-sheet: 200ms;
 }
@@ -1583,7 +1585,8 @@ span.linenumber {
    retained only for browsers without inline-size container queries. */
 .workspace-shell {
   /* Pinning floors, kept equal to WORKSPACE_CONTENT_MINIMUMS in lib/workspace-layout.ts. The transcript
-     reads at --reading-measure (720px); 560px is only the floor below which the inspector stacks. */
+     reads at --reading-measure (720px, wider on wide windows); 560px is only the floor below which the
+     inspector stacks. */
   --workspace-min-transcript: 560px;
   --workspace-min-navigator: 240px;
   --workspace-min-deck: var(--w-inspector);
@@ -1833,11 +1836,57 @@ span.linenumber {
 }
 
 .workspace-header-action,
-.workspace-panel-toggle {
+.workspace-panel-toggle,
+.workspace-wide-toggle {
   flex: none;
   max-inline-size: 45cqi;
   overflow: hidden;
   white-space: nowrap;
+}
+
+/* 넓게: pressed is a background fill, never a line. On a narrow header the shell drops the label. */
+.workspace-header-seam .workspace-wide-toggle[aria-pressed="true"] {
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.workspace-wide-toggle-label {
+  word-break: keep-all;
+}
+
+/* Layout presets: one compact segmented control; the active preset is a filled segment. */
+.workspace-layout-presets {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--seed-radius-r2);
+  background: var(--bg-subtle);
+}
+
+.workspace-layout-preset {
+  block-size: 28px;
+  padding-inline: var(--seed-dimension-x2);
+  border: 0;
+  border-radius: calc(var(--seed-radius-r2) - 2px);
+  background: transparent;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  white-space: nowrap;
+  word-break: keep-all;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease-out, color var(--dur-fast) ease-out;
+}
+
+.workspace-layout-preset:hover {
+  background: var(--bg-hover);
+  color: var(--seed-color-fg-neutral);
+}
+
+.workspace-layout-preset[aria-pressed="true"] {
+  background: var(--seed-color-bg-neutral-weak);
+  color: var(--seed-color-fg-neutral);
+  font-weight: 500;
 }
 
 .workspace-context-usage {
@@ -2001,7 +2050,7 @@ span.linenumber {
   scroll-padding-block: 40px calc(var(--omp-dock-h, 204px) + 8px);
 }
 
-/* The reading measure: 720px of text plus the column padding. */
+/* The reading measure plus the column padding. */
 .chat-session-column .chat-session-scroll > div {
   inline-size: 100%;
   max-inline-size: calc(var(--reading-measure) + 32px);
@@ -2346,6 +2395,13 @@ span.linenumber {
   padding: 16px;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+/* With the project overview the empty files view reads top-down: overview first, documents after. */
+.workspace-file-empty[data-overview="true"] {
+  align-content: start;
+  place-items: stretch;
+  gap: var(--seed-dimension-x4);
 }
 
 .file-doc-shortcuts {
@@ -2947,12 +3003,17 @@ span.linenumber {
   color: var(--text);
 }
 
-/* --- chat: wide column toggle (desktop only; phones never hit the cap) ---- */
-.workspace-shell[data-chat-wide="true"] .chat-column-cap,
-.workspace-shell[data-chat-wide="true"] .chat-session-column .chat-session-scroll > div,
-.workspace-shell[data-chat-wide="true"] .chat-session-column .chat-session-scroll > div > div {
-  max-inline-size: none !important;
-  max-width: none !important;
+/* --- chat: running prose stops at --prose-measure ------------------------- */
+/* Paragraphs, lists, quotes and headings keep a readable line on a wide column; code, tables, tool
+   cards, images and mermaid still take the full reading measure, including code or a table nested
+   in a list or quote. Capped blocks stay on the left edge. */
+.chat-session-column .message-assistant .markdown-body > :is(p, dl, h1, h2, h3, h4, h5, h6),
+.chat-session-column .message-assistant .markdown-body > :is(ul, ol, blockquote):not(:has(pre, table)) {
+  max-inline-size: var(--prose-measure);
+}
+
+.chat-session-column .message-user > div:first-child {
+  max-inline-size: min(85%, var(--prose-measure)) !important;
 }
 
 .sidebar-overlay-backdrop {
@@ -3039,6 +3100,34 @@ span.linenumber {
 .panel-resize-handle:focus-visible::after,
 .panel-resize-handle.is-resizing::after {
   background: var(--bg-hover);
+}
+
+/* The pinned inspector's left edge. It renders only while the deck is pinned beside the transcript. */
+.inspector-resize-handle {
+  display: block;
+}
+
+/* Width readout under the inspector's tab row while its edge is dragged or focused. It floats over the
+   panel's first line so the tab row never reflows during a drag. */
+.auxiliary-deck-tabbar {
+  position: relative;
+}
+
+.inspector-width-readout {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: calc(100% - 4px);
+  inset-inline-start: 12px;
+  padding: 4px var(--seed-dimension-x2);
+  border-radius: var(--seed-radius-r2);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t3-static);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  word-break: keep-all;
+  pointer-events: none;
 }
 
 .sidebar-container.sidebar-resizing,
@@ -4192,6 +4281,64 @@ h2.priority-group-heading {
 
 .chat-composer {
   background: transparent !important;
+}
+
+/* 「시작할 곳」 on the new-session composer: label, project picker and branch on one quiet row. */
+.composer-start-place {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  min-inline-size: 0;
+  padding: 0 var(--seed-dimension-x1) var(--seed-dimension-x1_5);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.composer-start-place-label {
+  flex: none;
+  word-break: keep-all;
+}
+
+.composer-start-place-project {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+  min-inline-size: 0;
+  block-size: 28px;
+  padding-inline: var(--seed-dimension-x2);
+  border: 0;
+  border-radius: var(--seed-radius-r2);
+  background: var(--bg-subtle);
+  color: var(--seed-color-fg-neutral);
+  font-size: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) ease-out;
+}
+
+.composer-start-place-project:hover,
+.composer-start-place-project[aria-expanded="true"] {
+  background: var(--bg-hover);
+}
+
+.composer-start-place-project > span,
+.composer-start-place-branch > span {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-start-place-branch {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--seed-dimension-x1);
+  min-inline-size: 0;
+  /* deslop-ignore-next-line 34 -- a branch name is a git ref; mono keeps it readable as an identifier */
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
 }
 
 .chat-composer-field {
@@ -6488,6 +6635,22 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     flex: 0 0 var(--w-inspector);
     inline-size: var(--w-inspector);
     min-inline-size: var(--w-inspector);
+  }
+}
+
+/* Wide landscape windows (넓게 on, the default): the reading column grows with the window. 넓게 off
+   keeps 720px at every width. The column keeps inline-size: 100% under its cap, so a narrower centre
+   pane still fills and nothing below 1440px changes. The inspector's width is the shell's inline
+   --w-inspector (AppShell: 440px from 1800px until the user drags it). */
+@container workspace-shell (min-width: 1440px) {
+  .workspace-shell:not([data-chat-wide="false"]) > * {
+    --reading-measure: 960px;
+  }
+}
+
+@container workspace-shell (min-width: 1800px) {
+  .workspace-shell:not([data-chat-wide="false"]) > * {
+    --reading-measure: 1120px;
   }
 }
 
@@ -8912,8 +9075,6 @@ html.dark[data-cuelo-look="graphite"] {
   --gt-dim: brightness(0.62);
   --gt-wall: #1e1f21;
   --gt-wallpaper: none;
-  /* half the reading measure plus the column padding and a little air */
-  --gt-band-half: calc(var(--reading-measure) / 2 + 28px);
   /* the backing fades out over this width so a character next to the column
      is not cut by a hard edge; the text area inside stays at full backing */
   --gt-band-feather: 48px;
@@ -9002,6 +9163,9 @@ html.dark[data-cuelo-look="graphite"] .chat-window[data-empty-start] {
 
 /* One continuous column backing behind the transcript and the composer. */
 html.dark[data-cuelo-look="graphite"] .chat-window {
+  /* half the reading measure plus the column padding and a little air; declared here, not on
+     html, so it follows the measure the shell widens on wide windows */
+  --gt-band-half: calc(var(--reading-measure) / 2 + 28px);
   /* deslop-ignore-next-line 06 df-08 -- graphite look: the backing band feathers into the wallpaper; kept as an accepted look carry-over (after/m1/design-decisions.md 「Smaller replacements」) */
   background: linear-gradient(
     to right,
@@ -9010,10 +9174,6 @@ html.dark[data-cuelo-look="graphite"] .chat-window {
     var(--gt-backing) calc(50% + var(--gt-band-half)),
     transparent calc(50% + var(--gt-band-half) + var(--gt-band-feather))
   );
-}
-
-html.dark[data-cuelo-look="graphite"] .workspace-shell[data-chat-wide="true"] .chat-window:not([data-empty-start]) {
-  background: var(--gt-backing);
 }
 
 html.dark[data-cuelo-look="graphite"] .chat-composer-dock {

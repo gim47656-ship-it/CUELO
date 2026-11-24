@@ -64,6 +64,8 @@ export interface AuxiliaryDeckProps {
   onOpenFile?: (filePath: string) => void;
   /** 파일 보기에 열린 파일이 있어 그 머리줄이 넓게 보기 토글을 든다. 없으면 탭 줄이 든다. */
   fileOpen?: boolean;
+  /** The shell's width readout while the pinned inspector's edge is dragged or focused. */
+  widthReadout?: ReactNode;
 }
 
 export function AuxiliaryDeck({
@@ -94,6 +96,7 @@ export function AuxiliaryDeck({
   onReturnToDispatch,
   onOpenFile,
   fileOpen = false,
+  widthReadout = null,
 }: AuxiliaryDeckProps) {
   const { t } = useI18n();
   const closeDeck = () => {
@@ -186,6 +189,7 @@ export function AuxiliaryDeck({
               <Icon size="16px" svg={<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>} />
             </ActionButton>
           )}
+          {widthReadout}
         </div>
 
         <Tabs.Content value="turn" className="auxiliary-deck-panel">

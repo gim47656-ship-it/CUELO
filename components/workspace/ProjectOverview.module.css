@@ -1,0 +1,262 @@
+/* 프로젝트 개요: 묶음은 여백으로, 줄은 hover·초점 때의 면 채움으로만 나눈다. 선과 테두리는 긋지 않는다. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x5);
+  padding: var(--seed-dimension-x3) var(--seed-dimension-x3) var(--seed-dimension-x5);
+  min-inline-size: 0;
+  color: var(--seed-color-fg-neutral);
+  font-size: var(--seed-font-size-t4-static);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x0_5);
+  min-inline-size: 0;
+  padding: var(--seed-dimension-x3);
+  border-radius: var(--radius-surface);
+  background: var(--bg-subtle);
+}
+
+.name {
+  margin: 0;
+  font-size: var(--seed-font-size-t6-static);
+  font-weight: 700;
+  line-height: 1.3;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.cwd {
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--seed-dimension-x1);
+  min-inline-size: 0;
+}
+
+.heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--seed-dimension-x1_5);
+  margin: 0;
+  padding-inline: var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  font-weight: 600;
+  word-break: keep-all;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  margin: 0;
+  padding-inline: var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-muted);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--seed-dimension-x2);
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 28px;
+  padding: 0 var(--seed-dimension-x1);
+  border: 0;
+  border-radius: var(--seed-radius-r1);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+
+.rowButton {
+  cursor: pointer;
+}
+
+.rowButton:hover {
+  background: var(--bg-hover);
+}
+
+.rowButton:focus {
+  outline: none;
+}
+
+.rowButton:focus-visible {
+  background: var(--bg-hover);
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+
+.dirRow,
+.deletedRow {
+  color: var(--seed-color-fg-neutral-muted);
+}
+
+/* 삭제된 파일: 취소선이 '지워짐'이라는 뜻을 싣는다. */
+.deletedRow .pathText {
+  /* deslop-ignore-next-line 09 */
+  text-decoration: line-through;
+}
+
+.code {
+  flex: none;
+  inline-size: 1.5ch;
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  font-weight: 700;
+  text-align: center;
+}
+
+.toneModified {
+  color: var(--warning);
+}
+
+.toneAdded {
+  color: var(--success);
+}
+
+.toneDeleted {
+  color: var(--danger);
+}
+
+.toneRenamed {
+  color: var(--accent);
+}
+
+.pathText,
+.entryName {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pathText {
+  text-align: left;
+}
+
+.entryName {
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t3-static);
+}
+
+.branchLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x2);
+  margin: 0;
+  padding-inline: var(--seed-dimension-x1);
+  min-inline-size: 0;
+}
+
+.branchName {
+  min-inline-size: 0;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.upstream {
+  min-inline-size: 0;
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+  overflow-wrap: anywhere;
+}
+
+.sync {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--seed-dimension-x1) var(--seed-dimension-x3);
+  margin: 0;
+  padding-inline: var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t3-static);
+  word-break: keep-all;
+}
+
+.syncPending {
+  color: var(--seed-color-fg-neutral);
+  font-weight: 600;
+}
+
+/* 해시와 시각은 열을 맞추고 제목이 남은 폭을 쓴다. 넓은 덱에서도 시각이 제목에서 멀어지지 않는다. */
+.commitList {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  column-gap: var(--seed-dimension-x2);
+}
+
+.commitRow {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  min-inline-size: 0;
+  padding: var(--seed-dimension-x1);
+}
+
+.hash {
+  flex: none;
+  color: var(--seed-color-fg-neutral-muted);
+  font-family: var(--font-mono);
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.subject {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.when {
+  flex: none;
+  color: var(--seed-color-fg-neutral-muted);
+  font-size: var(--seed-font-size-t2-static);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.more {
+  padding: var(--seed-dimension-x1);
+  color: var(--seed-color-fg-neutral-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--seed-font-size-t2-static);
+}
+
+.skeletonRow {
+  block-size: 14px;
+  margin: 7px var(--seed-dimension-x1);
+  border-radius: var(--seed-radius-r1);
+  background: var(--seed-color-bg-neutral-weak);
+}
+
+.skeletonRow:nth-child(2n) {
+  inline-size: 70%;
+}

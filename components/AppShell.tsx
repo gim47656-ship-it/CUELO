@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useReducer, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, useReducer, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams, type ReadonlyURLSearchParams } from "next/navigation";
 import { ActionButton, Icon, Menu } from "@seed-design/react";
@@ -30,6 +30,7 @@ import { EfficiencyPanel } from "./workspace/EfficiencyPanel";
 import { PluginLabPanel, type LabWidgetReport } from "./workspace/PluginLabPanel";
 import { MemoryTraceView } from "./workspace/MemoryTraceView";
 import { FileDocShortcuts } from "./workspace/FileDocShortcuts";
+import { ProjectOverview } from "./workspace/ProjectOverview";
 import { BranchNavigator } from "./BranchNavigator";
 import { getContextIndicator } from "@/lib/context-usage";
 import { autoNameBlockReason } from "@/lib/auto-name";
@@ -75,14 +76,27 @@ import {
   type WorkspaceViewId,
 } from "@/lib/workspace-layout";
 import {
+  clampPanelWidth,
+  getDefaultInspectorWidth,
+  getInspectorMaxWidth,
+  getLogCharsForWidth,
   getSidebarMaxWidth,
+  getWidthForLogChars,
+  INSPECTOR_DEFAULT_WIDTH,
+  INSPECTOR_MAX_WIDTH,
+  INSPECTOR_MIN_WIDTH,
+  LOG_PRESET_CHARS,
+  measureLogLineMetrics,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  snapToLogWidth,
+  WIDE_SHELL_MIN_WIDTH,
+  type LogLineMetrics,
 } from "@/lib/panel-layout";
 import type { BlockingExtensionUiRequest, ExtensionWidgetItem, SessionInfo, SessionTreeNode, SubagentSnapshot } from "@/lib/types";
 import type { ProjectTrustState } from "@/lib/api-types";
-import type { ChatInputHandle } from "./ChatInput";
+import { ComposerStartPlace, type ChatInputHandle, type StartPlaceProject } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/omp-types";
 import type { AgentCompletionResult, SessionData } from "@/hooks/useAgentSession";
 import { ComposerAttachContext } from "./ComposerAttachContext";
@@ -123,6 +137,16 @@ const TRANSIENT_LAYER_FOCUSABLE_SELECTOR =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 const WIDE_CHAT_STORAGE_KEY = "omp-web:wide-chat";
 const INSPECTOR_STORAGE_KEY = "omp-web:inspector-open";
+const INSPECTOR_WIDTH_STORAGE_KEY = "omp-web:inspector-width";
+/** Below this header width the 넓게 toggle keeps only its icon. */
+const HEADER_WIDE_LABEL_MIN_WIDTH = 880;
+
+type LayoutPreset = "chat" | "log" | "preview";
+const LAYOUT_PRESETS = [
+  { id: "chat", label: "layout.presetChat", title: "layout.presetChatTitle" },
+  { id: "log", label: "layout.presetLog", title: "layout.presetLogTitle" },
+  { id: "preview", label: "layout.presetPreview", title: "layout.presetPreviewTitle" },
+] as const satisfies ReadonlyArray<{ id: LayoutPreset; label: string; title: string }>;
 function createAppSideChatStore() {
   try {
     return createSideChatHistoryStore(typeof window === "undefined" ? null : window.localStorage);
@@ -223,13 +247,14 @@ export function AppShell({
   const handleChatJumpHandled = useCallback((id: number) => {
     setChatJump((current) => (current?.id === id ? null : current));
   }, []);
-  // Wide chat drops the transcript's column cap on wide screens; per browser.
-  const [wideChat, setWideChat] = useState(false);
+  // 넓게: on (the default) the reading column widens with the window (960px from a 1440px shell,
+  // 1120px from 1800px); off keeps 720px at every width. Per browser; only "0" turns it off.
+  const [wideChat, setWideChat] = useState(true);
   useEffect(() => {
     try {
-      setWideChat(window.localStorage.getItem(WIDE_CHAT_STORAGE_KEY) === "1");
+      setWideChat(window.localStorage.getItem(WIDE_CHAT_STORAGE_KEY) !== "0");
     } catch {
-      // Without storage the standard width stays.
+      // Without storage the automatic width stays.
     }
   }, []);
   const toggleWideChat = useCallback(() => {
@@ -278,6 +303,8 @@ export function AppShell({
   // panel never shows lines that arrived for another session.
   const [labWidgets, setLabWidgets] = useState<LabWidgetReport>({ sessionId: null, widgets: [] });
   const [pinDecision, setPinDecision] = useState(() => getWorkspacePinDecision(0));
+  // The shell is wide enough (>= 1440px) for the 넓게 toggle, layout presets and the new-session inspector.
+  const [wideShell, setWideShell] = useState(false);
   const [sideChatStore] = useState(createAppSideChatStore);
   // 진행 중 /btw 요청의 소유권. 덱이 닫히거나 반응형으로 이동해 패널이
   // 언마운트돼도 이 인스턴스는 유지되므로, 다시 열린 패널이 같은 flight에
@@ -587,6 +614,98 @@ export function AppShell({
     widthRef: sidebarWidthRef,
   });
   const reclampSidebarWidth = sidebarResizer.reclampWidth;
+  // The pinned inspector's width: automatic (440px from an 1800px shell, else 372px) until the user
+  // drags its edge or picks the 로그 layout; that width is kept per browser and re-clamped so the
+  // transcript keeps its 560px floor beside the rail and the open navigator.
+  const inspectorWidthRef = useRef(INSPECTOR_DEFAULT_WIDTH);
+  const readShellContentWidth = useCallback(() => {
+    const shell = shellRef.current;
+    if (!shell) return typeof window === "undefined" ? 0 : window.innerWidth;
+    const style = getComputedStyle(shell);
+    return shell.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0);
+  }, []);
+  const getInspectorDefaultWidth = useCallback(
+    () => getDefaultInspectorWidth(readShellContentWidth()),
+    [readShellContentWidth],
+  );
+  const inspectorNavigatorWidth = !isCompactWorkspace && navigatorPresentation.laidOut ? sidebarResizer.width : null;
+  const getResponsiveInspectorMaxWidth = useCallback(() => {
+    const shell = shellRef.current;
+    const zoneGap = shell ? Number.parseFloat(getComputedStyle(shell).columnGap) || 0 : 0;
+    return getInspectorMaxWidth({
+      shellContentWidth: readShellContentWidth(),
+      navigatorWidth: inspectorNavigatorWidth,
+      zoneGap,
+    });
+  }, [inspectorNavigatorWidth, readShellContentWidth]);
+  // Characters per process-log output line at a given inspector width, measured from the log's own CSS.
+  const [logLineMetrics, setLogLineMetrics] = useState<LogLineMetrics | null>(null);
+  const refreshLogMetrics = useCallback(() => {
+    const metrics = measureLogLineMetrics(document.getElementById("workspace-auxiliary-panel"));
+    setLogLineMetrics((current) => (
+      current && metrics && current.charWidth === metrics.charWidth && current.chrome === metrics.chrome ? current : metrics
+    ));
+    return metrics;
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void document.fonts.ready.then(() => {
+      if (!cancelled) refreshLogMetrics();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshLogMetrics]);
+  const formatInspectorWidth = useCallback((width: number) => (
+    logLineMetrics
+      ? translate("layout.inspectorReadout", { width, chars: getLogCharsForWidth(width, logLineMetrics) })
+      : `${width}px`
+  ), [logLineMetrics, translate]);
+  const inspectorReadoutRef = useRef<HTMLSpanElement>(null);
+  const showInspectorReadout = useCallback((width: number) => {
+    const readout = inspectorReadoutRef.current;
+    if (readout) readout.textContent = formatInspectorWidth(width);
+  }, [formatInspectorWidth]);
+  const snapInspectorWidth = useCallback((width: number) => snapToLogWidth(width, logLineMetrics), [logLineMetrics]);
+  const inspectorResizer = useResizablePanel({
+    ariaLabel: translate("layout.resizeInspector"),
+    cssVariable: "--w-inspector",
+    defaultWidth: INSPECTOR_DEFAULT_WIDTH,
+    followDefault: true,
+    formatValueText: formatInspectorWidth,
+    getDefaultWidth: getInspectorDefaultWidth,
+    getMaxWidth: getResponsiveInspectorMaxWidth,
+    growthDirection: "left",
+    maxWidth: INSPECTOR_MAX_WIDTH,
+    minWidth: INSPECTOR_MIN_WIDTH,
+    onLiveWidth: showInspectorReadout,
+    snapWidth: snapInspectorWidth,
+    storageKey: INSPECTOR_WIDTH_STORAGE_KEY,
+    widthRef: inspectorWidthRef,
+  });
+  const inspectorPanelRef = inspectorResizer.panelRef;
+  // The shell carries --w-inspector so the deck slot and the navigator clamp read the same width.
+  const setShellNode = useCallback((node: HTMLDivElement | null) => {
+    shellRef.current = node;
+    inspectorPanelRef.current = node;
+  }, [inspectorPanelRef]);
+  // The readout shows during a pointer drag and while the edge has keyboard focus. A press focuses the
+  // edge too, so the press marks itself first and that focus does not count as keyboard focus.
+  const [inspectorHandleKeyboardFocus, setInspectorHandleKeyboardFocus] = useState(false);
+  const inspectorHandlePressRef = useRef(false);
+  const inspectorReadoutVisible = inspectorResizer.isResizing || inspectorHandleKeyboardFocus;
+  const headerRef = useRef<HTMLElement>(null);
+  const [headerNarrow, setHeaderNarrow] = useState(false);
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number") setHeaderNarrow(width < HEADER_WIDE_LABEL_MIN_WIDTH);
+    });
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
   // Drawer and pinned modes remember their own navigator state. This prevents
   // hydration from flashing the drawer and preserves an intentional desktop
   // collapse when the shell crosses the content-derived pin boundary.
@@ -670,6 +789,7 @@ export function AppShell({
           ? current
           : next;
       });
+      setWideShell(width >= WIDE_SHELL_MIN_WIDTH);
     };
     updateDecision(shell.getBoundingClientRect().width);
     const observer = new ResizeObserver((entries) => {
@@ -1779,6 +1899,37 @@ export function AppShell({
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
   const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
+  const overviewCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
+  // A new session on a wide shell opens the inspector on the files view (the project overview) once.
+  // It stays after the first message; closing it on that screen keeps it closed until the next new session.
+  const newSessionScreenKey = selectedSession === null && effectiveNewSessionCwd !== null ? sessionKey : null;
+  const [autoInspectorSessionKey, setAutoInspectorSessionKey] = useState<number | null>(null);
+  if (newSessionScreenKey !== null && wideShell && inspectorPinned && autoInspectorSessionKey !== newSessionScreenKey) {
+    setAutoInspectorSessionKey(newSessionScreenKey);
+    if (workspaceLayout.activeView === "chat") dispatchWorkspaceLayout({ type: "select-view", view: "files" });
+  }
+  // 「시작할 곳」: projects the app already knows from its sessions, most recent first.
+  const startPlaceProjects = useMemo<StartPlaceProject[]>(() => {
+    const seen = new Set<string>();
+    const projects: StartPlaceProject[] = [];
+    const ordered = [...fullSessions].sort((a, b) => b.modified.localeCompare(a.modified));
+    for (const session of ordered) {
+      const path = session.projectRoot ?? session.cwd;
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      projects.push({ path, name: getFileName(path) || path });
+    }
+    if (effectiveNewSessionCwd && !seen.has(effectiveNewSessionCwd)) {
+      projects.unshift({ path: effectiveNewSessionCwd, name: getFileName(effectiveNewSessionCwd) || effectiveNewSessionCwd });
+    }
+    return projects;
+  }, [effectiveNewSessionCwd, fullSessions]);
+  const startInProject = useCallback((path: string) => {
+    handleNewSession(`start-${Date.now()}`, path);
+  }, [handleNewSession]);
+  const composerStartPlace = wideShell && newSessionScreenKey !== null && effectiveNewSessionCwd ? (
+    <ComposerStartPlace cwd={effectiveNewSessionCwd} projects={startPlaceProjects} onChoose={startInProject} />
+  ) : undefined;
   // Pinned: the inspector shows while open, or while a panel view was asked for. Stacked: a panel view
   // or 이번 턴 on request takes the conversation's place; on the phone it is the bottom sheet instead.
   const showAuxiliaryDeck = inspectorPinned
@@ -1903,6 +2054,18 @@ export function AppShell({
   const mainStatusSummary =
     `${mainStatusGlyph} Main ${mainStatusLabel} · Sub ${liveSubagentCount}${subagentCap ? `/${subagentCap}` : ""}`;
   const openWorkspaceView = useCallback((view: "subagents" | "process") => selectWorkspaceView(view, true), [selectWorkspaceView]);
+  // A bash card in the conversation asks for its run in 작업 과정: the inspector opens (pinned, the
+  // stacked view or the phone sheet) on the process view, which scrolls to that run.
+  const [processFocusRequest, setProcessFocusRequest] = useState<{ toolCallId: string; nonce: number } | null>(null);
+  // A request is spent once the process view is left: a later plain reopen must not replay that reveal.
+  if (processFocusRequest && workspaceLayout.activeView !== "process") setProcessFocusRequest(null);
+  // The process panel stays mounted across tabs and remembers the last nonce it handled, so nonces never restart.
+  const revealNonceRef = useRef(0);
+  const revealToolCallInLog = useCallback((toolCallId: string) => {
+    setProcessFocusRequest({ toolCallId, nonce: ++revealNonceRef.current });
+    selectWorkspaceView("process");
+    if (inspectorPinned) setInspectorOpen(true);
+  }, [inspectorPinned, selectWorkspaceView, setInspectorOpen]);
   const deckPresentation = getDeckPresentation({
     deckVisible: showAuxiliaryDeck,
     pinDecision,
@@ -1912,6 +2075,46 @@ export function AppShell({
   const deckExpand = deckPresentation.expandable
     ? { expanded: deckPresentation.expanded, onToggle: toggleDeckExpanded }
     : null;
+  // Layout presets. 대화 closes the inspector; 로그 opens the process log at 120 characters per line;
+  // 미리보기 opens the files view widened into the transcript's place (the '패널 넓게 보기' state). The
+  // active preset is read back from that state, so a drag off the 120-character width deselects 로그.
+  const logPresetWidth = logLineMetrics
+    ? clampPanelWidth(
+      getWidthForLogChars(LOG_PRESET_CHARS, logLineMetrics),
+      INSPECTOR_MIN_WIDTH,
+      inspectorResizer.separatorProps["aria-valuemax"],
+    )
+    : null;
+  const activeLayoutPreset: LayoutPreset | null = !showAuxiliaryDeck
+    ? "chat"
+    : deckPresentation.expanded
+      ? (workspaceLayout.activeView === "files" ? "preview" : null)
+      : workspaceLayout.activeView === "process" && logPresetWidth !== null && Math.abs(inspectorResizer.width - logPresetWidth) <= 1
+        ? "log"
+        : null;
+  const setInspectorPanelWidth = inspectorResizer.setPanelWidth;
+  // Each preset and each touch of the inspector edge supersedes a 로그 width still waiting for fonts.
+  const logPresetTokenRef = useRef(0);
+  const applyLayoutPreset = useCallback((preset: LayoutPreset) => {
+    const token = ++logPresetTokenRef.current;
+    if (preset === "chat") {
+      selectWorkspaceView("chat");
+      setInspectorOpen(false);
+      return;
+    }
+    setInspectorOpen(true);
+    selectWorkspaceView(preset === "log" ? "process" : "files");
+    dispatchWorkspaceLayout({ type: "set-deck-expanded", expanded: preset === "preview" });
+    if (preset !== "log") return;
+    // Measure once the process view is laid out, so a real output line on screen wins over the probe.
+    void document.fonts.ready.then(() => {
+      requestAnimationFrame(() => {
+        if (token !== logPresetTokenRef.current) return;
+        const metrics = refreshLogMetrics();
+        if (metrics) setInspectorPanelWidth(getWidthForLogChars(LOG_PRESET_CHARS, metrics), { forcePersist: true });
+      });
+    });
+  }, [refreshLogMetrics, selectWorkspaceView, setInspectorOpen, setInspectorPanelWidth]);
   // 넓힌 덱이 더는 넓힐 수 없는 자리로 가면(창이 좁아짐) 넓힌 상태를 지운다. 창을 다시 넓혀도 저절로 넓어지지 않는다.
   const staleDeckExpansion = deckPresentation.staleExpansion;
   useEffect(() => {
@@ -1993,7 +2196,8 @@ export function AppShell({
             )}
           />
         ) : (
-          <div className="workspace-file-empty">
+          <div className="workspace-file-empty" data-overview={wideShell && overviewCwd ? "true" : undefined}>
+            {wideShell && overviewCwd && <ProjectOverview cwd={overviewCwd} onOpenFile={handleOpenLinkedFile} />}
             <FileDocShortcuts cwd={selectedSession?.cwd ?? activeCwd} onOpenFile={handleOpenLinkedFile} />
           </div>
         )}
@@ -2039,6 +2243,7 @@ export function AppShell({
       title={viewLabels.process}
       data={processLog}
       onOpenFile={handleOpenLinkedFile}
+      focusRequest={processFocusRequest}
     />
   );
   const selectedSessionPath = resolveSidePanelSessionPath(selectedSession, sessionStats);
@@ -2087,6 +2292,11 @@ export function AppShell({
       closeLabel={inspectorPinned ? translate("inspector.hide") : translate("inspector.backToChat")}
       onReturnFocus={requestComposerFocus}
       expand={deckExpand}
+      widthReadout={inspectorPinned && inspectorReadoutVisible && !deckPresentation.expanded ? (
+        <span ref={inspectorReadoutRef} className="inspector-width-readout" aria-hidden="true">
+          {formatInspectorWidth(inspectorResizer.width)}
+        </span>
+      ) : null}
       selectedMaker={selectedMaker}
       onSelectMaker={setSelectedMaker}
       onReturnToDispatch={returnToDispatch}
@@ -2221,12 +2431,13 @@ export function AppShell({
       </div>
     ) : null}
     <div
-      ref={shellRef}
+      ref={setShellNode}
       className="workspace-shell"
       data-active-view={workspaceLayout.activeView}
       data-deck-mode={pinDecision.deck}
       data-deck-visible={showAuxiliaryDeck}
-      data-chat-wide={wideChat ? "true" : undefined}
+      data-chat-wide={wideChat ? "true" : "false"}
+      style={{ "--w-inspector": `${inspectorResizer.width}px` } as React.CSSProperties}
     >
       {!isCompactWorkspace && railContent}
       {/* Navigator drawer backdrop */}
@@ -2304,7 +2515,7 @@ export function AppShell({
             </div>
           )}
           <NotificationPermission variant="banner" locale={locale} {...notificationPermission} />
-          <header className="workspace-header-seam">
+          <header ref={headerRef} className="workspace-header-seam">
             <ActionButton
               ref={sidebarToggleRef}
               className="workspace-header-nav-toggle"
@@ -2388,6 +2599,38 @@ export function AppShell({
                   />
                 </span>
                 <span className="workspace-context-readout" data-level={contextIndicator.level}>{contextReadout}</span>
+              </ActionButton>
+            )}
+            {showChat && wideShell && inspectorPinned && (
+              <div className="workspace-layout-presets" role="group" aria-label={translate("layout.presets")}>
+                {LAYOUT_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className="workspace-layout-preset"
+                    aria-pressed={activeLayoutPreset === preset.id}
+                    title={translate(preset.title)}
+                    onClick={() => applyLayoutPreset(preset.id)}
+                  >
+                    {translate(preset.label)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showChat && wideShell && (
+              <ActionButton
+                className="workspace-wide-toggle"
+                variant="ghost"
+                size="small"
+                layout={headerNarrow ? "iconOnly" : "withText"}
+                type="button"
+                onClick={toggleWideChat}
+                aria-pressed={wideChat}
+                title={translate("layout.wideTitle")}
+                aria-label={translate("layout.wide")}
+              >
+                <WorkbenchIcon name="maximize-2" />
+                {!headerNarrow && <span className="workspace-wide-toggle-label">{translate("layout.wide")}</span>}
               </ActionButton>
             )}
             {showChat && (
@@ -2758,6 +3001,8 @@ export function AppShell({
               onLabWidgetsChange={handleLabWidgetsChange}
               onOpenWorkspaceView={openWorkspaceView}
               onOpenSessionList={navigatorPresentation.presented ? undefined : handleSidebarToggle}
+              onRevealToolCall={revealToolCallInLog}
+              composerStartPlace={composerStartPlace}
               onOpenMaker={openMaker}
               selectedMaker={selectedMaker}
               onProcessLogChange={setProcessLog}
@@ -2838,9 +3083,36 @@ export function AppShell({
         </div>
       </div>
       {inspectorPinned && inspectorShown && !sidePlaceOpen && (
-        <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
-          {auxiliaryDeckContent}
-        </aside>
+        <>
+          <div
+            {...inspectorResizer.separatorProps}
+            aria-controls="workspace-auxiliary-panel"
+            className={`panel-resize-handle inspector-resize-handle${inspectorResizer.isResizing ? " is-resizing" : ""}`}
+            data-resize-handle="inspector"
+            title={`${translate("layout.resizeInspector")}: ${translate("layout.resizeHint")}`}
+            onPointerDownCapture={() => {
+              inspectorHandlePressRef.current = true;
+              logPresetTokenRef.current += 1;
+            }}
+            onFocus={() => {
+              refreshLogMetrics();
+              setInspectorHandleKeyboardFocus(!inspectorHandlePressRef.current);
+              inspectorHandlePressRef.current = false;
+            }}
+            onBlur={() => {
+              inspectorHandlePressRef.current = false;
+              setInspectorHandleKeyboardFocus(false);
+            }}
+            onKeyDown={(event) => {
+              setInspectorHandleKeyboardFocus(true);
+              logPresetTokenRef.current += 1;
+              inspectorResizer.separatorProps.onKeyDown(event);
+            }}
+          />
+          <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-pinned" data-workspace-region="deck">
+            {auxiliaryDeckContent}
+          </aside>
+        </>
       )}
       {deckAsSheet && (
         <div className="inspector-sheet-layer">
@@ -2956,6 +3228,11 @@ export function AppShell({
                 <button type="button" onClick={toggleWideChat}>
                   <span><WorkbenchIcon name="maximize-2" />{translate(wideChat ? "palette.wideChatOff" : "palette.wideChatOn")}</span>
                 </button>
+                {wideShell && inspectorPinned && LAYOUT_PRESETS.map((preset) => (
+                  <button key={preset.id} type="button" onClick={() => applyLayoutPreset(preset.id)}>
+                    <span><WorkbenchIcon name="panel-right" />{translate("palette.layoutPreset", { name: translate(preset.label) })}</span>
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => {

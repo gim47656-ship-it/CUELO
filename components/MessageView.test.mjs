@@ -10,6 +10,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const { MessageView } = await jiti.import("./MessageView.tsx");
 const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
+const { ToolCallFocusContext } = await jiti.import("./tool-call-reveal.ts");
 
 function renderMessage(message) {
   return renderToStaticMarkup(
@@ -140,6 +141,32 @@ test("a failed bash opens expanded with the failure word, exit code and output",
   assert.match(html, /1 fail/);
   const controls = /aria-controls="([^"]+)"/.exec(html)?.[1];
   assert.ok(controls && html.includes(`id="${controls}"`), "the row controls the expanded body");
+});
+
+function renderFocusedBash(focus) {
+  const message = React.createElement(MessageView, {
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "gpt-test",
+      content: [{ type: "toolCall", toolCallId: "call-1", toolName: "bash", input: { command: "ls -la" } }],
+    },
+    toolResults: new Map([["call-1", { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "total 0" }] }]]),
+  });
+  return renderToStaticMarkup(
+    React.createElement(I18nProvider, null, React.createElement(ToolCallFocusContext.Provider, { value: focus }, message)),
+  );
+}
+
+test("a focus request for a collapsed card opens its output and marks it", () => {
+  const focused = renderFocusedBash({ toolCallId: "call-1", nonce: 1 });
+  assert.match(focused, /data-tool-call-id="call-1"/);
+  assert.match(focused, /class="tool-call-card is-done is-shell is-reveal-target"/);
+  assert.match(focused, /aria-expanded="true"/);
+  assert.match(focused, /shell-output-preview/);
+
+  const other = renderFocusedBash({ toolCallId: "call-2", nonce: 1 });
+  assert.doesNotMatch(other, /is-reveal-target|shell-output-preview/);
 });
 
 test("a nonzero exit counts as failed even when the result is not flagged as an error", () => {

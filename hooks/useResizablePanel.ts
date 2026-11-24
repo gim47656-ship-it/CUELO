@@ -31,6 +31,18 @@ interface UseResizablePanelOptions {
   minWidth: number;
   storageKey: string;
   widthRef: MutableRefObject<number>;
+  /**
+   * Without a stored width the panel follows getDefaultWidth whenever it re-clamps, and reset clears
+   * the stored width instead of storing the default. Re-clamps never overwrite the stored width, so a
+   * window that narrows for a while does not lose the width the user chose.
+   */
+  followDefault?: boolean;
+  /** Adjusts each pointer-drag width (for example to snap); the result is clamped again. */
+  snapWidth?: (width: number) => number;
+  /** Every width the panel takes, including drag frames that do not re-render. */
+  onLiveWidth?: (width: number) => void;
+  /** Spoken value of the separator; defaults to "<width> px". */
+  formatValueText?: (width: number) => string;
 }
 
 interface CommitOptions {
@@ -57,22 +69,38 @@ function writeStoredWidth(storageKey: string, width: number): void {
   }
 }
 
+function clearStoredWidth(storageKey: string): void {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // Without storage there is nothing to clear.
+  }
+}
+
 export function useResizablePanel(options: UseResizablePanelOptions) {
   const {
     ariaLabel,
     cssVariable,
     defaultWidth,
+    followDefault = false,
+    formatValueText,
     getDefaultWidth,
     getMaxWidth,
     growthDirection,
     maxWidth,
     minWidth,
+    onLiveWidth,
+    snapWidth,
     storageKey,
     widthRef,
   } = options;
   const panelRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const restoredRef = useRef(false);
+  // followDefault only: the width the user chose (stored), or null while the panel follows its default.
+  const preferredWidthRef = useRef<number | null>(null);
+  // What a re-clamp goes back to: the chosen width when a following panel has one, else the width last committed.
+  const reclampTargetRef = useRef(defaultWidth);
   const [width, setWidth] = useState(defaultWidth);
   const [isResizing, setIsResizing] = useState(false);
 
@@ -89,7 +117,8 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
   const applyLiveWidth = useCallback((nextWidth: number) => {
     widthRef.current = nextWidth;
     panelRef.current?.style.setProperty(cssVariable, `${nextWidth}px`);
-  }, [cssVariable, widthRef]);
+    onLiveWidth?.(nextWidth);
+  }, [cssVariable, onLiveWidth, widthRef]);
 
   const commitWidth = useCallback((candidate: number, commitOptions: CommitOptions = {}) => {
     const { forcePersist = false, persist = true } = commitOptions;
@@ -97,9 +126,15 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     const changed = nextWidth !== widthRef.current;
     applyLiveWidth(nextWidth);
     setWidth(nextWidth);
-    if (persist && (changed || forcePersist)) writeStoredWidth(storageKey, nextWidth);
+    // A following panel stores only explicit choices (drag, keys, a preset); re-clamps never store.
+    const store = followDefault ? persist && forcePersist : persist && (changed || forcePersist);
+    if (store) {
+      writeStoredWidth(storageKey, nextWidth);
+      if (followDefault) preferredWidthRef.current = nextWidth;
+    }
+    reclampTargetRef.current = preferredWidthRef.current ?? nextWidth;
     return nextWidth;
-  }, [applyLiveWidth, clampWidth, storageKey, widthRef]);
+  }, [applyLiveWidth, clampWidth, followDefault, storageKey, widthRef]);
 
   const restoreBodyState = useCallback((drag: DragState) => {
     document.body.style.cursor = drag.previousCursor;
@@ -112,7 +147,8 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     dragRef.current = null;
     restoreBodyState(drag);
     setIsResizing(false);
-    commitWidth(widthRef.current, { forcePersist: true });
+    // A press that never moved is not a width choice for a panel that follows its default.
+    commitWidth(widthRef.current, { forcePersist: !followDefault || widthRef.current !== drag.startWidth });
 
     try {
       if (drag.target.hasPointerCapture(pointerId)) {
@@ -121,7 +157,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     } catch {
       // The browser may have already released capture after pointer cancellation.
     }
-  }, [commitWidth, restoreBodyState, widthRef]);
+  }, [commitWidth, followDefault, restoreBodyState, widthRef]);
 
   const onPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -157,11 +193,12 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     event.preventDefault();
 
     const direction = growthDirection === "right" ? 1 : -1;
-    const nextWidth = clampWidth(drag.startWidth + ((event.clientX - drag.startX) * direction));
+    const dragged = clampWidth(drag.startWidth + ((event.clientX - drag.startX) * direction));
+    const nextWidth = snapWidth ? clampWidth(snapWidth(dragged)) : dragged;
     applyLiveWidth(nextWidth);
     event.currentTarget.setAttribute("aria-valuenow", String(nextWidth));
-    event.currentTarget.setAttribute("aria-valuetext", `${nextWidth} px`);
-  }, [applyLiveWidth, clampWidth, finishResize, growthDirection]);
+    event.currentTarget.setAttribute("aria-valuetext", formatValueText?.(nextWidth) ?? `${nextWidth} px`);
+  }, [applyLiveWidth, clampWidth, finishResize, formatValueText, growthDirection, snapWidth]);
 
   const onPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     finishResize(event.pointerId);
@@ -177,12 +214,22 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
 
   const resetWidth = useCallback(() => {
     const nextDefault = getDefaultWidth?.() ?? defaultWidth;
+    if (followDefault) {
+      preferredWidthRef.current = null;
+      clearStoredWidth(storageKey);
+      commitWidth(nextDefault);
+      return;
+    }
     commitWidth(nextDefault, { forcePersist: true });
-  }, [commitWidth, defaultWidth, getDefaultWidth]);
+  }, [commitWidth, defaultWidth, followDefault, getDefaultWidth, storageKey]);
 
   const reclampWidth = useCallback(() => {
+    if (followDefault) {
+      commitWidth(preferredWidthRef.current ?? getDefaultWidth?.() ?? defaultWidth);
+      return;
+    }
     commitWidth(widthRef.current);
-  }, [commitWidth, widthRef]);
+  }, [commitWidth, defaultWidth, followDefault, getDefaultWidth, widthRef]);
 
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 32 : 12;
@@ -212,23 +259,24 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     restoredRef.current = true;
 
     const storedWidth = readStoredWidth(storageKey);
+    if (followDefault) preferredWidthRef.current = storedWidth;
     const candidate = storedWidth ?? getDefaultWidth?.() ?? defaultWidth;
     const restoredWidth = commitWidth(candidate, { persist: false });
+    if (followDefault) return;
     if (storedWidth !== null && storedWidth !== restoredWidth) {
       writeStoredWidth(storageKey, restoredWidth);
     }
-  }, [commitWidth, defaultWidth, getDefaultWidth, storageKey]);
+  }, [commitWidth, defaultWidth, followDefault, getDefaultWidth, storageKey]);
 
   useEffect(() => {
     if (!restoredRef.current) return;
-    commitWidth(widthRef.current);
+    // A following panel goes back to the width it was given (chosen, else its automatic default, which
+    // never exceeds the maximum); the window resize listener picks up a changed default.
+    commitWidth(reclampTargetRef.current);
 
-    const onResize = () => {
-      commitWidth(widthRef.current);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [commitWidth, widthRef]);
+    window.addEventListener("resize", reclampWidth);
+    return () => window.removeEventListener("resize", reclampWidth);
+  }, [commitWidth, reclampWidth]);
 
   useEffect(() => {
     if (!isResizing) return;
@@ -261,13 +309,15 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     panelRef,
     reclampWidth,
     resetWidth,
+    /** Sets the width as a user choice (stored), for example from a layout preset. */
+    setPanelWidth: commitWidth,
     separatorProps: {
       "aria-label": ariaLabel,
       "aria-orientation": "vertical" as const,
       "aria-valuemax": effectiveMaxWidth(),
       "aria-valuemin": minWidth,
       "aria-valuenow": width,
-      "aria-valuetext": `${width} px`,
+      "aria-valuetext": formatValueText?.(width) ?? `${width} px`,
       onDoubleClick: resetWidth,
       onKeyDown,
       onLostPointerCapture,
