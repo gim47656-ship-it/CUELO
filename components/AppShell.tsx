@@ -1900,14 +1900,6 @@ export function AppShell({
   const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
   const overviewCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
-  // A new session on a wide shell opens the inspector on the files view (the project overview) once.
-  // It stays after the first message; closing it on that screen keeps it closed until the next new session.
-  const newSessionScreenKey = selectedSession === null && effectiveNewSessionCwd !== null ? sessionKey : null;
-  const [autoInspectorSessionKey, setAutoInspectorSessionKey] = useState<number | null>(null);
-  if (newSessionScreenKey !== null && wideShell && inspectorPinned && autoInspectorSessionKey !== newSessionScreenKey) {
-    setAutoInspectorSessionKey(newSessionScreenKey);
-    if (workspaceLayout.activeView === "chat") dispatchWorkspaceLayout({ type: "select-view", view: "files" });
-  }
   // 「시작할 곳」: projects the app already knows from its sessions, most recent first.
   const startPlaceProjects = useMemo<StartPlaceProject[]>(() => {
     const seen = new Set<string>();
@@ -1927,7 +1919,7 @@ export function AppShell({
   const startInProject = useCallback((path: string) => {
     handleNewSession(`start-${Date.now()}`, path);
   }, [handleNewSession]);
-  const composerStartPlace = wideShell && newSessionScreenKey !== null && effectiveNewSessionCwd ? (
+  const composerStartPlace = wideShell && selectedSession === null && effectiveNewSessionCwd ? (
     <ComposerStartPlace cwd={effectiveNewSessionCwd} projects={startPlaceProjects} onChoose={startInProject} />
   ) : undefined;
   // Pinned: the inspector shows while open, or while a panel view was asked for. Stacked: a panel view
