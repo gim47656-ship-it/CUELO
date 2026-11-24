@@ -3,6 +3,7 @@ import {
   openPaneFrames,
   postPaneInput,
   postPaneReturn,
+  postPaneViewport,
   readPaneChannel,
   type PaneChannel,
   type PaneFrame,
@@ -39,6 +40,11 @@ export type PaneEvent =
 
 export type PaneInputResult = "sent" | "invalid" | "not-user" | "not-live";
 export type PaneReturnResult = "returned" | "not-user" | "failed";
+export type PaneViewportResult = "set" | "invalid" | "none" | "failed";
+
+/** A viewer box outside this range is no real pane; ego refuses it too. */
+const VIEWPORT_MIN = 100;
+const VIEWPORT_MAX = 10_000;
 
 const POLL_MS = 1_000;
 const EMPTY_STATE: PaneState = { status: "none", ownership: null, tabs: [], tabId: null, agentTabId: null, follow: true };
@@ -266,6 +272,19 @@ export async function returnPaneControl(sessionId: string, channelPath: string =
   if (!channel) return "failed";
   const status = await postPaneReturn(channel, paneSpaceName(sessionId));
   return status === 200 ? "returned" : status === 409 ? "not-user" : "failed";
+}
+
+/**
+ * The box a surface shows the session's space in (CSS pixels). ego lays the space's tabs out in
+ * that shape, so the page fills the box instead of leaving empty rows above and below it.
+ */
+export async function setPaneViewport(sessionId: string, width: unknown, height: unknown, channelPath: string = paneChannelPath()): Promise<PaneViewportResult> {
+  const valid = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= VIEWPORT_MIN && (value as number) <= VIEWPORT_MAX;
+  if (!valid(width) || !valid(height)) return "invalid";
+  const channel = readPaneChannel(channelPath);
+  if (!channel) return "failed";
+  const status = await postPaneViewport(channel, paneSpaceName(sessionId), width, height);
+  return status === 204 ? "set" : status === 404 ? "none" : "failed";
 }
 
 /**

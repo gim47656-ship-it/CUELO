@@ -36,6 +36,8 @@ const MOUSE_BUTTONS = ["left", "middle", "right"] as const;
 const TEXT_CHUNK = 2_000;
 /** Text beyond this is refused as a whole, with a notice, instead of being cut. */
 const TEXT_MAX = 200_000;
+/** A resize settles before the new shape goes to ego, so a dragged border does not relayout the page every frame. */
+const VIEWPORT_SETTLE_MS = 250;
 
 function modifierBits(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): number {
   return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
@@ -48,12 +50,14 @@ function modifierBits(event: { altKey: boolean; ctrlKey: boolean; metaKey: boole
  */
 export function BrowserPane({ sessionId, sessionTitle, chrome }: BrowserPaneProps) {
   const { t } = useI18n();
-  const { status, state, hadView, frameSize, imageRef, bindImage, sendInput, returnControl, selectTab, reconnect } = useBrowserPane(sessionId);
+  const { status, state, hadView, frameSize, imageRef, bindImage, sendInput, returnControl, selectTab, reconnect, reportViewport } = useBrowserPane(sessionId);
   const [notice, setNotice] = useState<BandNotice | null>(null);
   const [returning, setReturning] = useState(false);
   const [scalePercent, setScalePercent] = useState<number | null>(null);
   const [keyboardFocus, setKeyboardFocus] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const tabsRef = useRef<HTMLDivElement | null>(null);
   const pointerFocusRef = useRef(false);
   const userTurn = state?.ownership === "user";
   const interactive = userTurn && status === "live";
@@ -75,6 +79,40 @@ export function BrowserPane({ sessionId, sessionTitle, chrome }: BrowserPaneProp
     observer.observe(image);
     return () => observer.disconnect();
   }, [frameSize, hasView, imageRef]);
+
+  // The box the page can fill: the scroll area without its padding and the tab list under the view.
+  // ego lays the agent's tab out at 1280 wide in this shape, so the frame fills the box top to bottom.
+  // Measured again when the view (re)appears live, since a restarted ego forgets the shape.
+  const live = status === "live";
+  const tabsShown = (state?.tabs.length ?? 0) > 0;
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || !live) return;
+    let timer: number | undefined;
+    let sent = "";
+    const measure = () => {
+      const box = getComputedStyle(scroll);
+      const tabs = tabsRef.current;
+      const tabsHeight = tabs ? tabs.getBoundingClientRect().height + parseFloat(getComputedStyle(tabs).marginBlockStart) : 0;
+      const width = Math.round(scroll.clientWidth - parseFloat(box.paddingLeft) - parseFloat(box.paddingRight));
+      const height = Math.round(scroll.clientHeight - parseFloat(box.paddingTop) - parseFloat(box.paddingBottom) - tabsHeight);
+      const key = `${width}x${height}`;
+      // A box that settles back to the one already sent cancels the report still waiting.
+      window.clearTimeout(timer);
+      if (width < 100 || height < 100 || key === sent) return;
+      timer = window.setTimeout(() => {
+        sent = key;
+        reportViewport(width, height);
+      }, VIEWPORT_SETTLE_MS);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroll);
+    if (tabsRef.current) observer.observe(tabsRef.current);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+    };
+  }, [live, tabsShown, reportViewport]);
 
   const pagePoint = useCallback((clientX: number, clientY: number) => {
     const image = imageRef.current;
@@ -232,7 +270,7 @@ export function BrowserPane({ sessionId, sessionTitle, chrome }: BrowserPaneProp
               <button type="button" className="browser-pane-button" onClick={reconnect}>{t("browserPane.reconnect")}</button>
             </div>
           )}
-          <div className="browser-pane-scroll">
+          <div className="browser-pane-scroll" ref={scrollRef}>
             <div className={`browser-pane-view${status === "lost" ? " is-stale" : ""}${keyboardFocus ? " is-keyboard-focus" : ""}`}>
               {/* eslint-disable-next-line @next/next/no-img-element -- frames are data URLs written by the stream, not a static asset */}
               <img ref={bindImage} alt="" draggable={false} />
@@ -287,7 +325,7 @@ export function BrowserPane({ sessionId, sessionTitle, chrome }: BrowserPaneProp
               />
             </div>
             {state && state.tabs.length > 0 && (
-              <div className="browser-pane-tabs">
+              <div className="browser-pane-tabs" ref={tabsRef}>
                 <div className="browser-pane-tabs-head">
                   <span>{t("browserPane.tabs")}</span>
                   <label className="browser-pane-follow">

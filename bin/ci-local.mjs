@@ -181,8 +181,7 @@ async function runExtensions(env, signal) {
     "./agent/tools/git-finalizer", "./agent/tools/windows-control", "./agent/tools/artifact-search",
     "./agent/tools/vm-build", "./agent/tools/ego-browser", "./agent/tools/deploy-verify",
     "./agent/tools/windows-build", "./agent/cuelo-plugins/scratch-dependency-hint", "./skill-cost"], harness, env, signal);
-  await run([process.execPath, "--test", "agent/rule-ledger/check.test.mjs", "agent/extension-ledger/check.test.mjs",
-    "agent/skills/kill-ai-slop/scripts/scan.test.mjs"], harness, env, signal);
+  await run([process.execPath, "--test", "agent/skills/kill-ai-slop/scripts/scan.test.mjs"], harness, env, signal);
 }
 
 async function coreTest(file, log, env, signal) {

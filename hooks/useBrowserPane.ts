@@ -30,9 +30,14 @@ export interface BrowserPaneView {
   /** A tab id pins the view to it; null follows the agent's tab again. */
   selectTab: (tabId: string | null) => void;
   reconnect: () => void;
+  /** The box (CSS pixels) this surface can show the page in; ego lays the space's tabs out in that shape. */
+  reportViewport: (width: number, height: number) => void;
 }
 
 const INPUT_BATCH = 32;
+/** A viewport report that failed is sent again this often before it is left to the next resize. */
+const VIEWPORT_TRIES = 3;
+const VIEWPORT_RETRY_MS = 2_000;
 
 const openEventSource: OpenPaneSource = (url, handlers) => {
   const source = new EventSource(url);
@@ -156,6 +161,41 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
 
   const reconnect = useCallback(() => store.reconnect(), [store]);
 
+  // One report in flight at a time, always the newest box, so an older box never lands after a
+  // newer one. A failed one is tried again a few times; after that the next resize or a view
+  // that comes back live sends it.
+  const viewportRef = useRef<{ width: number; height: number } | null>(null);
+  const viewportSendingRef = useRef(false);
+  const reportViewport = useCallback((width: number, height: number) => {
+    viewportRef.current = { width, height };
+    if (viewportSendingRef.current) return;
+    viewportSendingRef.current = true;
+    void (async () => {
+      try {
+        let failures = 0;
+        for (;;) {
+          const box = viewportRef.current;
+          if (!box || closedRef.current) return;
+          const ok = await fetch(base, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "viewport", ...box }),
+          }).then((response) => response.ok, () => false);
+          if (viewportRef.current !== box) {
+            failures = 0;
+            continue;
+          }
+          if (ok || ++failures >= VIEWPORT_TRIES) return;
+          const pause = Promise.withResolvers<void>();
+          setTimeout(pause.resolve, VIEWPORT_RETRY_MS);
+          await pause.promise;
+        }
+      } finally {
+        viewportSendingRef.current = false;
+      }
+    })();
+  }, [base]);
+
   let status: BrowserPaneStatus;
   // A stream that is being reopened is "lost" only when there is an old picture to say so about.
   if (streamDown) status = hadView ? "lost" : "connecting";
@@ -165,5 +205,5 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
   else if (state.status === "lost") status = hadView ? "lost" : "connecting";
   else status = state.status === "live" && frameTabId === state.tabId ? "live" : "connecting";
 
-  return { status, state, hadView, frameSize, imageRef, bindImage, sendInput, returnControl, selectTab, reconnect };
+  return { status, state, hadView, frameSize, imageRef, bindImage, sendInput, returnControl, selectTab, reconnect, reportViewport };
 }

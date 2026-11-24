@@ -34,6 +34,8 @@ export interface FakePaneServer {
   inputs: FakeInput[];
   /** The `targetId` query of every frames stream that was opened ("" when following). */
   streamTargets: string[];
+  /** Every viewer box ego was told, in order. */
+  viewports: { space: string; width: number; height: number }[];
   openStreams(): number;
   /** Sends the space's state to its open streams; call after changing `spaces`. */
   pushState(space: string): void;
@@ -76,6 +78,7 @@ export async function startFakePaneServer(channelPath: string): Promise<FakePane
   const spaces = new Map<string, FakeSpace>();
   const inputs: FakeInput[] = [];
   const streamTargets: string[] = [];
+  const viewports: FakePaneServer["viewports"] = [];
   const streams = new Set<{ space: string; targetId: string | null; res: ServerResponse }>();
   const stateOf = (space: FakeSpace) => ({ spaceId: space.spaceId, ownership: space.ownership, tabs: space.tabs });
   const event = (res: ServerResponse, name: string, data: unknown) => {
@@ -104,6 +107,16 @@ export async function startFakePaneServer(channelPath: string): Promise<FakePane
         req.on("close", () => streams.delete(stream));
         event(res, "state", stateOf(space));
         return;
+      }
+      if (req.method === "POST" && url.pathname === "/pane/viewport") {
+        const body = await readJson(req);
+        const name = typeof body?.space === "string" ? body.space : "";
+        if (!body || !spaces.has(name)) return send(res, 404, { error: "space not found" });
+        const { width, height } = body;
+        const fits = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 10_000;
+        if (!fits(width) || !fits(height)) return send(res, 400, { error: "bad viewport" });
+        viewports.push({ space: name, width, height });
+        return send(res, 204);
       }
       if (req.method === "POST" && (url.pathname === "/pane/input" || url.pathname === "/pane/return")) {
         const body = await readJson(req);
@@ -145,6 +158,7 @@ export async function startFakePaneServer(channelPath: string): Promise<FakePane
     spaces,
     inputs,
     streamTargets,
+    viewports,
     openStreams: () => streams.size,
     pushState(name) {
       const space = spaces.get(name);

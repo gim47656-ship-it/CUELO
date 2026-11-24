@@ -231,3 +231,17 @@ export async function postPaneReturn(channel: PaneChannel, space: string): Promi
     return 0;
   }
 }
+
+/**
+ * Tells ego how big the box is that shows the space (CSS pixels), so its tabs lay out in that
+ * shape. Resolves ego's HTTP status (204 taken, 404 no such space, 400 refused), or 0.
+ */
+export async function postPaneViewport(channel: PaneChannel, space: string, width: number, height: number): Promise<number> {
+  try {
+    const response = await request(channel, "/pane/viewport", { method: "POST", body: { space, width, height }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    await response.body?.cancel();
+    return response.status;
+  } catch {
+    return 0;
+  }
+}

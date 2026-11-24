@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fetchPaneState, postPaneInput, postPaneReturn, readPaneChannel } from "./channel";
-import { PaneHub, readPaneOwnership, returnPaneControl, type PaneEvent, type PaneState } from "./hub";
+import { PaneHub, readPaneOwnership, returnPaneControl, setPaneViewport, type PaneEvent, type PaneState } from "./hub";
 import { toPaneEventBatch } from "./input";
 import { paneChannelPath, paneSpaceName } from "./space";
 import { PaneViewStore, type PaneSourceHandlers } from "./view-store";
@@ -394,6 +394,29 @@ describe("returnPaneControl", () => {
     expect(await returnPaneControl(SESSION, channelPath)).toBe("failed");
     expect(await readPaneOwnership(SESSION, channelPath)).toEqual({ ownership: null, available: true });
     expect(await returnPaneControl(SESSION, join(tmpdir(), "cuelo-pane-test-missing", "ego-lite-pane.json"))).toBe("failed");
+  });
+});
+
+describe("setPaneViewport", () => {
+  test("tells ego the viewer box of the session's own space", async () => {
+    const { fake, channelPath } = await setup();
+    expect(await setPaneViewport(SESSION, 940, 1210, channelPath)).toBe("set");
+    expect(fake.viewports).toEqual([{ space: SPACE, width: 940, height: 1210 }]);
+  });
+
+  test("a box that is no real pane is refused before ego is asked", async () => {
+    const { fake, channelPath } = await setup();
+    for (const [width, height] of [[940.5, 800], [99, 800], [940, 10_001], ["940", 800], [940, null]]) {
+      expect(await setPaneViewport(SESSION, width, height, channelPath)).toBe("invalid");
+    }
+    expect(fake.viewports).toEqual([]);
+  });
+
+  test("no space reads as none, and no running ego as failed", async () => {
+    const { fake, channelPath } = await setup();
+    fake.spaces.clear();
+    expect(await setPaneViewport(SESSION, 940, 800, channelPath)).toBe("none");
+    expect(await setPaneViewport(SESSION, 940, 800, join(tmpdir(), "cuelo-pane-test-missing", "ego-lite-pane.json"))).toBe("failed");
   });
 });
 
