@@ -42,6 +42,7 @@ const OPUS = "anthropic/claude-opus-5-5";
 const DEEPSEEK = "hive/deepseek-ai/deepseek-v4.1-flash-1017";
 const SOL = "openai-codex/gpt-6.2-sol";
 const ASTRA = "openai-codex/gpt-6.2-astra";
+const FABLE = "anthropic/claude-fable-5-2";
 const MAKER_EFFORT = Symbol.for("cuelo.makerEffort");
 const candidates = [
   { profile: "HARD_ASTRA", model: ASTRA, efforts: allStrengths },
@@ -56,6 +57,10 @@ const candidates = [
   { profile: "NORMAL_SOL", model: SOL, efforts: allStrengths },
   { profile: "HARD_CODE_SOL", model: SOL, efforts: allStrengths },
   { profile: "HARD_BOUNDED_SOL", model: SOL, efforts: allStrengths },
+  // The fixture registry resolves efforts per model, so NORMAL_ASTRA shares HARD_ASTRA's row.
+  { profile: "NORMAL_ASTRA", model: ASTRA, efforts: allStrengths },
+  { profile: "NORMAL_FABLE", model: FABLE, efforts: ["medium", "high", "xhigh"] },
+  { profile: "HARD_FABLE", model: FABLE, efforts: ["medium", "high", "xhigh"] },
 ];
 const without = (...profiles: string[]) => candidates.filter((candidate) => !profiles.includes(candidate.profile));
 /** 후보·Main 모델의 계열. 코어 `ctx.models.family`(=`model.identity.class`)를 대신하는 하네스 fixture다. */
@@ -65,6 +70,7 @@ const families: Record<string, string> = {
   [ASTRA]: "openai",
   "anthropic/claude-opus-5-5": "anthropic",
   [SONNET]: "anthropic",
+  [FABLE]: "anthropic",
   [DEEPSEEK]: "unknown",
 };
 /** 메모리 ledger. 파일 경로 없이 기록·요약 경로를 본다. */
@@ -1683,7 +1689,7 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
     };
     const h = registryHarness({ registry });
     const batch = await h.route.prepareBatch("계약", [h.task], h.ctx);
-    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["HARD_ASTRA", "NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_SOL", "HARD_BOUNDED_SOL"]);
+    expect(batch.candidates.map((candidate) => candidate.profile)).toEqual(["HARD_ASTRA", "NORMAL_DEEPSEEK", "HARD_CODE_DEEPSEEK", "NORMAL_SOL", "HARD_CODE_SOL", "HARD_BOUNDED_SOL", "NORMAL_ASTRA"]);
     expect(batch.unavailableCandidates.map(({ profile, model }) => ({ profile, model }))).toEqual([
       { profile: "NORMAL_SONNET", model: SONNET },
       { profile: "NORMAL_OPUS", model: "anthropic/claude-opus-5-5" },
@@ -1691,6 +1697,8 @@ describe("후보 provider 갱신 공유와 잔량 예산", () => {
       { profile: "HARD_CODE_OPUS", model: "anthropic/claude-opus-5-5" },
       { profile: "HARD_CODE_SONNET", model: SONNET },
       { profile: "HARD_UI_SONNET", model: SONNET },
+      { profile: "NORMAL_FABLE", model: FABLE },
+      { profile: "HARD_FABLE", model: FABLE },
     ]);
     expect(batch.unavailableCandidates[0]!.reason).toBe("auto로 고를 추론 강도를 확인할 수 없는 후보");
   });
