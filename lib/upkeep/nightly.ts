@@ -231,7 +231,9 @@ export const NIGHTLY_SKILL_RULES = [
 ].join("\n");
 
 const posixQuote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
-const REGRESSION_COMMAND = `node ${posixQuote(join(homedir(), "cuelo-run/Tools/OMP_Global_Config/evals/outcome/run-revision-compare.mjs"))} --weekly --budget 2`;
+/** 주간 회귀 비교 실행 파일. 배포 체크아웃 `~/cuelo-run`에만 있고, 공개 설치본만 둔 클라우드에는 `evals/`가 없다. */
+export const REGRESSION_RUNNER = join(homedir(), "cuelo-run/Tools/OMP_Global_Config/evals/outcome/run-revision-compare.mjs");
+const REGRESSION_COMMAND = `node ${posixQuote(REGRESSION_RUNNER)} --weekly --budget 2`;
 
 export const NIGHTLY_REGRESSION_SECTION = [
   "# 주간 회귀 측정",
@@ -337,11 +339,13 @@ export function planNightlyRun(
   runningSessionIds: readonly string[],
   skillCandidates: readonly SkillCandidate[],
   coreUpdate: CoreUpdateLookup | null = null,
+  /** {@link REGRESSION_RUNNER}가 이 호스트에 있는지. 없으면 실행할 수 없는 회귀 명령을 싣지 않는다. */
+  regressionRunner = true,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   const problems = openProblems(report);
   const weeklyReview = weeklyReviewDue(state, date);
-  const regressionReview = regressionReviewDue(state, date);
+  const regressionReview = regressionRunner && regressionReviewDue(state, date);
   if (!problems.length && !skillCandidates.length && !weeklyReview && !regressionReview && coreUpdate?.status !== "newer") return { action: "skip", reason: "nothing-to-do" };
   const blocked = nightlyGuard(report.repoCwd, state, date, runningSessionIds);
   if (blocked || !report.repoCwd) return { action: "skip", reason: blocked ?? "no-repo" };

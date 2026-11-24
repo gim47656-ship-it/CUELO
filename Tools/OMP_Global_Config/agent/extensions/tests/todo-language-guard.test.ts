@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
@@ -7,11 +7,23 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasEnglishOnlyTodoProse, hasJapaneseTodoProse, requestedTodoEnglish, requestedTodoJapanese, userWritesKorean } from "../../cuelo-plugins/todo-language/todo-language";
 
 const japanese = ["コア直接変更とアプリ側機能の境界を確認", "現在のパッチ一覧と適用状態を確認", "利用者向けに効果と更新時の注意を整理"];
+// The guard appends kind counts for the nightly bundle; keep every test's writes out of the repository profile.
+const eventsDir = await mkdtemp(join(tmpdir(), "todo-language-events-"));
+const previousEventsPath = process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH;
+process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH = join(eventsDir, "events.jsonl");
+afterAll(async () => {
+  if (previousEventsPath === undefined) delete process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH;
+  else process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH = previousEventsPath;
+  await rm(eventsDir, { recursive: true, force: true });
+});
+const kindsSince = async (offset: number) =>
+  (await readFile(process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH!, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).slice(offset).map(line => JSON.parse(line).kind);
 
 async function harness() {
   const loaded = await loadExtensions([fileURLToPath(new URL("../../cuelo-plugins/todo-language/index.ts", import.meta.url))], process.cwd());
@@ -307,4 +319,37 @@ test("isolated HOME real SDK hooked tool smoke", async () => {
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("records only kind counts: checks, blocks, the passing rewrite and requested exceptions", async () => {
+  const offset = (await kindsSince(0)).length;
+  const h = await harness();
+  await h.runner.emitInput("vm 에 자료를 받아서 정리해줘", undefined, "interactive");
+  await expect(h.call({ op: "init", items: ["Check results"] })).rejects.toThrow("items[0]");
+  await expect(h.call({ op: "init", items: [japanese[0]] })).rejects.toThrow("items[0]");
+  // A status-only call introduces no text, so it is neither checked nor the rewrite.
+  expect((await h.call({ op: "done", task: "기존 작업" })).isError).toBeUndefined();
+  expect((await h.call({ op: "init", items: ["결과 확인"] })).isError).toBeUndefined();
+  expect((await h.call({ op: "append", items: ["다음 작업"] })).isError).toBeUndefined();
+  await h.runner.emitInput("할 일은 일본어로 써줘", undefined, "rpc");
+  expect((await h.call({ op: "init", items: [japanese[1]] })).isError).toBeUndefined();
+  expect(await kindsSince(offset)).toEqual(["checked", "block-english", "checked", "block-japanese", "checked", "rewritten", "checked", "checked", "allow-japanese"]);
+  const lines = (await readFile(process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH!, "utf8")).trim().split("\n").slice(offset);
+  for (const line of lines) expect(Object.keys(JSON.parse(line)).sort()).toEqual(["at", "kind"]);
+});
+
+test("an exception granted after a rejection is not counted as a rewrite, and a blocked call grants no exception", async () => {
+  const first = await harness();
+  let offset = (await kindsSince(0)).length;
+  await first.runner.emitInput("자료를 받아서 정리해줘", undefined, "interactive");
+  await expect(first.call({ op: "init", items: ["Check results"] })).rejects.toThrow("items[0]");
+  await first.runner.emitInput("할 일은 영어로 써줘", undefined, "rpc");
+  expect((await first.call({ op: "init", items: ["Check results"] })).isError).toBeUndefined();
+  expect(await kindsSince(offset)).toEqual(["checked", "block-english", "checked", "allow-english"]);
+
+  const second = await harness();
+  offset = (await kindsSince(0)).length;
+  await second.runner.emitInput("할 일은 일본어로 써줘", undefined, "interactive");
+  await expect(second.call({ op: "init", items: [japanese[0], "Check results"] })).rejects.toThrow("items[1]");
+  expect(await kindsSince(offset)).toEqual(["checked", "block-english"]);
 });

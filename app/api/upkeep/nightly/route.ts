@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { getAgentDir, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
@@ -6,7 +7,7 @@ import { invalidateSessionListCache, readFirstUserMessage, readSessionHeader, re
 import { readLastAssistant } from "@/lib/upkeep/nightly-result";
 import { getUpdateMutationBlock } from "@/lib/update-maintenance";
 import { collectUpkeep } from "@/lib/upkeep/collect";
-import { NIGHTLY_PREAMBLE, NIGHTLY_PROBLEM_SECTION, type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
+import { NIGHTLY_PREAMBLE, NIGHTLY_PROBLEM_SECTION, type NightlyJobs, type NightlySourcePlan, nightlyBranch, nightlyStateBranch, nightlyStateAfterRun, planNightlyRun, readNightlyState, REGRESSION_RUNNER, skillScanSince, writeNightlyState } from "@/lib/upkeep/nightly";
 import { createNightlyBranch, planInboxRun, pruneMergedNightlyBranches, pruneNightlyWorktrees, readCloudHandoffs, readNightlyInbox } from "@/lib/upkeep/nightly-inbox";
 import { collectNightlyCoreUpdate, type CoreUpdateLookup } from "@/lib/upkeep/nightly-core";
 import { collectOpenIssues } from "@/lib/upkeep/nightly-issues";
@@ -137,13 +138,13 @@ async function planAndRun(dryRun: boolean, recovery: string | null) {
       const issues = await collectOpenIssues();
       log(`issues: ${issues.status === "ok" ? `${issues.issues.length} open${issues.partial ? " (partial)" : ""}` : `unavailable (${issues.reason})`}`);
       coreUpdate = await collectNightlyCoreUpdate(repoOverride, handoffs?.base ? [handoffs.base.sha] : [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
-      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, coreUpdate, recovery);
+      plan = planInboxRun(inbox.bundles, state, now, getRunningRpcSessionIds(), repoOverride, process.env.CUELO_NIGHTLY_OUTBOX_DIR || null, issues, handoffs, coreUpdate, recovery, existsSync(REGRESSION_RUNNER));
     } else {
       const candidates = await collectSkillCandidates(getSessionsDir(agentDir), skillScanSince(state, now), now.getTime());
       const report = await collectUpkeep(true);
       const repoCwd = repoOverride ?? report.repoCwd;
       coreUpdate = await collectNightlyCoreUpdate(repoCwd, [`refs/heads/${nightlyBranch(kstDate(now.toISOString()))}`, "HEAD"]);
-      plan = planNightlyRun({ ...report, repoCwd }, state, now, getRunningRpcSessionIds(), candidates, coreUpdate);
+      plan = planNightlyRun({ ...report, repoCwd }, state, now, getRunningRpcSessionIds(), candidates, coreUpdate, existsSync(REGRESSION_RUNNER));
     }
     log(`core discovery: ${JSON.stringify(coreUpdate)}`);
   } catch (error) {

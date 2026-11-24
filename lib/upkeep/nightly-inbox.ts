@@ -1039,6 +1039,8 @@ export function planInboxRun(
   handoffs: Pick<CloudHandoffs, "items" | "base" | "dreamingLedger"> | null = null,
   coreUpdate: CoreUpdateLookup | null = null,
   completedLocalSessionId: string | null = null,
+  /** 주간 회귀 비교 실행 파일(`REGRESSION_RUNNER`)이 이 호스트에 있는지. 없으면 그 절을 싣지 않고 다음 날로 넘긴다. */
+  regressionRunner = true,
 ): NightlyPlan {
   const date = kstDate(now.toISOString());
   type Active = { bundle: NightlyBundle; candidates: SkillCandidate[]; plan: NightlySourcePlan };
@@ -1089,7 +1091,7 @@ export function planInboxRun(
     if (plan.jobs.weeklyReview) block.push("", weeklyBlock(bundle.source, bundle.toolFailures));
     sections.push(block.join("\n"));
   }
-  const regressionReview = regressionReviewDue(state, date);
+  const regressionReview = regressionRunner && regressionReviewDue(state, date);
   const overdueRows = (handoffs?.items ?? []).filter((item) => item.overdue && !handoffItems.includes(item));
   sections.push([
     "# 남은 HANDOFF 항목 분류",
