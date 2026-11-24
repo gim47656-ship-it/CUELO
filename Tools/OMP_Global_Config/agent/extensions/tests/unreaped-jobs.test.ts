@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -57,6 +60,11 @@ test("continuing, aborted and shutdown turns never collect jobs", async () => {
 // Real SDK load/bind proves shared session event-bus composition, independent of factory mocks.
 test("SDK plugin loading and single-disable isolation for all four features", async () => {
   const ids = ["goal-budget-hint", "unreaped-jobs", "tool-recovery-hint", "todo-language"];
+  // todo-language appends kind counts beside the agent folder; keep them out of the repository.
+  const eventsDir = await mkdtemp(join(tmpdir(), "todo-language-events-"));
+  const previousEventsPath = process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH;
+  process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH = join(eventsDir, "events.jsonl");
+  try {
   for (const disabled of [undefined, ...ids]) {
     const paths = [new URL("../turn-end-guard.ts", import.meta.url).pathname,
       ...ids.filter(id => id !== disabled).map(id => new URL(`../../cuelo-plugins/${id}/index.ts`, import.meta.url).pathname)];
@@ -89,6 +97,11 @@ test("SDK plugin loading and single-disable isolation for all four features", as
     }
     console.log(`SDK toggle ${disabled ?? "all-enabled"}: isolated behavior observed`);
     await runner.emit({ type: "session_shutdown" });
+  }
+  } finally {
+    if (previousEventsPath === undefined) delete process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH;
+    else process.env.CUELO_TODO_LANGUAGE_EVENTS_PATH = previousEventsPath;
+    await rm(eventsDir, { recursive: true, force: true });
   }
 });
 describe("turn-end unreaped jobs", () => {
