@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, watch } from "node:fs";
 import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Process } from "@oh-my-pi/pi-natives";
 import { FINALIZE_CHECKS_CONFIG, finalizeChecksNote, runFinalizeChecks } from "../lib/finalize-checks";
@@ -128,9 +128,9 @@ test.skipIf(process.platform !== "linux")("WSL candidate stages with the source 
   expect(f.git("diff", "--cached", "--name-only")).toBe("");
 });
 
-test("allows generated untracked reports but does not cache a changed input view", async () => {
+test.each(["src/report.txt", "report.txt"])("allows generated untracked report %s but does not cache a changed input view", async (report) => {
   const f = await fixture();
-  await f.config([{ name: "report", paths: ["src/"], command: bun(`require('node:fs').appendFileSync('src/report.txt', 'x')`) }]);
+  await f.config([{ name: "report", paths: ["src/"], command: bun(`require('node:fs').appendFileSync(process.argv[1], 'x')`, report) }]);
   const options = { publicationCandidate: true, files: [FINALIZE_CHECKS_CONFIG, "src/main.txt"] };
   const first = await f.run(options);
   expect(first?.checks[0].reused).toBe(false);
@@ -138,7 +138,9 @@ test("allows generated untracked reports but does not cache a changed input view
   const second = await f.run(options);
   expect(second?.checks[0].reused).toBe(false);
   expect(second?.candidateTree).toBeDefined();
-  expect(await readFile(join(f.root, "src", "report.txt"), "utf8")).toBe("x");
+  expect(await readFile(join(f.root, report), "utf8")).toBe("x");
+  await rm(join(f.root, report));
+  expect((await f.run(options))?.checks[0].reused).toBe(false);
 });
 
 test("cleans up the candidate after abort and retains the check's log", async () => {
@@ -199,6 +201,72 @@ test("reuses an identical pass and reruns for covered untracked or tracked conte
   await writeFile(join(f.root, "peer.txt"), "tracked changes outside the matching paths also matter\n");
   expect((await f.run())?.checks[0].reused).toBe(false);
   expect(await readFile(marker, "utf8")).toBe("run\n".repeat(5));
+});
+
+test.each(process.platform === "win32" ? [] : ["node", "bun"])("reruns when the PATH's %s reports a new version", async (runtime) => {
+  const f = await fixture();
+  const executable = join(f.scratch, runtime);
+  const version = `${executable}.version`;
+  const marker = join(f.scratch, "runs.txt");
+  await writeFile(executable, `#!/bin/sh
+if [ "$1" = "--version" ]; then cat "$0.version"; else printf 'run\\n' >> "$1"; fi
+`, { mode: 0o755 });
+  await writeFile(version, "1.0.0\n");
+  await f.config([{ name: "runtime", paths: ["src/"], command: [runtime, marker] }]);
+  const path = process.env.PATH;
+  process.env.PATH = `${f.scratch}${delimiter}${path ?? ""}`;
+  try {
+    expect((await f.run())?.checks[0].reused).toBe(false);
+    expect((await f.run())?.checks[0].reused).toBe(true);
+    await writeFile(version, "2.0.0\n");
+    expect((await f.run())?.checks[0].reused).toBe(false);
+    expect((await f.run())?.checks[0].reused).toBe(true);
+    expect(await readFile(marker, "utf8")).toBe("run\n".repeat(2));
+    await writeFile(version, "unknown\n");
+    expect((await f.run())?.checks[0].reused).toBe(false);
+    expect((await f.run())?.checks[0].reused).toBe(false);
+    expect(await readFile(marker, "utf8")).toBe("run\n".repeat(4));
+  } finally {
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+  }
+});
+
+test("publication reruns when an ignored installed package changes without a lockfile change", async () => {
+  const f = await fixture();
+  const installed = join(f.root, "node_modules", "fixture-dependency");
+  const manifest = join(installed, "package.json");
+  const marker = join(f.scratch, "version.txt");
+  await mkdir(installed, { recursive: true });
+  await writeFile(join(f.root, ".gitignore"), "/node_modules/\n");
+  await writeFile(manifest, '{"name":"fixture-dependency","version":"1.0.0"}');
+  await f.config([{ name: "dependency", paths: ["src/"], command: bun(`
+    const fs = require('node:fs');
+    fs.writeFileSync(process.argv[1], require('fixture-dependency/package.json').version);
+  `, marker) }]);
+  f.git("add", ".gitignore", FINALIZE_CHECKS_CONFIG);
+  f.git("commit", "-qm", "configure dependency check");
+  const options = { publicationCandidate: true };
+  expect((await f.run(options))?.checks[0].reused).toBe(false);
+  expect((await f.run(options))?.checks[0].reused).toBe(true);
+  await writeFile(manifest, '{"name":"fixture-dependency","version":"2.0.0"}');
+  expect((await f.run(options))?.checks[0].reused).toBe(false);
+  expect(await readFile(marker, "utf8")).toBe("2.0.0");
+});
+
+test("reruns when a check reads changed untracked input outside its paths", async () => {
+  const f = await fixture();
+  const input = join(f.root, "local-input.txt");
+  const marker = join(f.scratch, "input.txt");
+  await writeFile(input, "before");
+  await f.config([{ name: "input", paths: ["src/"], command: bun(`
+    require('node:fs').copyFileSync('local-input.txt', process.argv[1]);
+  `, marker) }]);
+  expect((await f.run())?.checks[0].reused).toBe(false);
+  expect((await f.run())?.checks[0].reused).toBe(true);
+  await writeFile(input, "after");
+  expect((await f.run())?.checks[0].reused).toBe(false);
+  expect(await readFile(marker, "utf8")).toBe("after");
 });
 
 test("source-loaded runner writes the default ledger and logs only to the configured agent directory", async () => {

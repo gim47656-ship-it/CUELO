@@ -43,7 +43,7 @@ test("pending reminder retains IDs, status exposes full checks, and verified evi
 });
 
 test("frames never change the system prompt; the frame is re-shown as a message only when the conversation lost it", async () => {
- type StartResult = { systemPrompt: string[]; message?: { customType: string; content: string; details: { at: string } } } | undefined;
+ type StartResult = { systemPrompt?: string[]; message?: { customType: string; content: string; details: { at: string } } } | undefined;
  const handlers = new Map<string, Handler[]>();
  let tool: GoalTool;
  const entries: Record<string, unknown>[] = [];
@@ -56,23 +56,28 @@ test("frames never change the system prompt; the frame is re-shown as a message 
   appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
  } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
  const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
- const start = async () => (await emit("before_agent_start", { reason: "prompt", prompt: "next", systemPrompt: ["base"] }))[0] as StartResult;
- const frame = (goal: string) => tool.execute("goal-test", { op: "frame", goal, size: "normal", deliverables: [{ id: "d", what: "w", check: "c" }] }, undefined, undefined, ctx);
+ const base = ["base"];
+ const start = async () => (await emit("before_agent_start", { reason: "prompt", prompt: "next", systemPrompt: base }))[0] as StartResult;
+ const frame = async (goal: string) => {
+  await tool.execute("goal-test", { op: "frame", goal, size: "normal", deliverables: [{ id: "d", what: "w", check: "c" }] }, undefined, undefined, ctx);
+  return (await emit("tool_result", { toolName: "lab_goal", input: { op: "frame" }, content: [], isError: false }))[0]?.additionalContext;
+ };
  await emit("session_start", {});
  const before = await start();
- await frame("First goal");
+ await emit("input", { source: "rpc", text: "Check the report." });
+ expect(await frame("First goal")).toContain("# Goal lane (Main only)");
  const afterFirst = await start();
- await frame("Second goal");
+ expect(await frame("Second goal")).toBeUndefined();
  const afterSecond = await start();
- expect(afterFirst?.systemPrompt).toEqual(before?.systemPrompt);
- expect(afterSecond?.systemPrompt).toEqual(before?.systemPrompt);
+ expect(afterFirst?.systemPrompt ?? base).toEqual(before?.systemPrompt ?? base);
+ expect(afterSecond?.systemPrompt ?? base).toEqual(before?.systemPrompt ?? base);
  // The `frame` tool result already shows it.
  expect(afterFirst?.message).toBeUndefined();
  expect(afterSecond?.message).toBeUndefined();
 
  await emit("session_compact", {});
  const afterCompact = await start();
- expect(afterCompact?.systemPrompt).toEqual(before?.systemPrompt);
+ expect(afterCompact?.systemPrompt ?? base).toEqual(before?.systemPrompt ?? base);
  expect(afterCompact?.message?.content).toContain("Second goal");
  expect((await start())?.message).toBeUndefined();
 
@@ -81,12 +86,12 @@ test("frames never change the system prompt; the frame is re-shown as a message 
  entries.push({ type: "compaction" });
  await emit("session_start", {});
  expect((await start())?.message?.content).toContain("Second goal");
- entries.push({ type: "custom_message", customType: afterCompact!.message!.customType, details: { at } });
+ entries.push({ type: "custom_message", customType: afterCompact!.message!.customType, content: afterCompact!.message!.content, details: { at } });
  await emit("session_start", {});
  expect((await start())?.message).toBeUndefined();
 });
 
-// 2026-11-22: a size:small request registers the frame only. The fixed text must say so, and nothing may ask for evidence afterwards.
+// 2026-11-22: a size:small request registers the frame only. Guidance must still say so when needed.
 test("a size:small frame needs no separate evidence call and draws no later reminder", async () => {
  const handlers = new Map<string, Handler[]>();
  let tool: GoalTool;
@@ -101,18 +106,18 @@ test("a size:small frame needs no separate evidence call and draws no later remi
  } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
  const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
  await emit("session_start", {});
- const start = (await emit("before_agent_start", { reason: "prompt", prompt: "x", systemPrompt: ["base"] }))[0] as { systemPrompt: string[] };
- const block = start.systemPrompt.at(-1)!;
- expect(block).toContain("skip `maker_route`, preflight and `lab_goal` frame");
- expect(block).toContain("before a chosen Maker dispatch");
- expect(block).toContain("size:small frame is registered with the frame call alone: no separate `evidence` call");
- expect(block).toContain("For size normal/deep, before done/waiting, record evidence");
+ expect(await emit("before_agent_start", { reason: "prompt", prompt: "x", systemPrompt: ["base"] })).toEqual([undefined]);
  await emit("input", { source: "rpc", text: "Fix the typo in the heading." });
  const framed = await tool!.execute("goal-test", { op: "frame", goal: "Fix a heading typo", size: "small" }, undefined, undefined, ctx);
  expect(framed.content[0].text).toContain("별도 evidence 호출은 필요 없다");
  await emit("tool_result", { toolName: "bash", input: { command: "bun test" }, details: { exitCode: 0 }, content: [], isError: false });
  await emit("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: "Fixed and checked." }] }] });
  expect(notices).toEqual([]);
+ const guidance = (await emit("tool_result", { toolName: "maker_route", input: {}, content: [], isError: false }))[0]?.additionalContext;
+ expect(guidance).toContain("skip `maker_route`, preflight and `lab_goal` frame");
+ expect(guidance).toContain("before a chosen Maker dispatch");
+ expect(guidance).toContain("size:small frame is registered with the frame call alone: no separate `evidence` call");
+ expect(guidance).toContain("For size normal/deep, before done/waiting, record evidence");
 });
 
 // 11-14 home measurement E4/E5: a no-edit condition from an earlier message fell outside the last 4000 characters
@@ -387,12 +392,11 @@ test("panel parses and renders old and new observed labels with the same tally",
  expect(legacy.replace(/확인됨/g, "")).toBe(modern.replace(/확인됨/g, ""));
 });
 
-// 2026-11-16 (doc/history/2026/11/16-quiet-advisories): while a Maker or background job runs, the turn-end reminder must
-// not wake Main. It rides the next turn instead, and the turn that ends with nothing running still gets the waking check.
-test("turn-end reminder waits for the next turn while background jobs run, then wakes once nothing runs", async () => {
+// While a background job runs, queue without waking Main. Only an observed delivery suppresses the idle aside.
+test.each(["same request", "new request", "undelivered"] as const)("turn-end reminder preserves quiet delivery and only skips an aside after a receipt (%s)", async (delivery) => {
  const handlers = new Map<string, Handler[]>();
  let tool: GoalTool;
- const notices: { customType: string; options: unknown }[] = [];
+ const notices: { message: { customType: string; content: string; details?: unknown }; options: unknown }[] = [];
  const entries: { type: string; customType: string; data: unknown }[] = [];
  let running: { id: string }[] = [{ id: "job-1" }];
  const ctx = { cwd: process.cwd(), agent: { kind: "main" }, sessionManager: { getBranch: () => entries }, ui: { setWidget() {} }, getAsyncJobSnapshot: () => ({ running, recent: [] }) };
@@ -400,20 +404,30 @@ test("turn-end reminder waits for the next turn while background jobs run, then 
   zod: z,
   on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
   registerTool(value: GoalTool) { tool = value; },
-  sendMessage(value: { customType: string }, options: unknown) { notices.push({ customType: value.customType, options }); },
+  sendMessage(message: typeof notices[number]["message"], options: unknown) { notices.push({ message, options }); },
   appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
  } as never, { resolveJudge: async () => { throw new Error("No provider in this focused test"); } });
  const emit = async (name: string, event: Record<string, unknown>) => Promise.all((handlers.get(name) ?? []).map(handler => handler(event, ctx)));
- const end = () => emit("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: "Maker가 구현 중이에요." }] }] });
+ const end = (prior: unknown[] = []) => emit("agent_end", { messages: [...prior, { role: "assistant", content: [{ type: "text", text: "Maker가 구현 중이에요." }] }] });
  await emit("session_start", {});
  await emit("input", { source: "rpc", text: "Build it." });
  await tool!.execute("goal-test", { op: "frame", goal: "Built", size: "normal", deliverables: [{ id: "b", what: "Build", check: "bun run build" }] }, undefined, undefined, ctx);
  await end();
  await end();
- expect(notices).toEqual([{ customType: "goal-lane", options: { deliverAs: "nextTurn" } }]);
+ expect(notices.map(({ message, options }) => ({ customType: message.customType, options }))).toEqual([{ customType: "goal-lane", options: { deliverAs: "nextTurn" } }]);
  await emit("agent_start", {});
  running = [];
- await end();
- await end();
- expect(notices.map((notice) => notice.options)).toEqual([{ deliverAs: "nextTurn" }, { deliverAs: "aside" }]);
+ if (delivery === "new request") await emit("input", { source: "rpc", text: "Continue checking." });
+ const prior = delivery === "undelivered" ? [] : [{ role: "custom", ...notices[0]!.message }];
+ await end(prior);
+ await end(prior);
+ expect(notices.map((notice) => notice.options)).toEqual(delivery === "undelivered"
+  ? [{ deliverAs: "nextTurn" }, { deliverAs: "aside" }]
+  : [{ deliverAs: "nextTurn" }]);
+ const sentBeforeNewRequest = notices.length;
+ await emit("input", { source: "rpc", text: "Check the build again." });
+ await end(prior);
+ expect(notices).toHaveLength(sentBeforeNewRequest + 1);
+ expect(notices.at(-1)?.options).toEqual({ deliverAs: "aside" });
+ expect(notices.at(-1)?.message.content).toBe(notices[0]?.message.content);
 });

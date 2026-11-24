@@ -45,7 +45,7 @@ import { labExtensionEntries, recordLabLoadResults, type LabExtensionEntry } fro
 import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
-import { withA2uiAgentPrompt } from "./a2ui/agent-prompt";
+import { registerA2uiAgentPrompt, withA2uiAgentPrompt } from "./a2ui/agent-prompt";
 import { readConfiguredModelRoleRefs, readDefaultModelRole } from "./model-roles";
 import { findModelWithRecovery, getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "./omp-runtime";
 import { describeMissingModel } from "./model-discovery-recovery";
@@ -3252,6 +3252,7 @@ export async function startRpcSession(
         // drops explicit custom tools when the tool list is restricted (tools off), and
         // subagents and revived children never inherit them.
         customTools: [createSessionRecallTool()],
+        ...(toolsOption === undefined ? { topLevelExtensions: [registerA2uiAgentPrompt] } : {}),
         ...(untrusted ?? {}),
         ...(!untrusted && labPaths.length > 0 ? { additionalExtensionPaths: labPaths } : {}),
         // The CLI hands `TITLE_SYSTEM.md` to the session the same way; without it the
@@ -3260,8 +3261,8 @@ export async function startRpcSession(
       };
       // omp's own applier, so a prompt file goes through the same templates the
       // CLI renders it with instead of overwriting the whole system prompt. The web
-      // chat's answer-card section follows the user's APPEND_SYSTEM.md text.
-      applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, withA2uiAgentPrompt(systemPrompts.appendPrompt));
+      // chat's card instructions follow APPEND_SYSTEM.md. Restricted sessions do not load inline extensions.
+      applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, withA2uiAgentPrompt(systemPrompts.appendPrompt, toolsOption === undefined));
       // The SDK exposes its agent to IRC before createAgentSession returns.
       // Recheck after startup awaits, before it can publish that raw agent.
       assertUpdateTurnAdmission(sessionManager.getSessionId());

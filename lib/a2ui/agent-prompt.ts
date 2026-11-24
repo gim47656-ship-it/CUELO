@@ -1,3 +1,6 @@
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { A2UI_ACTION_LANG, extractFencedBlocks, parseActionBlock } from "./blocks";
+
 /** Catalog id agents use for CUELO answer cards (the basic catalog id renders with the same components). */
 export const CUELO_A2UI_CATALOG_ID = "cuelo";
 
@@ -7,11 +10,7 @@ export const CUELO_A2UI_COMPONENTS = [
   "Button", "TextField", "CheckBox", "ChoicePicker", "Slider", "DateTimeInput",
 ] as const;
 
-/**
- * The system prompt section that tells a CUELO web session how to draw answer
- * cards. It is appended after the user's `APPEND_SYSTEM.md` text; the TUI and
- * other clients never see it.
- */
+/** Full answer-card instructions, delivered as hidden context on relevant web requests. */
 export const A2UI_AGENT_PROMPT = `# Answer cards (A2UI)
 This web chat renders A2UI v1.0 cards. Use one when a visual summary, a set of choices, or progress/status reads better than prose. Keep a short plain-text explanation next to every card; skip cards for plain answers.
 
@@ -28,7 +27,25 @@ surfaceId must be unique in this session; use descriptive ids (e.g. "plan-choice
 
 Buttons: {"component":"Button","child":"choose_a_label","variant":"primary","action":{"event":{"name":"choose","context":{"option":"A"}}}}. Inputs bind their value with {"@path":...}. When the user clicks, you receive a user message with an \`a2ui-action\` block: {"version":"1.0","action":{"name","surfaceId","sourceComponentId","timestamp","context"},"metadata":{"a2uiClientDataModel":{"surfaces":{...}}}} (data model only when sendDataModel is true). Answer it like a normal user request.`;
 
-/** `APPEND_SYSTEM.md` text for a CUELO web session: the user's own text first, then the card section. */
-export function withA2uiAgentPrompt(appendPrompt: string | undefined): string {
-  return appendPrompt ? `${appendPrompt}\n\n${A2UI_AGENT_PROMPT}` : A2UI_AGENT_PROMPT;
+// A small usable example lets the model choose a simple card even when the
+// user's initial text gave no cue (e.g. a visual summary of later tool results).
+const A2UI_HINT = `For a useful visual summary, choice or progress, use the on-demand A2UI guide or adapt this \`a2ui\` fenced JSON example (unique surfaceId; add short prose): [{"version":"1.0","createSurface":{"surfaceId":"summary","catalogId":"${CUELO_A2UI_CATALOG_ID}"}},{"version":"1.0","updateComponents":{"surfaceId":"summary","components":[{"id":"root","component":"Card","child":"t"},{"id":"t","component":"Text","text":"Summary"}]}}]`;
+
+const CARD_REQUEST_EN = /\b(?:a2ui(?!-action)|(?:answer|summary|status|progress|comparison|visual|interactive) cards?|card format|cards? please|(?:make|create|show|render|use|as) (?:me )?(?:a |the )?cards?|compar(?:e|ing|ison)|trade-?offs?|(?:progress|status) (?:report|update|summary|overview)|visual (?:summary|report)|infographic|(?:make|draw|plot|show) (?:a )?(?:(?:bar|line|pie) )?chart)\b/i;
+const CARD_REQUEST_KO = /답변\s*카드|(?:요약|비교)\s*카드|카드(?:로|(?:를|\s*하나)?\s*(?:만들|보여|그려))|비교|선택지|대안|장단점|진행\s*상황|상태\s*요약|현황\s*(?:요약|보고)|시각화/;
+
+/** When the SDK cannot load inline extensions, keep the existing static card spec. */
+export function withA2uiAgentPrompt(appendPrompt: string | undefined, onDemand = true): string {
+  const cardPrompt = onDemand ? A2UI_HINT : A2UI_AGENT_PROMPT;
+  return appendPrompt ? `${appendPrompt}\n\n${cardPrompt}` : cardPrompt;
+}
+
+export function registerA2uiAgentPrompt(pi: ExtensionAPI): void {
+  // SDK preparation also runs on delivery of steering and queued follow-ups.
+  pi.on("before_agent_start", ({ reason, prompt }) => {
+    if (reason !== "prompt") return;
+    if (!CARD_REQUEST_EN.test(prompt) && !CARD_REQUEST_KO.test(prompt)
+      && !extractFencedBlocks(prompt, A2UI_ACTION_LANG).some(parseActionBlock)) return;
+    return { message: { customType: "cuelo-a2ui-guide", content: A2UI_AGENT_PROMPT, display: false, attribution: "agent" } };
+  });
 }

@@ -30,7 +30,7 @@ function readySetup(): SetupDeps {
   };
 }
 
-type HookResult = { block?: boolean; reason?: string; additionalContext?: string; systemPrompt?: string[] } | undefined;
+type HookResult = { block?: boolean; reason?: string; additionalContext?: string; systemPrompt?: string[]; message?: unknown } | undefined;
 type Handler = (event: unknown, ctx?: unknown) => HookResult;
 type ToolDef = { execute: (id: string, params: unknown, signal: unknown, update: unknown, ctx: unknown) => Promise<{ content: { text: string }[] }> };
 
@@ -69,7 +69,7 @@ function harness(options: { env?: Record<string, string | undefined>; finds?: Ru
     read: (path: string, session: unknown = ctx) => handlers.get("tool_call")!({ toolName: "read", input: { path } }, session),
     find: async (params: Record<string, unknown>, session: unknown = ctx) =>
       (await tool!.execute("c1", params, undefined, undefined, session)).content[0].text,
-    beforeStart: (reason: string) => handlers.get("before_agent_start")!({ reason, systemPrompt: ["base"] }),
+    beforeStart: (reason: string, prompt: string) => handlers.get("before_agent_start")!({ reason, prompt, systemPrompt: ["base"] }),
   };
 }
 
@@ -139,10 +139,16 @@ describe("screen-fast-path read guard", () => {
     expect(h.read("/tmp/a.png?q=서버 시작 버튼 좌표")?.block).toBe(true);
   });
 
-  test("adds the short fast-path guide only on prompts", () => {
+  test("adds the guide as a hidden message for screen requests, never as system text", () => {
     const h = harness();
-    expect(h.beforeStart("prompt").systemPrompt.at(-1)).toContain("lab_screen_find");
-    expect(h.beforeStart("continue")).toBeUndefined();
+    expect(h.beforeStart("prompt", "Explain binary search.")).toBeUndefined();
+    expect(h.beforeStart("revive", "Open the AnyDesk window.")).toBeUndefined();
+    expect(h.beforeStart("prompt", "Open the AnyDesk window.")).toEqual({
+      message: {
+        customType: "screen-fast-path-guide", content: expect.stringContaining("lab_screen_find"),
+        display: false, attribution: "agent",
+      },
+    });
   });
 });
 

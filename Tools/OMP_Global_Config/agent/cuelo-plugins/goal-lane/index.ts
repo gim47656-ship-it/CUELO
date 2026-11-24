@@ -56,7 +56,7 @@ type Frame = {
   evidence: Evidence[];
 };
 type Control = { scope?: "all" | "trial"; roots?: string[] };
-type Message = { role?: string; content?: unknown; synthetic?: boolean; attribution?: string; stopReason?: string };
+type Message = { role?: string; content?: unknown; synthetic?: boolean; attribution?: string; stopReason?: string; customType?: string; details?: unknown };
 
 const CUSTOM_TYPE = "goal-lane";
 const WIDGET_KEY = "lab:goal-lane";
@@ -71,22 +71,23 @@ const URL_TIMEOUT_MS = 10_000;
 const CONFIRMATION_PATTERN =
   /(승인(?:이 필요|을 (?:요청|부탁|기다)|해 주|받아야)|허락(?:이 필요|해 주|받아야)|할까요|할까[?？]|해도 될|괜찮으면|결정이 필요|정해\s?주세요|정해\s?줘|주시면|라고\s?(?:알려|말해)\s?(?:줘|주세요)|(?:네|너의|당신의|사용자님의?)\s?결정|동의(?:를|가)?\s?(?:기다리|필요)|골라 주세요|선택해 주세요|어느 쪽|shall I|may I|would you like|(?:need|needs|awaiting|waiting for) your (?:approval|decision|permission))/i;
 
-const SYSTEM_BLOCK = `# Goal lane (Main only)
+const GUIDANCE = `# Goal lane (Main only)
 Decide who will do the work before routing it. If Main can finish the bounded task alone and no risk marker applies, skip \`maker_route\`, preflight and \`lab_goal\` frame; still run the real checks. This includes ordinary single-repository features, fixes and docs, not just typos. Call \`maker_route\` only immediately before a chosen Maker dispatch. For delegated or risky work (including deployment, deletion, permission changes and material risk under \`harness-policy.json\`), use a normal/deep frame before dispatch or risky action: goal = purpose, explicit = user's own conditions, assumptions = yours, deliverables = required outputs and checks. A size:small frame is registered with the frame call alone: no separate \`evidence\` call.
 - Only user-stated conditions are explicit. Drop or ask about assumptions that limit the goal. Use expert source material, tools and checks, not summaries or impressions.
 - For size normal/deep, before done/waiting, record evidence for each deliverable: file proves existence only; command = executed bash command or exact successful eval line; url = responding URL; observation = vision read (\`read <file>?q=…\`), not your own look. Observed evidence does not prove fulfillment: judge its relevance. Delegation does not remove your deliverables; work on yours while children run.
 - Reframe if the user changes framed work or adds work that needs a frame, keeping all still-owed deliverables. Do not reframe for a separate bounded solo task without risk. Evidence survives only when id, check, what and path all stay the same.`;
 
-// The system prompt carries only the fixed SYSTEM_BLOCK. The frame used to be appended there too, so every new frame
-// (and the restored one after a restart) changed the last system block on the next prompt and the provider re-wrote the
-// whole conversation behind it (2026-11-12 prompt-prefix-ledger: 49k cached, 90k-285k re-written per change). The
-// `frame` tool result already shows the frame in the conversation; when compaction drops it, one hidden message after
-// the history restores it, which leaves the cached prefix intact.
+// Keep both guidance and frame state after the stable system/tool prefix. Changing the system
+// prompt invalidated the conversation behind it (2026-11-12 prompt-prefix-ledger).
+const GUIDANCE_MESSAGE_TYPE = "goal-lane-guidance";
 const FRAME_MESSAGE_TYPE = "goal-lane-frame";
 
 const EVAL_LINE_MIN = 12;
 const FRAME_REMINDER_DISPATCH =
   "goal-lane: Maker를 발주했는데 작업 목표가 등록되지 않았다. `lab_goal` `op: \"frame\"`으로 목표, 사용자 조건, 가정, 산출물과 확인 방법을 기록하라. 이 안내는 승인이 아니다.";
+const IMAGE_LEAD = "이미지가 생성됐다. 결과를 보기 전에 목표와 대조하라.";
+const DELEGATED_LEAD = "위임·대기 결과를 받았다. 위임은 산출물을 네 레인에서 빼지 않는다.";
+const END_LEAD = "턴을 끝내기 전 목표 대조.";
 // 2026-11-23 user decision (「둘이 같이말한것들은 해보자」): a frame reminder comes only from an observed signal (a Maker
 // dispatch), not from a model guess about the request. The per-input JEV frame judgment (11-06, 0.10.158) flagged the
 // one-line bug report 「가끔 장바구니 수량이 이상하게 나와 고쳐줘」 as risky in the 11-22 bench, and the Sol run then spent
@@ -371,10 +372,11 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   let userText = "";
   /** The user's own words as typed (spaces kept), for the JEV explicit check; the tail is what gets sent. */
   let userWords = "";
-  let nudgedThisInput = false;
-  /** An end-of-turn nudge already parked for the next turn while background jobs ran; cleared when a turn starts. */
-  let deferredNudge = false;
-  let frameRemindedThisInput = false;
+  let guidanceShown = false;
+  const sentReminders = new Set<string>();
+  // The core can deliver queued context in a later request or after the frame/evidence changes.
+  const deferredNudges = new Map<number, string>();
+  let nudgeId = 0;
   /** JEV verdict that the latest user message changes the frame's goal; cleared by a new frame or a newer message. */
   let reframeJudged = false;
   let reframeReminded = false;
@@ -397,9 +399,9 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     shownAt = undefined;
     userText = "";
     userWords = "";
-    nudgedThisInput = false;
-    deferredNudge = false;
-    frameRemindedThisInput = false;
+    guidanceShown = false;
+    sentReminders.clear();
+    deferredNudges.clear();
     reframeJudged = false;
     reframeReminded = false;
     lastInputText = "";
@@ -428,6 +430,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
       for (const entry of ctx.sessionManager.getBranch() as unknown[]) {
         if (!entry || typeof entry !== "object" || !("type" in entry)) continue;
         if (entry.type === "compaction") {
+          guidanceShown = false;
           shownAt = undefined;
         } else if (entry.type === "custom" && "customType" in entry && entry.customType === CUSTOM_TYPE && "data" in entry && entry.data && typeof entry.data === "object") {
           // Our own appended entry; the shape is what `persist` wrote. A new `at` comes from a `frame` call, whose result
@@ -435,15 +438,35 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
           const data = entry.data as Frame;
           if (data.at !== frame?.at) shownAt = data.at;
           frame = data;
-        } else if (entry.type === "custom_message" && "customType" in entry && entry.customType === FRAME_MESSAGE_TYPE && "details" in entry) {
-          const at = (entry.details as { at?: unknown } | undefined)?.at;
-          if (typeof at === "string") shownAt = at;
+          sentReminders.clear();
+        } else if (entry.type === "custom_message" && "customType" in entry) {
+          if (entry.customType === GUIDANCE_MESSAGE_TYPE) guidanceShown = true;
+          if (entry.customType === FRAME_MESSAGE_TYPE) {
+            if ("details" in entry) {
+              const at = (entry.details as { at?: unknown } | undefined)?.at;
+              if (typeof at === "string") shownAt = at;
+            }
+            if ("content" in entry && typeof entry.content === "string" && entry.content.startsWith(GUIDANCE)) guidanceShown = true;
+          }
+          if (entry.customType === CUSTOM_TYPE && "content" in entry && typeof entry.content === "string"
+              && entry.content.startsWith(END_LEAD)) sentReminders.add(entry.content);
         } else if (entry.type === "message" && "message" in entry && entry.message && typeof entry.message === "object") {
           const message: Message = entry.message;
           if (message.role === "user" && message.synthetic !== true && message.attribution !== "agent") {
             const typed = messageText(message);
+            if (isHarnessNotice(typed)) continue;
+            sentReminders.clear();
             userText += `\n${normalize(typed)}`;
             userWords += `\n${typed}`;
+          } else if (message.role === "developer" && message.attribution === "agent") {
+            // Core joins passive tool advisories into a developer message, separated by blank lines.
+            const text = messageText(message);
+            if (!guidanceShown && text.includes(GUIDANCE)) guidanceShown = true;
+            for (const part of text.split("\n\n")) {
+              if (part === FRAME_REMINDER_DISPATCH || part.startsWith(IMAGE_LEAD) || part.startsWith(DELEGATED_LEAD)) {
+                sentReminders.add(part);
+              }
+            }
           }
         }
       }
@@ -474,11 +497,12 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
   pi.on("session_shutdown", () => reset());
   pi.on("session_compact", () => {
     shownAt = undefined;
+    guidanceShown = false;
   });
 
   /** One background JEV judgment per user message while a normal/deep frame exists: has the goal changed? */
   const judgeUserMessage = (text: string, ctx: ExtensionContext) => {
-    frameRemindedThisInput = false;
+    sentReminders.clear();
     reframeJudged = false;
     reframeReminded = false;
     const seq = ++inputSeq;
@@ -492,17 +516,26 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
 
   pi.on("input", (event, ctx) => {
     if (event.source !== "interactive" && event.source !== "rpc") return;
-    nudgedThisInput = false;
     activeInput = true;
-    lastInputText = normalize(event.text);
     // 11-24: a goal-lane judge read the server's [자동 재개] notice as a new user message and advised re-framing.
     if (isHarnessNotice(event.text)) return;
+    lastInputText = normalize(event.text);
     userText += `\n${lastInputText}`;
     userWords += `\n${event.text}`;
     judgeUserMessage(event.text, ctx);
   });
+
+  const receiveDeferred = (message: Message) => {
+    if (message.role !== "custom" || message.customType !== CUSTOM_TYPE || typeof message.details !== "number") return;
+    const text = deferredNudges.get(message.details);
+    if (text === undefined || message.content !== text) return;
+    deferredNudges.delete(message.details);
+    sentReminders.add(text);
+  };
+
   pi.on("message_start", (event, ctx) => {
     const message = event.message as Message;
+    if (deferredNudges.size > 0) receiveDeferred(message);
     if (message.role !== "user" || message.synthetic === true || message.attribution === "agent") return;
     const typed = messageText(message);
     const text = normalize(typed);
@@ -523,16 +556,21 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
 
   pi.on("before_agent_start", (event, ctx) => {
     try {
-      if (!main || event.reason !== "prompt" || !inScope(ctx.cwd)) return;
-      const systemPrompt = [...event.systemPrompt, SYSTEM_BLOCK];
-      if (!frame || frame.size === "small" || frame.at === shownAt) return { systemPrompt };
-      shownAt = frame.at;
-      return {
-        systemPrompt,
-        message: { customType: FRAME_MESSAGE_TYPE, content: frameForPrompt(frame), details: { at: frame.at }, display: false, attribution: "agent" },
-      };
+      if (event.reason !== "prompt" || !frame || frame.size === "small" || !active(ctx)) return;
+      const restoreFrame = frame.at !== shownAt;
+      if (guidanceShown && !restoreFrame) return;
+      const parts = [];
+      if (!guidanceShown) parts.push(GUIDANCE);
+      if (restoreFrame) parts.push(frameForPrompt(frame));
+      guidanceShown = true;
+      if (restoreFrame) shownAt = frame.at;
+      return { message: {
+        customType: restoreFrame ? FRAME_MESSAGE_TYPE : GUIDANCE_MESSAGE_TYPE,
+        content: parts.join("\n\n"), details: restoreFrame ? { at: frame.at } : undefined,
+        display: false, attribution: "agent",
+      } };
     } catch {
-      return;
+      // A malformed restored frame must not affect prompt setup.
     }
   });
 
@@ -567,40 +605,45 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         } catch {}
       }
       if (!main || !inScope(ctx.cwd) || !activeInput) return;
+      // `maker_route` is only for a chosen dispatch; highRisk is a declared risk, not a guess from user text.
+      const dispatch = event.toolName === "task" || event.toolName === "maker_route";
+      const needsGuidance = !event.isError && !guidanceShown && (dispatch
+        || (event.toolName === "lab_goal" && event.input.op === "frame" && frame && frame.size !== "small")
+        || (event.toolName === "cross_review" && event.input.action === "review" && event.input.highRisk === true));
+      let reminder: string | undefined;
       if (!frame || frame.size === "small") {
-        if (frameRemindedThisInput) return;
-        if (event.toolName === "task" && !event.isError) {
-          frameRemindedThisInput = true;
-          return { additionalContext: FRAME_REMINDER_DISPATCH };
-        }
-        return;
-      }
-      if (reframeJudged && !reframeReminded && event.toolName !== "lab_goal") {
+        if (event.toolName === "task" && !event.isError) reminder = FRAME_REMINDER_DISPATCH;
+      } else if (reframeJudged && !reframeReminded && event.toolName !== "lab_goal") {
         reframeReminded = true;
-        return { additionalContext: `goal-lane: JEV가 사용자의 새 말이 지금 frame(「${frame.goal}」)을 바꾸거나 목표 등록이 필요한 일을 더한다고 봤다. 실제로 해당한다면 \`lab_goal\` \`op: "frame"\`을 다시 부르고 이전 frame에서 아직 끝나지 않은 산출물도 함께 적어라. 별개의 위험 없는 단독 작업이면 갱신하지 않는다. 이 안내는 새 말마다 한 번이며 승인이 아니다.` };
+        reminder = `goal-lane: JEV가 사용자의 새 말이 지금 frame(「${frame.goal}」)을 바꾸거나 목표 등록이 필요한 일을 더한다고 봤다. 실제로 해당한다면 \`lab_goal\` \`op: "frame"\`을 다시 부르고 이전 frame에서 아직 끝나지 않은 산출물도 함께 적어라. 별개의 위험 없는 단독 작업이면 갱신하지 않는다. 이 안내는 새 말마다 한 번이며 승인이 아니다.`;
+      } else if (!event.isError) {
+        if (event.toolName === "generate_image") {
+          reminder = pendingText(frame, IMAGE_LEAD);
+        } else if (event.toolName === "task" || event.toolName === "wait") {
+          reminder = pendingText(frame, DELEGATED_LEAD);
+        }
       }
-      if (!active(ctx) || event.isError) return;
-      if (event.toolName === "generate_image") {
-        const text = pendingText(frame!, "이미지가 생성됐다. 결과를 보기 전에 목표와 대조하라.");
-        if (text) return { additionalContext: text };
-      } else if (event.toolName === "task" || event.toolName === "wait") {
-        const text = pendingText(frame!, "위임·대기 결과를 받았다. 위임은 산출물을 네 레인에서 빼지 않는다.");
-        if (text) return { additionalContext: text };
+      if (reminder !== undefined) {
+        if (sentReminders.has(reminder)) reminder = undefined;
+        else sentReminders.add(reminder);
       }
+      if (needsGuidance) {
+        guidanceShown = true;
+        return { additionalContext: reminder ? `${GUIDANCE}\n\n${reminder}` : GUIDANCE };
+      }
+      if (reminder) return { additionalContext: reminder };
     } catch {
       // Observation failures never change tool results.
     }
   });
 
-  pi.on("agent_start", () => {
-    // The parked nudge rides the turn that just started; a later wait may park a fresh one.
-    deferredNudge = false;
-  });
-
   pi.on("agent_end", async (event, ctx) => {
     try {
-      if (!active(ctx) || !activeInput || event.willContinue || nudgedThisInput) return;
-      const last = [...event.messages].reverse().find((message) => (message as Message)?.role === "assistant") as Message | undefined;
+      if (!active(ctx) || !activeInput) return;
+      // Core can append a quiet notice directly while idle, without a message_start event.
+      if (deferredNudges.size > 0) for (const message of event.messages) receiveDeferred(message);
+      if (event.willContinue) return;
+      const last = event.messages.findLast((message) => (message as Message)?.role === "assistant") as Message | undefined;
       if (!last || last.stopReason === "aborted" || hasToolCall(last)) return;
       const text = messageText(last).trim();
       const ending = text.split(/\n\s*\n/).filter((part) => part.trim()).at(-1) ?? "";
@@ -609,19 +652,19 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         const seq = inputSeq;
         const current = frame;
         if (!(await judgeClosingNotAsking(ending, ctx))) return;
-        if (seq !== inputSeq || frame !== current || nudgedThisInput || !active(ctx)) return;
+        if (seq !== inputSeq || frame !== current || !active(ctx)) return;
       }
-      const nudge = pendingText(frame!, "턴을 끝내기 전 목표 대조.");
-      if (!nudge) return;
-      // 2026-11-16 사용자 결정(doc/history/2026/11/16-quiet-advisories): Maker나 백그라운드 job이 돌고 있으면 대기 중이다.
-      // 깨우지 않고 그 결과가 여는 다음 턴에 붙인다. 그 턴이 끝날 때 다시 대조하도록 nudgedThisInput은 세우지 않는다.
+      const nudge = pendingText(frame!, END_LEAD);
+      if (!nudge || sentReminders.has(nudge)) return;
+      // While a job runs, queue a quiet reminder and let the result wake Main.
       if ((ctx.getAsyncJobSnapshot?.()?.running.length ?? 0) > 0) {
-        if (deferredNudge) return;
-        deferredNudge = true;
-        pi.sendMessage({ customType: CUSTOM_TYPE, content: nudge, display: false, attribution: "agent" }, { deliverAs: "nextTurn" });
+        for (const queued of deferredNudges.values()) if (queued === nudge) return;
+        const id = ++nudgeId;
+        deferredNudges.set(id, nudge);
+        pi.sendMessage({ customType: CUSTOM_TYPE, content: nudge, display: false, attribution: "agent", details: id }, { deliverAs: "nextTurn" });
         return;
       }
-      nudgedThisInput = true;
+      sentReminders.add(nudge);
       pi.sendMessage({ customType: CUSTOM_TYPE, content: nudge, display: false, attribution: "agent" }, { deliverAs: "aside" });
     } catch {
       // Never let the end-of-turn check throw into the session.
@@ -635,7 +678,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     // Bookkeeping only: the core runs this call even when user steering arrived mid-response (apply-core-patch steeringSafe).
     steeringSafe: true,
     description:
-      "Main goal/evidence tracking, advisory not a gate. Skip for bounded solo work without risk. frame: goal, explicit(user-stated), assumptions(yours), deliverables[{id,what,check,path?}], size. Reframing retains evidence only for unchanged id/check/what/normalized path. evidence: id, kind(file|command|url|observation), value (command: a bash command, an eval line, or a cross_review reviewId this session resolved with pass); unobserved evidence stays self-reported. Observation is not proof of fulfillment. status: current state.",
+      "Main goal/evidence tracking, advisory not a gate. Skip for bounded solo work without risk. For delegated or risky work, register a normal/deep frame before dispatch or risky action. frame: goal, explicit(user-stated), assumptions(yours), deliverables[{id,what,check,path?}], size. Reframing retains evidence only for unchanged id/check/what/normalized path. evidence: id, kind(file|command|url|observation), value (command: a bash command, an eval line, or a cross_review reviewId this session resolved with pass); unobserved evidence stays self-reported. Observation is not proof of fulfillment. status: current state.",
     parameters: z.object({
       op: z.enum(["frame", "evidence", "status"]),
       size: z.enum(["small", "normal", "deep"]).optional(),
@@ -696,6 +739,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
           return !!kept && !!old && sameTarget(kept, old, ctx.cwd);
         });
         frame = { at: new Date().toISOString(), size, goal, explicit, assumptions, ungrounded, deliverables, evidence: carried };
+        sentReminders.clear();
         reframeJudged = false;
         reframeReminded = false;
         const saved = persist(ctx);
@@ -753,6 +797,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
       // A URL check awaited above; the lane may have been replaced or cleared meanwhile.
       if (frame !== current) return fail("확인하는 동안 frame이 바뀌어 이 근거를 버렸다. 다시 남겨라.");
       current.evidence.push({ id, kind, value, summary: params.summary, verified, detail, at: new Date().toISOString() });
+      sentReminders.clear();
       const saved = persist(ctx);
       const open = unverified(current);
       const text = [

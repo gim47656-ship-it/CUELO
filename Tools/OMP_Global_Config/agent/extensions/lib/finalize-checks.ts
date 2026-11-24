@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent";
 import { Process } from "@oh-my-pi/pi-natives";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
@@ -98,7 +99,7 @@ function matches(paths: readonly string[], file: string): boolean {
   });
 }
 
-async function fileFingerprint(root: string, path: string, checkPaths: readonly string[]): Promise<{ value: string; opaque?: true }> {
+async function fileFingerprint(root: string, path: string, checkPaths: readonly string[], untrackedInput: boolean): Promise<{ value: string; opaque?: true }> {
   const absolute = join(root, path);
   const info = await lstat(absolute).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
@@ -114,7 +115,7 @@ async function fileFingerprint(root: string, path: string, checkPaths: readonly 
   const within = real && relative(root, real);
   if (within === undefined || isAbsolute(within) || within === ".." || within.startsWith(`..${sep}`)) {
     // The link itself is known even when its target cannot be treated as a repository input.
-    return { value: `${real === undefined ? "dangling" : "external"}:${link}`, ...(link && !matches(checkPaths, path) ? {} : { opaque: true }) };
+    return { value: `${real === undefined ? "dangling" : "external"}:${link}`, ...(link && !untrackedInput && !matches(checkPaths, path) ? {} : { opaque: true }) };
   }
   if (!real) throw new Error("no resolved path");
   const realInfo = await lstat(real, { bigint: true });
@@ -135,13 +136,116 @@ async function fileFingerprint(root: string, path: string, checkPaths: readonly 
   }
 }
 
+function runtimeFingerprints(cwd: string, env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  const pathKey = process.platform === "win32" ? Object.keys(env).sort().find((key) => key.toUpperCase() === "PATH") : "PATH";
+  const path = pathKey === undefined ? undefined : env[pathKey];
+  const host = realpath(process.execPath).catch(() => undefined);
+  const probes = new Map<string, Promise<string | undefined>>();
+  const probe = async (command: string) => {
+    try {
+      if (path === undefined) return undefined;
+      const executable = Bun.which(command, { PATH: path, cwd });
+      if (!executable) return undefined;
+      const resolved = await realpath(executable);
+      const identity = JSON.stringify([executable, resolved, statIdentity(await stat(resolved, { bigint: true }))]);
+      let version = probes.get(identity);
+      if (!version) {
+        const { promise, resolve } = Promise.withResolvers<string | undefined>();
+        execFile(executable, ["--version"], { cwd, env, signal, timeout: 2_000, killSignal: "SIGKILL", windowsHide: true, maxBuffer: 4_096 },
+          (error, stdout) => {
+            const text = stdout.trim();
+            resolve(!error && /^v?\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(text) ? text : undefined);
+          });
+        version = promise;
+        probes.set(identity, version);
+      }
+      const text = await version;
+      return text === undefined ? undefined : [identity, text];
+    } catch {
+      // A failing or unresolvable probe must never turn into evidence for reuse.
+      return undefined;
+    }
+  };
+  return async (command: string) => {
+    const local = /^(bun|node)(\.exe)?$/i.test(basename(command)) && !/^(bun|node)$/.test(command);
+    const [executable, node, bun, direct] = await Promise.all([host, probe("node"), probe("bun"), local ? probe(command) : null]);
+    return executable && node && bun && direct !== undefined
+      ? [executable, process.versions.node, process.versions.bun, node, bun, direct] : undefined;
+  };
+}
+
+function statIdentity(info: BigIntStats): string {
+  return [info.dev, info.ino, info.mode, info.size, info.ctimeNs, info.mtimeNs].join(":");
+}
+
+const installEntries = { ".bin": true, ".bun": true, ".modules.yaml": true, ".package-lock.json": true,
+  ".pnpm": true, ".yarn-integrity": true, ".yarn-state.yml": true };
+
+async function installedDependencies(root: string, inputs: Iterable<string>, signal?: AbortSignal) {
+  const dirs = new Set<string>();
+  for (let dir = root;; dir = dirname(dir)) {
+    dirs.add(join(dir, "node_modules"));
+    if (dir === dirname(dir)) break;
+  }
+  for (const path of inputs) {
+    if (path.endsWith("/package.json") && !path.includes("\uFFFD")) dirs.add(join(root, dirname(path), "node_modules"));
+  }
+  const optional = (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  };
+  const identity = async (path: string, info: BigIntStats) => {
+    const target = info.isSymbolicLink() ? await stat(path, { bigint: true }) : info;
+    return statIdentity(target);
+  };
+  try {
+    const hash = createHash("sha256");
+    for (const dir of [...dirs].sort()) {
+      signal?.throwIfAborted();
+      const info = await lstat(dir, { bigint: true }).catch(optional);
+      if (!info) continue;
+      // Include install metadata and hoisted package manifests, not package payloads
+      // or tool caches. Scope folders are the only extra level we enumerate.
+      const packages: string[] = [];
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (entry.name.includes("\uFFFD")) return undefined;
+        if (Object.hasOwn(installEntries, entry.name)) packages.push(entry.name);
+        else if (entry.name.startsWith("@")) {
+          for (const name of await readdir(join(dir, entry.name))) {
+            if (name.includes("\uFFFD")) return undefined;
+            packages.push(`${entry.name}/${name}/package.json`);
+          }
+        } else if (!entry.name.startsWith(".") && (entry.isDirectory() || entry.isSymbolicLink())) {
+          packages.push(`${entry.name}/package.json`);
+        }
+      }
+      hash.update(JSON.stringify([dir, await identity(dir, info)]));
+      packages.sort();
+      for (let index = 0; index < packages.length; index += 64) {
+        signal?.throwIfAborted();
+        const entries = packages.slice(index, index + 64);
+        const ids = await Promise.all(entries.map(async (name) => {
+          const path = join(dir, name);
+          const info = await lstat(path, { bigint: true }).catch(optional);
+          return info && identity(path, info);
+        }));
+        hash.update(JSON.stringify([entries, ids]));
+      }
+    }
+    return hash.digest("hex");
+  } catch {
+    // Inaccessible or unsupported installed state cannot certify a cached pass.
+    return undefined;
+  }
+}
+
 type ReadGit = (args: string[]) => ReturnType<Exec>;
-type Snapshot = { hash: string; sourceHash: string; complete: boolean };
+type Snapshot = { hash: string; sourceHash: string; receiptHash?: string };
 
 /** Hash raw working bytes rather than `git diff`, which can hide changes behind clean filters and index flags. */
 async function fingerprint(
   root: string, files: readonly string[], paths: readonly string[], git: ReadGit,
-  signal?: AbortSignal, publication = false,
+  signal?: AbortSignal, publication = false, collectReceipt = false,
 ): Promise<Snapshot | undefined> {
   try {
     const [head, tracked, committed, untracked] = await Promise.all([
@@ -163,20 +267,30 @@ async function fingerprint(
       inputs.add(entry.slice(tab + 1));
     }
     const outputs = new Set<string>();
+    const extraInputs = new Set<string>();
     for (const path of untracked.stdout.split("\0")) {
-      if (!path || !matches(paths, path) || inputs.has(path)) continue;
-      inputs.add(path);
-      if (publication) outputs.add(path);
+      if (!path || inputs.has(path)) continue;
+      if (matches(paths, path)) {
+        inputs.add(path);
+        if (publication) outputs.add(path);
+      } else if (collectReceipt) extraInputs.add(path);
     }
+    const dependencyState = collectReceipt ? installedDependencies(root, [...inputs, ...extraInputs], signal) : undefined;
+    const extraHash = collectReceipt ? createHash("sha256") : undefined;
     const hash = createHash("sha256").update(JSON.stringify([head.stdout.trim(), tracked.stdout, files]));
     const sourceHash = outputs.size ? hash.copy() : undefined;
     const update = (path: string, value: string | null) => {
       const data = JSON.stringify([path, value]);
-      hash.update(data);
-      if (!outputs.has(path)) sourceHash?.update(data);
+      // Check selection paths are not a read boundary. This widens the receipt,
+      // not the publication source/output classification or transaction checks.
+      if (extraInputs.has(path)) extraHash?.update(data);
+      else {
+        hash.update(data);
+        if (!outputs.has(path)) sourceHash?.update(data);
+      }
     };
     const ordered: string[] = [];
-    for (const path of [...inputs].sort()) {
+    for (const path of [...inputs, ...extraInputs].sort()) {
       // The text Git adapter cannot distinguish invalid UTF-8 from U+FFFD. Keep
       // that part opaque instead of dropping the evidence from all other paths.
       if (path.includes("\uFFFD")) {
@@ -187,7 +301,7 @@ async function fingerprint(
     for (let index = 0; index < ordered.length; index += 32) {
       signal?.throwIfAborted();
       const batch = ordered.slice(index, index + 32);
-      const entries = await Promise.allSettled(batch.map((path) => fileFingerprint(root, path, paths)));
+      const entries = await Promise.allSettled(batch.map((path) => fileFingerprint(root, path, paths, extraInputs.has(path))));
       for (let offset = 0; offset < batch.length; offset++) {
         const entry = entries[offset];
         if (entry.status === "rejected") {
@@ -200,7 +314,9 @@ async function fingerprint(
       }
     }
     const digest = hash.digest("hex");
-    return { hash: digest, sourceHash: sourceHash?.digest("hex") ?? digest, complete };
+    const dependencies = await dependencyState;
+    const receiptHash = complete && dependencies !== undefined ? extraHash?.update(digest).update(dependencies).digest("hex") : undefined;
+    return { hash: digest, sourceHash: sourceHash?.digest("hex") ?? digest, receiptHash };
   } catch {
     // Cache evidence is optional. Unknown, inaccessible or unsupported inputs require a fresh run.
     return undefined;
@@ -444,18 +560,22 @@ async function runSelectedChecks(
     env.BUN_INSTALL_CACHE_DIR = bunCache;
     env.PWD = cwd;
   }
+  const runtimeFingerprint = runtimeFingerprints(cwd, env, options.signal);
   const results: CheckResult[] = [];
   const verified: { check: Check; fingerprint: string }[] = [];
   let ranAfterVerification = false;
   let logDir: string | undefined;
   for (const check of selected) {
     options.signal?.throwIfAborted();
-    const prior = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate);
+    const [prior, runtime] = await Promise.all([
+      fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate, true),
+      runtimeFingerprint(check.command[0]),
+    ]);
     options.signal?.throwIfAborted();
     const slot = createHash("sha256").update(JSON.stringify([root, check.name])).digest("hex");
     const ledgerFile = join(ledgerDir, slot);
-    const key = prior?.complete ? createHash("sha256").update(JSON.stringify(options.publicationCandidate
-      ? [3, envKey, check, candidateTree ?? null, prior.hash] : [2, envKey, check, prior.hash])).digest("hex") : undefined;
+    const key = prior?.receiptHash && runtime && !env.NODE_PATH ? createHash("sha256")
+      .update(JSON.stringify([4, envKey, runtime, check, !!options.publicationCandidate, candidateTree ?? null, prior.receiptHash])).digest("hex") : undefined;
     if (key && await readFile(ledgerFile, "utf8").catch(() => undefined) === key) {
       results.push({ name: check.name, seconds: 0, reused: true });
       verified.push({ check, fingerprint: prior!.hash });
@@ -489,12 +609,12 @@ async function runSelectedChecks(
     }
     results.push({ name: check.name, seconds, reused: false });
     ranAfterVerification = verified.length > 0;
-    const after = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate);
+    const after = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate, Boolean(key));
     if (options.publicationCandidate && prior?.sourceHash !== after?.sourceHash) {
       throw new Error(`${check.name}'s publication candidate inputs changed during the check. Call the publication tool again when the inputs are stable.`);
     }
     if (after) verified.push({ check, fingerprint: after.hash });
-    if (key && after?.complete && after.hash === prior?.hash) {
+    if (key && after?.receiptHash === prior?.receiptHash) {
       try {
         await mkdir(ledgerDir, { recursive: true, mode: 0o700 });
         await writeFile(ledgerFile, key, { mode: 0o600 });

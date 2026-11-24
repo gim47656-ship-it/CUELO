@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createEditLessons, EDIT_LESSONS_PER_PATH, lessonTarget, relativeTarget } from "../edit-lessons";
+import { createEditLessons, EDIT_LESSONS_PER_PATH, lessonTarget, relativeTarget, summarizeLesson } from "../edit-lessons";
 
 type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
 interface Item {
@@ -58,8 +58,8 @@ describe("edit-lessons", () => {
     const lines = result!.additionalContext!.split("\n");
     expect(lines[0]).toBe("[edit-lessons] Tools/OMP_Global_Config/setup.ps1에 묶인 기억 2건. 단서일 뿐이며 현재 지시·정본·승인이 우선한다. 원문은 memory://<id>로 읽는다.");
     expect(lines.slice(1)).toEqual([
-      "- setup.ps1은 -ValidateOnly를 먼저 돌린다 (id: a1, 2026-10-05)",
-      "- retain 쪽 setup.ps1 메모 (id: b2)",
+      "- setup.ps1은 -ValidateOnly를 먼저 돌린다 (memory://a1, 2026-10-05)",
+      "- retain 쪽 setup.ps1 메모 (memory://b2)",
     ]);
   });
 
@@ -71,7 +71,7 @@ describe("edit-lessons", () => {
     const lines = result!.additionalContext!.split("\n");
     expect(lines).toHaveLength(1 + EDIT_LESSONS_PER_PATH);
     expect(lines[0]).toContain("src/lib.ts에 묶인 기억 3건");
-    expect(lines.slice(1).map((line) => line.match(/id: (\w+)/)![1])).toEqual(["x4", "x3", "x2"]);
+    expect(lines.slice(1).map((line) => line.match(/memory:\/\/(\w+)/)![1])).toEqual(["x4", "x3", "x2"]);
   });
 
   test("비밀 패턴 기억은 내용 없이 id만 알리고 상한 3건에 세지 않는다", async () => {
@@ -84,20 +84,36 @@ describe("edit-lessons", () => {
     }));
     const text = (await t.call("edit", { path: "deploy.mjs" }))!.additionalContext!;
     expect(text).toContain("묶인 기억 3건");
-    expect(text).toContain("- deploy.mjs 점검 순서 (id: p1, 2026-10-05)");
+    expect(text).toContain("- deploy.mjs 점검 순서 (memory://p1, 2026-10-05)");
     expect(text).toContain("- 비밀 패턴이 있어 보이지 않음: s1, s2");
     expect(text).not.toContain("환경 파일에서 읽는다");
     expect(text).not.toContain("토큰 위치");
   });
 
-  test("교훈 줄은 공백만 정리하고 경로·literal은 가리지 않으며 검색이 준 길이를 자르지 않는다", async () => {
+  test("교훈 줄은 첫 문장을 공백만 정리해 100자 안으로 줄이고 경로·literal은 가리지 않는다", async () => {
     const long = `a.ts ${"가".repeat(500)}`;
-    const t = setup(async () => ({ items: [lesson("l1", long), lesson("l2", "a.ts는\n`bun test`  전에\tsrc/lib/x.ts를 본다")] }));
+    const t = setup(async () => ({
+      items: [
+        lesson("l1", long),
+        lesson("l2", "a.ts는\n`bun test`  전에\tsrc/lib/x.ts를 본다. 두 번째 문장은 원문에서 읽는다. 세 번째 문장도 그렇다."),
+        lesson("l3", "a.ts v1.2.3 버전을 쓴다. 다음 문장"),
+      ],
+    }));
     const lines = (await t.call("edit", { path: "a.ts" }))!.additionalContext!.split("\n").slice(1);
     expect(lines).toEqual([
-      `- ${long} (id: l1, 2026-10-05)`,
-      "- a.ts는 `bun test` 전에 src/lib/x.ts를 본다 (id: l2, 2026-10-05)",
+      `- a.ts ${"가".repeat(100 - 1 - "a.ts ".length)}… (memory://l1, 2026-10-05)`,
+      "- a.ts는 `bun test` 전에 src/lib/x.ts를 본다. (memory://l2, 2026-10-05)",
+      "- a.ts v1.2.3 버전을 쓴다. (memory://l3, 2026-10-05)",
     ]);
+  });
+
+  test("summarizeLesson은 첫 문장이 없으면 앞부분을 자르고 짧은 글은 그대로 둔다", () => {
+    expect(summarizeLesson("  짧은   글  ")).toBe("짧은 글");
+    expect(summarizeLesson("")).toBe("");
+    expect(summarizeLesson("가".repeat(100))).toBe("가".repeat(100));
+    expect(summarizeLesson("가".repeat(101))).toBe(`${"가".repeat(99)}…`);
+    expect(summarizeLesson("x.ts를 확인。다음에 진행。")).toBe("x.ts를 확인。");
+    expect(summarizeLesson(`${"a".repeat(98)}😀xyz`)).toBe(`${"a".repeat(98)}…`);
   });
 
   test("같은 경로를 세션에서 다시 고치면 다시 찾지 않고 아무것도 붙이지 않는다", async () => {
@@ -114,10 +130,10 @@ describe("edit-lessons", () => {
         : [lesson("shared", "x.ts와 y.ts는 함께 고친다"), lesson("only-y", "y.ts 전용 교훈")],
     }));
     const first = (await t.call("edit", { path: "a/x.ts" }))!.additionalContext!;
-    expect(first).toContain("id: shared");
+    expect(first).toContain("memory://shared");
     const second = (await t.call("edit", { path: "b/y.ts" }))!.additionalContext!;
-    expect(second).not.toContain("id: shared");
-    expect(second).toContain("id: only-y");
+    expect(second).not.toContain("memory://shared");
+    expect(second).toContain("memory://only-y");
     expect(second).toContain("묶인 기억 1건");
   });
 
@@ -129,14 +145,36 @@ describe("edit-lessons", () => {
     const t = setup(search, {}, entries);
     t.fire("session_start");
     const resumed = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
-    expect(resumed).not.toContain("id: x");
-    expect(resumed).toContain("id: y");
+    expect(resumed).not.toContain("memory://x");
+    expect(resumed).toContain("memory://y");
     entries.push({ type: "message", message: { role: "developer", content: [{ type: "text", text: "[edit-lessons] x.ts\n- newer (id: y)" }] } });
     t.fire("session_switch");
     expect(await t.call("edit", { path: "other/x.ts" })).toBeUndefined();
     const fresh = setup(search);
     fresh.fire("session_start");
-    expect((await fresh.call("edit", { path: "x.ts" }))!.additionalContext!).toContain("id: x");
+    expect((await fresh.call("edit", { path: "x.ts" }))!.additionalContext!).toContain("memory://x");
+  });
+
+  test("여러 텍스트 조각으로 나뉜 developer 메시지의 마지막 기억 줄도 재시작 뒤 다시 붙이지 않는다", async () => {
+    const entries: unknown[] = [{
+      type: "message",
+      message: { role: "developer", content: [{ type: "text", text: "[edit-lessons] x.ts\n- earlier (memory://x, 2026-10-05)" }, { type: "text", text: "[other] 뒤 문맥" }] },
+    }];
+    const t = setup(async () => ({ items: [lesson("x", "x.ts 이전 교훈")] }), {}, entries);
+    t.fire("session_start");
+    expect(await t.call("edit", { path: "x.ts" })).toBeUndefined();
+  });
+
+  test("같은 메시지 뒤쪽 다른 문맥의 memory 링크 줄은 붙인 기억으로 세지 않는다", async () => {
+    const entries: unknown[] = [{
+      type: "message",
+      message: { role: "developer", content: [{ type: "text", text: "[edit-lessons] x.ts\n- earlier (memory://x, 2026-10-05)" }, { type: "text", text: "[other]\n- See also (memory://y)" }] },
+    }];
+    const t = setup(async () => ({ items: [lesson("x", "x.ts 이전 교훈"), lesson("y", "x.ts 다른 교훈")] }), {}, entries);
+    t.fire("session_start");
+    const result = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
+    expect(result).not.toContain("memory://x");
+    expect(result).toContain("memory://y");
   });
 
   // 교차검토 R1-ANT-5·R1-OAI-3: 다른 문맥 뒤에 붙은 블록과 비밀 패턴으로 가린 id도 복원한다.
@@ -148,9 +186,24 @@ describe("edit-lessons", () => {
     const t = setup(async () => ({ items: [lesson("x", "x.ts 이전 교훈"), lesson("s1", "x.ts password=hunter2"), lesson("y", "x.ts 새 교훈")] }), {}, entries);
     t.fire("session_start");
     const resumed = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
-    expect(resumed).not.toContain("id: x");
+    expect(resumed).not.toContain("memory://x");
     expect(resumed).not.toContain("s1");
-    expect(resumed).toContain("id: y");
+    expect(resumed).toContain("memory://y");
+  });
+
+  test("새 형식(memory://<id>) 안내문의 id도 재시작 뒤 다시 붙이지 않는다. 머리줄·요약 속 괄호는 id로 읽지 않고 꺾쇠 id는 두 형식 모두 읽는다", async () => {
+    const header = "[edit-lessons] x.ts에 묶인 기억 3건. 단서일 뿐이다. 원문은 memory://<id>로 읽는다.";
+    const entries = [{
+      type: "message",
+      message: { role: "developer", content: `${header}\n- earlier (memory://x, 2026-10-05)\n- See (memory://b) for details. (memory://a, 2026-10-05)\n- angle (memory://<new>)\n- legacy angle (id: <old>, 2026-10-05)` },
+    }];
+    const lessons = ["x", "a", "b", "<new>", "<old>", "y"].map((id) => lesson(id, `x.ts ${id}`));
+    const t = setup(async () => ({ items: lessons }), {}, entries);
+    t.fire("session_start");
+    const resumed = (await t.call("edit", { path: "x.ts" }))!.additionalContext!;
+    expect(resumed).toContain("memory://b,"); // 요약 본문 속 괄호는 붙인 것으로 치지 않는다
+    expect(resumed).toContain("memory://y,");
+    expect(resumed).not.toMatch(/memory:\/\/(x|a|<new>|<old>),/);
   });
 
   test("한 호출의 여러 경로는 입력 순서대로 구역을 나눠 한 문맥으로 합치고 같은 id는 한 번만 싣는다", async () => {
@@ -161,11 +214,11 @@ describe("edit-lessons", () => {
     const sections = text.split("\n\n");
     expect(sections).toHaveLength(2);
     expect(sections[0]).toStartWith("[edit-lessons] a.ts에 묶인 기억 2건");
-    expect(sections[0]).toContain("id: both");
-    expect(sections[0]).toContain("id: a-only");
+    expect(sections[0]).toContain("memory://both");
+    expect(sections[0]).toContain("memory://a-only");
     expect(sections[1]).toStartWith("[edit-lessons] b.ts에 묶인 기억 1건");
-    expect(sections[1]).toContain("id: b-only");
-    expect(sections[1]).not.toContain("id: both");
+    expect(sections[1]).toContain("memory://b-only");
+    expect(sections[1]).not.toContain("memory://both");
   });
 
   test("basename을 가진 기억이 없으면 붙이지 않는다", async () => {
@@ -246,7 +299,7 @@ describe("edit-lessons", () => {
       return { items: [lesson("a1", "x.ts 교훈")] };
     }, { searchTimeoutMs: 20 });
     expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
-    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("id: a1");
+    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("memory://a1");
     expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
     expect(retry.queries).toEqual(["x.ts", "x.ts"]);
 
@@ -296,9 +349,8 @@ describe("edit-lessons", () => {
     const lines = (await t.call("edit", { path: "Tools/setup.ps1" }))!.additionalContext!.split("\n");
     expect(reads.sort()).toEqual(["far", "other"]); // 온전한(잘리지 않은) 무관 미리보기와 이미 파일명이 보이는 것은 읽지 않는다
     expect(lines[0]).toContain("묶인 기억 2건");
-    expect(lines[1]).toStartWith(`- ${preview("앞부분")} [전문에서 setup.ps1 언급: …`);
-    expect(lines[1]).toContain("setup.ps1은 -ValidateOnly를 먼저 돌린다.…] (id: far, 2026-10-05)");
-    expect(lines[2]).toBe("- setup.ps1은 앞쪽에 있다 (id: near, 2026-10-05)");
+    expect(lines[1]).toBe(`- 앞부분 ${"가".repeat(100 - 1 - "앞부분 ".length)}… [전문에서 파일명 확인] (memory://far, 2026-10-05)`);
+    expect(lines[2]).toBe("- setup.ps1은 앞쪽에 있다 (memory://near, 2026-10-05)");
     expect(lines).toHaveLength(3);
   });
 
@@ -343,7 +395,7 @@ describe("edit-lessons", () => {
       { readMemory: async () => { if (++n === 1) throw new Error("not found"); return `${"가".repeat(499)} x.ts 교훈`; } },
     );
     expect(await retry.call("edit", { path: "x.ts" })).toBeUndefined();
-    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("id: far");
+    expect((await retry.call("edit", { path: "x.ts" }))!.additionalContext).toContain("memory://far");
   });
 
   test("같은 파일의 다른 표기는 한 번만 찾는다 (R1-OAI-4)", async () => {
@@ -370,8 +422,8 @@ describe("edit-lessons", () => {
     const lines = (await t.call("edit", { path: "x.ts" }))!.additionalContext!.split("\n");
     expect(lines[0]).toContain("묶인 기억 3건");
     expect(lines.slice(1)).toEqual([
-      "- x.ts 교훈 첫 줄 (id: dup, 2026-10-05)",
-      "- x.ts 다른 교훈 (id: b, 2026-10-05)",
+      "- x.ts 교훈 첫 줄 (memory://dup, 2026-10-05)",
+      "- x.ts 다른 교훈 (memory://b, 2026-10-05)",
       "- 비밀 패턴이 있어 보이지 않음: sec",
     ]);
   });
@@ -391,7 +443,7 @@ describe("edit-lessons", () => {
       // 새 세션에서는 같은 경로를 처음부터 다시 찾고, 옛 결과가 attached에 남아 있지 않다.
       const fresh = t.call("edit", { path: "x.ts" });
       gates[1]!({ items: [lesson("old", "x.ts 옛 세션 교훈")] });
-      expect((await fresh)!.additionalContext).toContain("id: old");
+      expect((await fresh)!.additionalContext).toContain("memory://old");
       expect(t.queries).toEqual(["x.ts", "x.ts"]);
     }
   });
@@ -418,7 +470,7 @@ describe("edit-lessons", () => {
     const result = await t.call("edit", { paths: ["proc://bg/kill", "x.ts", "agent://Main"] });
     expect(t.queries).toEqual(["x.ts"]);
     expect(result!.additionalContext).toStartWith("[edit-lessons] x.ts에 묶인 기억 1건");
-    expect(result!.additionalContext).not.toContain("id: k");
+    expect(result!.additionalContext).not.toContain("memory://k");
   });
 
   test("file:// URI는 실제 파일 경로로 풀어 찾는다 (Windows 드라이브·UNC·퍼센트 인코딩 포함)", async () => {

@@ -12,6 +12,23 @@ import { ensureReady, realSetupDeps, runProcess, type Ready, type Run } from "./
 const SCRIPT = join(import.meta.dir, "screen_find.py");
 const MAX_LINES = 150;
 export const EVENTS_FILE = "cuelo-screen-fast-path-events.jsonl";
+const GUIDE_TYPE = "screen-fast-path-guide";
+const SCREEN_REQUEST = /\b(?:AnyDesk|WinBoat|RDP|VNC|remote desktop|screen(?:shot)?|lab_screen_find|AT-SPI|click (?:the|on)|press the .*? button)\b|화면|스크린샷|원격\s*데스크톱|윈도우\s*창|클릭해|눌러\s*줘/i;
+const COMPUTER_CALL = /\bcomputer\s*(?:\.|\[)/;
+const IMAGE_READ = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif)(?:$|\?)/i;
+
+function hasGuideForCurrentRequest(manager: ExtensionContext["sessionManager"]): boolean {
+  for (let entry = manager.getLeafEntry(); entry; entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined) {
+    if (entry.type === "compaction") return false;
+    if (entry.type === "custom_message" && entry.customType === GUIDE_TYPE) return true;
+    if (entry.type !== "message") continue;
+    const { message } = entry;
+    if (message.role === "user") return false;
+    if (message.role === "developer" && Array.isArray(message.content)
+      && message.content.some((part) => part.type === "text" && part.text.includes(SYSTEM_BLOCK))) return true;
+  }
+  return false;
+}
 
 type Log = (record: Record<string, unknown>) => void;
 
@@ -59,9 +76,17 @@ export function createScreenFastPath(options: ScreenFastPathOptions = {}) {
       failures.set(session, [...(failures.get(session) ?? []), failure]);
     };
 
-    pi.on("before_agent_start", (event) => {
-      if (event.reason !== "prompt") return;
-      return { systemPrompt: [...event.systemPrompt, SYSTEM_BLOCK] };
+    pi.on("before_agent_start", ({ reason, prompt }) => {
+      if (reason !== "prompt" || !SCREEN_REQUEST.test(prompt)) return;
+      return { message: { customType: GUIDE_TYPE, content: SYSTEM_BLOCK, display: false, attribution: "agent" } };
+    });
+
+    pi.on("tool_result", ({ toolName, input }, ctx) => {
+      const screenWork = toolName === "lab_screen_find"
+        || (toolName === "read" && typeof input.path === "string" && IMAGE_READ.test(input.path.trim()))
+        || (toolName === "eval" && typeof input.code === "string" && COMPUTER_CALL.test(input.code));
+      if (!screenWork || hasGuideForCurrentRequest(ctx.sessionManager)) return;
+      return { additionalContext: SYSTEM_BLOCK };
     });
 
     pi.on("tool_call", (event, ctx) => {

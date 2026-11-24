@@ -32,6 +32,8 @@ interface FinalizerResult {
   repositoryFiles?: string[];
 }
 
+class FinalizerPathRefusal extends Error {}
+
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
 const syncCheckoutPath = fileURLToPath(new URL("./sync-checkout.ts", import.meta.url));
 const helperPath = "Tools/CUELO_Setup/files/source-build-helper.js";
@@ -397,8 +399,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
-    "Main-only commit/push exact cwd-relative files in one repo, no globs/directories. message required; crossReviewHighRisk uses paths from files. Review/slop passes bind current content. crossReviewWaiver: explicit user instruction OR standing exception when required review failed only on provider rate or usage limits (decision, reviewId, raw errors). slopGateWaiver: explicit user instruction only. outsideCwdReason: the user's explicit instruction authorizing files outside the session cwd (another repo, another worktree, or the shared main checkout outside cwd); not needed inside the session's own linked worktree or for direct repo-root children of the cwd repo; without it such paths are rejected. A stale source manifest is regenerated and committed automatically. After a commit the result lists untracked/modified files left under the committed folder (not committed, advisory). Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry."
-    + " Matching .finalize-checks.json checks run after review/slop and before commit/push. finalizeChecksWaiver: explicit user instruction only.",
+    "Main-only commit/push. Before calling: give exact cwd-relative files in one repo (no globs/directories) and message; crossReviewHighRisk uses paths from files. Resolve cross_review for gated code and slop_check for gated visible files at current content. Include the matching source manifest where required; stale hashes are regenerated and committed when possible. Fix known .finalize-checks.json failures; matching checks run after review/slop before publication." +
+    " crossReviewWaiver: explicit user instruction OR standing exception when required review failed only on provider rate or usage limits (decision, reviewId, raw errors). slopGateWaiver and finalizeChecksWaiver: explicit user instruction only. outsideCwdReason: user's explicit instruction for files outside session cwd, except in its own linked worktree or for direct children of the cwd repo root. Result lists leftover files under the committed folder (advisory). Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
   parameters: pi.zod.object({
     files: pi.zod.array(pi.zod.string()),
     message: pi.zod.string(),
@@ -412,10 +414,66 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   async execute(_toolCallId, params, onUpdate, ctx, signal) {
     let requested: string[] = params.files.map((value: string) => value.trim()).filter(Boolean);
     const message = params.message.trim();
-    if (requested.length === 0) throw new Error("git_finalize requires at least one exact file path.");
+    if (requested.length === 0) {
+      throw new Error("git_finalize requires at least one exact file path." + (message ? "" : "\ngit_finalize requires a non-empty commit message."));
+    }
     if (!message) throw new Error("git_finalize requires a non-empty commit message.");
 
     const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
+    const prepareFinalizer = async (tempDir: string, files: string[], generatedManifest: boolean) => {
+      const requestPath = join(tempDir, "request.json");
+      const windows = await windowsDrivePaths(pi.cwd, files, [pi.cwd, scriptPath, requestPath], exec);
+      const shell = process.platform === "win32" || windows ? "powershell.exe" : "pwsh";
+      const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windows?.[1] ?? scriptPath, "-Request", windows?.[2] ?? requestPath];
+      const options = { cwd: pi.cwd, signal, timeout: 180_000 };
+      const outsideCwdReason = params.outsideCwdReason?.trim();
+      const request = { cwd: windows?.[0] ?? pi.cwd, files, message, outsideCwdReason, generatedFiles: generatedManifest ? [manifestPath] : undefined };
+      return {
+        requestPath, request, windows, shell, args, options,
+        async checkPaths() {
+          await writeFile(requestPath, JSON.stringify(request), "utf8");
+          const result = await pi.exec(shell, [...args, "-PreflightOnly"], options);
+          const parsed = parseResult(result.stdout);
+          if (result.code !== 0 || !parsed?.ok || !parsed.repositoryRoot || !parsed.repositoryFiles?.length) {
+            const detail = `git_finalize failed at ${parsed?.stage ?? "preflight"}: ${parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`;
+            if (parsed?.ok === false && parsed.stage === "repository") throw new FinalizerPathRefusal(detail);
+            throw new Error(detail);
+          }
+          const root = windows ? windowsPathToPosix(parsed.repositoryRoot) : parsed.repositoryRoot;
+          return { root, paths: parsed.repositoryFiles };
+        },
+      };
+    };
+    const preconditionError = async (error: unknown, stage?: "cross-review" | "slop-gate", generatedManifest = false) => {
+      const primary = (stage ? `git_finalize failed at ${stage}: ` : "") + (error instanceof Error ? error.message : String(error));
+      let pathNote = "";
+      let dir: string | undefined;
+      try {
+        // Diagnose paths only on rejection. This stops before fetch, staging, or project commands.
+        if (!signal?.aborted) {
+          dir = await mkdtemp(join(tmpdir(), "omp-git-finalize-"));
+          const prepared = await prepareFinalizer(dir, requested, generatedManifest);
+          await prepared.checkPaths();
+        }
+      } catch (pathError) {
+        const detail = pathError instanceof Error ? pathError.message : String(pathError);
+        pathNote = pathError instanceof FinalizerPathRefusal
+          ? `\nExact file-list preflight: ${detail}\nCorrect the reported path or repository issue before retrying.`
+          : `\nCould not verify the exact file list: ${detail}\nResolve the preflight error before retrying.`;
+      } finally {
+        if (dir) {
+          await rm(dir, { recursive: true, force: true }).catch((cleanupError: Error) => {
+            pathNote += `\nCould not remove the temporary preflight request: ${cleanupError.message}`;
+          });
+        }
+      }
+      const next = [
+        !stage && "a current cross_review pass for gated code",
+        stage !== "slop-gate" && "a current slop_check pass for gated visible files",
+        "passing matching .finalize-checks.json checks (git_finalize runs them after preflight)",
+      ].filter(Boolean).join("; ");
+      return new Error(`${primary}${pathNote}\nAfter fixing the above, this call also requires, where applicable: ${next}.`);
+    };
     // 뒤처지기만 한 작업 사본은 원격 커밋을 먼저 받는다(사용자 결정 2026-11-05). 게이트가 받은 뒤의 내용(합친 파일 포함)을 보도록 맨 앞에서 한다.
     let upstreamNote = "";
     const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
@@ -433,7 +491,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       if (reattached.note) upstreamNote = [reattached.note, upstreamNote].filter(Boolean).join(" ");
     }
     // 낡은 매니페스트는 여기서 다시 만들어 요청 파일에 더한다. 게이트 blob 수집(runGate)보다 앞이라 finalizer의 blob 대조와 어긋나지 않는다.
-    const regeneratedManifest = await checkSourceManifest(pi.cwd, requested, exec, Boolean(params.outsideCwdReason?.trim()));
+    const regeneratedManifest = await checkSourceManifest(pi.cwd, requested, exec, Boolean(params.outsideCwdReason?.trim()))
+      .catch(async (error: unknown) => { throw await preconditionError(error); });
     if (regeneratedManifest && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, regeneratedManifest.file))) {
       requested = [...requested, regeneratedManifest.file];
     }
@@ -448,7 +507,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       })).gateBlobs;
     } catch (error) {
       // 게이트가 판정하지 못한 오류(git 실패 등)도 열어 두지 않는다: 확인하지 못한 채 커밋하지 않는다.
-      throw new Error(`git_finalize failed at cross-review: ${error instanceof Error ? error.message : String(error)}`);
+      throw await preconditionError(error, "cross-review", Boolean(regeneratedManifest));
     }
     // AI 슬롭 게이트: 보이는 산출물(문서·html·Office·pdf·보고 csv·UI 문구, .slop-gate.json이 더한 것)은 현재 내용의 slop_check 통과가 있어야 한다.
     // 게이트가 맞춘 바이트의 blob을 gateBlobs에 합쳐, 게이트 뒤에 파일이 바뀌면 finalizer가 잠금 안에서 거절한다.
@@ -462,7 +521,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       // 원자료 csv로 보고 통과를 요구하지 않은 파일도 결과에 남긴다(조용히 빠지지 않게).
       if (slop.rawData?.length) rawDataNote = `slop-gate가 원자료 csv로 보고 심사를 요구하지 않은 파일: ${slop.rawData.map((file) => `${file.path} (${file.reason})`).join("; ")}.`;
     } catch (error) {
-      throw new Error(`git_finalize failed at slop-gate: ${error instanceof Error ? error.message : String(error)}`);
+      throw await preconditionError(error, "slop-gate", Boolean(regeneratedManifest));
     }
     const memory = await exportMemories(pi.cwd, requested, exec);
     const files = memory.file ? [...requested, memory.file] : requested;
@@ -478,28 +537,13 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     }
 
     const tempDir = await mkdtemp(join(tmpdir(), "omp-git-finalize-"));
-    const requestPath = join(tempDir, "request.json");
     try {
-      const windows = await windowsDrivePaths(pi.cwd, files, [pi.cwd, scriptPath, requestPath], exec);
-      const shell = process.platform === "win32" || windows ? "powershell.exe" : "pwsh";
-      const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windows?.[1] ?? scriptPath, "-Request", windows?.[2] ?? requestPath];
-      const options = { cwd: pi.cwd, signal, timeout: 180_000 };
-      const outsideCwdReason = params.outsideCwdReason?.trim();
-      const request = { cwd: windows?.[0] ?? pi.cwd, files, message, outsideCwdReason, generatedFiles: regeneratedManifest ? [manifestPath] : undefined };
+      const prepared = await prepareFinalizer(tempDir, files, Boolean(regeneratedManifest));
+      const { requestPath, request, windows, shell, args, options } = prepared;
       let finalizeChecks: FinalizeChecksResult | undefined;
       const run = spawnExec(signal);
       let pathPreflight: { root: string; paths: string[] } | undefined;
-      const verifyPaths = async () => {
-        if (pathPreflight) return pathPreflight;
-        await writeFile(requestPath, JSON.stringify(request), "utf8");
-        const result = await pi.exec(shell, [...args, "-PreflightOnly"], options);
-        const parsed = parseResult(result.stdout);
-        if (result.code !== 0 || !parsed?.ok || !parsed.repositoryRoot || !parsed.repositoryFiles?.length) {
-          throw new Error(`git_finalize failed at ${parsed?.stage ?? "preflight"}: ${parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`);
-        }
-        const root = windows ? windowsPathToPosix(parsed.repositoryRoot) : parsed.repositoryRoot;
-        return pathPreflight = { root, paths: parsed.repositoryFiles };
-      };
+      const verifyPaths = async () => pathPreflight ??= await prepared.checkPaths();
       const portableFiles = files.map((file) => file.replaceAll("\\", "/"));
       const targets = repo && !("failure" in repo) && files.length === repo.targets.length && portableFiles.every((file, index) => file === repo.targets[index].input)
         ? repo : await resolveRepoTargets(pi.cwd, portableFiles, run);

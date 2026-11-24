@@ -588,7 +588,7 @@ describe("git finalizer", () => {
     expect(await readFile(manifestFile, "utf8")).toBe(edited);
   }, TEST_TIMEOUT_MS);
 
-  test("never regenerates the manifest for a request that the cwd boundary would reject", async () => {
+  test("reports both a stale manifest and an unauthorized file without regenerating", async () => {
     const { work } = await createManifestRepository();
     await installRegeneratingHelper(work);
     const session = join(work, "session");
@@ -596,10 +596,17 @@ describe("git finalizer", () => {
     const manifestFile = join(work, "Tools", "CUELO_Setup", "files", "source-integrity.json");
     const before = await readFile(manifestFile, "utf8");
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
+    const head = git(work, ["rev-parse", "HEAD"]);
 
     const { error } = await startTool(session, ["../Tools/runtime/entry.js"]);
     expect(error?.message).toContain("source manifest is stale for Tools/runtime/entry.js");
+    expect(error?.message).toContain("File path escapes the session cwd: ../Tools/runtime/entry.js");
+    expect(error?.message).toContain("pass it as outsideCwdReason");
+    expect(error?.message).toContain("cross_review");
+    expect(error?.message).toContain(".finalize-checks.json");
     expect(await readFile(manifestFile, "utf8")).toBe(before);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
   test("allows a source and its matching manifest in the same commit", async () => {

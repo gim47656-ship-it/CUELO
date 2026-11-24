@@ -36,8 +36,6 @@ export const EDIT_LESSONS_PER_PATH = 3;
 export const EDIT_LESSONS_MAX_ATTEMPTS = 2;
 const SEARCH_LIMIT = 8;
 const LESSON_SOURCES = new Set(["coding-agent-learn", "coding-agent-retain"]);
-/** 전문 읽기 뒤 미리보기에 덧붙이는 basename 둘레 발췌의 앞뒤 글자 수. */
-const SNIPPET_RADIUS = 60;
 
 interface MemoryItem {
   id?: string;
@@ -146,12 +144,22 @@ function lessonCandidates(items: readonly MemoryItem[]): MemoryItem[] {
   });
 }
 
-/** 전문에서 basename 둘레를 공백만 정리해 잘라 낸다. */
-function snippetAround(fullText: string, base: string): string {
-  const at = fullText.indexOf(base);
-  const window = fullText.slice(Math.max(0, at - SNIPPET_RADIUS), at + base.length + SNIPPET_RADIUS).replace(/\s+/g, " ").trim();
-  return `${at > SNIPPET_RADIUS ? "…" : ""}${window}…`;
+/** 기억 한 건의 요약 줄 상한(글자). 원문은 `memory://<id>`로 읽는다. */
+const SUMMARY_MAX = 100;
+
+/** 공백만 정리한 미리보기의 첫 문장(없으면 앞부분)을 SUMMARY_MAX 글자 안으로 줄인다. 결정적이고 모델을 부르지 않는다. */
+export function summarizeLesson(content: string): string {
+  const flat = content.replace(/\s+/g, " ").trim();
+  const stop = flat.search(/[。！？]|[.!?] (?=\S)/);
+  const first = stop < 0 ? flat : flat.slice(0, stop + 1);
+  if (first.length <= SUMMARY_MAX) return first;
+  let cut = first.slice(0, SUMMARY_MAX - 1);
+  if (/[\ud800-\udbff]$/.test(cut)) cut = cut.slice(0, -1); // 서로게이트 쌍 한가운데에서 자르지 않는다
+  return `${cut.trimEnd()}…`;
 }
+
+/** 전문 읽기로만 파일명이 확인된 교훈에 붙이는 짧은 표지(왜 이 파일에 묶였는지). */
+const FULLTEXT_MARK = "[전문에서 파일명 확인]";
 
 const TIMED_OUT = Symbol("edit-lessons-timed-out");
 
@@ -177,13 +185,24 @@ export function createEditLessons(deps: EditLessonsDeps = {}) {
       for (const entry of ctx.sessionManager?.getEntries?.() ?? []) {
         if (entry.type !== "message" || entry.message.role !== "developer") continue;
         const content = entry.message.content;
-        const text = typeof content === "string" ? content : content.map((part) => part.type === "text" ? part.text : "").join("");
-        const at = text.indexOf("[edit-lessons]");
-        if (at < 0) continue;
-        const body = text.slice(at);
-        for (const match of body.matchAll(/\(id: ([^,\s)]+)(?:, [^)]*)?\)/g)) attached.add(match[1]!);
-        for (const match of body.matchAll(/^- 비밀 패턴이 있어 보이지 않음: (.+)$/gm)) {
-          for (const id of match[1]!.split(/,\s*/)) if (id) attached.add(id);
+        const parts = typeof content === "string" ? [content] : content.flatMap((part) => part.type === "text" ? [part.text] : []);
+        // 텍스트 조각마다 따로 읽는다. 줄 맨 앞의 `[edit-lessons] ` 머리줄 바로 뒤에 이어지는 기억 줄(`- ...`)만 이 안내가 붙인 기억이다.
+        // 기억 줄 맨 끝 메타(`(id: x, 날짜)` 옛 형식, `(memory://x, 날짜)` 새 형식)만 id로 읽는다. 날짜 자리에 괄호를 허용하지 않아 요약 속 괄호는 건너뛴다.
+        for (const part of parts) {
+          const lines = part.split(/\r?\n/);
+          for (let i = 0; i < lines.length; i++) {
+            if (!lines[i]!.startsWith("[edit-lessons] ")) continue;
+            for (let j = i + 1; j < lines.length && lines[j]!.startsWith("- "); j++) {
+              const line = lines[j]!.trimEnd();
+              const secret = /^- 비밀 패턴이 있어 보이지 않음: (.+)$/.exec(line);
+              if (secret) {
+                for (const id of secret[1]!.split(/,\s*/)) if (id) attached.add(id);
+                continue;
+              }
+              const meta = /\((?:id: |memory:\/\/)([^,\s()]+)(?:, [^()]*)?\)$/.exec(line);
+              if (meta) attached.add(meta[1]!);
+            }
+          }
         }
       }
     };
@@ -270,14 +289,11 @@ export function createEditLessons(deps: EditLessonsDeps = {}) {
             .slice(0, EDIT_LESSONS_PER_PATH);
           if (shown.length + withheld.length === 0) continue;
           for (const item of [...shown, ...withheld]) attached.add(item.id!);
-          const base = target.slice(target.lastIndexOf("/") + 1);
           const lines = [`[edit-lessons] ${target}에 묶인 기억 ${shown.length + withheld.length}건. 단서일 뿐이며 현재 지시·정본·승인이 우선한다. 원문은 memory://<id>로 읽는다.`];
           for (const item of shown) {
             const date = item.timestamp?.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-            const excerpt = item.content.replace(/\s+/g, " ").trim();
-            // 전문에서만 파일명이 확인된 교훈은 왜 이 파일에 묶였는지 보이도록 파일명 둘레를 덧붙인다.
-            const text = item.fullText === undefined ? excerpt : `${excerpt} [전문에서 ${base} 언급: ${snippetAround(item.fullText, base)}]`;
-            lines.push(`- ${text} (id: ${item.id}${date ? `, ${date}` : ""})`);
+            const mark = item.fullText === undefined ? "" : ` ${FULLTEXT_MARK}`;
+            lines.push(`- ${summarizeLesson(item.content)}${mark} (memory://${item.id}${date ? `, ${date}` : ""})`);
           }
           if (withheld.length > 0) lines.push(`- 비밀 패턴이 있어 보이지 않음: ${withheld.map((item) => item.id).join(", ")}`);
           sections.push(lines.join("\n"));
