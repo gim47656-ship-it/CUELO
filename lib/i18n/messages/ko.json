@@ -232,6 +232,8 @@
  "browserPane.viewLabel": "{title} 페이지 화면",
  "browserPane.handoffNotice": "에이전트가 브라우저 조작을 넘겼습니다.",
  "browserPane.handoffAction": "브라우저 열기",
+ "browserPane.useNotice": "에이전트가 브라우저를 조작 중입니다.",
+ "browserPane.useAction": "브라우저 보기",
  "workspace.getStarted": "시작하기",
  "workspace.selectProject": "사이드바에서 프로젝트 디렉터리를 선택하세요",
  "workspace.addModels": "하단의 모델 버튼으로 모델을 추가하세요",

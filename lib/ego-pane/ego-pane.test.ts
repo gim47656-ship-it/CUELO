@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { fetchPaneState, postPaneInput, postPaneReturn, readPaneChannel } from "
 import { PaneHub, readPaneOwnership, returnPaneControl, type PaneEvent, type PaneState } from "./hub";
 import { toPaneEventBatch } from "./input";
 import { paneChannelPath, paneSpaceName } from "./space";
+import { PaneViewStore, type PaneSourceHandlers } from "./view-store";
 import { startFakePaneServer, type FakePaneServer } from "./testing/fake-pane-server";
 
 const SESSION = "0d0ebb11-a35e-4b59-bb0a-899b7a449458";
@@ -351,6 +352,18 @@ describe("PaneHub", () => {
     expect(hub.idle).toBe(true);
   });
 
+  test("a viewer that joins later shares the stream and starts with the state and the last frame", async () => {
+    const { fake, channelPath } = await setup();
+    const first = watch(channelPath);
+    await goLive(first, fake);
+    const joined: PaneEvent[] = [];
+    cleanups.push(first.hub.subscribe((event) => joined.push(event)));
+    expect(joined.map((event) => event.type)).toEqual(["state", "frame"]);
+    expect(joined[0]).toEqual({ type: "state", state: first.state()! });
+    expect(fake.openStreams()).toBe(1);
+    expect(fake.streamTargets.length).toBe(1);
+  });
+
   test("a completed space reads as none, and an ego that stops reads as off", async () => {
     const { fake, channelPath } = await setup();
     const view = watch(channelPath);
@@ -381,5 +394,92 @@ describe("returnPaneControl", () => {
     expect(await returnPaneControl(SESSION, channelPath)).toBe("failed");
     expect(await readPaneOwnership(SESSION, channelPath)).toEqual({ ownership: null, available: true });
     expect(await returnPaneControl(SESSION, join(tmpdir(), "cuelo-pane-test-missing", "ego-lite-pane.json"))).toBe("failed");
+  });
+});
+
+describe("PaneViewStore", () => {
+  // The store watches the page's visibility. Other test files in the same run
+  // leave their own `document` stand-ins behind, so these tests bring a visible page.
+  let savedDocument: PropertyDescriptor | undefined;
+  beforeEach(() => {
+    savedDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    });
+  });
+  afterEach(() => {
+    if (savedDocument) Object.defineProperty(globalThis, "document", savedDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+  });
+  /** Stands in for the page's event source: counts what is open and lets the test speak as the server. */
+  function source(): { open: (url: string, handlers: PaneSourceHandlers) => () => void; live: () => number; opened: () => number; send: (event: PaneEvent) => void } {
+    const live = new Set<PaneSourceHandlers>();
+    let opened = 0;
+    return {
+      open: (_url, handlers) => {
+        opened += 1;
+        live.add(handlers);
+        handlers.open();
+        return () => live.delete(handlers);
+      },
+      live: () => live.size,
+      opened: () => opened,
+      send: (event) => {
+        for (const handlers of live) handlers.message(JSON.stringify(event));
+      },
+    };
+  }
+  const STATE: PaneState = { status: "live", ownership: "user", tabs: [{ id: TAB_A, title: "A", url: "https://a.example/" }], tabId: TAB_A, agentTabId: TAB_A, follow: true };
+
+  test("two surfaces of one session read one stream, one state and the same frames", () => {
+    const fake = source();
+    const store = new PaneViewStore("/events", fake.open);
+    const leavePane = store.subscribe(() => {});
+    fake.send({ type: "state", state: STATE });
+    fake.send({ type: "frame", tabId: TAB_A, data: "QUJD", width: 1200, height: 700 });
+
+    // The inspector tab joins after the pane: no second stream, and it starts with what the pane shows.
+    let renders = 0;
+    const leaveInspector = store.subscribe(() => { renders += 1; });
+    const frames: string[] = [];
+    const unwatch = store.watchFrames((src) => frames.push(src));
+    expect(fake.opened()).toBe(1);
+    expect(store.getSnapshot()).toEqual({ state: STATE, streamDown: false, frameSize: { width: 1200, height: 700 }, frameTabId: TAB_A, hadView: true });
+    // Whoever draws starts with the frame that is showing, whenever it begins to watch.
+    expect(frames).toEqual(["data:image/jpeg;base64,QUJD"]);
+
+    // A frame of the same tab and size is drawn, not rendered.
+    fake.send({ type: "frame", tabId: TAB_A, data: "REVG", width: 1200, height: 700 });
+    expect(frames).toEqual(["data:image/jpeg;base64,QUJD", "data:image/jpeg;base64,REVG"]);
+    expect(renders).toBe(0);
+    fake.send({ type: "frame", tabId: TAB_B, data: "R0hJ", width: 1200, height: 700 });
+    expect(store.getSnapshot().frameTabId).toBe(TAB_B);
+    expect(renders).toBe(1);
+
+    leavePane();
+    expect(fake.live()).toBe(1);
+    leaveInspector();
+    unwatch();
+    expect(fake.live()).toBe(0);
+    // The next view of the session starts from nothing.
+    expect(store.getSnapshot()).toEqual({ state: null, streamDown: false, frameSize: null, frameTabId: null, hadView: false });
+    expect(store.frameSrc).toBe("");
+  });
+
+  test("a hidden page holds no stream, and the view picks up when it shows again", () => {
+    const fake = source();
+    const store = new PaneViewStore("/events", fake.open);
+    const leave = store.subscribe(() => {});
+    fake.send({ type: "frame", tabId: TAB_A, data: "QUJD", width: 1200, height: 700 });
+    store.setVisible(false);
+    expect(fake.live()).toBe(0);
+    expect(store.getSnapshot().hadView).toBe(true);
+    store.setVisible(true);
+    expect(fake.live()).toBe(1);
+    expect(fake.opened()).toBe(2);
+    leave();
+    expect(fake.live()).toBe(0);
   });
 });

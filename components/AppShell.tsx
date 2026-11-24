@@ -193,6 +193,7 @@ const PALETTE_VIEW_ICONS: Record<WorkspaceViewId, WorkbenchIconName> = {
   efficiency: "gauge",
   plugins: "puzzle",
   memory: "brain",
+  browser: "globe",
 };
 
 /** 헤더 위 패널(세션 정보·시스템 프롬프트·분기)을 연 조작부. 메뉴 항목은 메뉴와 함께 사라지므로 더 보기 버튼을 돌려준다. */
@@ -314,6 +315,13 @@ export function AppShell({
   const [browserWaitFor, setBrowserWaitFor] = useState<string | null>(null);
   // Read by handlers defined above the render-time split decision.
   const splitShownRef = useRef(false);
+  // Read by handlers defined above the render-time pane decision.
+  const browserPaneShownRef = useRef(false);
+  // The request (index of its first message) whose browser call the shell already answered, per
+  // session: the browser shows by itself once per request, so a tab the user picks afterwards stays.
+  const browserAnsweredRef = useRef(new Map<string, number>());
+  // Sessions whose running request uses the browser while the shell did not show it by itself.
+  const [browserUseSessions, setBrowserUseSessions] = useState<ReadonlySet<string>>(new Set());
   // The beside pane's key while it can be promoted; -1 right after a promotion until the next render,
   // so a second event from the same gesture cannot trade the roles back.
   const besideKeyRef = useRef(-1);
@@ -1593,6 +1601,48 @@ export function AppShell({
     setBrowserWaitFor(null);
   }, [besideSession]);
 
+  // 인스펙터의 브라우저 탭. Opening it never moves focus: the agent's first browser call of a
+  // request opens it by itself, possibly while the user is typing.
+  const showBrowserInspector = useCallback(() => {
+    setInspectorOpen(true);
+    dispatchWorkspaceLayout({ type: "select-view", view: "browser" });
+  }, [setInspectorOpen]);
+
+  const forgetBrowserUse = useCallback((sessionId: string) => {
+    setBrowserUseSessions((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
+  // The way in from a composer notice: the inspector's tab where the inspector sits beside the
+  // conversation, the browser pane where the inspector would take the conversation's place.
+  const revealBrowser = useCallback(() => {
+    if (selectedSession) forgetBrowserUse(selectedSession.id);
+    if (inspectorPinned) showBrowserInspector();
+    else showBrowserPane();
+  }, [forgetBrowserUse, inspectorPinned, selectedSession, showBrowserInspector, showBrowserPane]);
+
+  const handleBrowserUse = useCallback((sessionId: string, request: number | null) => {
+    if (request === null) {
+      // Nothing runs: the next run starts unanswered, even if compaction gives its request an index seen before.
+      browserAnsweredRef.current.delete(sessionId);
+      forgetBrowserUse(sessionId);
+      return;
+    }
+    // Only the selected session's own conversation reports here.
+    if (sessionId !== selectedSession?.id || browserAnsweredRef.current.get(sessionId) === request) return;
+    browserAnsweredRef.current.set(sessionId, request);
+    // A browser already on screen needs no second view.
+    if (browserPaneShownRef.current) return;
+    // Switching the inspector's view would drop a focus that sits inside the view being replaced,
+    // so there, as on layouts without a pinned inspector, the composer notice offers the way in.
+    if (inspectorPinned && !document.activeElement?.closest(".auxiliary-deck-panel")) showBrowserInspector();
+    else setBrowserUseSessions((current) => new Set(current).add(sessionId));
+  }, [forgetBrowserUse, inspectorPinned, selectedSession?.id, showBrowserInspector]);
+
   // Closing the browser closes the side pane as a whole; 「대화로 바꾸기」 is the way back to a session.
   const closeBrowserPane = useCallback(() => {
     setBesideBrowser(false);
@@ -2272,8 +2322,8 @@ export function AppShell({
     return () => observer.disconnect();
   }, [windowTitle]);
   const viewLabels: Record<WorkspaceViewId, string> = locale === "ko"
-    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적" }
-    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace" };
+    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적", browser: "브라우저" }
+    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace", browser: "Browser" };
   const inspectorViewLabels: Record<AuxiliaryDeckView, string> = { ...viewLabels, turn: translate("inspector.turn") };
   const inspectorShown = showAuxiliaryDeck && !deckPresentation.expanded;
   // One context indicator. The number carries the meaning; the bar and the
@@ -2409,6 +2459,11 @@ export function AppShell({
   const turnSlotContent = showChat
     ? <div ref={setTurnSlot} className="turn-inspector-slot" />
     : <p className="inspector-empty">{translate("inspector.noTurn")}</p>;
+  // Mounted only while the tab shows, so the stream runs only while someone can see it.
+  const inspectorBrowserShown = showAuxiliaryDeck && inspectorView === "browser";
+  const browserSlotContent = !inspectorBrowserShown ? null : selectedSession
+    ? <BrowserPane key={`inspector-browser-${selectedSession.id}`} sessionId={selectedSession.id} sessionTitle={sessionTitle} chrome={null} />
+    : <p className="inspector-empty">{translate("browserPane.noneTitle")}</p>;
   const nativeAuxiliaryDeck = showAuxiliaryDeck ? (
     <AuxiliaryDeck
       activeView={inspectorView}
@@ -2422,6 +2477,7 @@ export function AppShell({
       liveSubagents={subagents}
       processSlot={processLogSlot}
       fileSlot={fileViewerSlot}
+      browserSlot={browserSlotContent}
       sideChatSlot={sideChatSlot}
       resourceSlot={resourcePanelContent}
       efficiencySlot={efficiencyPanelContent}
@@ -2461,6 +2517,7 @@ export function AppShell({
   const besideChatShown = splitAvailable && splitFits && besideSession !== null && !browserOpen && !(besideBrowser && browserHeld);
   const splitShown = besideChatShown || browserSplit;
   splitShownRef.current = besideChatShown;
+  browserPaneShownRef.current = browserSplit || browserAlone;
   const besideBlockedReason = splitFits
     ? null
     : translate(showAuxiliaryDeck && inspectorPinned ? "sidebar.openBesideNarrowDeck" : "sidebar.openBesideNarrow");
@@ -2550,13 +2607,15 @@ export function AppShell({
       key={`pane-browser-${selectedSession.id}`}
       sessionId={selectedSession.id}
       sessionTitle={sessionTitle}
-      canSplit={splitAvailable && splitFits}
-      enlarged={browserEnlarged && splitAvailable && splitFits}
-      onToggleEnlarge={() => setBrowserEnlarged((enlarged) => !enlarged)}
-      onShowChat={browserSplit ? (besideSession ? () => setBesideBrowser(false) : null) : () => setBrowserFront(false)}
-      onClose={closeBrowserPane}
-      onUse={() => setBrowserFront(true)}
-      narrowNote={splitAvailable && !splitFits ? translate("workspace.foldedNarrow") : null}
+      chrome={{
+        canSplit: splitAvailable && splitFits,
+        enlarged: browserEnlarged && splitAvailable && splitFits,
+        onToggleEnlarge: () => setBrowserEnlarged((enlarged) => !enlarged),
+        onShowChat: browserSplit ? (besideSession ? () => setBesideBrowser(false) : null) : () => setBrowserFront(false),
+        onClose: closeBrowserPane,
+        onUse: () => setBrowserFront(true),
+        narrowNote: splitAvailable && !splitFits ? translate("workspace.foldedNarrow") : null,
+      }}
     />
   ) : null;
 
@@ -3285,9 +3344,10 @@ export function AppShell({
               onOpenSessionList={navigatorPresentation.presented ? undefined : handleSidebarToggle}
               onRevealToolCall={revealToolCallInLog}
               composerStartPlace={composerStartPlace}
-              composerNotice={selectedSession && !browserSplit && !browserAlone
-                ? <BrowserHandoffNotice key={selectedSession.id} sessionId={selectedSession.id} onOpen={showBrowserPane} />
+              composerNotice={selectedSession && !browserSplit && !browserAlone && !inspectorBrowserShown
+                ? <BrowserHandoffNotice key={selectedSession.id} sessionId={selectedSession.id} inUse={browserUseSessions.has(selectedSession.id)} onOpen={revealBrowser} />
                 : undefined}
+              onBrowserUse={handleBrowserUse}
               onOpenMaker={openMaker}
               selectedMaker={selectedMaker}
               onProcessLogChange={setProcessLog}

@@ -2153,6 +2153,17 @@ span.linenumber {
   background: transparent;
 }
 
+/* 인스펙터의 브라우저 탭: the same view inside the inspector, on the inspector's own tone. */
+.browser-pane.is-inspector {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-block-size: 0;
+  padding-block-start: 8px;
+  overflow: hidden;
+  background: transparent;
+}
+
 .browser-pane-button {
   display: inline-flex;
   flex: none;
@@ -2456,6 +2467,11 @@ span.linenumber {
 .browser-handoff-notice-text {
   flex: 1 1 auto;
   min-inline-size: 0;
+}
+
+/* The agent operating the browser is a status, not a call for the user's turn. */
+.browser-handoff-notice[data-turn="agent"] {
+  background: var(--bg-subtle);
 }
 
 /* Right-click menu of a session row. */
@@ -4979,11 +4995,13 @@ h2.priority-group-heading {
   display: none !important;
 }
 
+/* Triggers stretch to fill the row, so the padding is only the least a tab keeps: five tabs and
+   the three buttons fit the inspector's 440px on one row. */
 .auxiliary-deck-tabbar .seed-tabs__trigger {
   flex: 1 1 auto;
   justify-content: center;
   min-block-size: 32px;
-  padding-inline: 10px;
+  padding-inline: 6px;
   border: 0;
   border-radius: 3px;
   box-shadow: none;

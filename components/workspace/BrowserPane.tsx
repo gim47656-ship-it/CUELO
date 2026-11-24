@@ -5,9 +5,8 @@ import { useBrowserPane } from "@/hooks/useBrowserPane";
 import { useI18n } from "@/hooks/useI18n";
 import { WorkbenchIcon } from "./WorkbenchIcon";
 
-interface BrowserPaneProps {
-  sessionId: string;
-  sessionTitle: string;
+/** What only the side pane has: its own header, the way back to a conversation, and 크게 보기. */
+interface BrowserPaneChrome {
   /** Two panes fit, so the pane can offer 크게 보기 and back. */
   canSplit: boolean;
   /** The pane stands alone by the user's choice (크게 보기). */
@@ -20,6 +19,13 @@ interface BrowserPaneProps {
   onUse: () => void;
   /** Why only one pane shows, when the window is too narrow for two. */
   narrowNote: string | null;
+}
+
+interface BrowserPaneProps {
+  sessionId: string;
+  sessionTitle: string;
+  /** Null inside the inspector, whose tab row and close button stand in for the pane's header. */
+  chrome: BrowserPaneChrome | null;
 }
 
 type BandNotice = "blocked" | "returned" | "failed" | "pasteTooLong";
@@ -40,7 +46,7 @@ function modifierBits(event: { altKey: boolean; ctrlKey: boolean; metaKey: boole
  * pane only shows it; after the agent hands over, clicks, wheel and typing go to the page, and
  * 「조작 돌려주기」 gives control back. The server decides what is forwarded; this is the surface.
  */
-export function BrowserPane({ sessionId, sessionTitle, canSplit, enlarged, onToggleEnlarge, onShowChat, onClose, onUse, narrowNote }: BrowserPaneProps) {
+export function BrowserPane({ sessionId, sessionTitle, chrome }: BrowserPaneProps) {
   const { t } = useI18n();
   const { status, state, hadView, frameSize, imageRef, bindImage, sendInput, returnControl, selectTab, reconnect } = useBrowserPane(sessionId);
   const [notice, setNotice] = useState<BandNotice | null>(null);
@@ -152,17 +158,24 @@ export function BrowserPane({ sessionId, sessionTitle, canSplit, enlarged, onTog
     : null;
 
   return (
-    <div className="chat-pane browser-pane" data-turn={userTurn ? "user" : "agent"} onPointerDownCapture={onUse} onFocusCapture={onUse}>
-      <div className="chat-pane-head">
-        <span className="chat-pane-title" title={sessionTitle}>{t("browserPane.title", { title: sessionTitle })}</span>
-        {onShowChat && (
-          <button type="button" className="browser-pane-button" onClick={onShowChat}>{t("workspace.toChat")}</button>
-        )}
-        <button type="button" className="chat-pane-close" onClick={onClose} aria-label={t("workspace.closePane")} title={t("workspace.closePane")}>
-          <WorkbenchIcon name="x" size={14} />
-        </button>
-      </div>
-      {narrowNote && <p className="browser-pane-narrow">{narrowNote}</p>}
+    <div
+      className={chrome ? "chat-pane browser-pane" : "browser-pane is-inspector"}
+      data-turn={userTurn ? "user" : "agent"}
+      onPointerDownCapture={chrome?.onUse}
+      onFocusCapture={chrome?.onUse}
+    >
+      {chrome && (
+        <div className="chat-pane-head">
+          <span className="chat-pane-title" title={sessionTitle}>{t("browserPane.title", { title: sessionTitle })}</span>
+          {chrome.onShowChat && (
+            <button type="button" className="browser-pane-button" onClick={chrome.onShowChat}>{t("workspace.toChat")}</button>
+          )}
+          <button type="button" className="chat-pane-close" onClick={chrome.onClose} aria-label={t("workspace.closePane")} title={t("workspace.closePane")}>
+            <WorkbenchIcon name="x" size={14} />
+          </button>
+        </div>
+      )}
+      {chrome?.narrowNote && <p className="browser-pane-narrow">{chrome.narrowNote}</p>}
 
       {status === "none" && (
         <div className="browser-pane-empty">
@@ -202,10 +215,10 @@ export function BrowserPane({ sessionId, sessionTitle, canSplit, enlarged, onTog
           <div className="browser-pane-url">
             <span className="browser-pane-url-text" title={shownTab?.url}>{shownTab?.url ?? ""}</span>
             {frameSize && scalePercent !== null && <span className="browser-pane-scale">{t("browserPane.scale", { percent: scalePercent })}</span>}
-            {(canSplit || enlarged) && (
-              <button type="button" className="browser-pane-button is-quiet" onClick={onToggleEnlarge}>
-                <WorkbenchIcon name={enlarged ? "columns-2" : "maximize-2"} size={13} />
-                {enlarged ? t("browserPane.shrink") : t("browserPane.enlarge")}
+            {chrome && (chrome.canSplit || chrome.enlarged) && (
+              <button type="button" className="browser-pane-button is-quiet" onClick={chrome.onToggleEnlarge}>
+                <WorkbenchIcon name={chrome.enlarged ? "columns-2" : "maximize-2"} size={13} />
+                {chrome.enlarged ? t("browserPane.shrink") : t("browserPane.enlarge")}
               </button>
             )}
           </div>
@@ -320,6 +333,8 @@ export function BrowserPane({ sessionId, sessionTitle, canSplit, enlarged, onTog
 
 interface BrowserHandoffNoticeProps {
   sessionId: string;
+  /** The agent is operating the browser in the request that is running, on a layout that does not show it by itself. */
+  inUse: boolean;
   onOpen: () => void;
 }
 
@@ -328,11 +343,12 @@ const HANDOFF_POLL_MS = 3_000;
 const HANDOFF_IDLE_POLL_MS = 15_000;
 
 /**
- * Above the composer while the browser pane is not showing: tells the user the agent handed the
- * browser over, with the way in. It asks the server only while the page is visible, and slowly
- * while there is nothing to ask about. Mount it with the session id as key.
+ * Above the composer while no view of the session's browser is showing: tells the user the agent
+ * handed the browser over, or that the agent is operating it, with the way in. It asks the server
+ * only while the page is visible, and slowly while there is nothing to ask about. Mount it with
+ * the session id as key.
  */
-export function BrowserHandoffNotice({ sessionId, onOpen }: BrowserHandoffNoticeProps) {
+export function BrowserHandoffNotice({ sessionId, inUse, onOpen }: BrowserHandoffNoticeProps) {
   const { t } = useI18n();
   const [userTurn, setUserTurn] = useState(false);
 
@@ -364,12 +380,14 @@ export function BrowserHandoffNotice({ sessionId, onOpen }: BrowserHandoffNotice
     };
   }, [sessionId]);
 
-  if (!userTurn) return null;
+  if (!userTurn && !inUse) return null;
   return (
-    <div className="browser-handoff-notice" role="status">
-      <span className="workbench-lamp" data-kind="input" aria-hidden="true" />
-      <span className="browser-handoff-notice-text">{t("browserPane.handoffNotice")}</span>
-      <button type="button" className="browser-pane-button is-primary" onClick={onOpen}>{t("browserPane.handoffAction")}</button>
+    <div className="browser-handoff-notice" data-turn={userTurn ? "user" : "agent"} role="status">
+      <span className="workbench-lamp" data-kind={userTurn ? "input" : undefined} aria-hidden="true" />
+      <span className="browser-handoff-notice-text">{t(userTurn ? "browserPane.handoffNotice" : "browserPane.useNotice")}</span>
+      <button type="button" className={`browser-pane-button${userTurn ? " is-primary" : ""}`} onClick={onOpen}>
+        {t(userTurn ? "browserPane.handoffAction" : "browserPane.useAction")}
+      </button>
     </div>
   );
 }

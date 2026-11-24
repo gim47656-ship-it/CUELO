@@ -184,6 +184,8 @@ export const enLocale = {
     "browserPane.viewLabel": "{title} page view",
     "browserPane.handoffNotice": "The agent handed over browser control.",
     "browserPane.handoffAction": "Open browser",
+    "browserPane.useNotice": "The agent is operating the browser.",
+    "browserPane.useAction": "View browser",
     "workspace.getStarted": "Get Started",
     "workspace.selectProject": "Select a project directory from the sidebar",
     "workspace.addModels": "Add models via the Models button at the bottom",

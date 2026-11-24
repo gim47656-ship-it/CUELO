@@ -18,11 +18,11 @@ import { PanelExpandContext, PanelExpandToggle, type PanelExpandState } from "./
 export type AuxiliaryDeckView = WorkspacePanelViewId | "turn";
 
 /** The segmented control's views, in order; the rest open from the overflow menu. */
-const PRIMARY_VIEWS: ReadonlyArray<AuxiliaryDeckView> = ["turn", "process", "subagents", "files"];
+const PRIMARY_VIEWS: ReadonlyArray<AuxiliaryDeckView> = ["turn", "process", "subagents", "files", "browser"];
 const OVERFLOW_VIEWS: ReadonlyArray<AuxiliaryDeckView> = ["efficiency", "resource", "sidechat", "plugins", "memory"];
 
 /** 자기 머리줄(PanelHeader)이 없는 보기. 이 보기에서만 넓게 보기 토글을 탭 줄에 둔다. */
-const HEADERLESS_VIEWS: ReadonlySet<AuxiliaryDeckView> = new Set<AuxiliaryDeckView>(["efficiency", "sidechat", "resource"]);
+const HEADERLESS_VIEWS: ReadonlySet<AuxiliaryDeckView> = new Set<AuxiliaryDeckView>(["efficiency", "sidechat", "resource", "browser"]);
 
 export interface AuxiliaryDeckProps {
   activeView: AuxiliaryDeckView;
@@ -40,6 +40,8 @@ export interface AuxiliaryDeckProps {
   /** The work log behind the transcript: thinking, tool calls, process notices. */
   processSlot: ReactNode;
   fileSlot: ReactNode;
+  /** 브라우저: the live view of the selected session's ego TaskSpace; the shell mounts it only while this view shows. */
+  browserSlot: ReactNode;
   /** Side chat. Lives in this panel so no second side-chat surface exists. */
   sideChatSlot: ReactNode;
   /** Usage and models. Lives in this panel so no second auxiliary surface exists. */
@@ -81,6 +83,7 @@ export function AuxiliaryDeck({
   turnSlot,
   processSlot,
   fileSlot,
+  browserSlot,
   sideChatSlot,
   resourceSlot,
   efficiencySlot,
@@ -223,6 +226,11 @@ export function AuxiliaryDeck({
         <Tabs.Content value="files" className="auxiliary-deck-panel">
           {fileSlot}
         </Tabs.Content>
+
+        <Tabs.Content value="browser" className="auxiliary-deck-panel">
+          {browserSlot}
+        </Tabs.Content>
+
         <Tabs.Content value="sidechat" className="auxiliary-deck-panel">
           {sideChatSlot}
         </Tabs.Content>

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { PaneEvent, PaneReturnResult, PaneState } from "@/lib/ego-pane/hub";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
+import type { PaneReturnResult, PaneState } from "@/lib/ego-pane/hub";
+import { PaneViewStore, type OpenPaneSource, type PaneViewSnapshot } from "@/lib/ego-pane/view-store";
 
 /** connecting: no frame yet. lost: there was a view and the stream or the ego app went away. */
 export type BrowserPaneStatus = "connecting" | "live" | "none" | "off" | "lost";
@@ -32,42 +33,54 @@ export interface BrowserPaneView {
 }
 
 const INPUT_BATCH = 32;
-const STREAM_RETRY_MS = 2_000;
+
+const openEventSource: OpenPaneSource = (url, handlers) => {
+  const source = new EventSource(url);
+  source.onopen = handlers.open;
+  source.onerror = () => handlers.error(source.readyState === EventSource.CLOSED);
+  source.onmessage = (message) => handlers.message(message.data);
+  return () => source.close();
+};
+
+/** One store per session for the life of the page; an idle store holds no stream and no frame. */
+const stores = new Map<string, PaneViewStore>();
+
+function viewStore(sessionId: string): PaneViewStore {
+  let store = stores.get(sessionId);
+  if (!store) {
+    store = new PaneViewStore(`/api/agent/${encodeURIComponent(sessionId)}/browser/events`, openEventSource);
+    stores.set(sessionId, store);
+  }
+  return store;
+}
+
+const SERVER_SNAPSHOT: PaneViewSnapshot = { state: null, streamDown: false, frameSize: null, frameTabId: null, hadView: false };
+const serverSnapshot = (): PaneViewSnapshot => SERVER_SNAPSHOT;
 
 /**
- * Live view of one session's ego TaskSpace. The stream is open only while the pane is mounted and
- * the page is visible; closing the EventSource is what stops the server's screencast. The view
- * state belongs to one session: mount the component that calls this with the session id as key.
+ * Live view of one session's ego TaskSpace. Every surface showing the same session shares one
+ * stream and one state; the stream is open only while one of them is mounted and the page is
+ * visible. Input is queued per surface: mount the component that calls this with the session id
+ * as key.
  */
 export function useBrowserPane(sessionId: string): BrowserPaneView {
-  const [state, setState] = useState<PaneState | null>(null);
-  const [streamDown, setStreamDown] = useState(false);
-  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
-  const [frameTabId, setFrameTabId] = useState<string | null>(null);
-  const [hadView, setHadView] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const [pageVisible, setPageVisible] = useState(true);
+  const store = viewStore(sessionId);
+  const { state, streamDown, frameSize, frameTabId, hadView } = useSyncExternalStore(store.subscribe, store.getSnapshot, serverSnapshot);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const frameSrcRef = useRef("");
   const bindImage = useCallback((node: HTMLImageElement | null) => {
     imageRef.current = node;
-    if (node && frameSrcRef.current) node.src = frameSrcRef.current;
-  }, []);
+    if (node && store.frameSrc) node.src = store.frameSrc;
+  }, [store]);
+  useEffect(() => store.watchFrames((src) => {
+    if (imageRef.current) imageRef.current.src = src;
+  }), [store]);
   /** Input waiting to be sent, each with the tab whose frame was on screen when it was made. */
   const queueRef = useRef<{ tabId: string; event: BrowserPaneInput }[]>([]);
-  const shownTabRef = useRef<string | null>(null);
   const sendingRef = useRef(false);
   const base = `/api/agent/${encodeURIComponent(sessionId)}/browser`;
 
-  useEffect(() => {
-    const sync = () => setPageVisible(document.visibilityState === "visible");
-    sync();
-    document.addEventListener("visibilitychange", sync);
-    return () => document.removeEventListener("visibilitychange", sync);
-  }, []);
-
   // A closed pane sends nothing more: what it had queued (the rest of a long paste) is dropped,
-  // even when another window keeps the same view open on the server.
+  // even when another surface keeps the same view open.
   const closedRef = useRef(false);
   useEffect(() => {
     closedRef.current = false;
@@ -77,48 +90,11 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
     };
   }, []);
 
+  // Input made on the tab that was showing must not reach the tab that shows now. The server
+  // refuses it by its tab id as well.
   useEffect(() => {
-    if (!pageVisible) return;
-    const source = new EventSource(`${base}/events`);
-    let size = { width: 0, height: 0 };
-    let retry: number | undefined;
-    source.onopen = () => setStreamDown(false);
-    source.onerror = () => {
-      setStreamDown(true);
-      // EventSource gives up for good on an HTTP error (a session the server cannot place yet, a
-      // restart in progress); it reconnects by itself only after a dropped connection.
-      if (source.readyState === EventSource.CLOSED) retry = window.setTimeout(() => setAttempt((value) => value + 1), STREAM_RETRY_MS);
-    };
-    source.onmessage = (message) => {
-      let event: PaneEvent;
-      try {
-        event = JSON.parse(message.data);
-      } catch {
-        return;
-      }
-      if (event.type === "state") {
-        setState(event.state);
-        return;
-      }
-      frameSrcRef.current = `data:image/jpeg;base64,${event.data}`;
-      if (imageRef.current) imageRef.current.src = frameSrcRef.current;
-      if (event.width !== size.width || event.height !== size.height) {
-        size = { width: event.width, height: event.height };
-        setFrameSize(size);
-      }
-      if (event.tabId !== shownTabRef.current) {
-        // Input made on the tab that was showing must not reach the tab that shows now.
-        queueRef.current = [];
-        shownTabRef.current = event.tabId;
-        setFrameTabId(event.tabId);
-        setHadView(true);
-      }
-    };
-    return () => {
-      clearTimeout(retry);
-      source.close();
-    };
-  }, [attempt, base, pageVisible]);
+    queueRef.current = [];
+  }, [frameTabId]);
 
   const flush = useCallback(async () => {
     if (sendingRef.current) return;
@@ -145,7 +121,7 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
   }, [base]);
 
   const sendInput = useCallback((event: BrowserPaneInput) => {
-    const tabId = shownTabRef.current;
+    const tabId = store.getSnapshot().frameTabId;
     if (!tabId) return;
     const queue = queueRef.current;
     const last = queue.at(-1);
@@ -153,7 +129,7 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
     if (event.t === "mouse" && event.type === "move" && last?.tabId === tabId && last.event.t === "mouse" && last.event.type === "move") queue[queue.length - 1] = { tabId, event };
     else queue.push({ tabId, event });
     void flush();
-  }, [flush]);
+  }, [flush, store]);
 
   const returnControl = useCallback(async (): Promise<PaneReturnResult> => {
     queueRef.current = [];
@@ -178,7 +154,7 @@ export function useBrowserPane(sessionId: string): BrowserPaneView {
     }).catch(() => {});
   }, [base]);
 
-  const reconnect = useCallback(() => setAttempt((value) => value + 1), []);
+  const reconnect = useCallback(() => store.reconnect(), [store]);
 
   let status: BrowserPaneStatus;
   // A stream that is being reopened is "lost" only when there is an old picture to say so about.
