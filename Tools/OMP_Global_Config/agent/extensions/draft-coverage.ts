@@ -12,7 +12,9 @@ import { coverage, COVERED_RATIO, denyText, inScope, lettersOf, MIN_UNCOVERED_LE
  *   같은 프로세스의 다른 세션(Main·Maker)이 만든 결과는 이 세션이 그 경로를 read한 뒤에만 쓴다.
  * - 바뀌기 전 내용(기준선)은 사용자 입력마다 파일별로 처음 손댈 때 고정한다: 잘게 나눠 직접 더한 글이 기준선으로 씻기지 않는다.
  * - 같은 파일·같은 덩어리 묶음을 그대로 다시 보내면 통과시킨다(예외를 밝힌 경우의 복구 길). 통과는 덮음으로 기록하지 않는다.
- * - bash·eval이 바꾼 글 파일은 내용을 볼 수 없어 알림만 한다. docx·xlsx·pdf draft 결과와 그 밖의 도구가 쓴 글은 범위 밖이다.
+ * - bash·eval은 호출 전에 명령에 나온 글 파일의 지금 내용을 기준선으로 잡고, 끝난 뒤 바뀐 파일 전체를 같은 4-gram으로 대조해 덮이지 않은 글이
+ *   문단 분량 이상일 때만 알린다(멈추지 않는다). 2026-11-25 비교 실험 2건과 운영 7일 19건이 draft 결과를 옮겼는데도 알리던 무조건 안내였다.
+ *   이 기준선은 그 호출에만 쓰고 write·edit의 입력별 기준선 고정에는 넣지 않는다. docx·xlsx·pdf draft 결과와 그 밖의 도구가 쓴 글은 범위 밖이다.
  * - 이 세션이 read로 연 파일의 그때 내용도 덮는 출처다(2026-10-30 사용자 결정 B7): 이미 있는 글을 미리보기 사본으로 옮기는 것은 새 글이 아니다.
  *   처음부터 새로 쓰는 노트(facts 파일 등)는 그대로 확인한다. 근거: doc/history/2026/10/30-harness-friction.
  */
@@ -56,10 +58,12 @@ export default function draftCoverage(pi: ExtensionAPI): void {
   let denied = new Set<string>();
   let reminded = new Set<string>();
   let started = new Map<string, number>();
+  // bash·eval 호출마다 명령에 나온 글 파일의 호출 전 내용.
+  let commandBaselines = new Map<string, Map<string, Set<string>>>();
   // 통과시킨 write·edit의 기록은 그 도구가 성공한 뒤에만 남긴다(실패한 시도는 더한 글이 아니다).
   let staged = new Map<string, (() => void)[]>();
   const resetInput = () => {
-    baselines = new Map(); pending = new Map(); acknowledged = new Map(); denied = new Set(); reminded = new Set(); started = new Map(); staged = new Map();
+    baselines = new Map(); pending = new Map(); acknowledged = new Map(); denied = new Set(); reminded = new Set(); started = new Map(); staged = new Map(); commandBaselines = new Map();
   };
   const resetSession = () => { owner = {}; granted = new WeakSet(); readSources = []; resetInput(); };
 
@@ -71,7 +75,17 @@ export default function draftCoverage(pi: ExtensionAPI): void {
 
   pi.on("tool_call", (event, ctx) => {
     const input = (event.input ?? {}) as Record<string, unknown>;
-    if (event.toolName === "bash" || event.toolName === "eval") { started.set(event.toolCallId, Date.now()); return; }
+    if (event.toolName === "bash" || event.toolName === "eval") {
+      started.set(event.toolCallId, Date.now());
+      const before = new Map<string, Set<string>>();
+      for (const path of candidatesOf(event.toolName, input, ctx.cwd).files) {
+        if (!inScope(path, ctx.cwd) || reminded.has(path) || baselines.has(path)) continue;
+        const text = readText(path);
+        if (text !== undefined) before.set(path, shingles(text));
+      }
+      if (before.size > 0) commandBaselines.set(event.toolCallId, before);
+      return;
+    }
     const changes = proseChanges(event.toolName, input, ctx.cwd);
     if (changes.length === 0) return;
     const usable = [...drafts.filter((snap) => snap.owner === owner || granted.has(snap)).map((snap) => snap.grams), ...readSources];
@@ -150,12 +164,21 @@ export default function draftCoverage(pi: ExtensionAPI): void {
     if (event.toolName !== "bash" && event.toolName !== "eval") return;
     const since = (started.get(event.toolCallId) ?? Date.now()) - 2_000;
     started.delete(event.toolCallId);
-    const changed = candidatesOf(event.toolName, input, ctx.cwd).files.filter((path) => {
-      if (!inScope(path, ctx.cwd) || reminded.has(path)) return false;
-      try { return statSync(path).mtimeMs >= since; } catch { return false; }
-    });
-    if (changed.length === 0) return;
-    for (const path of changed) reminded.add(path);
-    pi.sendMessage({ customType: "draft-coverage", content: reminderText(changed), display: false, attribution: "agent" }, { deliverAs: "aside" });
+    const before = commandBaselines.get(event.toolCallId);
+    commandBaselines.delete(event.toolCallId);
+    const usable = [...drafts.filter((snap) => snap.owner === owner || granted.has(snap)).map((snap) => snap.grams), ...readSources];
+    const found: { path: string; blocks?: string[] }[] = [];
+    for (const path of candidatesOf(event.toolName, input, ctx.cwd).files) {
+      if (!inScope(path, ctx.cwd) || reminded.has(path)) continue;
+      try { if (statSync(path).mtimeMs < since) continue; } catch { continue; }
+      const text = readText(path);
+      // 너무 커서 읽지 못한 파일은 대조 없이 예전처럼 알린다.
+      if (text === undefined) { found.push({ path }); continue; }
+      const blocks = uncoveredBlocks(text, path, [baselines.get(path) ?? before?.get(path) ?? new Set<string>(), ...usable]);
+      if (lettersOf(blocks) >= MIN_UNCOVERED_LETTERS) found.push({ path, blocks });
+    }
+    if (found.length === 0) return;
+    for (const { path } of found) reminded.add(path);
+    pi.sendMessage({ customType: "draft-coverage", content: reminderText(found), display: false, attribution: "agent" }, { deliverAs: "aside" });
   });
 }

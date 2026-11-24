@@ -224,6 +224,8 @@ export function denyText(path: string, blocks: readonly string[]): string {
 예외일 때만: 위 덩어리가 정확한 사실·오타·슬롭 교정, 배치·코드만 옮긴 기존 글, 사용자·원문 인용처럼 draft 대상이 아니면, 다시 보내기 전에 응답 본문에 덩어리마다 어떤 예외인지와 그 근거(원문 위치 등)를 먼저 적고 같은 호출을 바꾸지 않고 다시 보낸다. 그 다시 보내기는 한 번 통과할 뿐 draft를 거친 것으로 기록되지 않으며, 새 예시·설명·결론은 예외가 아니다. 이 판단은 글자 유사도에 기댄 단서이며 저자 증명이 아니다.`;
 }
 
-export function reminderText(paths: readonly string[]): string {
-  return `[draft-coverage] 이 명령이 글 파일을 바꿨다: ${paths.join(", ")}. bash·eval로 쓴 글은 draft 범위를 확인하지 못한다. 새 문단·설명·예시를 넣었다면 그 부분을 draft로 쓰게 한 뒤 적용하라(사실·오타·슬롭 교정과 배치 변경은 예외).`;
+/** bash·eval이 바꾼 글 파일의 알림. blocks가 없으면 너무 커서 대조하지 못한 파일이다. */
+export function reminderText(files: readonly { path: string; blocks?: readonly string[] }[]): string {
+  const list = files.map(({ path, blocks }) => (blocks ? `${path}(draft 결과에도 바뀌기 전 내용에도 없는 글 ${blocks.length}덩어리, ${lettersOf(blocks)}자)` : `${path}(너무 커서 대조하지 못함)`));
+  return `[draft-coverage] 이 명령이 글 파일을 바꿨다: ${list.join(", ")}. 새 문단·설명·예시를 넣었다면 그 부분을 draft로 쓰게 한 뒤 적용하라(사실·오타·슬롭 교정과 배치 변경은 예외). 글자 유사도에 기댄 단서이며 저자 증명이 아니다.`;
 }

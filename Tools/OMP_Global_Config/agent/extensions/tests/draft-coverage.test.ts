@@ -273,7 +273,7 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(s.call("write", { path: "site/docs/README.md", content: markdown(DIRECT) })?.block).toBe(true);
   });
 
-  test("bash가 바꾼 글 파일은 내용을 볼 수 없어 한 번만 알린다", () => {
+  test("bash가 바꾼 글 파일에 덮이지 않은 새 글이 있으면 한 번만 알린다", () => {
     const cwd = workdir();
     const s = session(cwd);
     s.input();
@@ -292,6 +292,30 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     s.call("bash", { command: "cat old.md" });
     s.result("bash", { command: "cat old.md" });
     expect(s.sent).toHaveLength(1);
+  });
+
+  // 2026-11-25 rules-sensitive 비교 6회의 2건과 운영 세션 7일 19건이 모두 이 무조건 안내였다(doc/history/2026/11/25-rev-compare-0358).
+  test("bash·eval로 draft 결과를 옮기거나 기존 글에 사실 한 줄만 더하면 알리지 않는다", () => {
+    const cwd = workdir();
+    const s = session(cwd);
+    s.input();
+    s.draft("draft-out.md", markdown(DRAFTED));
+    const copy = "open('guide.md','w').write(open('draft-out.md').read())";
+    s.call("eval", { code: copy });
+    writeFileSync(join(cwd, "guide.md"), markdown(DRAFTED));
+    s.result("eval", { code: copy });
+    writeFileSync(join(cwd, "notes.md"), markdown(DIRECT));
+    const append = "printf '\\n버전 0.10.358\\n' >> notes.md";
+    s.call("bash", { command: append });
+    writeFileSync(join(cwd, "notes.md"), `${markdown(DIRECT)}\n버전 0.10.358\n`);
+    s.result("bash", { command: append });
+    expect(s.sent).toHaveLength(0);
+    const fresh = "python gen.py > fresh.md";
+    s.call("bash", { command: fresh });
+    writeFileSync(join(cwd, "fresh.md"), markdown(DIRECT));
+    s.result("bash", { command: fresh });
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]!.content).toContain("fresh.md");
   });
 
   test("CSS-only HTML edits pass while visible paragraphs remain gated", () => {
