@@ -23,6 +23,8 @@ import {
   type ResolveInput,
 } from "./lib/cross-review";
 import { helperAttemptRecorder } from "./lib/helper-usage";
+import { parseAutoEffortConfig } from "./lib/auto-effort-policy";
+import { messageText } from "../cuelo-plugins/requirement-carry/requirement-carry";
 import { beforeModelAbort } from "./lib/model-routes";
 import { createRoutingLedger, readCrossReviewRecords } from "./lib/routing-ledger";
 import { onSessionLifecycle } from "./lib/session-identity";
@@ -31,8 +33,8 @@ import type { TurnEndNotices } from "./turn-end-guard";
 /**
  * 계열 교차검증 도구. review(probe·delta 라운드 포함)는 Main과 Maker child(agents/maker.md tools 목록) 모두 부를 수 있고,
  * git_finalize가 믿는 통과 지문을 남기는 resolve는 Main 전용이라 subagent 세션에서는 거절한다. 모델 호출은 skim의
- * completeRole과 같은 경로(역할 slot 해석 → completeSimple → 비용 장부)이며 대화·사용자 프로필 없이 고정 system 한 줄 +
- * 변경 본문 한 통만 보낸다.
+ * completeRole과 같은 경로(역할 slot 해석 → completeSimple → 비용 장부)이며 고정 system 한 줄과 심사 본문만 보낸다.
+ * 첫 코드 검토의 심사 본문에는 현재 브랜치에서 가져온 제한된 USER REQUEST도 들어간다.
  */
 
 const OPENAI_PROVIDERS: Record<string, true> = { "openai-codex": true, openai: true };
@@ -105,6 +107,29 @@ function reviewDeps(ctx: ExtensionContext, signal: AbortSignal): ReviewDeps {
   };
 }
 
+const { noticePrefixes } = parseAutoEffortConfig(undefined);
+
+function collectReviewRequest(ctx: ExtensionContext, maker: boolean) {
+  const messages: string[] = [];
+  let explicit: string[] | undefined;
+  for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
+    if (entry.type === "custom" && entry.customType === "goal-lane") {
+      const conditions = (entry.data as { explicit?: unknown } | undefined)?.explicit;
+      explicit = Array.isArray(conditions) ? conditions.filter((item): item is string => typeof item === "string") : undefined;
+    }
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const message = entry.message;
+    if (message.synthetic || "customType" in message) continue;
+    // Core dispatches the first Maker assignment as an agent-attributed user message, not a steer.
+    if (message.attribution === "agent" && !(maker && messages.length === 0 && !message.steering && !message.parentIrc)) continue;
+    const text = messageText(message);
+    const trimmed = text.trim();
+    if (!trimmed || noticePrefixes.some((prefix) => trimmed.startsWith(prefix)) || /^<system-reminder(?:\s[^>]*)?>[\s\S]*<\/system-reminder>$/.test(trimmed)) continue;
+    messages.push(text);
+  }
+  return { messages, explicit };
+}
+
 export interface CrossReviewParams {
   action: string;
   files?: string[];
@@ -153,6 +178,7 @@ export async function executeCrossReview(
     const input: ReviewInput = {
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
       highRisk: params.highRisk, previousReviewId: params.previousReviewId, base: params.base, inputs: params.inputs, references: params.references, probeResults: params.probeResults, maker: sub,
+      userRequest: params.previousReviewId ? undefined : collectReviewRequest(ctx, sub),
     };
     return runReview(input, deps, signal);
   }

@@ -3,6 +3,14 @@ import { readFileSync, statSync, type Stats } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { SECRET_PATTERN } from "../../extensions/lib/interpreter";
 import { defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, stoppedBy } from "../../extensions/lib/native-judge";
+import { parseAutoEffortConfig } from "../../extensions/lib/auto-effort-policy";
+
+/** CUELO's own restart and update notices arrive as rpc prompts; they are not the user's words. */
+const { noticePrefixes } = parseAutoEffortConfig(undefined);
+const isHarnessNotice = (text: string): boolean => {
+  const trimmed = text.trim();
+  return noticePrefixes.some((prefix) => trimmed.startsWith(prefix));
+};
 
 /**
  * goal-lane (Main only; promoted from Plugin Lab on 2026-11-06 by user decision).
@@ -487,6 +495,8 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     nudgedThisInput = false;
     activeInput = true;
     lastInputText = normalize(event.text);
+    // 11-24: a goal-lane judge read the server's [자동 재개] notice as a new user message and advised re-framing.
+    if (isHarnessNotice(event.text)) return;
     userText += `\n${lastInputText}`;
     userWords += `\n${event.text}`;
     judgeUserMessage(event.text, ctx);
@@ -496,7 +506,7 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
     if (message.role !== "user" || message.synthetic === true || message.attribution === "agent") return;
     const typed = messageText(message);
     const text = normalize(typed);
-    if (!text) return;
+    if (!text || isHarnessNotice(typed)) return;
     if (text === lastInputText) {
       // The prompt the `input` event already recorded and judged.
       lastInputText = "";

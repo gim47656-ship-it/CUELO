@@ -52,7 +52,7 @@ import { PRESET_FULL } from "./tool-presets";
 import { computerTakeoverState, revokeComputerTakeover, setComputerTakeover, type ComputerTakeoverState } from "./computer-takeover";
 import type { SlashCommandInfo } from "./omp-types";
 import { getUpdateTurnAdmissionBlock, recordRuntimeActivity, UpdateTurnAdmissionError } from "./update-maintenance";
-import { GoalModeController } from "./goal-mode";
+import { GoalModeController, goalFromModeData } from "./goal-mode";
 import { registerRootReviver } from "./subagent-revive";
 import { mergeSubagentSnapshot } from "./subagent-snapshots";
 import { isThinkingCeiling, latestThinkingCeiling, THINKING_CEILING_ENTRY_TYPE } from "./thinking-ceiling";
@@ -614,47 +614,94 @@ class PlainTextTheme extends Theme {
 const PLAIN_TEXT_THEME = new PlainTextTheme();
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 
+const TOOL_SELECTION_ENTRY_TYPE = "cuelo-tool-selection";
+
+type RestoredRpcTools = (() => void) & { allOff: boolean; reapplyAfterStartup?: () => Promise<void> };
+
 /**
- * The provider replays declaration order, but a new Agent forgets withdrawn
- * definitions and the SDK starts with its default active set. Restore only the
- * recorded selection; leave ordering and tool-change controls to the provider.
+ * Restore the picker selection independently of provider history. Anthropic
+ * still needs older, withdrawn definitions to replay its declaration order.
  */
 export async function restoreRpcSessionTools(
   session: AgentSession,
   toolNames?: string[],
-): Promise<((() => void) & { allOff: boolean }) | undefined> {
-  if (toolNames !== undefined || session.model?.api !== "anthropic-messages") return;
-  const messages = session.sessionManager.buildSessionContext().messages;
-  const recorded = messages.findLast((message) =>
-    message.role === "assistant" && !isProviderRefusalMessage(message) && message.requestControls?.tools,
-  );
+  restrictTools?: readonly string[],
+): Promise<RestoredRpcTools | undefined> {
+  if (toolNames !== undefined && restrictTools === undefined) return;
+  const manager = session.sessionManager;
+  // Picker changes affect the whole session, not just the conversation branch
+  // where the change was made. A tree navigation must not revert permissions.
+  const entries = manager.getEntriesView();
+  const selectionIndex = entries.findLastIndex((entry) => entry.type === "custom" && entry.customType === TOOL_SELECTION_ENTRY_TYPE);
+  const selection = entries[selectionIndex];
+  const recorded = restrictTools === undefined && session.model?.api === "anthropic-messages"
+    ? manager.buildSessionContext().messages.findLast((message) =>
+      message.role === "assistant" && !isProviderRefusalMessage(message) && message.requestControls?.tools,
+    )
+    : undefined;
   const tools = recorded?.role === "assistant" ? recorded.requestControls?.tools : undefined;
-  if (!tools) return;
+  if (!selection && !tools) return;
 
-  const declared = new Set(tools.declared);
-  const enabled = session.getEnabledToolNames();
-  const mounted = new Set(session.getMountedToolCommandNames());
-  const branch = session.sessionManager.getBranch();
-  const replyIndex = branch.findLastIndex((entry) =>
-    entry.type === "message" && entry.message.role === "assistant" &&
-    recorded?.role === "assistant" && entry.message.requestControls === recorded.requestControls,
-  );
-  const mode = replyIndex < 0 ? undefined : branch.slice(replyIndex + 1).findLast((entry) => entry.type === "mode_change");
-  let active = tools.active;
-  if (mode?.type === "mode_change") {
-    if (mode.mode === "goal") active = [...new Set([...active, "goal"])];
-    else if (mode.mode === "none" || mode.mode === "goal_paused") active = active.filter((name) => name !== "goal");
+  let active: string[];
+  let allOff: boolean;
+  if (selection?.type === "custom") {
+    const data = selection.data as { toolNames?: unknown; allOff?: unknown } | undefined;
+    active = Array.isArray(data?.toolNames) ? data.toolNames.filter((name) => typeof name === "string") : [];
+    allOff = data?.allOff === true;
+    if (restrictTools === undefined) {
+      const modeIndex = entries.findLastIndex((entry) => entry.type === "mode_change");
+      const mode = entries[modeIndex];
+      if (mode?.type === "mode_change") {
+        // The live picker keeps goal for an existing active or paused goal;
+        // a later manual pause/drop instead removes it.
+        if ((mode.mode === "goal" || (mode.mode === "goal_paused" && modeIndex < selectionIndex))
+          && goalFromModeData(mode.data)) {
+          if (!active.includes("goal")) active.push("goal");
+        } else if (modeIndex > selectionIndex && (mode.mode === "none" || mode.mode === "goal_paused")) {
+          active = active.filter((name) => name !== "goal");
+        }
+      }
+    }
+  } else if (tools) {
+    active = [...tools.active];
+    allOff = active.length === 0;
+    const branch = manager.getBranchView();
+    const replyIndex = branch.findLastIndex((entry) =>
+      entry.type === "message" && entry.message.role === "assistant" &&
+      recorded?.role === "assistant" && entry.message.requestControls === recorded.requestControls,
+    );
+    const mode = replyIndex < 0 ? undefined
+      : branch.findLast((entry, index) => index > replyIndex && entry.type === "mode_change");
+    if (mode?.type === "mode_change") {
+      if (mode.mode === "goal" && !active.includes("goal")) active.push("goal");
+      else if (mode.mode === "none" || mode.mode === "goal_paused") active = active.filter((name) => name !== "goal");
+    }
+    allOff = allOff && active.length === 0;
+  } else {
+    return;
   }
-  await session.setActiveToolsByName([
-    ...active.filter((name) => session.getToolByName(name) !== undefined),
-    ...enabled.filter((name) =>
-      tools.active.length > 0 && !declared.has(name) && (mounted.has(name) || !session.hasBuiltInTool(name)),
-    ),
-  ]);
+  const declared = tools ? new Set(tools.declared) : undefined;
+  if (!selection && tools?.active.length && declared) {
+    const mounted = new Set(session.getMountedToolCommandNames());
+    for (const name of session.getEnabledToolNames()) {
+      if (!declared.has(name) && (mounted.has(name) || !session.hasBuiltInTool(name))) active.push(name);
+    }
+  }
+  const applySelection = () => session.setActiveToolsByName(active.filter((name) =>
+    session.getToolByName(name) !== undefined && (restrictTools === undefined || restrictTools.includes(name)),
+  ));
+  await applySelection();
+  let replay = true;
+  const restored: RestoredRpcTools = Object.assign(() => { replay = false; }, { allOff });
+  if (selection) {
+    // session_start can both register new tools and change activation. Reapply
+    // the stored picker choice once registration and startup hooks finish.
+    restored.reapplyAfterStartup = applySelection;
+  }
+  if (!declared) return restored;
 
   const agent = session.agent;
   const stream = agent.streamFn;
-  let replay = true;
   agent.streamFn = (model, context, options) => {
     if (!replay || model.api !== "anthropic-messages" || !context.tools?.length) {
       return stream(model, context, options);
@@ -684,7 +731,7 @@ export async function restoreRpcSessionTools(
       inactiveTools: [...(context.inactiveTools ?? []), ...definitions],
     }, options);
   };
-  return Object.assign(() => { replay = false; }, { allOff: tools.active.length === 0 && active.length === 0 });
+  return restored;
 }
 
 function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
@@ -898,7 +945,7 @@ export class AgentSessionWrapper {
   constructor(
     public readonly inner: AgentSessionLike,
     eventBus: ConstructorParameters<typeof RpcSubagentRegistry>[0],
-    private readonly stopResumeToolReplay?: () => void,
+    private readonly stopResumeToolReplay?: RestoredRpcTools,
     readonly restrictTools?: readonly string[],
   ) {
     // The pinned SDK uses the same Agent instance for both fresh prompts and
@@ -1221,6 +1268,7 @@ export class AgentSessionWrapper {
           message: "Extension requested shutdown, but shutdown is not supported in CUELO.",
         } as ExtensionUiRequest as AgentEvent),
       });
+      await this.stopResumeToolReplay?.reapplyAfterStartup?.();
       this.extensionsBound = true;
       this.applyForcedEmptySystemPrompt();
       console.log(`[cuelo] session_start dispatched to extensions for session ${this.inner.sessionId}`);
@@ -1252,7 +1300,9 @@ export class AgentSessionWrapper {
       || type === "handoff"
       || type === "get_commands"
       || type === "execute_slash_command"
-      || type === "goal";
+      || type === "goal"
+      || type === "set_tools"
+      || (type === "get_tools" && this.stopResumeToolReplay?.reapplyAfterStartup !== undefined);
   }
 
   private async withFinalRunningNotification<T>(operation: () => Promise<T>): Promise<T> {
@@ -2155,14 +2205,36 @@ export class AgentSessionWrapper {
 
       case "set_tools": {
         const toolNames = command.toolNames as string[];
-        this.stopResumeToolReplay?.();
-        this.setForceEmptySystemPrompt(toolNames.length === 0);
-        await this.inner.setActiveToolsByName(
-          this.restrictTools === undefined
-            ? this.goalMode.reconcileToolNames(withExtensionTools(this.inner, toolNames))
-            : toolNames.filter((name) => this.restrictTools!.includes(name)),
-        );
-        this.applyForcedEmptySystemPrompt();
+        const ceiling = this.restrictTools;
+        const session = this.inner as AgentSessionLike & Pick<
+          AgentSession, "getMountedToolCommandNames" | "runToolRegistryMutation" | "setActiveToolPresentation"
+        >;
+        await session.runToolRegistryMutation(async () => {
+          const selected = ceiling === undefined
+            ? withExtensionTools(session, toolNames)
+            : toolNames.filter((name) => ceiling.includes(name));
+          const previousTools = session.getEnabledToolNames();
+          const previousMounts = session.getMountedToolCommandNames();
+          const allOff = toolNames.length === 0;
+          let applied = false;
+          try {
+            await session.setActiveToolsByName(ceiling === undefined ? this.goalMode.reconcileToolNames(selected) : selected);
+            applied = true;
+            const manager = session.sessionManager;
+            await manager.appendEntriesAtomically(() => manager.appendCustomEntry(TOOL_SELECTION_ENTRY_TYPE, {
+              toolNames: selected.filter((name) => session.getToolByName(name) !== undefined),
+              allOff,
+            }));
+          } catch (error) {
+            // Do not publish a live selection the session file could not commit.
+            if (ceiling === undefined) this.goalMode.reconcileToolNames(previousTools);
+            if (applied) await session.setActiveToolPresentation(previousTools, previousMounts);
+            this.applyForcedEmptySystemPrompt();
+            throw error;
+          }
+          this.stopResumeToolReplay?.();
+          this.setForceEmptySystemPrompt(allOff);
+        });
         return null;
       }
 
@@ -3017,7 +3089,7 @@ export function restoreThinkingCeiling(session: Pick<AgentSessionLike, "sessionM
  * For new sessions (sessionFile === ""), omp generates its own id.
  * New sessions resolve enabledModels before construction so the initial model,
  * thinking pin, and SDK scopedModels share one settings snapshot.
- * Pass options.toolNames to pre-configure active tools (empty = all disabled).
+ * Pass options.toolNames to pre-configure a new session's active tools (empty = all disabled).
  */
 export async function startRpcSession(
   sessionId: string,
@@ -3025,7 +3097,8 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
-  const { toolNames, initialModel, thinkingLevel, accountOauthPosition } = options;
+  const { initialModel, thinkingLevel, accountOauthPosition } = options;
+  const toolNames = sessionFile ? undefined : options.toolNames;
   const restrictTools = options.restrictTools === undefined ? undefined : [...new Set(options.restrictTools)];
   if (restrictTools?.some((name) => !(BUILTIN_TOOL_NAMES as readonly string[]).includes(name))) {
     throw new Error("restrictTools accepts builtin tool names only");
@@ -3205,7 +3278,7 @@ export async function startRpcSession(
 
       const session = inner as unknown as AgentSessionLike;
       restoreThinkingCeiling(session);
-      const stopResumeToolReplay = await restoreRpcSessionTools(inner, restrictTools ?? toolNames);
+      const stopResumeToolReplay = await restoreRpcSessionTools(inner, toolNames, restrictTools);
 
       // If specific tool names were requested (non-empty), set the active tools to the
       // requested builtin coding tools PLUS all extension/package tools, so installed

@@ -1,6 +1,6 @@
 # Global Agent Instructions
 
-도구 설명과 런타임 안내가 강제 절차의 정본이다. 위임, job 감시, 캐릭터 호출, 위임한 작업의 완료 보고 전 `rule://agent-workflow`를 읽는다.
+도구 설명과 런타임 안내가 강제 절차의 정본이다.
 
 ## 사용자에게 먼저 답한다
 
@@ -12,7 +12,7 @@
 
 구현 역할은 Main과 maker 둘이다. Main은 요구, 설계, 계약, 승인, 라우팅, 중간 검수와 최종 수용 및 미위임 실행을 맡는다. Maker는 자기 조각을 조사부터 구현, 집중 검사와 표면 확인까지 소유한다. 사용자 선택 모델과 실행 모델을 지시 없이 바꾸거나 폐지된 역할을 되살리지 않는다.
 
-작은 단일 owner 작업은 Main, 진짜 독립 조각은 Maker로 병렬 배분한다. Main이 직접 끝내고 위험 표시가 없는 작은 작업은 `maker_route`, 사전 점검, `lab_goal frame` 없이 진행한다. 실제 발주 직전 `rule://task-guard`와 `rule://subagent`를 읽고 정본 TASK_GUARD, TASK_TITLE, TODO_TASKS와 Skill 인계를 따른다. 코드 성질과 결과 위험은 `harness-policy.json`이 정하며 크기나 fixture라는 이유로 낮추지 않는다. high-risk 트리거는 편집 전 Main 승인과 직렬 drift 검수가 필요하다. Maker 결과를 검수하고 수용할 때 `rule://subagent`, `rule://verdict`를 읽는다.
+작은 단일 owner 작업은 Main, 진짜 독립 조각은 Maker로 병렬 배분한다. 실제 발주 직전 `rule://task-guard`와 `rule://subagent`를 읽고 정본 TASK_GUARD, TASK_TITLE, TODO_TASKS와 Skill 인계를 따른다. 코드 성질과 결과 위험은 `harness-policy.json`이 정하며 크기나 fixture라는 이유로 낮추지 않는다. high-risk 트리거는 편집 전 Main 승인과 직렬 drift 검수가 필요하다.
 
 각 owner가 자기 변경을 검증하고 Main은 공통 환경, 전체 빌드와 통합 수용을 맡는다. Main은 살아 있는 Maker 경로를 고치거나 같은 집중 검사를 반복하지 않는다. Maker 작업 중에는 Main의 독립 준비와 확정 delta 검수를 끝낸 뒤에만 기다린다.
 
@@ -20,8 +20,6 @@
 
 ## 필요한 규칙과 보고
 
-Skill은 관련되거나 요청됐을 때 먼저 읽고 절차와 범위를 지킨다. 원인 불명 버그, 두 번째 실패와 모호한 완료에는 해당 절차 Skill을 쓴다. 자체 대체와 축소는 밝히고 Skill 수행이라 부르지 않는다. UI는 `rule://frontend`, 레거시 인코딩은 `rule://legacy-encoding`, 문서 역할과 기록은 `rule://docs-handoff`를 따른다. 독립 읽기와 검색은 묶고 편집 구간, 호출부와 테스트를 먼저 읽는다.
-
-말투는 주입된 `<character-voice>`가 정본이며 사용자 지정이 우선한다. 캐릭터 호출과 세션 교체는 `rule://agent-workflow`와 `harness-policy.json`의 exact selector와 계정 pin을 따르고 실패를 조용히 대체하지 않는다.
+Skill의 절차와 범위를 지킨다. 원인 불명 버그, 두 번째 실패와 모호한 완료에는 해당 절차 Skill을 쓴다. 자체 대체와 축소는 밝히고 Skill 수행이라 부르지 않는다. 편집 구간, 호출부와 테스트를 먼저 읽는다.
 
 결론부터 자연스러운 문단으로 쓰고 사용자나 parser가 요구하지 않은 고정 형식, 반복 요약과 지어낸 용어는 피한다. 전문어보다 개념과 효과를 먼저 말한다. 실제 기여한 다른 모델과 child의 역할, 개수와 이유, 검증과 미확인 위험은 보고하되 묻지 않은 해시, run ID, 모델 ID와 명령은 기록에 둔다. 상세 완료 형식과 수치 차트 조건은 `rule://agent-workflow`를 따른다.

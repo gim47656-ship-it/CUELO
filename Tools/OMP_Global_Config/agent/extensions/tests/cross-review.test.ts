@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage, ModelRegistry } from "@oh-my-pi/pi-coding-agent";
+import { AuthStorage, ModelRegistry, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
 
@@ -907,22 +907,24 @@ describe("probe 라운드", () => {
 
   test("buildReviewPrompt: probe 라운드 출력 형식에 verdicts가 있고, probeAvailable:false여도 재현 방법은 요구하되 실행 판단은 하지 않는다고 알린다", () => {
     const finding = { id: "R1-OAI-1", severity: "major" as const, file: "a.ts", claim: "c", why: "w", reviewer: ASTRA };
-    const probe = buildReviewPrompt({ acceptance: "A", round: 2, parts: [], previousFindings: [finding], probeResults: [{ finding, command: "x", exitCode: 0, output: "o", outputBytes: 1, truncated: false }] });
+    const probe = buildReviewPrompt({ acceptance: "A", userRequest: "Do not resend this user request.", round: 2, parts: [], previousFindings: [finding], probeResults: [{ finding, command: "x", exitCode: 0, output: "o", outputBytes: 1, truncated: false }] });
     expect(probe).toContain('"verdicts":[{"id":"R1-OAI-1","verdict":"confirmed|withdrawn|unresolved"');
     expect(probe).toContain("Judge only the PROBE RESULTS");
     expect(probe).not.toContain("===== CHANGE =====");
+    expect(probe).not.toContain("Do not resend this user request.");
     expect(probe).toContain("- R1-OAI-1 a.ts");
-    const plain = buildReviewPrompt({ acceptance: "A", round: 3, parts: [{ path: "a.ts", kind: "delta", text: "@@" }], previousFindings: [finding], probeAvailable: false });
+    const plain = buildReviewPrompt({ acceptance: "A", userRequest: "Do not resend this user request.", round: 3, parts: [{ path: "a.ts", kind: "delta", text: "@@" }], previousFindings: [finding], probeAvailable: false });
     expect(plain).toContain("no probe round is available");
     expect(plain).not.toContain('"verdicts"');
     expect(plain).not.toContain("PROBE RESULTS");
     expect(plain).toContain('Give EVERY finding a "probe"');
+    expect(plain).not.toContain("Do not resend this user request.");
     expect(plain).toContain("you will not judge any run");
   });
 
-  test("initial review asks for an exact symptom probe when before/after reproduction is missing", () => {
+  test("initial review asks for exact before/after evidence for every reported symptom, including ones outside acceptance", () => {
     const prompt = buildReviewPrompt({ acceptance: "A", round: 1, parts: [{ path: "a.ts", kind: "diff", text: "@@" }] });
-    expect(prompt).toMatch(/reported symptom.*before.*after.*major.*probe/i);
+    expect(prompt).toMatch(/reported symptom.*enumerate every concrete symptom.*USER REQUEST.*before.*after.*major.*probe/i);
   });
 
   // ── 재현 방법·증명 수준(2026-11-03): 지적마다 저자가 돌릴 재현 방법과 증명 수준을 받는다 ──
@@ -2578,6 +2580,50 @@ describe("Maker(subagent) 세션", () => {
     expect(await runGate({ cwd: env.work, files: ["a.ts"], ledgerPath: env.ledger })).toMatchObject({ checked: true, decision: { uncovered: [] } });
   });
 
+  test("round 1 includes the Maker brief and recent direct input, not harness traffic or secrets", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const sessionManager = SessionManager.inMemory(env.work);
+    const error = 'sql: Scan error on column index 34, name "image_files": converting NULL to string is unsupported';
+    const brief = `Complete assignment thoroughly:\n\n  ${error}\r\n  Preserve this spacing.  `;
+    const add = (content: string, options: { attribution?: "agent" | "user"; synthetic?: boolean; steering?: boolean } = {}) =>
+      sessionManager.appendMessage({ role: "user", content, timestamp: Date.now(), ...options });
+    add("synthetic traffic", { synthetic: true });
+    add(brief, { attribution: "agent" });
+    add("agent traffic", { attribution: "agent" });
+    add("agent steering traffic", { attribution: "agent", steering: true });
+    add("[자동 재개] resume traffic");
+    add("[하네스 통지] notice traffic");
+    add("<system-reminder>\nreminder traffic\n</system-reminder>");
+    sessionManager.appendCustomMessageEntry("test-notice", "custom traffic", false);
+    add("old middle turn " + "한".repeat(MAX_INPUT_BYTES));
+    add("Newest clarification.");
+    const passwordKey = ["pass", "word"].join("");
+    add(`${passwordKey} = "fake-unquoted-in-prompt-value"`);
+    add(["-----BEGIN RSA PRIV", "ATE KEY-----\nprivate-data-not-for-review"].join(""));
+    sessionManager.appendCustomEntry("goal-lane", { explicit: ["Keep the schema unchanged."] });
+    const ctx = { agent: { kind: "sub" }, model: { provider: "anthropic", id: "claude-opus-5-5" }, sessionManager } as never;
+    const calls: { family: Lane; prompt: string }[] = [];
+    await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Only the timestamps are listed here.", authors: [OPUS] }, ctx, signal, () => deps(env, {}, calls));
+    const [{ prompt }] = calls;
+    expect(prompt).toContain("USER REQUEST");
+    expect(prompt).toContain(brief);
+    expect(prompt).not.toMatch(/traffic|old middle turn|fake-unquoted-in-prompt-value|private-data-not-for-review/);
+    expect(prompt).toMatch(/omitted[^\n]*\n[\s\S]*Newest clarification\.[\s\S]*\[REDACTED\]/);
+    expect(prompt.indexOf(brief)).toBeLessThan(prompt.indexOf("Newest clarification."));
+    expect(prompt).toContain("Keep the schema unchanged.");
+    expect(Buffer.byteLength(prompt)).toBeLessThan(MAX_INPUT_BYTES);
+  });
+
+  test("an unavailable branch signals incomplete request evidence without blocking review", async () => {
+    const env = repo();
+    writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
+    const calls: { family: Lane; prompt: string }[] = [];
+    await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, sub, signal, () => deps(env, {}, calls));
+    expect(calls[0].prompt).toContain("No eligible user request text available from the calling session branch.");
+    expect(calls[0].prompt).toContain("mark symptom coverage for omitted or unavailable text as unverifiable");
+  });
+
   test("author \"main\"은 Maker 자신의 모델로 오인되므로 거절하고, 자기 selector를 주면 돈다", async () => {
     const env = repo();
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
@@ -3218,6 +3264,7 @@ describe("자격 증명 파일 값 전송 차단(#50)", () => {
 
 describe("required reviewer through the real cross_review tool", () => {
   const hits: string[] = [];
+  let lastUserPrompt: string | undefined;
   let server: ReturnType<typeof Bun.serve>;
   let modelRoot: string;
   let registry: ModelRegistry;
@@ -3227,7 +3274,8 @@ describe("required reviewer through the real cross_review tool", () => {
 
   beforeAll(async () => {
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-      const body = await request.json() as { model: string };
+      const body = await request.json() as { model: string; messages: { role: string; content: string }[] };
+      lastUserPrompt = body.messages.find((message) => message.role === "user")?.content;
       const provider = new URL(request.url).pathname.split("/")[1] ?? "";
       hits.push(`${provider}/${body.model}`);
       // x-should-retry: false는 전송 계층이 이 실패를 곧바로 올리게 한다(없으면 completeSimple이 15초 동안 6번 되풀이한다).
@@ -3300,10 +3348,14 @@ describe("required reviewer through the real cross_review tool", () => {
     try {
       await withActiveSettings(Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA, crossReviewAnthropic: OPUS } }), async () => {
         const model = registry.find("hive", "deepseek-ai/deepseek-v4.1-flash-1017");
+        const sessionManager = SessionManager.inMemory(env.work);
+        const report = (text: string) => sessionManager.appendMessage({ role: "user", content: [{ type: "text", text }], attribution: "user", timestamp: Date.now() });
+        report(`First error line: failure opening the album.\n${"한🌱".repeat(8_000)}\nTail of the first request.`);
+        report(`Latest clarification begins.\n${"😀".repeat(4_000)}\nLatest error line: album request returned 500.`);
         const ctx = {
           cwd: env.work, agent: { kind: "main" }, model, modelRegistry: registry,
           models: createExtensionModelQuery(registry, findScopedSettings(env.work), () => model),
-          sessionManager: { getSessionId: () => "deepseek-route", getLeafId: () => null },
+          sessionManager,
         } as never;
         const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "Never delete user files.", authors: [DEEPSEEK] }, ctx, signal) as {
           passable: boolean; findings: unknown[]; reviewers: { family: string; model: string; status: string }[];
@@ -3311,6 +3363,10 @@ describe("required reviewer through the real cross_review tool", () => {
         expect(review.passable).toBe(true);
         expect(review.findings).toEqual([]);
         expect(review.reviewers).toMatchObject([{ family: "openai", model: ASTRA, status: "ok" }]);
+        expect(lastUserPrompt).toMatch(/First error line:[^\n]*\n[\s\S]*\d+ bytes omitted[\s\S]*Tail of the first request\.[\s\S]*Latest clarification begins\.[\s\S]*\d+ bytes omitted[\s\S]*Latest error line: album request returned 500\./);
+        expect(lastUserPrompt).toContain("mark symptom coverage for omitted or unavailable text as unverifiable");
+        expect(lastUserPrompt).not.toContain("\uFFFD");
+        expect(Buffer.byteLength(lastUserPrompt!)).toBeLessThan(MAX_INPUT_BYTES);
         expect(review).not.toHaveProperty("advisory");
         expect([...hits].sort()).toEqual([ASTRA]);
         expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ authors: [DEEPSEEK], reviewers: [{ family: "openai", model: ASTRA }] }]);

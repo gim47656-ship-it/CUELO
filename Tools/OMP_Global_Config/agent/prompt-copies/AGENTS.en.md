@@ -1,7 +1,7 @@
-<!-- source-fingerprint: 577f218a7c3ab8a0 -->
+<!-- source-fingerprint: ff0c5c5ff2346016 -->
 # Global Agent Instructions
 
-Tool descriptions/runtime notices are canonical for enforced procedures. Before delegation, job monitoring, character routing or reporting delegated work as done, read `rule://agent-workflow`.
+Tool descriptions/runtime notices are canonical for enforced procedures.
 
 ## Answer the user first
 
@@ -13,7 +13,7 @@ Continue actionable work/live jobs after answering. End only for required user a
 
 Only Main and maker implement. Main owns requirements/design/contracts/approval/routing/interim-final acceptance and undelegated work; Maker owns investigation through implementation, focused checks and surface verification of its slice. Do not change user-chosen/running models without instruction or revive retired roles.
 
-Main keeps small single-owner tasks; delegate genuinely independent slices in parallel. For small tasks Main can finish alone with no risk marker, skip `maker_route`, preflight and `lab_goal frame`. Immediately before an actual dispatch read `rule://task-guard` and `rule://subagent` for canonical TASK_GUARD, TASK_TITLE, TODO_TASKS and Skill handoff. `harness-policy.json` determines code-nature/consequence risk, never lowered by size or fixture status. High-risk triggers need Main approval before editing and serial drift review. Read `rule://subagent` and `rule://verdict` when reviewing and accepting Maker work.
+Main keeps small single-owner tasks; delegate genuinely independent slices in parallel. Immediately before an actual dispatch read `rule://task-guard` and `rule://subagent` for canonical TASK_GUARD, TASK_TITLE, TODO_TASKS and Skill handoff. `harness-policy.json` determines code-nature/consequence risk, never lowered by size or fixture status. High-risk triggers need Main approval before editing and serial drift review.
 
 Every owner verifies its changes; Main owns shared environments/full builds/integration acceptance. Main never edits live Maker paths or repeats their focused checks. While Makers work, finish Main's independent preparation and settled-delta review before waiting.
 
@@ -21,8 +21,6 @@ Define outcome/acceptance/preserved behavior/approval/observation; separate user
 
 ## Needed rules and reporting
 
-Read matching/requested Skills first; preserve procedures/scope. Use procedure Skills for unknown-cause bugs, second failures or ambiguous completion. Disclose substitutions/narrowing, never claim the Skill's result. UI: `rule://frontend`; legacy encoding: `rule://legacy-encoding`; docs/records: `rule://docs-handoff`. Batch independent reads/searches; inspect edit ranges/callers/tests first.
-
-Injected `<character-voice>` is canonical; user tone wins. Character summons/session switches follow exact selectors/account pins in `rule://agent-workflow` and `harness-policy.json`; never silently substitute after failure.
+Preserve Skill procedures/scope. Use procedure Skills for unknown-cause bugs, second failures or ambiguous completion. Disclose substitutions/narrowing, never claim the Skill's result. Inspect edit ranges/callers/tests first.
 
 Lead with conclusions in natural paragraphs. Avoid unrequested fixed formats, repeated summaries and invented jargon. Explain concepts/effects before technical terms. Disclose actual helper roles/count/reasons/contributions, checks and unknown risks; keep unrequested hashes/run IDs/model IDs/commands in records. Detailed completion format/chart conditions: `rule://agent-workflow`.

@@ -249,6 +249,22 @@ test("an unrelated solo request does not reframe existing work, but a changed de
  expect(JSON.stringify(requests[0]?.questions)).toContain("separate bounded solo task without risk");
 });
 
+test("CUELO restart and update notices are not judged as a new user message", async () => {
+ const judged: string[] = [];
+ const { call, emit } = await lane("Deploy the exporter.", async (_ctx, purpose) => ({
+  judge: async (request: { state: { newMessage: string } }) => {
+   if (purpose === "goal-lane-reframe") judged.push(request.state.newMessage);
+   return { answers: {} };
+  },
+ }) as never);
+ await call({ op: "frame", goal: "Deploy the exporter to production", deliverables: [{ id: "rollout", what: "Live exporter", check: "Check health" }] });
+ await emit("input", { source: "rpc", text: "[자동 재개] CUELO 업데이트·재시작 때문에 이 세션의 진행 중 작업이 중단(abort)됐다. 서버가 새 버전으로 다시 떴다." });
+ await emit("message_start", { message: { role: "user", content: "[하네스 통지] 이 세션이 시작한 CUELO 업데이트가 끝나 런타임이 새 버전으로 교체됐습니다." } });
+ await emit("input", { source: "rpc", text: "Deploy to staging instead." });
+ await setImmediate();
+ expect(judged).toEqual(["Deploy to staging instead."]);
+});
+
 test("a successful but unrelated command is reported as observed evidence, never as a met requirement", async () => {
  const { call, frame, ran, reminder } = await lane();
  await frame([{ id: "out", what: "The report renders every section", check: "open the report and compare every section" }]);
