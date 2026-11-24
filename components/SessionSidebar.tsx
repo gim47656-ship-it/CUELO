@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import {
   PRIORITY_REFRESH_MS,
@@ -33,7 +33,8 @@ import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
 import { useTranslatorText } from "./translator/i18n";
 import { missingSubdirectoryText, readWorktreeNotice, rememberWorktreeNotice, worktreeText, type SessionWorktreeNotice } from "@/lib/session-worktree/client";
-import { SESSION_DRAG_TYPE, useSessionBeside } from "./workspace/session-beside";
+import { SESSION_DRAG_TYPE, SessionBrowserContext, useSessionBeside } from "./workspace/session-beside";
+import { SessionRowMenu, type SessionRowMenuItem } from "./workspace/SessionRowMenu";
 import { WorkbenchIcon } from "./workspace/WorkbenchIcon";
 
 interface Props {
@@ -3443,13 +3444,17 @@ function SessionItem({
   const displayFirstMessage = skillExpansionToCommand(session.firstMessage) ?? session.firstMessage;
   const title = session.name || displayFirstMessage.slice(0, 50) || session.id.slice(0, 12);
 
-  const startRename = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
+  const beginRename = useCallback(() => {
     // Transient sessions have no file yet, so renaming would fail.
     if (session.transient) return;
     setRenameValue(session.name || displayFirstMessage.slice(0, 50) || session.id.slice(0, 12));
     setRenaming(true);
   }, [session.name, session.transient, displayFirstMessage, session.id]);
+
+  const startRename = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    beginRename();
+  }, [beginRename]);
 
   const commitRename = useCallback(async () => {
     const name = renameValue.trim();
@@ -3517,6 +3522,11 @@ function SessionItem({
     setConfirmDelete(false);
   }, []);
 
+  const openBrowserBeside = useContext(SessionBrowserContext);
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeRowMenu = useCallback(() => setRowMenu(null), []);
+
+  // A plugin listener that claims the event shows its own menu; CUELO's menu opens only otherwise.
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const handled = dispatchSessionRowContextMenu({
       id: session.id,
@@ -3527,10 +3537,30 @@ function SessionItem({
       clientY: e.clientY,
       refresh: () => { onRenamed?.(); },
     });
-    if (!handled) return;
+    // A transient session has nothing these actions can work on, so it keeps the browser's menu.
+    if (!handled && session.transient) return;
     e.preventDefault();
     e.stopPropagation();
-  }, [onRenamed, session.cwd, session.id, session.name, session.path]);
+    if (handled) return;
+    // A keyboard-opened menu has no pointer position: it opens at the row.
+    const rect = e.currentTarget.getBoundingClientRect();
+    const atPointer = e.clientX !== 0 || e.clientY !== 0;
+    setRowMenu({ x: atPointer ? e.clientX : rect.left + 24, y: atPointer ? e.clientY : rect.bottom });
+  }, [onRenamed, session.cwd, session.id, session.name, session.path, session.transient]);
+
+  const rowMenuItems: SessionRowMenuItem[] = [];
+  if (rowMenu) {
+    if (canOfferBeside && beside) {
+      rowMenuItems.push({ id: "beside", label: t("sidebar.openBeside"), disabledReason: beside.blockedReason, onSelect: () => beside.openBeside(session) });
+    }
+    if (openBrowserBeside) {
+      rowMenuItems.push({ id: "browser", label: t("sidebar.openBrowserBeside"), onSelect: () => openBrowserBeside(session) });
+    }
+    rowMenuItems.push({ id: "rename", label: t("sidebar.rename"), onSelect: beginRename });
+    if (onTogglePin) {
+      rowMenuItems.push({ id: "pin", label: isPinned ? t("sidebar.unpin") : t("sidebar.pin"), onSelect: onTogglePin });
+    }
+  }
 
   // Only the id travels: the drop resolves it against the session list.
   const handleDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -3850,6 +3880,9 @@ function SessionItem({
             </div>
           )}
         </>
+      )}
+      {rowMenu && (
+        <SessionRowMenu label={t("sidebar.rowMenu")} x={rowMenu.x} y={rowMenu.y} items={rowMenuItems} onClose={closeRowMenu} />
       )}
     </div>
   );

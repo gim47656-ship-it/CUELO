@@ -128,6 +128,8 @@ interface Props {
   onRevealToolCall?: (toolCallId: string) => void;
   /** The composer's "start in" project control on the empty new-session screen; it replaces the centre project block. */
   composerStartPlace?: ReactNode;
+  /** A notice of this session shown in the composer's banner area, above the input. */
+  composerNotice?: ReactNode;
   /** Opens one Maker's detail in the deck from an in-answer dispatch card; passed through to the cards unchanged. */
   onOpenMaker?: AnswerStatusContextValue["onOpenMaker"];
   /** The Maker the deck shows now; the matching card row is marked. */
@@ -530,7 +532,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, composerNotice, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -1305,6 +1307,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         cwd={session?.cwd ?? newSessionCwd}
         sessionTitle={session?.name}
         startPlace={isEmptyNew && !transcriptReplacement ? composerStartPlace : undefined}
+        notice={composerNotice}
       />
     </div>
   );

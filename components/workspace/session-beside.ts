@@ -22,6 +22,12 @@ export function useSessionBeside(): SessionBesideControls | null {
   return useContext(SessionBesideContext);
 }
 
+/**
+ * 브라우저 옆 칸: opens the live view of a session's ego TaskSpace beside its conversation. A row of
+ * another session is selected first, because the pane always shows the selected session's browser.
+ */
+export const SessionBrowserContext = createContext<((session: SessionInfo) => void) | null>(null);
+
 /** Reads the session id a session row's drag carries, or null when the drag carries something else. */
 export function readSessionDragId(data: DataTransfer): string | null {
   const id = data.getData(SESSION_DRAG_TYPE).trim();

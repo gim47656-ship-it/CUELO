@@ -2137,6 +2137,366 @@ span.linenumber {
   color: var(--text);
 }
 
+/* 브라우저 옆 칸: the side pane shows the selected session's ego TaskSpace. With one pane on
+   screen the conversation stays mounted (its stream keeps running) and is only taken out of layout. */
+.chat-pane.is-covered {
+  display: none;
+}
+
+.browser-pane {
+  background: color-mix(in srgb, var(--bg-panel) 35%, var(--bg));
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.browser-pane .chat-pane-head {
+  background: transparent;
+}
+
+.browser-pane-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  block-size: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  /* One step lighter than the surface it sits on: the browser pane and an idle pane share one tone. */
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* On the page tone of the pane being typed in, and on a raised band, the step goes the other way. */
+.chat-pane.is-active > .chat-pane-head .browser-pane-button,
+.browser-pane-lost .browser-pane-button {
+  background: var(--bg-subtle);
+}
+
+.browser-pane-button:hover,
+.chat-pane.is-active > .chat-pane-head .browser-pane-button:hover,
+.browser-pane-lost .browser-pane-button:hover {
+  background: var(--bg-hover);
+}
+
+.browser-pane-button.is-quiet {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.browser-pane-button.is-quiet:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.browser-pane-button.is-primary {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.browser-pane-button.is-primary:hover {
+  background: color-mix(in srgb, var(--accent) 86%, var(--bg));
+}
+
+.browser-pane-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.browser-pane-button:focus-visible,
+.browser-pane-tab:focus-visible,
+.session-row-menu button:focus-visible {
+  outline: none;
+  background: var(--focus-fill);
+  color: var(--focus-text);
+}
+
+.browser-pane-narrow {
+  flex: none;
+  margin: 0;
+  padding: 0 16px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.browser-pane-band,
+.browser-pane-lost {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin-inline: 16px;
+  padding: 10px 12px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-raised);
+}
+
+.browser-pane-band[data-turn="user"] {
+  background: var(--warning-soft);
+}
+
+.browser-pane-band-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.browser-pane-band-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.browser-pane-url {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-block-size: 38px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.browser-pane-url-text {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.browser-pane-scale {
+  flex: none;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.browser-pane-lost {
+  margin-block-end: 8px;
+}
+
+.browser-pane-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  padding: 0 16px 16px;
+}
+
+.browser-pane-view {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+  background: var(--bg-raised);
+}
+
+.browser-pane-view img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  user-select: none;
+}
+
+.browser-pane-view.is-stale img {
+  opacity: 0.5;
+}
+
+/* The page image cannot take focus styling itself, so the keyboard focus of the input layer
+   above it shows as a ring on the view. */
+.browser-pane-view.is-keyboard-focus {
+  box-shadow: 0 0 0 3px var(--focus-fill);
+}
+
+/* Transparent layer over the page image: it takes the pointer, wheel, keys and IME text. */
+.browser-pane-input {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  opacity: 0;
+  caret-color: transparent;
+  cursor: default;
+}
+
+.browser-pane-tabs {
+  margin-block-start: 14px;
+}
+
+.browser-pane-tabs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding-block-end: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.browser-pane-follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.browser-pane-follow input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.browser-pane-tabs ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.browser-pane-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  inline-size: 100%;
+  min-block-size: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.browser-pane-tab:hover {
+  background: var(--bg-hover);
+}
+
+.browser-pane-tab.is-shown {
+  background: var(--bg-selected);
+}
+
+.browser-pane-tab-title {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-pane-tab-mark {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.browser-pane-tab:focus-visible .browser-pane-tab-mark {
+  color: inherit;
+}
+
+.browser-pane-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  max-inline-size: calc(46ch + 80px);
+  padding: 0 40px 120px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.browser-pane-empty strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.browser-pane-empty p {
+  margin: 0;
+}
+
+/* Above the composer: the agent handed the browser over while the pane is not showing. */
+.browser-handoff-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block-end: 8px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-surface);
+  background: var(--warning-soft);
+  font-size: 13px;
+  color: var(--text);
+  word-break: keep-all;
+}
+
+.browser-handoff-notice-text {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+/* Right-click menu of a session row. */
+.session-row-menu {
+  position: fixed;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 184px;
+  padding: 4px;
+  border-radius: var(--radius-surface);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+}
+
+.session-row-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session-row-menu button:hover {
+  background: var(--bg-hover);
+}
+
+.session-row-menu button[aria-disabled="true"] {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.session-row-menu button[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
 /* A session row dragged over the conversation: the half it lands in (the 옆 창's side) is shown. */
 .chat-beside-drop {
   position: absolute;
