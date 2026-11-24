@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1593,8 +1593,8 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
 
 export const REVIEW_SYSTEM = "You are a careful independent code reviewer. You have no tools; answer only from the material in the user message.";
 
-/** part: 한 파일을 여러 조각으로 나눠 심사할 때만 `k/m`(m 조각 중 k번째). */
-export interface ReviewPart { path: string; kind: "diff" | "new-file" | "delta" | "new-since-last-round" | "deleted"; text: string; part?: string }
+/** part: 한 파일을 여러 조각으로 나눠 심사할 때만 `k/m`(m 조각 중 k번째). facts: diff 글자로는 보이지 않는 바이트 사실(BOM·줄바꿈·UTF-8 여부, {@link byteFacts}). */
+export interface ReviewPart { path: string; kind: "diff" | "new-file" | "delta" | "new-since-last-round" | "deleted"; text: string; part?: string; facts?: string }
 
 const CHECKLIST = [
   "1. Safety first: any path where the change touches something it must not (wrong process/file/record/user killed, deleted, overwritten or exposed; secret leaked; auth bypassed)? Quote the code.",
@@ -1604,7 +1604,7 @@ const CHECKLIST = [
   "5. Boundaries and encodings: empty/huge input, CRLF, BOM, non-UTF-8, Windows vs WSL paths, case sensitivity, path traversal, quoting.",
   "6. Callers and contracts: changed or removed behaviour that other code still relies on; tests or docs that now lie.",
   "7. Cleanup: files, processes, locks, timers or temp state left behind on failure and abort.",
-  "8. Reported symptom (initial review): enumerate every concrete symptom in USER REQUEST, acceptance criteria or bound inputs (error/log lines, failing commands, wrong outputs), including symptoms outside the formal requirements. For each, require commands and output showing that exact symptom occurring before the change and gone afterward. If either is missing, emit a major finding about the missing proof, not a speculative claim that the bug still exists. Design a probe that runs the same reported scenario against the baseline and the reviewed code without editing the reviewed files. The author submits the command and output in the verdict-only probe round for your confirmed/withdrawn/unresolved verdict.",
+  "8. Reported symptom (initial review): enumerate every concrete symptom in USER REQUEST, acceptance criteria or bound inputs (error/log lines, failing commands, wrong outputs), including symptoms outside the formal requirements. For each, require commands and output (an OBSERVED RUN counts) showing that exact symptom occurring before the change and gone afterward. If either is missing, emit a major finding about the missing proof, not a speculative claim that the bug still exists. Design a probe that runs the same reported scenario against the baseline and the reviewed code without editing the reviewed files. The author submits the command and output in the verdict-only probe round for your confirmed/withdrawn/unresolved verdict.",
 ];
 
 /** 도구가 다듬은 probe 결과(비밀 가림·발췌 상한 적용 뒤)와 그 결과가 가리키는 finding. */
@@ -1633,8 +1633,8 @@ const MAX_HIDING_LEADS_SHOWN = 20;
 
 const ROUND_CAP_RULE = "FINAL CODE REVIEW: verify the round-1 fixes. Refer to any still-open round-1 finding by id in the summary instead of duplicating it. Any new finding is recorded as a limit and does not open another code review.";
 
-export function buildReviewPrompt(input: { acceptance: string; userRequest?: string; userRequestIncomplete?: boolean; round: number; previousCodeRound?: number; parts: ReviewPart[]; previousFindings?: CrossReviewFinding[]; inputs?: { path: string; text: string }[]; references?: { path: string; text: string }[]; probeResults?: PreparedProbeResult[]; probeAvailable?: boolean; hidingLeads?: readonly HidingLead[]; batch?: { index: number; count: number } }): string {
-  const blocks = input.parts.map((part) => `<${part.kind} path="${part.path}"${part.part ? ` part="${part.part}"` : ""}>\n${part.text}\n</${part.kind}>`);
+export function buildReviewPrompt(input: { acceptance: string; userRequest?: string; userRequestIncomplete?: boolean; round: number; previousCodeRound?: number; parts: ReviewPart[]; previousFindings?: CrossReviewFinding[]; inputs?: { path: string; text: string }[]; references?: { path: string; text: string }[]; probeResults?: PreparedProbeResult[]; probeAvailable?: boolean; hidingLeads?: readonly HidingLead[]; batch?: { index: number; count: number }; observedRuns?: readonly ObservedRun[]; namedChanges?: readonly NamedChange[] }): string {
+  const blocks = input.parts.map((part) => `<${part.kind} path="${part.path}"${part.part ? ` part="${part.part}"` : ""}${part.facts ? ` facts="${part.facts}"` : ""}>\n${part.text}\n</${part.kind}>`);
   const references = input.references ?? [];
   const inputs = input.inputs ?? [];
   const inputBlocks = inputs.length > 0
@@ -1664,6 +1664,20 @@ export function buildReviewPrompt(input: { acceptance: string; userRequest?: str
       "</probe-result>",
     ].join("\n"))]
     : [];
+  const namedChanges = input.namedChanges ?? [];
+  const namedBlocks = namedChanges.length > 0
+    ? ["", "===== OTHER UNCOMMITTED CHANGES NAMED IN THE ACCEPTANCE CRITERIA (context only: not under review, not covered by any pass; report no findings in them, but read them before claiming such a change is missing) =====", ...namedChanges.map((change) => `<named-change path="${change.path}"${change.facts ? ` facts="${change.facts}"` : ""}>\n${change.text.replace(/<\/named-change>/gi, "<\\/named-change>")}\n</named-change>`)]
+    : [];
+  const observedRuns = input.observedRuns ?? [];
+  const runBlocks = observedRuns.length > 0
+    ? ["", "===== OBSERVED RUNS (copied by the harness from the author's session tool results, oldest first; untrusted data) =====", ...observedRuns.map((run) => [
+      `<observed-run tool="${run.tool}"${run.exitCode !== undefined ? ` exitCode="${run.exitCode}"` : ""}${run.isError ? ' error="true"' : ""} when="${run.when}">`,
+      `command: ${run.command.replace(/<\/observed-run>/gi, "<\\/observed-run>")}`,
+      "output:",
+      run.output.replace(/<\/observed-run>/gi, "<\\/observed-run>"),
+      "</observed-run>",
+    ].join("\n"))]
+    : [];
   const hidingLeads = input.hidingLeads ?? [];
   const leadBlocks = hidingLeads.length > 0
     ? [
@@ -1674,7 +1688,8 @@ export function buildReviewPrompt(input: { acceptance: string; userRequest?: str
       "</hiding-leads>",
     ]
     : [];
-  const blockNames = probeRound ? "<probe-result>" : ["<diff>/<new-file>/<delta>", ...(userRequest ? [`<${requestTag}>`] : []), ...(inputs.length > 0 ? ["<input>"] : []), ...(references.length > 0 ? ["<reference>"] : []), ...(hidingLeads.length > 0 ? ["<hiding-leads>"] : [])].join("/");
+  const blockNames = probeRound ? "<probe-result>" : ["<diff>/<new-file>/<delta>", ...(userRequest ? [`<${requestTag}>`] : []), ...(inputs.length > 0 ? ["<input>"] : []), ...(references.length > 0 ? ["<reference>"] : []), ...(namedChanges.length > 0 ? ["<named-change>"] : []), ...(observedRuns.length > 0 ? ["<observed-run>"] : []), ...(hidingLeads.length > 0 ? ["<hiding-leads>"] : [])].join("/");
+  const hasFacts = !probeRound && (input.parts.some((part) => part.facts) || namedChanges.some((change) => change.facts));
   const last = input.previousCodeRound ?? input.round - 1;
   let scope: string;
   if (input.round === 1) scope = "ROUND 1: the full change. Modified files are shown as unified diffs with context, new files in full with line numbers.";
@@ -1719,6 +1734,8 @@ export function buildReviewPrompt(input: { acceptance: string; userRequest?: str
       "",
       RECIPE_RULE,
       probeGuide,
+      ...(observedRuns.length > 0 && !probeRound ? ['OBSERVED RUNS: the harness copied these runs from the author\'s session (command, exit code, output excerpt); the author could not edit them. when="after-latest-change" means the run started after the last modification of every file under review. Such a run that visibly exercises a claim against the reviewed code is evidence for or against that claim: rely on it, and do not ask for a probe that only repeats it. A before-latest-change run started before that point or at a time the harness could not order (for example around a deletion), so it may show older content (it can be the before side of item 8). A run whose command does not exercise the claim proves nothing about it.'] : []),
+      ...(hasFacts ? ['BYTES: a facts="..." attribute states what the harness measured in the current file bytes (size, UTF-8 BOM, CRLF and LF line endings, UTF-8 validity). Text that is not valid UTF-8 shows as U+FFFD here, but git compares bytes, so a context line is byte-identical before and after.'] : []),
     ] : []),
     "",
     "OUTPUT: respond with ONLY one JSON object and nothing else:",
@@ -1728,7 +1745,7 @@ export function buildReviewPrompt(input: { acceptance: string; userRequest?: str
       : 'Use {"findings":[],"summary":"..."} when you find nothing. "line" and "expectIfNot" are optional; every finding has "proof" and "probe".',
     ...probeBlocks,
     "",
-    ...(!probeRound ? ["===== CHANGE =====", ...blocks, ...leadBlocks, ...inputBlocks, ...referenceBlocks] : []),
+    ...(!probeRound ? ["===== CHANGE =====", ...blocks, ...leadBlocks, ...inputBlocks, ...referenceBlocks, ...namedBlocks, ...runBlocks] : []),
   ].join("\n");
 }
 
@@ -2005,8 +2022,11 @@ export const MAX_REFERENCE_FILE_BYTES = MAX_CONTEXT_TOTAL_BYTES;
  * probeResults: 앞 라운드 finding의 probe를 실제로 돌린 결과. 있으면 이 호출이 체인의 probe 라운드이며 코드 변경이 없어도 된다.
  */
 export interface ProbeResultInput { findingId: string; command: string; exitCode: number; output: string }
-/** maker: subagent 세션의 호출. resolve는 Main 전용이라 다음 단계 안내가 resolve 대신 Main에게 보고하는 길을 적는다. */
-export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[]; maker?: boolean; userRequest?: ReviewUserRequest }
+/**
+ * maker: subagent 세션의 호출. resolve는 Main 전용이라 다음 단계 안내가 resolve 대신 Main에게 보고하는 길을 적는다.
+ * sessionRuns: 호출 세션 branch에 하네스가 남긴 bash·eval 실행 기록(1라운드만). 저자가 타이핑한 결과가 아니다.
+ */
+export interface ReviewInput { files: string[]; acceptance: string; authors: string[]; highRisk?: boolean; previousReviewId?: string; base?: string; inputs?: string[]; references?: string[]; probeResults?: ProbeResultInput[]; maker?: boolean; userRequest?: ReviewUserRequest; sessionRuns?: readonly SessionRun[] }
 
 interface ReviewUserRequest { messages: readonly string[]; explicit?: readonly string[] }
 
@@ -2060,6 +2080,125 @@ export function prepareUserRequest({ messages, explicit }: ReviewUserRequest): {
     userRequestIncomplete: incomplete || index > 0,
   };
 }
+
+/** 세션 branch의 bash·eval 실행 한 건(명령, 종료 코드, 출력, 시작 시각 ms). */
+export interface SessionRun { tool: "bash" | "eval"; command: string; exitCode?: number; isError: boolean; output: string; startedAt?: number }
+/** reviewer에게 싣는 실행 한 건. when은 검수 대상 파일의 마지막 수정 시각과 실행 시작 시각을 견준 것이다. */
+export interface ObservedRun { tool: SessionRun["tool"]; command: string; exitCode?: number; isError: boolean; when: "after-latest-change" | "before-latest-change"; output: string }
+/** acceptance가 경로로 말했지만 검수 대상이 아닌 미커밋 변경(맥락 전용). */
+export interface NamedChange { path: string; text: string; facts?: string }
+
+/**
+ * 1라운드에 싣는 세션 실행 상한. 2026-11-25 측정: probe 판정 556건 중 436건이 철회였고, rules-sensitive 회차의 철회 3건 중 2건은
+ * 세션에 이미 있던 전후 실행과 테스트 출력을 reviewer가 보지 못해 같은 명령을 다시 요구한 것이었다(doc/history/2026/11/25-xr-evidence).
+ */
+export const MAX_OBSERVED_RUNS = 10;
+export const MAX_OBSERVED_RUN_OUTPUT_BYTES = 3 * 1024;
+export const MAX_OBSERVED_RUNS_BYTES = 24 * 1024;
+const MAX_OBSERVED_COMMAND_BYTES = 1_000;
+// 검수 대상 파일을 이름으로 부르지 않아도 증거가 되는 검사 실행(테스트·타입·린트·빌드).
+const CHECK_RUN = /\b(?:bun|npm|pnpm|yarn|npx|bunx|deno|cargo|go|dotnet)\s+(?:run\s+)?(?:test|tests|typecheck|lint|check|build|vet)\b|\b(?:vitest|jest|pytest|tsc|eslint|mocha|phpunit|rspec)\b/;
+
+/**
+ * 글에 경로가 독립된 조각으로 나오는가. 앞뒤 경로 글자를 막아 `a.ts`가 `data.ts`·`a.tsx`를 부르지 않게 한다. acceptance에서는 앞의 `폴더/`도 막아
+ * `legacy/device.cfg`가 루트 `device.cfg`를 부르지 않게 하되 `./legacy/device.cfg`는 그 파일로 본다. 명령에서는 절대 경로 끝(`/repo/src/a.ts`)도 그 파일로 본다.
+ */
+function mentionsPath(text: string, path: string, afterSlash: boolean): boolean {
+  return new RegExp(`(?<![\\w.-])${afterSlash ? "" : "(?<![\\w-]/)"}${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/-]|\\.\\w)`).test(text);
+}
+
+/**
+ * 세션 실행 중 검수 대상 파일(저장소 경로·cwd 경로·파일 이름)을 부르거나 검사 명령인 것을 최신 것부터 고르고, 보여 줄 때는 오래된 것부터 놓는다.
+ * 비밀을 가리고 개인키 블록이 든 실행과 정책상 보내지 않는 비밀 위치(hardSecretPath)를 명령에서 부른 실행은 뺀다.
+ * 시작 시각이 없거나, 대상 파일의 마지막 수정보다 이르거나, 수정 시각을 모르는 대상(삭제 등)이 있으면 before-latest-change로 표시한다.
+ */
+export function selectObservedRuns(runs: readonly SessionRun[], reviewed: readonly { path: string; mtimeMs?: number }[], root: string, cwd: string): ObservedRun[] {
+  if (runs.length === 0 || reviewed.length === 0) return [];
+  const names = new Set<string>();
+  for (const { path } of reviewed) {
+    names.add(path);
+    const fromCwd = relative(cwd, join(root, ...path.split("/"))).split(sep).join("/");
+    if (fromCwd && !fromCwd.startsWith("..") && !isAbsolute(fromCwd)) names.add(fromCwd);
+    const base = path.split("/").pop();
+    if (base) names.add(base);
+  }
+  const latest = reviewed.some((file) => file.mtimeMs === undefined) ? Infinity : Math.max(...reviewed.map((file) => file.mtimeMs!));
+  const picked: ObservedRun[] = [];
+  let used = 0;
+  for (let index = runs.length - 1; index >= 0 && picked.length < MAX_OBSERVED_RUNS; index--) {
+    const run = runs[index]!;
+    if (!run.command.trim() || (!CHECK_RUN.test(run.command) && ![...names].some((name) => mentionsPath(run.command, name, true)))) continue;
+    if (run.command.split(/[\s;|&<>()'"`=,]+/).some((token) => token && hardSecretPath(token))) continue;
+    const command = redactSecrets(run.command);
+    const output = redactSecrets(run.output);
+    if (command.blocked || output.blocked) continue;
+    const shownCommand = excerpt(command.text, MAX_OBSERVED_COMMAND_BYTES).text;
+    const shownOutput = excerpt(output.text, MAX_OBSERVED_RUN_OUTPUT_BYTES).text;
+    const bytes = utf8(shownCommand) + utf8(shownOutput);
+    if (used + bytes > MAX_OBSERVED_RUNS_BYTES) continue;
+    used += bytes;
+    picked.push({
+      tool: run.tool, command: shownCommand, ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}), isError: run.isError,
+      when: run.startedAt !== undefined && run.startedAt >= latest ? "after-latest-change" : "before-latest-change", output: shownOutput,
+    });
+  }
+  return picked.reverse();
+}
+
+/** diff 글자로는 보이지 않는 현재 파일의 바이트 사실. BOM·CRLF·UTF-8 아닌 바이트가 하나도 없거나 바이너리면 undefined다. */
+export function byteFacts(content: Buffer | null): string | undefined {
+  if (!content || content.includes(0)) return undefined;
+  const bom = content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf;
+  let crlf = 0;
+  let lf = 0;
+  for (let index = 0; index < content.length; index++) {
+    if (content[index] !== 10) continue;
+    if (index > 0 && content[index - 1] === 13) crlf++;
+    else lf++;
+  }
+  let valid = true;
+  try { new TextDecoder("utf-8", { fatal: true }).decode(content); } catch { valid = false; }
+  if (!bom && crlf === 0 && valid) return undefined;
+  return `${content.length} bytes; UTF-8 BOM: ${bom ? "yes" : "no"}; line endings: ${crlf} CRLF, ${lf} LF; ${valid ? "valid UTF-8" : "NOT valid UTF-8"}`;
+}
+
+const MAX_NAMED_CHANGES = 5;
+const MAX_NAMED_CHANGE_BYTES = 16 * 1024;
+
+/**
+ * acceptance가 저장소 경로나 cwd 경로로 부른 미커밋 변경 중 검수 대상·입력·참고가 아닌 것의 diff를 맥락으로 모은다. 2026-11-24 rules-sensitive
+ * 회차에서 저자가 acceptance에 적은 cfg 수정을 files에서 빼자 reviewer가 "그 수정이 빠졌다"는 blocker를 냈고 probe 뒤 철회했다.
+ * 비밀 경로·바이너리·개인키 블록은 싣지 않고, 의존 입력·참고와 같은 맥락 예산을 쓴다.
+ */
+async function collectNamedChanges(exec: Exec, git: string, root: string, cwd: string, acceptance: string, exclude: ReadonlySet<string>, budget: { used: number }): Promise<NamedChange[]> {
+  const status = await exec(git, ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd: root });
+  if (status.code !== 0) return [];
+  const named: string[] = [];
+  for (const entry of status.stdout.split("\0")) {
+    if (entry.length <= 3 || named.length >= MAX_NAMED_CHANGES) continue;
+    const path = entry.slice(3);
+    if (exclude.has(path) || secretPath(path) || hardSecretPath(path)) continue;
+    const fromCwd = relative(cwd, join(root, ...path.split("/"))).split(sep).join("/");
+    const forms = [path, join(root, ...path.split("/")).split(sep).join("/"), ...(fromCwd && !fromCwd.startsWith("..") && !isAbsolute(fromCwd) ? [fromCwd] : [])];
+    if (forms.some((form) => mentionsPath(acceptance, form, false))) named.push(path);
+  }
+  if (named.length === 0) return [];
+  const { changed } = await collectChanges(exec, git, root, named);
+  const out: NamedChange[] = [];
+  for (const change of changed) {
+    if (change.binary) continue;
+    const safe = redactSecrets(change.text);
+    if (safe.blocked) continue;
+    const text = excerpt(safe.text, MAX_NAMED_CHANGE_BYTES).text;
+    const bytes = utf8(text);
+    if (budget.used + bytes > MAX_CONTEXT_TOTAL_BYTES) continue;
+    budget.used += bytes;
+    const facts = byteFacts(change.content);
+    out.push({ path: change.path, text, ...(facts ? { facts } : {}) });
+  }
+  return out;
+}
+
 export interface ReviewerCompletion { model: string; text: string }
 export class ReviewerCallError extends Error {
   /** A partial response is kept as evidence, never treated as a usable review. */
@@ -2632,11 +2771,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const redacted: { path: string; matches: number }[] = [];
   const leadSources: LeadSource[] = [];
   /** 본문에서 비밀로 보이는 값을 가린 뒤 싣는다. 개인키 블록이 든 파일은 빠지고 어떤 통과도 덮지 않는다. */
-  const addPart = (path: string, kind: ReviewPart["kind"], text: string, lines: readonly ChangedLine[], status: ChangedFile["status"]): boolean => {
+  const addPart = (path: string, kind: ReviewPart["kind"], text: string, lines: readonly ChangedLine[], status: ChangedFile["status"], facts?: string): boolean => {
     const safe = redactSecrets(text);
     if (safe.blocked) { skipped.push({ path, reason: "private key block excluded by the safety filter; it is NOT covered by any pass" }); return false; }
     if (safe.count > 0) redacted.push({ path, matches: safe.count });
-    parts.push({ path, kind, text: safe.text });
+    parts.push({ path, kind, text: safe.text, ...(facts ? { facts } : {}) });
     for (const hit of detectMarkers(path, lines)) triggers.add(hit.trigger);
     leadSources.push({ path, status, changedLines: [...lines], ...(kind === "diff" || kind === "delta" ? { diff: text } : {}) });
     return true;
@@ -2663,7 +2802,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     const take = (change: ChangedFile): void => {
       if (change.binary) { skipped.push({ path: change.path, reason: "binary file" }); return; }
       if (holdsKeyBlock(change.path, change.content)) return;
-      if (!addPart(change.path, change.status === "added" ? "new-file" : "diff", change.text, change.changedLines, change.status)) return;
+      if (!addPart(change.path, change.status === "added" ? "new-file" : "diff", change.text, change.changedLines, change.status, byteFacts(change.content))) return;
       reviewedFiles.push({ path: change.path, blob: change.blob });
       snapshot.push({ path: change.path, blob: change.blob, content: change.content });
     };
@@ -2706,7 +2845,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
         ok = addPart(path, "deleted", `The file was deleted after the previous round (it had ${oldContent!.length} bytes).`, [], "deleted");
       } else if (!oldContent!.equals(content)) {
         const delta = await deltaDiff(deps.exec, root, path, old!.file!, content);
-        ok = addPart(path, "delta", delta, markBlockComments(path, parseChangedLines(delta), content.toString("utf8"), oldContent!.toString("utf8")), "modified");
+        ok = addPart(path, "delta", delta, markBlockComments(path, parseChangedLines(delta), content.toString("utf8"), oldContent!.toString("utf8")), "modified", byteFacts(content));
       }
       if (!ok) return;
       reviewedFiles.push({ path, blob });
@@ -2751,6 +2890,15 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     return { ...lead, text: safeText.blocked ? "" : safeText.text.slice(0, 100) };
   });
   const requestContext = round === 1 && input.userRequest ? prepareUserRequest(input.userRequest) : undefined;
+  // 첫 라운드만: 세션이 이미 돌린 실행과 acceptance가 부른 다른 미커밋 변경을 맥락으로 싣는다. 둘 다 통과가 덮지 않는다.
+  const firstRound = round === 1 && !previous;
+  const mtimeOf = (path: string): number | undefined => { try { return statSync(join(root, ...path.split("/"))).mtimeMs; } catch { return undefined; } };
+  const observedRuns = firstRound && input.sessionRuns?.length
+    ? selectObservedRuns(input.sessionRuns, reviewedFiles.map(({ path }) => ({ path, mtimeMs: mtimeOf(path) })), root, deps.cwd)
+    : [];
+  const namedChanges = firstRound
+    ? await collectNamedChanges(deps.exec, git, root, deps.cwd, acceptance, new Set([...paths, ...inputPaths, ...referencePaths, ...references.map((reference) => reference.path)]), contextBudget)
+    : [];
   const plan = planReviewPrompts(parts, hidingLeads, (shownParts, shownLeads, batch) => buildReviewPrompt({
     acceptance, ...requestContext, round, previousCodeRound: codePrevious?.round, parts: shownParts,
     inputs: inputEntries.map(({ path, text }) => ({ path, text })),
@@ -2758,7 +2906,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     references: references.map(({ path, text }) => ({ path, text })),
     probeResults: preparedProbes,
     probeAvailable: canProbe,
-    hidingLeads: shownLeads, batch,
+    hidingLeads: shownLeads, batch, observedRuns, namedChanges,
   }));
   if ("refused" in plan) {
     // 전체 바이트만 알리면 작은 파일을 빼도 줄지 않는 이유를 Main이 직접 재야 했다(10-23, 13→6→5개 파일에 490KB→472KB).
@@ -2768,6 +2916,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       ...references.map((reference) => ({ label: `${reference.path} (reference)`, bytes: utf8(reference.text) })),
       { label: "acceptance", bytes: utf8(acceptance) },
       ...(requestContext ? [{ label: "user request", bytes: utf8(requestContext.userRequest) }] : []),
+      ...namedChanges.map((change) => ({ label: `${change.path} (named change)`, bytes: utf8(change.text) })),
+      ...(observedRuns.length > 0 ? [{ label: `observed runs (${observedRuns.length})`, bytes: observedRuns.reduce((sum, run) => sum + utf8(run.command) + utf8(run.output), 0) }] : []),
       // 앞 지적·probe 결과도 모든 호출에 실린다. 공통 부분 때문에 거절될 때 무엇을 줄일지 보이게 함께 센다.
       ...(previous && chainFindings.length > 0 ? [{ label: `earlier findings (${chainFindings.length})`, bytes: utf8(chainFindings.map((finding) => `${finding.id} ${finding.file} ${finding.claim}`).join("\n")) }] : []),
       ...(preparedProbes.length > 0 ? [{ label: `probe results (${preparedProbes.length})`, bytes: preparedProbes.reduce((sum, result) => sum + utf8(result.command) + utf8(result.output), 0) }] : []),
@@ -2791,6 +2941,8 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   writeFileSync(join(snapshotDir, ACCEPTANCE_FILE), acceptance, { mode: 0o600 });
   writeContextFiles(snapshotDir, references, "ref", "references.json");
   writeContextFiles(snapshotDir, inputEntries, "in", "inputs.json");
+  if (observedRuns.length > 0) writeFileSync(join(snapshotDir, "observed-runs.json"), JSON.stringify(observedRuns), { mode: 0o600 });
+  if (namedChanges.length > 0) writeFileSync(join(snapshotDir, "named-changes.json"), JSON.stringify(namedChanges), { mode: 0o600 });
   if (probeRound) {
     writeFileSync(join(snapshotDir, "probe-results.json"), JSON.stringify(preparedProbes.map((result) => ({ findingId: result.finding.id, command: result.command, exitCode: result.exitCode, outputBytes: result.outputBytes, truncated: result.truncated, output: result.output }))), { mode: 0o600 });
   }

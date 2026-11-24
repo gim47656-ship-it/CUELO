@@ -140,6 +140,10 @@ try {
     cfgTodoMidRunNudges.set(session.settings, "off");
     await run("interactive", "Turning off periodic core reminders does not turn off the fifth-call reminder", [FIFTH], { count: 5, kinds: true });
     cfgTodoMidRunNudges.set(session.settings, "capped");
+    // 2026-11-25 rules-sensitive: the fifth call was decided during the final reply and the reminder arrived after the answer,
+    // reopening a finished turn. Here the final stream emits the third work kind and then a tool result (the quiet flush point).
+    await run("interactive", "A fifth-call reminder decided during the final reply does not reopen the finished turn", [],
+      { count: 3 }, { count: 0, kinds: true, todos: false });
     for (const extension of session.extensionRunner.extensions) extension.handlers.delete("input");
     await run("rpc", "The host opens a new request even without any extension input handlers", [CORE],
       { count: 12, todos: true }, { count: 12, todos: true }, { count: 0, todos: false });

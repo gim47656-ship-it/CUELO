@@ -21,6 +21,7 @@ import {
   type ReviewInput,
   type ReviewProgress,
   type ResolveInput,
+  type SessionRun,
 } from "./lib/cross-review";
 import { helperAttemptRecorder } from "./lib/helper-usage";
 import { parseAutoEffortConfig } from "./lib/auto-effort-policy";
@@ -130,6 +131,47 @@ function collectReviewRequest(ctx: ExtensionContext, maker: boolean) {
   return { messages, explicit };
 }
 
+// 세션 실행은 최근 것만 본다. lib가 다시 관련된 것만 골라 개수·바이트를 묶는다.
+const MAX_SESSION_RUNS = 60;
+
+/**
+ * 이 세션 branch에서 하네스가 기록한 bash·eval 실행(명령, 종료 코드, 출력, 시작 시각). reviewer가 저자에게 같은 실행을 다시 요구하지 않도록
+ * 1라운드에 넘긴다. 시작 시각은 tool_execution_start 기록, 없으면 호출을 담은 assistant 항목이 끝난 시각(도구는 그 뒤에 시작한다)이다.
+ */
+export function collectSessionRuns(entries: readonly unknown[]): SessionRun[] {
+  const calls = new Map<string, { tool: SessionRun["tool"]; command: string; at?: number }>();
+  const started = new Map<string, number>();
+  const runs: SessionRun[] = [];
+  // 두 시각 모두 ISO 문자열로 기록된다.
+  for (const raw of entries) {
+    const entry = raw as { type?: string; customType?: string; data?: { toolCallId?: unknown; startedAt?: unknown }; timestamp?: unknown; message?: { role?: string; content?: unknown; toolCallId?: string; isError?: boolean; details?: { exitCode?: unknown } } };
+    if (entry.type === "custom" && entry.customType === "tool_execution_start" && typeof entry.data?.toolCallId === "string") {
+      const at = Date.parse(String(entry.data.startedAt));
+      if (Number.isFinite(at)) started.set(entry.data.toolCallId, at);
+      continue;
+    }
+    const message = entry.type === "message" ? entry.message : undefined;
+    if (message?.role === "assistant" && Array.isArray(message.content)) {
+      const at = Date.parse(String(entry.timestamp));
+      for (const part of message.content as { type?: string; id?: string; name?: string; arguments?: { command?: unknown; code?: unknown } }[]) {
+        if (part.type !== "toolCall" || typeof part.id !== "string" || (part.name !== "bash" && part.name !== "eval")) continue;
+        const command = part.name === "bash" ? part.arguments?.command : part.arguments?.code;
+        if (typeof command === "string") calls.set(part.id, { tool: part.name, command, ...(Number.isFinite(at) ? { at } : {}) });
+      }
+    } else if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+      const call = calls.get(message.toolCallId);
+      if (!call) continue;
+      const exitCode = message.details?.exitCode;
+      const startedAt = started.get(message.toolCallId) ?? call.at;
+      runs.push({
+        tool: call.tool, command: call.command, isError: message.isError === true, output: messageText(message as Parameters<typeof messageText>[0]),
+        ...(typeof exitCode === "number" ? { exitCode } : {}), ...(startedAt !== undefined ? { startedAt } : {}),
+      });
+    }
+  }
+  return runs.slice(-MAX_SESSION_RUNS);
+}
+
 export interface CrossReviewParams {
   action: string;
   files?: string[];
@@ -179,6 +221,7 @@ export async function executeCrossReview(
       files: params.files ?? [], acceptance: params.acceptance ?? "", authors: params.authors ?? [],
       highRisk: params.highRisk, previousReviewId: params.previousReviewId, base: params.base, inputs: params.inputs, references: params.references, probeResults: params.probeResults, maker: sub,
       userRequest: params.previousReviewId ? undefined : collectReviewRequest(ctx, sub),
+      sessionRuns: params.previousReviewId ? undefined : collectSessionRuns(ctx.sessionManager?.getBranch?.() ?? []),
     };
     return runReview(input, deps, signal);
   }

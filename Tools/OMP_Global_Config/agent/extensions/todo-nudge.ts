@@ -70,7 +70,9 @@ export function createTodoNudge(now: () => number = Date.now) {
       if (!owner.currentCoreSlot) return pi.sendMessage(message, options); // Standalone OMP without the SDK patch.
       if (owner.currentCoreSlot() !== owner.slot) return;
       // Core polls the current request at injection time, even if newer input arrives after this tool result.
-      owner.slot.fifthReminder = { content: REMINDER, atStop: options?.deliverAs === "aside" };
+      // 끝난 턴은 이 안내만으로 다시 열지 않는다: 앞 확장의 느린 tool_result 처리로 마지막 도구 경계를 놓치면 최종 답 뒤에 실려
+      // 끝난 작업에 todo를 만들게 했다(2026-11-25 rules-sensitive). 정지 경계에서는 다른 전달이 있을 때만 함께 실린다.
+      owner.slot.fifthReminder = { content: REMINDER, atStop: false };
     },
   });
 
