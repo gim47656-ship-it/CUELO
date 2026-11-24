@@ -55,6 +55,8 @@ import type { ProcessLogData } from "./workspace/ProcessLogPanel";
 import { splitLabWidgets } from "./workspace/plugin-lab-bridge";
 import { AskForm } from "./AskForm";
 import { MarkdownBody } from "./MarkdownBody";
+import { A2uiSessionProvider } from "./a2ui/A2uiSession";
+import type { A2uiSendOutcome } from "@/lib/a2ui/session-store";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { TodoStrip } from "./TodoStrip";
@@ -1260,6 +1262,12 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     return handleSend(...args);
   }, [handleSend, renderWindow.end, snapToTail]);
 
+  // A card action is a user message: a new prompt when idle, a queued follow-up while the agent runs.
+  const sendA2uiAction = useCallback(async (text: string): Promise<A2uiSendOutcome> => {
+    if (agentRunning) return (await handleFollowUp(text)) === "accepted" ? "followUp" : "failed";
+    return (await sendFromComposer(text)) === "accepted" ? "prompt" : "failed";
+  }, [agentRunning, handleFollowUp, sendFromComposer]);
+
   const chatInputElement = (
     <div ref={composerRootRef} data-chat-composer="" style={{ display: "contents" }}>
       <ChatInput
@@ -1683,6 +1691,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             <div className="chat-column-cap" style={{ width: "100%", minWidth: 0, maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
+            <A2uiSessionProvider sessionKey={session?.id ?? "new"} messages={messages} onSend={sendA2uiAction}>
             <ToolCallRevealContext.Provider value={onRevealToolCall ?? null}>
             <AnswerStatusContext.Provider value={answerStatus}>
             <TurnSelectionContext.Provider value={turnSelection}>
@@ -1731,6 +1740,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
             </TurnSelectionContext.Provider>
             </AnswerStatusContext.Provider>
             </ToolCallRevealContext.Provider>
+            </A2uiSessionProvider>
             {showInterrupted && <InterruptedRunNotice onDismiss={dismissInterrupted} t={t} />}
 
             <div ref={messagesEndRef} />

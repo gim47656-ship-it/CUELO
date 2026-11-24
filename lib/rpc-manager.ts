@@ -45,6 +45,7 @@ import { labExtensionEntries, recordLabLoadResults, type LabExtensionEntry } fro
 import { isPathWithinRoots } from "./path-security";
 import { isProjectTrustRevokedFor, reconcileProjectTrust, type ProjectTrustHost } from "./project-trust-lifecycle";
 import { resolveSessionSystemPrompts } from "./session-system-prompt";
+import { withA2uiAgentPrompt } from "./a2ui/agent-prompt";
 import { readConfiguredModelRoleRefs, readDefaultModelRole } from "./model-roles";
 import { findModelWithRecovery, getOmpRuntime, getSettingsForCwd, recoverMissingModelRefs } from "./omp-runtime";
 import { describeMissingModel } from "./model-discovery-recovery";
@@ -3258,8 +3259,9 @@ export async function startRpcSession(
         ...(systemPrompts.titlePrompt ? { titleSystemPrompt: systemPrompts.titlePrompt } : {}),
       };
       // omp's own applier, so a prompt file goes through the same templates the
-      // CLI renders it with instead of overwriting the whole system prompt.
-      applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, systemPrompts.appendPrompt);
+      // CLI renders it with instead of overwriting the whole system prompt. The web
+      // chat's answer-card section follows the user's APPEND_SYSTEM.md text.
+      applyResolvedSystemPromptInputs(sessionOptions, systemPrompts.systemPrompt, withA2uiAgentPrompt(systemPrompts.appendPrompt));
       // The SDK exposes its agent to IRC before createAgentSession returns.
       // Recheck after startup awaits, before it can publish that raw agent.
       assertUpdateTurnAdmission(sessionManager.getSessionId());

@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { MarkdownBody } from "./MarkdownBody";
+import { A2uiActionChip, A2uiPartScope, useInA2uiSession } from "./a2ui/A2uiSession";
+import { parseActionMessage } from "@/lib/a2ui/blocks";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
@@ -306,6 +308,8 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   const documentPrompt = parseDocumentPrompt(rawContent);
   const content = documentPrompt?.message ?? rawContent;
   const attachedDocuments = documentPrompt?.documents ?? [];
+  const inCardSession = useInA2uiSession();
+  const cardAction = inCardSession ? parseActionMessage(content) : null;
 
   const imageBlocks: ImageContent[] =
     typeof message.content === "string"
@@ -405,7 +409,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
               ))}
             </div>
           )}
-          {content && <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
+          {content && (cardAction
+            ? <A2uiActionChip envelope={cardAction.envelope} code={cardAction.code} />
+            : <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>)}
         </div>
 
       </div>
@@ -942,7 +948,8 @@ function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { trans
 
 function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, runStartedAt, cwd, onOpenFile, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; runStartedAt?: number; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
-    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+    // A2UI fences find their card through the text part they belong to.
+    return <A2uiPartScope part={block}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} /></A2uiPartScope>;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;

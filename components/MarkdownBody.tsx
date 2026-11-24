@@ -6,6 +6,8 @@ import { resolveLocalFileHref } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { A2uiFence, A2uiMarkdownSource } from "./a2ui/A2uiSession";
+import { A2UI_LANG } from "@/lib/a2ui/blocks";
 
 interface MarkdownBodyProps {
   children: string;
@@ -19,13 +21,16 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
-    code({ className, children, ...props }) {
+    code({ className, children, node, ...props }) {
       const lang = className?.replace("language-", "").toLowerCase() ?? "";
       const raw = String(children);
       const isBlock = className?.includes("language-") || raw.includes("\n");
       if (isBlock) {
         if (lang === "mermaid") {
           return <MermaidBlock code={raw.replace(/\n$/, "")} isStreaming={isStreaming} />;
+        }
+        if (lang === A2UI_LANG) {
+          return <A2uiFence code={raw.replace(/\n$/, "")} offset={node?.position?.start.offset} isStreaming={isStreaming} />;
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
       }
@@ -90,13 +95,15 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
-      <ReactMarkdown
-        remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={markdownRehypePlugins}
-        components={components}
-      >
-        {normalizedMarkdown}
-      </ReactMarkdown>
+      <A2uiMarkdownSource.Provider value={normalizedMarkdown}>
+        <ReactMarkdown
+          remarkPlugins={markdownRemarkPlugins}
+          rehypePlugins={markdownRehypePlugins}
+          components={components}
+        >
+          {normalizedMarkdown}
+        </ReactMarkdown>
+      </A2uiMarkdownSource.Provider>
     </div>
   );
 }

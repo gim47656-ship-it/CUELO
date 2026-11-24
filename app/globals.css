@@ -1208,6 +1208,252 @@ pre, code {
   font-size: 12px;
 }
 
+/* A2UI answer cards (components/a2ui). Areas separate by spacing and one
+   background step; the only lines left are input and checkbox edges. The basic catalog
+   renders into light DOM and reads --a2ui-* variables, so the app's tokens are
+   mapped here and its default borders, shadows and tab underline are cleared. */
+.a2ui-answer,
+.a2ui-answer-invalid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 12px 0;
+}
+.a2ui-answer-card {
+  min-width: 0;
+  max-width: min(100%, 46rem);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  --a2ui-color-on-background: var(--text);
+  --a2ui-color-on-surface: var(--text);
+  --a2ui-color-background: transparent;
+  --a2ui-color-surface: transparent;
+  --a2ui-color-border: var(--border-strong);
+  --a2ui-color-input: var(--bg);
+  --a2ui-color-on-input: var(--text);
+  --a2ui-color-primary: var(--seed-color-bg-neutral-inverted);
+  --a2ui-color-on-primary: var(--seed-color-fg-neutral-inverted);
+  --a2ui-color-primary-hover: var(--seed-color-bg-neutral-inverted-pressed);
+  --a2ui-color-secondary: var(--bg-hover);
+  --a2ui-color-secondary-hover: var(--bg-selected);
+  --a2ui-border: 0;
+  --a2ui-border-radius: var(--radius-control);
+  --a2ui-card-background: var(--bg-subtle);
+  --a2ui-card-border: 0;
+  --a2ui-card-box-shadow: none;
+  --a2ui-card-margin: 0;
+  --a2ui-card-padding: 16px;
+  --a2ui-card-border-radius: var(--radius-surface);
+  --a2ui-button-border: 0;
+  --a2ui-button-background: var(--bg-hover);
+  --a2ui-button-box-shadow: none;
+  /* Input edges show where to type; they are the lines a card keeps. */
+  --a2ui-textfield-border: 1px solid var(--border);
+  --a2ui-datetimeinput-border: 1px solid var(--border);
+  --a2ui-datetimeinput-background: var(--bg);
+  --a2ui-choicepicker-chip-border: 0;
+  --a2ui-choicepicker-chip-background: var(--bg-hover);
+  --a2ui-choicepicker-chip-background-selected: var(--seed-color-bg-neutral-inverted);
+  --a2ui-choicepicker-gap: 8px;
+  --a2ui-checkbox-margin: 0;
+  --a2ui-tabs-border: 0;
+}
+/* One card surface per answer card: a Card inside a Card is flattened. */
+.a2ui-answer-card a2ui-card a2ui-card .a2ui-card {
+  padding: 0;
+  background: transparent;
+}
+.a2ui-answer-card a2ui-tabs .a2ui-tab-bar {
+  gap: 4px;
+  border: 0;
+  margin-bottom: 8px;
+}
+.a2ui-answer-card a2ui-tabs .a2ui-tab-button {
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 6px 12px;
+  color: var(--text-muted);
+  word-break: keep-all;
+}
+.a2ui-answer-card a2ui-tabs .a2ui-tab-button.a2ui-tab-button-active {
+  border: 0;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-weight: 600;
+}
+.a2ui-answer-card a2ui-basic-text .a2ui-text-caption,
+.a2ui-answer-card a2ui-basic-text .a2ui-text-caption em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+.a2ui-c-md-p,
+.a2ui-c-md-h {
+  display: block;
+}
+.a2ui-c-md-p + .a2ui-c-md-p {
+  margin-top: 6px;
+}
+.a2ui-c-md-h {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.a2ui-c-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.a2ui-c-stat-label,
+.a2ui-c-stat-delta,
+.a2ui-c-progress-caption,
+.a2ui-c-image-alt {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.a2ui-c-stat-value {
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.a2ui-c-stat-delta {
+  font-variant-numeric: tabular-nums;
+}
+.a2ui-c-stat-delta[data-trend="up"] {
+  color: var(--success);
+}
+.a2ui-c-stat-delta[data-trend="down"] {
+  color: var(--danger);
+}
+.a2ui-c-progress,
+.a2ui-c-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.a2ui-c-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.a2ui-c-progress-value,
+.a2ui-c-chart-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.a2ui-c-progress-value {
+  color: var(--text-muted);
+}
+.a2ui-c-progress-track,
+.a2ui-c-chart-track {
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--metric-track);
+}
+.a2ui-c-progress-track {
+  height: 6px;
+}
+.a2ui-c-chart-track {
+  height: 10px;
+}
+.a2ui-c-progress-fill,
+.a2ui-c-chart-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--metric);
+  transform-origin: left center;
+  transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.a2ui-c-chart-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.a2ui-c-chart-rows {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 6px 10px;
+}
+.a2ui-c-chart-row {
+  display: contents;
+}
+.a2ui-c-chart-label {
+  max-width: 12em;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.a2ui-c-chart-value {
+  text-align: right;
+}
+.a2ui-c-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-control);
+}
+.a2ui-answer-note,
+.a2ui-answer-status {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.a2ui-answer-status {
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+.a2ui-answer-note[data-tone="error"],
+.a2ui-answer-status[data-state="failed"] {
+  color: var(--danger);
+}
+.a2ui-action-chip summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  cursor: pointer;
+  list-style: none;
+  word-break: keep-all;
+}
+.a2ui-action-chip summary::-webkit-details-marker {
+  display: none;
+}
+.a2ui-action-chip-name {
+  font-weight: 600;
+}
+.a2ui-action-chip-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.a2ui-action-chip[open] summary {
+  margin-bottom: 8px;
+}
+/* Phone touch targets: card controls reach 44px on coarse pointers; desktop keeps its density. */
+@media (pointer: coarse) {
+  .a2ui-answer-card :is(button, label.a2ui-checkbox, .a2ui-option-label),
+  .a2ui-action-chip summary {
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .a2ui-c-progress-fill,
+  .a2ui-c-chart-bar {
+    transition: none;
+  }
+}
+
 .mermaid-preview-button {
   width: 100%;
   border: 0;
