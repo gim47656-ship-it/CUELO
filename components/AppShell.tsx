@@ -17,6 +17,7 @@ import { NotificationPermission, useNotificationPermission } from "./Notificatio
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { AuxiliaryDeck, type AuxiliaryDeckView } from "./workspace/AuxiliaryDeck";
 import { CueloMark, WorkbenchIcon, type WorkbenchIconName } from "./workspace/WorkbenchIcon";
+import { readSessionDragId, SESSION_DRAG_TYPE, SessionBesideContext, type SessionBesideControls } from "./workspace/session-beside";
 import {
   LEGACY_PRIORITY_MODE_STORAGE_KEY,
   NAVIGATOR_MODE_STORAGE_KEY,
@@ -137,6 +138,19 @@ const TRANSIENT_LAYER_FOCUSABLE_SELECTOR =
   "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 const WIDE_CHAT_STORAGE_KEY = "omp-web:wide-chat";
 const INSPECTOR_STORAGE_KEY = "omp-web:inspector-open";
+/** 옆 창: each chat pane needs this much width; two panes and their gutter fit, or the split folds. */
+const SPLIT_PANE_MIN_PX = 520;
+const SPLIT_GUTTER_PX = 8;
+/** Mount keys of the chat panes come from one sequence, so the two panes never share a key when they trade roles. */
+function nextPaneKey(sequence: { current: number }): number {
+  sequence.current += 1;
+  return sequence.current;
+}
+/** The pane list in screen order. Keyed elements in one array let a pane keep its chat when roles trade. */
+function orderPanes(mainFirst: boolean, beside: ReactNode, main: ReactNode): ReactNode[] {
+  if (!beside) return [main];
+  return mainFirst ? [main, beside] : [beside, main];
+}
 const INSPECTOR_WIDTH_STORAGE_KEY = "omp-web:inspector-width";
 /** Below this header width the 넓게 toggle keeps only its icon. */
 const HEADER_WIDE_LABEL_MIN_WIDTH = 880;
@@ -277,6 +291,21 @@ export function AppShell({
   const [initialCwdError, setInitialCwdError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [sessionKey, setSessionKey] = useState(0);
+  const paneKeySequenceRef = useRef(0);
+  // 옆 창: a second session laid beside the selected one. The pane being typed in is always the
+  // selected session; using the other pane makes the two trade roles without remounting either chat.
+  const [besideSession, setBesideSession] = useState<SessionInfo | null>(null);
+  const [besideKey, setBesideKey] = useState(0);
+  // Which side the selected session's pane sits on. Panes keep their side when roles trade.
+  const [mainPaneFirst, setMainPaneFirst] = useState(true);
+  const [chatLayoutWidth, setChatLayoutWidth] = useState(0);
+  const [besideDropActive, setBesideDropActive] = useState(false);
+  // Read by handlers defined above the render-time split decision.
+  const splitShownRef = useRef(false);
+  // The beside pane's key while it can be promoted; -1 right after a promotion until the next render,
+  // so a second event from the same gesture cannot trade the roles back.
+  const besideKeyRef = useRef(-1);
+  besideKeyRef.current = besideSession ? besideKey : -1;
   const [gitRefreshKey, setGitRefreshKey] = useState(0);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [settingsConfigOpen, setSettingsConfigOpen] = useState(false);
@@ -1423,7 +1452,7 @@ export function AppShell({
         // the null-session welcome mount from the switch would never load
         // the restored session's messages.
         setSelectedSession(s);
-        setSessionKey((k) => k + 1);
+        setSessionKey(nextPaneKey(paneKeySequenceRef));
         if (new URLSearchParams(window.location.search).get("session") !== s.id) {
           router.replace(`?session=${encodeURIComponent(s.id)}`, { scroll: false });
         }
@@ -1467,12 +1496,14 @@ export function AppShell({
     // Close any session that belongs to a different project — it no longer
     // matches the selected project directory.
     setSelectedSession(null);
+    // The 옆 창 belongs to the workspace being left, like its file tabs.
+    setBesideSession(null);
     setNewSessionAutoWorktree(undefined);
     setNewSessionCwd((prev) => {
       if (prev && prev !== cwd) return null;
       return prev;
     });
-    setSessionKey((k) => k + 1);
+    setSessionKey(nextPaneKey(paneKeySequenceRef));
     setBranchState({ sessionId: null, tree: [], leafId: null, navigation: 0 });
     setSystemPrompt(null);
     setActiveTopPanel(null);
@@ -1489,6 +1520,74 @@ export function AppShell({
     router.replace(homePath, { scroll: false });
   }, [homePath, router, selectedSession, invalidateWorkspaceRestore, restoreWorkspaceContext]);
 
+  // 옆 창 → the pane being typed in. Its chat stays mounted (same key, same side); only the roles
+  // trade, so the shell (header, 이번 턴, URL) follows the pane in use.
+  const promoteBesidePane = useCallback((fromKey?: number) => {
+    const next = besideSession;
+    if (!next || besideKeyRef.current < 0) return;
+    if (fromKey !== undefined && fromKey !== besideKeyRef.current) return;
+    besideKeyRef.current = -1;
+    const previous = selectedSession;
+    activeProjectRootRef.current = next.projectRoot ?? next.cwd;
+    invalidateWorkspaceRestore();
+    sessionPreloadRequestRef.current += 1;
+    sessionPreloadAbortRef.current?.abort();
+    sessionPreloadAbortRef.current = null;
+    setPendingSession(null);
+    setNewSessionCwd(null);
+    setNewSessionAutoWorktree(undefined);
+    setPreloadedSessionData(null);
+    setSelectedSession(next);
+    setBranchState({ sessionId: next.id, tree: [], leafId: null, navigation: 0 });
+    setSystemPrompt(null);
+    setSessionKey(besideKey);
+    if (previous) {
+      setBesideSession(previous);
+      setBesideKey(sessionKey);
+      setMainPaneFirst((first) => !first);
+    } else {
+      // A new-session composer has no session to keep beside; the promoted pane stands alone.
+      setBesideSession(null);
+    }
+    router.replace(`?session=${encodeURIComponent(next.id)}`, { scroll: false });
+  }, [besideKey, besideSession, invalidateWorkspaceRestore, router, selectedSession, sessionKey]);
+
+  const openBeside = useCallback((session: SessionInfo) => {
+    if (session.id === selectedSession?.id || session.id === besideSession?.id) return;
+    // A first 옆 창 opens on the right; a replacement takes the current beside pane's side.
+    if (!besideSession) setMainPaneFirst(true);
+    setBesideSession(session);
+    setBesideKey(nextPaneKey(paneKeySequenceRef));
+  }, [besideSession, selectedSession?.id]);
+
+  const closeBesidePane = useCallback(() => setBesideSession(null), []);
+
+  // Closing the pane being typed in keeps the other session, now as the only pane.
+  const closeMainPane = useCallback(() => {
+    promoteBesidePane();
+    setBesideSession(null);
+  }, [promoteBesidePane]);
+
+  // The 옆 창 finishing refreshes the list; its own chat already played its cue.
+  const handleBesideAgentEnd = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+    setGitRefreshKey((k) => k + 1);
+  }, []);
+
+  // Measures the conversation column (callback ref: the column remounts with the workspace views).
+  const chatLayoutObserverRef = useRef<ResizeObserver | null>(null);
+  const chatLayoutRef = useCallback((node: HTMLDivElement | null) => {
+    chatLayoutObserverRef.current?.disconnect();
+    chatLayoutObserverRef.current = null;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => {
+      // Rounded down: a fractional width just short of two panes must not count as room for both.
+      if (entry) setChatLayoutWidth(Math.floor(entry.contentRect.width));
+    });
+    observer.observe(node);
+    chatLayoutObserverRef.current = observer;
+  }, []);
+
   const commitSessionSelection = useCallback((session: SessionInfo, isRestore: boolean, initialData: SessionData | null) => {
     setNewSessionCwd(null);
     setNewSessionAutoWorktree(undefined);
@@ -1498,7 +1597,9 @@ export function AppShell({
     // leaf go out with it, and nothing is consumed until this session's own
     // branch data arrives.
     setBranchState({ sessionId: session.id, tree: [], leafId: null, navigation: 0 });
-    setSessionKey((k) => k + 1);
+    setSessionKey(nextPaneKey(paneKeySequenceRef));
+    // A session opened in the main pane leaves the 옆 창 if it was there.
+    setBesideSession((current) => (current?.id === session.id ? null : current));
     setSystemPrompt(null);
     setInitialSessionRestored(true);
     // Collapse the drawer after selection so the transcript is revealed.
@@ -1524,6 +1625,11 @@ export function AppShell({
     // project switch and the just-selected session is cleared.
     activeProjectRootRef.current = session.projectRoot ?? session.cwd;
     invalidateWorkspaceRestore();
+    // Choosing the session shown in the 옆 창 moves typing there instead of opening it twice.
+    if (!isRestore && besideSession?.id === session.id && splitShownRef.current) {
+      promoteBesidePane();
+      return;
+    }
     // Re-clicking the already-open session cancels any pending transition
     // without remounting the chat or re-running its positioning cycle.
     if (!isRestore && selectedSession) {
@@ -1578,7 +1684,7 @@ export function AppShell({
         sessionPreloadAbortRef.current = null;
         setPendingSession(null);
       });
-  }, [commitSessionSelection, invalidateWorkspaceRestore, isCompactWorkspace, pendingSession?.id, selectedSession, setCompactDrawerOpen]);
+  }, [besideSession?.id, commitSessionSelection, invalidateWorkspaceRestore, isCompactWorkspace, pendingSession?.id, promoteBesidePane, selectedSession, setCompactDrawerOpen]);
 
   const handleNewSession = useCallback((_sessionId: string, cwd: string, autoWorktree?: boolean) => {
     sessionPreloadRequestRef.current += 1;
@@ -1590,7 +1696,7 @@ export function AppShell({
     setSelectedSession(null);
     setNewSessionCwd(cwd);
     setNewSessionAutoWorktree(autoWorktree);
-    setSessionKey((k) => k + 1);
+    setSessionKey(nextPaneKey(paneKeySequenceRef));
     setBranchState({ sessionId: null, tree: [], leafId: null, navigation: 0 });
     setSystemPrompt(null);
     setActiveTopPanel(null);
@@ -1797,7 +1903,7 @@ export function AppShell({
   const handleSessionForked = useCallback((newSessionId: string) => {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
-    setSessionKey((k) => k + 1);
+    setSessionKey(nextPaneKey(paneKeySequenceRef));
     setNewSessionCwd(null);
     setNewSessionAutoWorktree(undefined);
     setSelectedSession((prev) => ({
@@ -1816,12 +1922,13 @@ export function AppShell({
   const handleSessionDeleted = useCallback((sessionId: string) => {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
+    setBesideSession((current) => (current?.id === sessionId ? null : current));
     if (selectedSession?.id === sessionId) {
       const cwd = selectedSession.cwd;
       setSelectedSession(null);
       setNewSessionCwd(cwd ?? null);
       setNewSessionAutoWorktree(undefined);
-      setSessionKey((k) => k + 1);
+      setSessionKey(nextPaneKey(paneKeySequenceRef));
       setBranchState({ sessionId: null, tree: [], leafId: null, navigation: 0 });
       setSystemPrompt(null);
       setActiveTopPanel(null);
@@ -1949,7 +2056,7 @@ export function AppShell({
     if (!replaced) return;
     if (next.trusted) setProjectTrustDialogOpen(false);
     setModelsRefreshKey((key) => key + 1);
-    setSessionKey((key) => key + 1);
+    setSessionKey(nextPaneKey(paneKeySequenceRef));
   }, [translate]);
 
   useEffect(() => {
@@ -2298,8 +2405,93 @@ export function AppShell({
   ) : null;
   const auxiliaryDeckContent = auxiliaryDeck ?? nativeAuxiliaryDeck;
 
+  // 옆 창 needs the conversation on screen and room for two readable panes. On a narrower layout it
+  // folds to the pane being typed in and returns when there is room again; compact and phone
+  // layouts never split, and neither does a view that replaces the conversation.
+  const splitAvailable = !isCompactWorkspace && !isMobile && showChat && !deckReplacesTranscript;
+  const splitFits = chatLayoutWidth >= SPLIT_PANE_MIN_PX * 2 + SPLIT_GUTTER_PX;
+  const splitShown = splitAvailable && splitFits && besideSession !== null;
+  splitShownRef.current = splitShown;
+  const besideBlockedReason = splitFits
+    ? null
+    : translate(showAuxiliaryDeck && inspectorPinned ? "sidebar.openBesideNarrowDeck" : "sidebar.openBesideNarrow");
+  const besideControls = useMemo<SessionBesideControls | null>(() => (
+    splitAvailable
+      ? { besideSessionId: splitShown ? besideSession?.id ?? null : null, blockedReason: besideBlockedReason, openBeside }
+      : null
+  ), [besideBlockedReason, besideSession?.id, openBeside, splitAvailable, splitShown]);
+
+  const handleChatDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!splitAvailable || !event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = splitFits ? "copy" : "none";
+    if (!besideDropActive) setBesideDropActive(true);
+  };
+  const handleChatDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    setBesideDropActive(false);
+  };
+  const handleChatDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return;
+    event.preventDefault();
+    setBesideDropActive(false);
+    if (!splitAvailable || !splitFits) return;
+    const sessionId = readSessionDragId(event.dataTransfer);
+    const session = sessionId ? fullSessions.find((listed) => listed.id === sessionId) : undefined;
+    if (session) openBeside(session);
+  };
+
+  const renderPaneHead = (title: string, onClose: () => void) => (
+    <div className="chat-pane-head">
+      <span className="chat-pane-title" title={title}>{title}</span>
+      <button
+        type="button"
+        className="chat-pane-close"
+        onClick={onClose}
+        aria-label={translate("workspace.closePane")}
+        title={translate("workspace.closePane")}
+      >
+        <WorkbenchIcon name="x" size={14} />
+      </button>
+    </div>
+  );
+  // The 옆 창 title follows the header's rule for the selected session (name, else first message).
+  const besideListed = besideSession ? fullSessions.find((session) => session.id === besideSession.id) ?? besideSession : null;
+  const besidePaneTitle = besideListed?.name?.trim() || besideListed?.firstMessage?.trim() || besideListed?.id.slice(0, 12) || "";
+  // Pointer or keyboard focus entering the 옆 창 makes it the pane being typed in; its header
+  // (title and close) acts on the pane as it is.
+  const promoteFromEvent = (event: React.SyntheticEvent<HTMLDivElement>) => {
+    if (event.target instanceof Element && event.target.closest(".chat-pane-head")) return;
+    promoteBesidePane(besideKey);
+  };
+  const besidePane = splitShown && besideSession ? (
+    <div
+      key={`pane-${besideKey}`}
+      className="chat-pane is-idle"
+      onPointerDownCapture={promoteFromEvent}
+      onFocusCapture={promoteFromEvent}
+    >
+      {renderPaneHead(besidePaneTitle, closeBesidePane)}
+      <ChatWindow
+        session={besideSession}
+        newSessionCwd={null}
+        modelsRefreshKey={modelsRefreshKey}
+        onAgentEnd={handleBesideAgentEnd}
+        onOpenFile={handleOpenLinkedFile}
+        soundEnabled={soundEnabled}
+        onSoundToggle={onSoundToggle}
+        playCueSound={playCueSound}
+        preloadCueSound={preloadCueSound}
+        unlockAudio={unlockAudio}
+        turnInspectorFolded={isMobile}
+        shellConnected={false}
+      />
+    </div>
+  ) : null;
+
   const sidebarContent = (
     <>
+      <SessionBesideContext.Provider value={besideControls}>
       <SessionSidebar
         selectedSessionId={pendingSession?.id ?? selectedSession?.id ?? null}
         optimisticSession={pendingSession ?? selectedSession}
@@ -2322,6 +2514,7 @@ export function AppShell({
         navigatorMode={navigatorMode}
         onActivityChange={setSessionActivity}
       />
+      </SessionBesideContext.Provider>
       {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. 보수·설정은 레일에 있다. */}
       <div className="navigator-footer">
         <SidebarUsage
@@ -2967,12 +3160,29 @@ export function AppShell({
         <div className="chat-content-layout">
           <div
             id="workspace-transcript"
+            ref={chatLayoutRef}
             className="chat-session-column"
             data-translator-open={translatorOpen ? "true" : undefined}
+            onDragOver={handleChatDragOver}
+            onDragLeave={handleChatDragLeave}
+            onDrop={handleChatDrop}
           >
+          {besideDropActive && (
+            <div
+              className="chat-beside-drop"
+              data-blocked={splitFits ? undefined : "true"}
+              data-side={splitShown && !mainPaneFirst ? "start" : undefined}
+              aria-hidden="true"
+            >
+              <span>{splitFits ? translate("workspace.dropBeside") : besideBlockedReason}</span>
+            </div>
+          )}
           {showChat ? (
+            <div className={`chat-split${splitShown ? " is-split" : ""}`}>
+              {orderPanes(mainPaneFirst, besidePane, (
+                <div key={`pane-${sessionKey}`} className="chat-pane is-active">
+                  {splitShown && renderPaneHead(sessionTitle, closeMainPane)}
             <ChatWindow
-              key={sessionKey}
               session={selectedSession}
               newSessionCwd={effectiveNewSessionCwd}
               newSessionAutoWorktree={newSessionAutoWorktree}
@@ -3021,6 +3231,9 @@ export function AppShell({
               onShowTurnInspector={showTurnInspector}
               turnInspectorFolded={isMobile}
             />
+                </div>
+              ))}
+            </div>
           ) : deckReplacesTranscript ? (
             <aside id="workspace-auxiliary-panel" className="workspace-auxiliary-deck-slot is-replacement" data-workspace-region="deck">
               {auxiliaryDeckContent}
@@ -3260,7 +3473,7 @@ export function AppShell({
           requestComposerFocus();
         }}
         onModelsChanged={() => setModelsRefreshKey((key) => key + 1)}
-        onReloaded={() => setSessionKey((key) => key + 1)}
+        onReloaded={() => setSessionKey(nextPaneKey(paneKeySequenceRef))}
       />
     )}
     {reloginTarget !== null && (

@@ -162,6 +162,11 @@ interface Props {
   onShowTurnInspector?: () => void;
   /** Phone: 이번 턴 folds its blocks, and a peek strip above the composer opens the sheet. */
   turnInspectorFolded?: boolean;
+  /**
+   * Whether this chat drives the shell: the global Esc abort, Ctrl+F and the shell's composer height.
+   * The second pane of the split view passes false so the two chats never fight over them.
+   */
+  shellConnected?: boolean;
 }
 
 export interface ChatJumpRequest {
@@ -525,7 +530,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -796,11 +801,13 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     requestCue(cueTagForDialog(extensionDialog.method), trigger, speaker.provider, speaker.credentialId, speaker.model);
   }, [extensionDialog, streamState.streamingMessage, displayModelValue?.provider, displayModelValue?.modelId, currentCueTrigger, requestCue]);
 
-  // Register the abort handler for the global Esc shortcut
+  // Register the abort handler for the global Esc shortcut. Only the shell-connected chat owns the
+  // one global slot; the other pane's cleanup must not clear it.
   useEffect(() => {
+    if (!shellConnected) return;
     registerAbortHandler(sessionBusy ? handleAbort : null);
     return () => registerAbortHandler(null);
-  }, [sessionBusy, handleAbort]);
+  }, [shellConnected, sessionBusy, handleAbort]);
   useEffect(() => {
     onSessionBusyChange?.(sessionBusy);
   }, [onSessionBusyChange, sessionBusy]);
@@ -976,6 +983,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
   }, [pauseAutoFollow]);
   const closeSearch = useCallback(() => setSearchOpen(false), []);
   useEffect(() => {
+    // Two visible chats would race for Ctrl+F; the shell-connected one answers it.
+    if (!shellConnected) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey) return;
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return;
@@ -992,7 +1001,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [scrollContainerRef]);
+  }, [scrollContainerRef, shellConnected]);
 
   // --- Question rail ---
   const railQuestions = useMemo<RailQuestion[]>(() => {
@@ -1204,10 +1213,16 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     const dock = composerDockRef.current;
     const shell = dock?.closest<HTMLElement>(".workspace-shell");
     if (!dock || !shell) return;
+    // The pane's own value keeps its transcript padding right when two panes have different
+    // composer heights; the shell value (read by layers outside the panes) follows the connected chat.
+    const pane = dock.closest<HTMLElement>(".chat-pane");
     let transcriptHeight = scrollContainerRef.current?.clientHeight ?? 0;
     const syncDockHeight = () => {
       const height = Math.ceil(dock.getBoundingClientRect().height);
-      if (height > 0) shell.style.setProperty("--omp-dock-h", `${height}px`);
+      if (height > 0) {
+        pane?.style.setProperty("--omp-dock-h", `${height}px`);
+        if (shellConnected) shell.style.setProperty("--omp-dock-h", `${height}px`);
+      }
       // 입력창이 커지면 대화 영역이 아래에서 줄어든다. 바닥에 붙어 있던 대화는
       // 다음 스크롤까지 마지막 줄을 가리지 않도록 그대로 바닥에 두고, 위로
       // 스크롤한 대화는 건드리지 않는다.
@@ -1223,7 +1238,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     const observer = new ResizeObserver(syncDockHeight);
     observer.observe(dock);
     return () => observer.disconnect();
-  }, [loading, scrollContainerRef]);
+  }, [loading, scrollContainerRef, shellConnected]);
 
   // Sending from a detached window brings the reader back to the latest, where the new turn appears.
   const sendFromComposer = useCallback((...args: Parameters<typeof handleSend>) => {

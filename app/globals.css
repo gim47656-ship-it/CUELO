@@ -2050,6 +2050,124 @@ span.linenumber {
   scroll-padding-block: 40px calc(var(--omp-dock-h, 204px) + 8px);
 }
 
+/* 옆 창: the conversation column holds one chat pane, or two side by side. Panes separate by
+   tone and an 8px gutter of the panel colour, never a drawn line (rule://frontend 2026-11-14).
+   The pane being typed in keeps the page tone; the other pane sits one step toward the panel. */
+.chat-split {
+  display: flex;
+  block-size: 100%;
+  min-inline-size: 0;
+}
+
+.chat-split.is-split {
+  gap: 8px;
+  background: var(--bg-panel);
+}
+
+/* overflow:hidden keeps an absolute descendant of the chat from widening the pane (see the
+   .chat-session-scroll position note in ChatWindow). */
+.chat-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.chat-pane > .chat-window {
+  flex: 1 1 auto;
+  block-size: auto;
+  min-block-size: 0;
+}
+
+.chat-pane.is-idle,
+.chat-pane.is-idle .chat-window,
+.chat-pane.is-idle .chat-session-scroll {
+  background: color-mix(in srgb, var(--bg-panel) 35%, var(--bg));
+}
+
+.chat-pane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  block-size: 36px;
+  padding-inline: 16px 8px;
+  background: var(--bg);
+}
+
+.chat-pane.is-idle .chat-pane-head {
+  background: transparent;
+}
+
+.chat-pane-title {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chat-pane.is-idle .chat-pane-title {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.chat-pane-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 26px;
+  block-size: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.chat-pane-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* A session row dragged over the conversation: the half it lands in (the 옆 창's side) is shown. */
+.chat-beside-drop {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 25;
+  display: grid;
+  place-items: center;
+  inline-size: 50%;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg-selected) 60%, transparent);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  pointer-events: none;
+}
+
+.chat-beside-drop[data-side="start"] {
+  inset-inline-start: 0;
+  inset-inline-end: auto;
+}
+
+.chat-beside-drop[data-blocked="true"] {
+  background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 /* The reading measure plus the column padding. */
 .chat-session-column .chat-session-scroll > div {
   inline-size: 100%;

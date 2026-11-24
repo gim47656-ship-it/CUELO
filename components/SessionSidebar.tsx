@@ -33,6 +33,8 @@ import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
 import { useTranslatorText } from "./translator/i18n";
 import { missingSubdirectoryText, readWorktreeNotice, rememberWorktreeNotice, worktreeText, type SessionWorktreeNotice } from "@/lib/session-worktree/client";
+import { SESSION_DRAG_TYPE, useSessionBeside } from "./workspace/session-beside";
+import { WorkbenchIcon } from "./workspace/WorkbenchIcon";
 
 interface Props {
   selectedSessionId: string | null;
@@ -809,9 +811,12 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     };
   }, []);
 
+  // The session open in the 옆 창 is on screen like the selected one: finishing there is not a
+  // background completion and leaves nothing unread.
+  const besideSessionId = useSessionBeside()?.besideSessionId ?? null;
   useEffect(() => {
     const previous = previousRunningSessionIdsRef.current;
-    const completedInBackground = [...previous].filter((id) => !runningSessionIds.has(id) && id !== selectedSessionId);
+    const completedInBackground = [...previous].filter((id) => !runningSessionIds.has(id) && id !== selectedSessionId && id !== besideSessionId);
     const newlyRunning = [...runningSessionIds].filter((id) => !previous.has(id));
 
     if (completedInBackground.length > 0 || newlyRunning.length > 0) {
@@ -833,17 +838,18 @@ export function SessionSidebar({ selectedSessionId, optimisticSession, onSelectS
     }
 
     previousRunningSessionIdsRef.current = runningSessionIds;
-  }, [runningSessionIds, selectedSessionId, allSessions, loadSessions, onBackgroundTaskDone]);
+  }, [runningSessionIds, selectedSessionId, besideSessionId, allSessions, loadSessions, onBackgroundTaskDone]);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    const onScreen = [selectedSessionId, besideSessionId].filter((id): id is string => id !== null);
+    if (onScreen.length === 0) return;
     setUnreadSessionIds((prev) => {
-      if (!prev.has(selectedSessionId)) return prev;
+      if (!onScreen.some((id) => prev.has(id))) return prev;
       const next = new Set(prev);
-      next.delete(selectedSessionId);
+      onScreen.forEach((id) => next.delete(id));
       return next;
     });
-  }, [selectedSessionId]);
+  }, [selectedSessionId, besideSessionId]);
 
   // 열어 둔 세션은 본 것이다. 연 동안 활동이 늘어도(그 세션이 끝나도) 다시 남긴다.
   const selectedReviewSession = selectedSessionId
@@ -3412,6 +3418,10 @@ function SessionItem({
 }) {
   const { t } = useI18n();
   const [hovered, setHovered] = useState(false);
+  const beside = useSessionBeside();
+  const isBeside = beside !== null && beside.besideSessionId === session.id;
+  // 옆에 열기 is offered for any other saved session while the layout can show two panes.
+  const canOfferBeside = beside !== null && !session.transient && !isSelected && !isBeside;
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -3522,14 +3532,22 @@ function SessionItem({
     e.stopPropagation();
   }, [onRenamed, session.cwd, session.id, session.name, session.path]);
 
+  // Only the id travels: the drop resolves it against the session list.
+  const handleDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.dataTransfer.setData(SESSION_DRAG_TYPE, session.id);
+    e.dataTransfer.effectAllowed = "copy";
+  }, [session.id]);
+
   // Fixed height keeps hover and confirmation states from reflowing the list.
   const ITEM_HEIGHT = 40;
 
   return (
     <div
-      className={`navigator-session-row${isSelected ? " is-selected" : ""}${isRunning ? " is-running" : ""}${isUnread ? " is-unread" : ""}${confirmDelete ? " is-confirming" : ""}`}
+      className={`navigator-session-row${isSelected ? " is-selected" : ""}${isBeside ? " is-beside" : ""}${isRunning ? " is-running" : ""}${isUnread ? " is-unread" : ""}${confirmDelete ? " is-confirming" : ""}`}
       onClick={confirmDelete || renaming ? undefined : onClick}
       onContextMenu={confirmDelete || renaming ? undefined : handleContextMenu}
+      draggable={canOfferBeside && !confirmDelete && !renaming}
+      onDragStart={canOfferBeside && !confirmDelete && !renaming ? handleDragStart : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
@@ -3539,7 +3557,7 @@ function SessionItem({
         paddingLeft: depth > 0 ? depth * 10 + 8 : 8,
         paddingRight: 4,
         cursor: confirmDelete || renaming ? "default" : "pointer",
-        background: isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
+        background: isSelected ? "var(--bg-selected)" : hovered || isBeside ? "var(--bg-hover)" : "transparent",
         transition: "background 0.1s",
         opacity: deleting ? 0.5 : 1,
         gap: 4,
@@ -3683,9 +3701,41 @@ function SessionItem({
             </button>
           )}
 
+          {isBeside && (
+            <span style={{ flexShrink: 0, fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
+              {t("sidebar.besidePane")}
+            </span>
+          )}
+
           {/* Pin stays visible while active; rename/delete remain hover actions. */}
           {!session.transient && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {canOfferBeside && beside && (
+                <button
+                  type="button"
+                  className="navigator-session-action"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!beside.blockedReason) beside.openBeside(session);
+                  }}
+                  title={beside.blockedReason ?? t("sidebar.openBeside")}
+                  aria-label={t("sidebar.openBeside")}
+                  aria-disabled={beside.blockedReason ? true : undefined}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 26, height: 26, padding: 0,
+                    background: "transparent", border: "none",
+                    borderRadius: "var(--radius-control)", color: "var(--text-muted)",
+                    cursor: beside.blockedReason ? "not-allowed" : "pointer", flexShrink: 0,
+                    opacity: hovered ? (beside.blockedReason ? 0.45 : 1) : 0,
+                    pointerEvents: hovered ? "auto" : "none",
+                    transition: "opacity 0.12s, background 0.12s, color 0.12s",
+                  }}
+                  onFocus={() => setHovered(true)}
+                >
+                  <WorkbenchIcon name="columns-2" size={13} />
+                </button>
+              )}
               <button
                 className="navigator-session-action"
                 onClick={(e) => {
