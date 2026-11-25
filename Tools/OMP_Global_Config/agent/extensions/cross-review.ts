@@ -15,6 +15,7 @@ import {
   runResolve,
   runReview,
   snapshotRoot,
+  workingBaseline,
   spawnExec,
   type Lane,
   type ReviewDeps,
@@ -277,12 +278,19 @@ export default function crossReview(pi: ExtensionAPI): void {
   // 경로가 있는 편집은 marker와 변경 크기를 본다. 경로를 모르는 도구는 저장소의 변경 크기만 본다.
   // 턴 종료 연결점은 동기다. 같은 저장소의 조회가 겹치면 마지막 조회만, 세션이 바뀌면 옛 조회는 버린다.
   type RepoNoticeState = { edited: Set<string>; uncovered: string[]; lookup: number; sendPending: boolean };
+  // Uncommitted code files when this session first touches a repository, so another task's earlier work is not announced.
+  // A snapshot not finished before its tool started may already hold this session's writes, so it is not used.
+  type Baseline = { done: Promise<void>; value?: ReadonlyMap<string, string>; usable: boolean };
   const repos = new Map<string, RepoNoticeState>();
+  const baselines = new Map<string, Baseline>();
+  // A root lookup that failed or ran past its wait could let a later call snapshot this session's own writes.
+  // Then no new baseline is taken until reset, which keeps the earlier repository-wide notice.
+  let baselinesOff = false;
   const inventoryBatches = new Map<string, { active?: Promise<void>; queued?: Promise<void> }>();
   const noticed = new Set<string>();
   let epoch = 0;
   let remindedThisInput = false;
-  const reset = () => { epoch++; noticed.clear(); repos.clear(); inventoryBatches.clear(); remindedThisInput = false; };
+  const reset = () => { epoch++; noticed.clear(); repos.clear(); baselines.clear(); baselinesOff = false; inventoryBatches.clear(); remindedThisInput = false; };
   onSessionLifecycle(pi, { start: reset });
   pi.on("session_shutdown", reset);
   pi.on("input", (event) => {
@@ -292,7 +300,10 @@ export default function crossReview(pi: ExtensionAPI): void {
     state.sendPending ||= send;
     const lookup = ++state.lookup;
     try {
-      const notices = await earlyReviewNotice(root, state.edited, spawnExec(), () => readCrossReviewRecords(ledgerPath()));
+      const baseline = baselines.get(root);
+      // A baseline that missed its wait is unusable; do not wait for its stalled snapshot.
+      if (baseline?.usable) await baseline.done;
+      const notices = await earlyReviewNotice(root, state.edited, spawnExec(), () => readCrossReviewRecords(ledgerPath()), baseline?.usable ? baseline.value : undefined);
       if (startedEpoch !== epoch || lookup !== state.lookup) return;
       state.uncovered = notices.map(({ path }) => resolve(root, path));
       if (!state.sendPending || !(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
@@ -336,6 +347,62 @@ export default function crossReview(pi: ExtensionAPI): void {
     });
     await queue.queued;
   };
+  /** Repository roots the call can write; `null` when the lookup failed for a reason other than "not a git repository". */
+  const baselineRoots = async (toolName: string, input: unknown, cwd: string): Promise<string[] | null> => {
+    const exec = spawnExec();
+    if (toolName === "edit" || toolName === "write") {
+      const roots: string[] = [];
+      for (const absolute of editedPaths(toolName, input, cwd)) {
+        const target = await resolveRepoTargets(cwd, [relative(cwd, absolute)], exec);
+        if (!("failure" in target)) roots.push(target.root);
+      }
+      return roots;
+    }
+    if (toolName === "bash" && input && typeof input === "object" && "cwd" in input && typeof input.cwd === "string") {
+      const { resolveToCwd } = await import("@oh-my-pi/pi-coding-agent/tools/path-utils");
+      cwd = resolve(resolveToCwd(input.cwd, cwd));
+    }
+    const git = await exec("git", ["rev-parse", "--show-toplevel"], { cwd });
+    const root = git.stdout.replace(/\r?\n$/, "");
+    if (git.code === 0 && isAbsolute(root)) return [root];
+    return /not a git repository/i.test(git.stderr ?? "") ? [] : null;
+  };
+  pi.on("tool_call", async (event, ctx) => {
+    if (!["bash", "eval", "edit", "write", "ast_edit", "resolve"].includes(event.toolName) || baselinesOff) return;
+    const startedEpoch = epoch;
+    let late = false;
+    let discovered = false;
+    const waited: Baseline[] = [];
+    const capture = async () => {
+      const roots = await baselineRoots(event.toolName, event.input, ctx.cwd);
+      discovered = true;
+      if (roots === null) {
+        if (startedEpoch === epoch) baselinesOff = true;
+        return;
+      }
+      for (const root of roots) {
+        if (startedEpoch !== epoch || baselinesOff) return;
+        let baseline = baselines.get(root);
+        if (!baseline) {
+          const entry: Baseline = { done: Promise.resolve(), usable: !late };
+          entry.done = workingBaseline(root, spawnExec()).then((value) => { entry.value = value; }, () => { entry.usable = false; });
+          baselines.set(root, baseline = entry);
+        }
+        waited.push(baseline);
+        await baseline.done;
+      }
+    };
+    // The runner awaits tool_call, so the tool starts after this; bound the wait like the result-side check.
+    const deadline = new AbortController();
+    try { await Promise.race([capture(), delay(NOTICE_RESULT_WAIT_MS, undefined, { signal: deadline.signal })]); }
+    catch { /* A missing baseline only keeps the earlier repository-wide notice. */ }
+    finally {
+      late = true;
+      deadline.abort();
+      if (!discovered && startedEpoch === epoch) baselinesOff = true;
+      for (const baseline of waited) if (baseline.value === undefined) baseline.usable = false;
+    }
+  });
   pi.on("tool_result", async (event, ctx) => {
     if (event.isError) return;
     const startedEpoch = epoch;

@@ -1453,10 +1453,34 @@ async function decideCurrentCoverage(exec: Exec, git: string, root: string, chan
   return decideCoverage(changes, required, records, inputBlobs, passedContent, root);
 }
 
-/** Advisory-only: use repository-wide size, but only look for markers on paths edited this session. */
-export async function earlyReviewNotice(root: string, edited: ReadonlySet<string>, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[]): Promise<{ path: string; text: string }[]> {
+/**
+ * Uncommitted code files (repo-relative path → current blob) when a session first touches the repository.
+ * The advisory notice subtracts this snapshot so another task's earlier uncommitted work is not announced as this session's.
+ */
+export async function workingBaseline(root: string, exec: Exec): Promise<Map<string, string>> {
+  const status = await exec("git", ["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd: root });
+  if (status.code !== 0) throw new Error(`git status failed: ${(status.stderr || status.stdout).trim()}`);
+  const paths: string[] = [];
+  for (const entry of status.stdout.split("\0")) {
+    const path = entry.length > 3 ? entry.slice(3) : "";
+    if (path && isCodeFile(path) && !hardSecretPath(path)) paths.push(path);
+  }
+  return paths.length > 0 ? currentBlobs(exec, "git", root, paths) : new Map();
+}
+
+/**
+ * Advisory-only: use repository-wide size, but only look for markers on paths edited this session. With a `baseline`, files whose
+ * content still equals the snapshot and that this session did not edit are left out, so only work done since then counts.
+ */
+export async function earlyReviewNotice(root: string, edited: ReadonlySet<string>, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[], baseline?: ReadonlyMap<string, string>): Promise<{ path: string; text: string }[]> {
   const git = "git";
-  const { changed } = await collectWorkingChanges(exec, git, root, undefined, edited);
+  let { changed } = await collectWorkingChanges(exec, git, root, undefined, edited);
+  const inherited = baseline?.size ? changed.filter(({ path }) => baseline.has(path) && !edited.has(path)) : [];
+  if (inherited.length > 0) {
+    const now = await currentBlobs(exec, git, root, inherited.map(({ path }) => path));
+    const untouched = new Set(inherited.filter(({ path }) => now.get(path) === baseline!.get(path)).map(({ path }) => path));
+    changed = changed.filter(({ path }) => !untouched.has(path));
+  }
   const required = reviewRequirements(changed, []);
   if (required.length === 0) return [];
   const records = readRecords();

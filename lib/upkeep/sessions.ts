@@ -15,6 +15,7 @@ import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { DREAMING_WINDOW_MS, DreamingCollector, hasCredentialContext, type DreamingEvidence } from "./dreaming";
 import { buildModelErrors, collectModelErrorCounts, modelErrorFrom, utcDay, type AssistantDays, type ModelErrorExport } from "./model-errors";
+import { collectPrefixBreaks, type PrefixBreakExport } from "./prefix-breaks";
 import { emptySkillWindow, skillNamesFromPath, type SkillSessionUsage, type SkillWindowUsage } from "./skill-usage";
 import type { UpkeepEvidence } from "./types";
 import { loadUpkeepReader, readSessionEntries } from "./upkeep-reader";
@@ -166,6 +167,8 @@ export type ScanResult = {
   dreaming?: DreamingEvidence;
   /** PC export only: per-day assistant replies and Codex model errors over 14 days (model-errors.ts). */
   modelErrors?: ModelErrorExport;
+  /** PC export only: per-day Anthropic prompt-prefix breaks and translation-caused ones over 14 days (prefix-breaks.ts). */
+  prefixBreaks?: PrefixBreakExport;
   /** 배포 교체 시각을 읽은 업데이트 로그의 시작(`from`, 없으면 null)과 그 로그가 최근 7일 시작을 덮는지. 보고서가 채운다. */
   deployLogs?: { from: number | null; coversRecent: boolean };
 };
@@ -1170,10 +1173,13 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     .slice(0, EVIDENCE_LIMIT)
     .map((x) => x.row);
   // 메트릭 리더가 errorMessage를 넘기지 않아 오류 문구가 든 파일만 원본으로 다시 읽는다. 일부 파일이나 줄을 못 읽었으면 partial이다.
-  const modelErrors = includeDreaming
-    ? await collectModelErrorCounts(files, now).then((counts) => buildModelErrors(now, assistantDays, counts.byDay, counts.partial || warnings.length > 0))
-    : null;
-  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish(), ...(dreaming ? { dreaming } : {}), ...(modelErrors ? { modelErrors } : {}) };
+  const [modelErrors, prefixBreaks] = includeDreaming
+    ? await Promise.all([
+      collectModelErrorCounts(files, now).then((counts) => buildModelErrors(now, assistantDays, counts.byDay, counts.partial || warnings.length > 0)),
+      collectPrefixBreaks(files, now, warnings.length > 0),
+    ])
+    : [null, null];
+  return { windows, recent: splits.get(recentAt)!.after, scannedFiles: files.length, warnings: [...new Set(warnings)], evidence, topSessions: costs.top(), makerResults, splits, cwdActivity, ...finish(), ...(dreaming ? { dreaming } : {}), ...(modelErrors ? { modelErrors } : {}), ...(prefixBreaks ? { prefixBreaks } : {}) };
 }
 
 type SkillSession = { sessionId: string; opens: number; afterCalls: number; afterFailures: number; lastAt: number };

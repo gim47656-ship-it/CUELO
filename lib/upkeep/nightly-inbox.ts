@@ -18,6 +18,7 @@ import {
 } from "./nightly";
 import { type CoreUpdateLookup, nightlyCoreUpdateBlock } from "./nightly-core";
 import { MODEL_ERROR_DAYS, modelErrorFrom, utcDay, type ModelErrorDay, type ModelErrorExport } from "./model-errors";
+import type { PrefixBreakDay, PrefixBreakExport } from "./prefix-breaks";
 import { isPluginEventKind, PLUGIN_EVENT_DAYS, PLUGIN_FILE_LIMIT, PLUGIN_KIND_LIMIT, type PluginEventExport, type PluginEventFile } from "./plugin-events";
 import { ISSUE_LIMIT, type IssueLookup, type OpenIssue } from "./nightly-issues";
 import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
@@ -92,6 +93,8 @@ export interface NightlyBundle {
   modelErrors?: ModelErrorExport;
   /** Optional v2 field; bundles without it leave the plugin observation rows unmeasured. */
   pluginEvents?: PluginEventExport;
+  /** Optional v2 field; bundles without it leave the cache ledger break counts unmeasured. */
+  prefixBreaks?: PrefixBreakExport;
 }
 
 /**
@@ -179,6 +182,7 @@ export function buildNightlyExport(input: {
   contextLoad?: ContextLoadExport;
   modelErrors?: ModelErrorExport;
   pluginEvents?: PluginEventExport;
+  prefixBreaks?: PrefixBreakExport;
 }): NightlyBundle {
   const toolFailures = rankToolFailures(input.errorsBySignature);
   // 관찰 후보의 실패 묶음을 먼저 싣는다(순위 20개 밖이거나 직전 7일 실패여도 후보 근거가 빠지지 않게). 같은 묶음은 한 번만.
@@ -199,6 +203,7 @@ export function buildNightlyExport(input: {
     contextLoad: input.contextLoad,
     modelErrors: input.modelErrors,
     pluginEvents: input.pluginEvents,
+    prefixBreaks: input.prefixBreaks,
     failureExcerpts: [...new Set(signatures)].flatMap((signature) => {
       const excerpts = input.failureExcerpts?.[signature];
       const split = signature.indexOf(": ");
@@ -368,6 +373,26 @@ function parseModelErrors(value: unknown, generatedAt: number | null): ModelErro
   return { from: raw.from as string, to: raw.to as string, partial: raw.partial, days };
 }
 
+const BREAK_DAY_FIELDS = ["anthropic", "day", "translation"].join();
+
+/** 날짜별 캐시 장부 끊김 집계. 모양, 기간, 날짜 순서가 맞지 않거나 번역 끊김이 전체보다 많으면 전체를 미측정(null)으로 읽는다. */
+function parsePrefixBreaks(value: unknown, generatedAt: number | null): PrefixBreakExport | null {
+  const raw = rows([value])[0];
+  if (generatedAt === null || !raw || Object.keys(raw).sort().join() !== AGGREGATE_FIELDS || typeof raw.partial !== "boolean" || !Array.isArray(raw.days)) return null;
+  const from = isoInstant(raw.from), to = isoInstant(raw.to);
+  if (from === null || to === null || to > generatedAt || generatedAt - to > MODEL_ERRORS_LAG_MS || from !== modelErrorFrom(to)) return null;
+  const fromDay = utcDay(from), toDay = utcDay(to);
+  const days: PrefixBreakDay[] = [];
+  for (const item of raw.days) {
+    const d = rows([item])[0];
+    if (!d || Object.keys(d).sort().join() !== BREAK_DAY_FIELDS || typeof d.day !== "string" || !DAY_KEY.test(d.day) || isoInstant(`${d.day}T00:00:00.000Z`) === null) return null;
+    if (d.day < fromDay || d.day > toDay || (days.length > 0 && d.day <= days[days.length - 1]!.day)) return null;
+    if (!isCount(d.anthropic) || !isCount(d.translation) || d.anthropic === 0 || d.translation > d.anthropic) return null;
+    days.push({ day: d.day, anthropic: d.anthropic, translation: d.translation });
+  }
+  return { from: raw.from as string, to: raw.to as string, partial: raw.partial, days };
+}
+
 const PLUGIN_EXPORT_FIELDS = ["from", "partial", "plugins", "to"].join();
 const PLUGIN_FILE_FIELDS = ["first", "kinds", "last", "plugin", "unreadable"].join();
 const PLUGIN_KIND_FIELDS = ["kind", "recent", "total"].join();
@@ -424,6 +449,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const contextLoad = raw.version === 2 ? parseContextLoad(raw.contextLoad) : null;
   const modelErrors = raw.version === 2 ? parseModelErrors(raw.modelErrors, isoInstant(raw.generatedAt)) : null;
   const pluginEvents = raw.version === 2 ? parsePluginEvents(raw.pluginEvents, isoInstant(raw.generatedAt)) : null;
+  const prefixBreaks = raw.version === 2 ? parsePrefixBreaks(raw.prefixBreaks, isoInstant(raw.generatedAt)) : null;
   return {
     version: raw.version,
     source: fileSource,
@@ -446,6 +472,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     ...(contextLoad ? { contextLoad } : {}),
     ...(modelErrors ? { modelErrors } : {}),
     ...(pluginEvents ? { pluginEvents } : {}),
+    ...(prefixBreaks ? { prefixBreaks } : {}),
   };
 }
 
@@ -904,6 +931,27 @@ function modelErrorBlock(source: string, errors: ModelErrorExport | undefined): 
   ].join("\n");
 }
 
+/** 출처의 날짜별 캐시 장부 끊김 집계. 묶음에 없으면 미측정이라고 적고, 창의 모든 날짜를 한 줄씩 적는다. */
+function prefixBreakBlock(source: string, breaks: PrefixBreakExport | undefined): string {
+  const head = [
+    "## 캐시 장부 끊김 집계",
+    "",
+    `\`${source}\`의 세션(하위 세션 포함)에서 날짜별(UTC)로 센 Anthropic 요청의 캐시 장부 끊김(\`prompt-prefix-break\`)과, 그중 앞뒤 요청 한쪽에만 \`[한국어 번역]\`이 있는 번역 끼어들기 끊김입니다. HANDOFF의 「캐시 장부 보조 요청 분리(0.10.300)」 항목을 이 PC의 설치 시각과 견줘 판정할 때 씁니다. 건수일 뿐이며 판정은 따로 합니다. 끊김이 없는 날은 관찰 없음이지 측정 실패가 아닙니다.`,
+  ];
+  if (!breaks) return [...head, "- 이 묶음에는 캐시 장부 끊김 집계가 없습니다(끊김 집계를 싣기 전 판이거나 모양이 틀린 집계). 미측정으로 둡니다."].join("\n");
+  const byDay = new Map(breaks.days.map((day) => [day.day, day]));
+  const dates = Array.from({ length: MODEL_ERROR_DAYS }, (_, i) => utcDay(Date.parse(breaks.from) + i * DAY_MS));
+  return [
+    ...head,
+    `- 기간: ${breaks.from.slice(0, 10)} ~ ${breaks.to.slice(0, 10)} (UTC, 마지막 날은 ${breaks.to.slice(11, 16)}까지)${breaks.partial ? ". 세션 기록 일부를 읽지 못해 아래 값은 실제보다 작을 수 있습니다(일부만 측정)" : ""}`,
+    "- 날짜별:",
+    ...dates.map((date) => {
+      const day = byDay.get(date);
+      return `  - ${date.slice(5)}: ${day ? `끊김 ${group(day.anthropic)}건, 그중 번역 끼어들기 ${group(day.translation)}건` : "끊김 기록 없음"}`;
+    }),
+  ].join("\n");
+}
+
 const utcMinute = (iso: string) => `${iso.slice(5, 10)} ${iso.slice(11, 16)}`;
 
 /**
@@ -1085,6 +1133,7 @@ export function planInboxRun(
     if (bundle.failureExcerpts.length) block.push("", excerptBlock(bundle.source, bundle.failureExcerpts));
     block.push("", contextLoadBlock(bundle.source, bundle.contextLoad));
     block.push("", modelErrorBlock(bundle.source, bundle.modelErrors));
+    block.push("", prefixBreakBlock(bundle.source, bundle.prefixBreaks));
     block.push("", pluginEventBlock(bundle.source, bundle.pluginEvents));
     if (candidates.length) block.push("", skillBlock(bundle.source, candidates, bundle.failureExcerpts));
     if (bundle.skillUsage.rows.length || bundle.skillUsage.unused.length) block.push("", skillHealthBlock(bundle.source, bundle.skillUsage));

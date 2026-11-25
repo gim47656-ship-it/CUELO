@@ -26266,6 +26266,232 @@ ${refreshReason}	resolveAfterRotation,
 	alternate(read, { anchor: markdownImport, patched: `${artifactImport}\n${markdownImport}`, marker: artifactImport }, markdownImport);
 }
 
+// 19.2.1 (ADAPT): service-tier-aware auth (`#resolve` returns ResolvedApiKey and threads `serviceTier`),
+// transcript-view history://, agent:// model controls, o2ctl/session-process bash imports, mcp timing laps.
+// Older candidates stay byte-identical except for an `excludes` on the 19.2.1-only discriminator.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`19.2.1 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = (file, marker) => one(entry => entry.file === file && entry.marker.startsWith(marker));
+	const alternate = (entry, candidate, discriminator) => {
+		const file = candidate.file ?? entry.file;
+		for (const old of [entry, ...(entry.alternates ?? [])]) {
+			if (old.file === file) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		}
+		(entry.alternates ??= []).push({ file, ...candidate, requires: discriminator });
+	};
+	const swapAll = (text, from, to, count = 1) => {
+		if (text.split(from).length !== count + 1) throw new Error(`19.2.1 anchor x${count}: ${JSON.stringify(from)}`);
+		return text.split(from).join(to);
+	};
+	const prior = entry => entry.alternates?.at(-1) ?? entry;
+	const port = (entry, discriminator, transform, marker = prior(entry).marker) => {
+		const old = prior(entry);
+		alternate(entry, { anchor: transform(old.anchor), patched: transform(old.patched), marker }, discriminator);
+	};
+	const absorbed = (entry, file, discriminator, upstream = discriminator) =>
+		alternate(entry, { file, anchor: upstream, patched: upstream, marker: upstream }, discriminator);
+
+	// Policy reapply still must not clear retry-fallback cooldowns; upstream now marks "invalid" with undefined.
+	port(byMarker("src/config/model-registry.ts", "// Policy reapply rebuilds the catalog only"), "#dropComposedCatalog(): void {",
+		text => swapAll(text, "this.#lastStaticLoadMtime = null;", "this.#lastStaticLoadMtime = undefined;"));
+
+	// Auth cascade: same CUELO weekly-fallback, billing-park and exact-pin purposes on the ResolvedApiKey shape.
+	const cascade = "../pi-ai/src/auth/cascade.ts";
+	const tierCascade = "async #resolveServiceTierApiKey(";
+	const oauthCall = `		try {
+			oauthResolved = await this.#deps.selector.resolveOAuth(
+				provider,
+				sessionId,
+				tierPreferring ? { ...options, recordAffinity: false } : options,
+			);
+`;
+	alternate(byMarker(cascade, "cueloOnWeeklyExhausted: () => {"), {
+		anchor: oauthCall,
+		patched: `		// CUELO: the fallback key file is read only when the selector confirms the weekly decision.
+		let cueloFileKey: string | undefined;
+		try {
+			const oauthOptions = tierPreferring ? { ...options, recordAffinity: false } : options;
+			oauthResolved = await this.#deps.selector.resolveOAuth(
+				provider,
+				sessionId,
+				this.#cueloWeeklyFallbackAllowed(provider, sessionId)
+					? {
+							...oauthOptions,
+							cueloOnWeeklyExhausted: () => {
+								cueloFileKey = this.#cueloReadFallbackKeyFile();
+								return cueloFileKey !== undefined;
+							},
+						}
+					: oauthOptions,
+			);
+`,
+		marker: "cueloOnWeeklyExhausted: () => {",
+	}, tierCascade);
+	// A tier detour to an API key is not OAuth service, so the mark moves past it.
+	const oauthServed = "\t\t\tconst { credentialId, credential } = oauthResolved;\n";
+	const markFalse = byMarker(cascade, "this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, false);");
+	alternate(markFalse, {
+		anchor: oauthServed,
+		patched: `			// CUELO: OAuth actually serves this session again, so it is OAuth-attributed again.
+			this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, false);
+${oauthServed}`,
+		marker: markFalse.marker,
+	}, tierCascade);
+	const oauthReturnEnd = "\t\t\t\t...(serviceTierUnavailable ? { serviceTierUnavailable: true } : {}),\n\t\t\t};\n\t\t}\n";
+	const exactThrow = byMarker(cascade, "의 지정 OAuth 계정이 현재 사용할 수 없습니다.`);");
+	alternate(exactThrow, {
+		anchor: oauthReturnEnd,
+		patched: `${oauthReturnEnd}		if (exactOAuthLabel) {
+			throw new Error(\`[CharacterSummonRuntime] \${exactOAuthLabel}의 지정 OAuth 계정이 현재 사용할 수 없습니다.\`);
+		}
+`,
+		marker: exactThrow.marker,
+	}, tierCascade);
+	// New upstream path: an exact character pin never rotates to a sibling, so it never takes the tier API-key detour.
+	const tierDetour = "\t\t\tif (serviceTierUnavailable && !restricted) {\n";
+	const exactTierGuard = "\t\t\tif (serviceTierUnavailable && !restricted && !exactOAuthLabel) {\n";
+	const cascadeStable = "\tasync #resolve(\n";
+	EDITS.push({
+		file: cascade, requires: tierCascade, anchor: tierDetour, marker: exactTierGuard,
+		patched: `			// CUELO: an exact character pin stays on its OAuth account even when it lacks the requested tier.\n${exactTierGuard}`,
+		alternates: [{ file: cascade, excludes: tierCascade, anchor: cascadeStable, marker: cascadeStable, patched: cascadeStable }],
+	});
+	const fileKey = byMarker(cascade, "if (cueloFileKey !== undefined) {");
+	const loginKey = "\t\tconst loginApiKey = await this.#selectStoredApiKey(\n";
+	alternate(fileKey, {
+		anchor: loginKey,
+		patched: `		if (cueloFileKey !== undefined) {
+			// CUELO: weekly-exhausted pool served by the fallback key file. Leave OAuth without an
+			// api_key sticky and keep this session out of OAuth account attribution.
+			if (sessionId) this.#deps.affinity.forget(provider, sessionId);
+			this.#deps.affinity.cueloMarkKeyFallback(provider, sessionId, true);
+			return { apiKey: cueloFileKey };
+		}
+${loginKey}`,
+		marker: fileKey.marker,
+	}, tierCascade);
+	port(byMarker(cascade, "return this.cueloWeeklyApiKeyFallback(provider, sessionId, { baseUrl, modelId, signal });"), tierCascade,
+		text => swapAll(text, "resolve({ signal })", "resolve({ signal, serviceTier })"));
+	const parkedRetry = byMarker(cascade, "if (this.cueloFallbackKeyRejected(provider, previousKey, error)) return resolve({ signal });");
+	alternate(parkedRetry, {
+		anchor: swapAll(parkedRetry.anchor, "resolve({ signal })", "resolve({ signal, serviceTier })"),
+		patched: swapAll(parkedRetry.patched, "resolve({ signal })", "resolve({ signal, serviceTier })", 2),
+		marker: "if (this.cueloFallbackKeyRejected(provider, previousKey, error)) return resolve({ signal, serviceTier });",
+	}, tierCascade);
+
+	const resolver = "src/config/api-key-resolver.ts";
+	const requestResolver = "const resolveKey = async (request: AuthApiKeyOptions): Promise<ApiKeyResolution> => {";
+	port(byMarker(resolver, "registry.authStorage.keys?.cueloWeeklyApiKeyFallback?.("), requestResolver,
+		text => swapAll(text, "resolveKey(undefined)", "resolveKey({ serviceTier })"));
+	const resolverPark = byMarker(resolver, "registry.authStorage.keys?.cueloFallbackKeyRejected?.(provider, previousKey, error)");
+	alternate(resolverPark, {
+		anchor: swapAll(resolverPark.anchor, "resolveKey(undefined)", "resolveKey({ serviceTier })"),
+		patched: swapAll(resolverPark.patched, "resolveKey(undefined)", "resolveKey({ serviceTier })", 2),
+		marker: resolverPark.marker,
+	}, requestResolver);
+
+	// runAttempt now receives the whole resolution; the bearer it sent is resolvedApiKeyBearer(resolved).
+	const stream = "../pi-ai/src/stream.ts";
+	alternate(byMarker(stream, "import { createAuthRetryKeyState, cueloIsFallbackKeyBillingRejection, isApiKeyResolver,"), {
+		anchor: "\tcreateAuthRetryKeyState,\n\tisApiKeyResolver,\n",
+		patched: "\tcreateAuthRetryKeyState,\n\tcueloIsFallbackKeyBillingRejection,\n\tisApiKeyResolver,\n",
+		marker: "\tcueloIsFallbackKeyBillingRejection,\n\tisApiKeyResolver,\n",
+	}, "\twithRequestServiceTier,\n");
+	const wholeResolution = "const runAttempt = async (resolved?: ApiKeyResolution): Promise<AuthRetryFailure | undefined> => {";
+	for (const tail of ["\t\t\t\t\t\t\tevent.error.errorMessage,\n", "\t\t\t\t\t\terror instanceof Error ? error.message : undefined,\n"]) {
+		const bearer = one(entry => entry.file === stream && entry.anchor.includes(tail) && entry.patched.includes("\tapiKey,\n"));
+		const patched = swapAll(bearer.patched, "\tapiKey,\n", "\tresolvedApiKeyBearer(resolved),\n");
+		alternate(bearer, { anchor: bearer.anchor, patched, marker: patched }, wholeResolution);
+	}
+
+	// Per-request MCP selection still runs before the start-policy loop; upstream now times the MCP wait.
+	const mcpLap = '\t\tlaps.lap("mcpMs");\n';
+	const mcp = byMarker("src/session/agent-session.ts", "\t\tawait this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {");
+	alternate(mcp, {
+		anchor: `\t\t\t});\n\t\t}\n${mcpLap}`,
+		patched: `			});
+		}
+		await this.#selectMCPServersForPrompt(prompt, isCurrent, signal).catch(error => {
+			logger.warn("MCP per-request selection failed; no new server connected", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		if (!isCurrent()) return cancelled;
+${mcpLap}`,
+		marker: mcp.marker,
+	}, mcpLap.trim());
+
+	// Advisor transcript skip stays absorbed upstream; only the minified helper name moved.
+	absorbed(byMarker("dist/cli.js", 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), "dist/cli.js",
+		'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&xee(c))continue');
+
+	const bashImport = 'import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";';
+	port(byMarker("src/tools/bash.ts", "// CUELO: sandbox runtime imports"), 'import { BASH_SESSION_ENV } from "../exec/session-processes";',
+		text => swapAll(text, bashImport, 'import { applyDirenvPreflight, type BashResult, executeBash, sessionShellEnv } from "../exec/bash-executor";'));
+
+	// history:// renders through transcript-view now; root scoping of the disk fallback is unchanged.
+	const history = "src/internal-urls/history-protocol.ts";
+	const transcriptView = "function historyViewOptions(url: InternalUrl, title: string): TranscriptViewOptions {";
+	for (const id of ["agentId", "ref.id"]) {
+		const call = byMarker(history, `this.#resolveFromDisk(${id}, preferredArtifactDir, onlyPreferred)`);
+		alternate(call, {
+			anchor: `this.#resolveFromDisk(url, ${id}, preferredArtifactDir)`,
+			patched: `this.#resolveFromDisk(url, ${id}, preferredArtifactDir, onlyPreferred)`,
+			marker: `this.#resolveFromDisk(url, ${id}, preferredArtifactDir, onlyPreferred)`,
+		}, transcriptView);
+	}
+	const diskSignature = `	async #resolveFromDisk(
+		url: InternalUrl,
+		agentId: string,
+		preferredArtifactDir?: string,
+	): Promise<InternalResource | undefined> {
+		const match = await this.#findOnDisk(agentId, preferredArtifactDir);`;
+	const diskScoped = swapAll(swapAll(diskSignature, "\t\tpreferredArtifactDir?: string,\n", "\t\tpreferredArtifactDir?: string,\n\t\tonlyPreferred = false,\n"),
+		"this.#findOnDisk(agentId, preferredArtifactDir)", "this.#findOnDisk(agentId, preferredArtifactDir, onlyPreferred)");
+	alternate(byMarker(history, "\tasync #resolveFromDisk(agentId: string, preferredArtifactDir?: string, onlyPreferred = false)"),
+		{ anchor: diskSignature, patched: diskScoped, marker: diskScoped }, transcriptView);
+	const historyDoc = byMarker("src/prompts/internal-urls/history.md", "history://<id>: summarized read-only transcript;");
+	(historyDoc.alternates ??= []).push({
+		file: historyDoc.file,
+		anchor: "history://<id>: read-only transcript, numbered by user turn: user and agent text whole, one line per tool call, thinking and results left out. Query as `archive.transcript`: `?budget=4000` compacts to fit; `?detail=brief` or `user:full,thinking:brief,result:normal`; `?turns=-1` or `3,5`. Bare history:// lists registered and retained on-disk agents, not persisted unregistered top-level sessions.",
+		patched: "history://<id>: read-only transcript by user turn (text whole, one line per call, no thinking/results); `?budget=4000`, `?detail=brief`, `?turns=-1` as `archive.transcript`; bare lists registered/retained agents, NOT unregistered top-level sessions.",
+		marker: "history://<id>: read-only transcript by user turn",
+	});
+
+	// agent:// messaging keeps its root scope. 2026-11-26 Main decision: agent://<id>/model and /effort writes stay
+	// rejected as before 19.2.1; a running agent's model and effort change only through `task` model selection.
+	const agentProtocol = "src/internal-urls/agent-protocol.ts";
+	const modelControls = "function controlTarget(";
+	const scopedTo = "\t\tconst senderRoot = registry.rootOf(senderId);\n\t\tconst to = remote ? named : rootScopedAgentId(resolveRecipient(registry, senderId, named), senderRoot);";
+	alternate(byMarker(agentProtocol, "\t\tconst senderRoot = registry.rootOf(senderId);\n\t\tconst to ="), {
+		anchor: "\t\tconst to = remote ? named : resolveRecipient(registry, senderId, named);", patched: scopedTo, marker: scopedTo,
+	}, modelControls);
+	const controlBranch = '\t\tif (segments.length === 1 && (field === "model" || field === "effort")) {\n';
+	const controlRejected = "agent://<id>/${field} writes are disabled in CUELO.";
+	const agentStable = 'readonly scheme = "agent";';
+	EDITS.push({
+		file: agentProtocol, requires: modelControls, anchor: controlBranch, marker: controlRejected,
+		patched: `${controlBranch}			// CUELO: model and effort of a running agent change only through \`task\` model selection (Task Guard,
+			// auto-effort), never through agent://.
+			throw new Error(\`${controlRejected} Choose the model and effort through task model selection when you spawn the agent.\`);
+`,
+		// Any upstream model-control code fails closed (anchor-lost) instead of matching this pre-19.2.1 no-op.
+		alternates: [{ file: agentProtocol, excludes: [modelControls, "applyAgentModelChange"], anchor: agentStable, marker: agentStable, patched: agentStable }],
+	});
+	const agentDoc = "src/prompts/internal-urls/agent.md";
+	const controlDoc = "\nFor yourself or a live child you spawned, write agent://<id>/model with a permitted task agent kind (e.g. `task:high` or `m1`), or agent://<id>/effort with a level (e.g. `high` or `auto`). Unsupported levels snap to a supported effort; writes change only that session.";
+	const controlDocCuelo = "Model/effort writes: disabled; pick them at spawn via `task`.";
+	EDITS.push({
+		file: agentDoc, anchor: controlDoc, marker: controlDocCuelo, patched: `\n${controlDocCuelo}`,
+		// A reworded upstream advertisement fails closed (anchor-lost) instead of matching this pre-19.2.1 no-op.
+		alternates: [{ file: agentDoc, excludes: ["agent://<id>/model", "agent://<id>/effort", controlDocCuelo], anchor: "agent://<id>", marker: "agent://<id>", patched: "agent://<id>" }],
+	});
+}
+
 /** All possible targets, including files reached only by a version alternate. */
 export function corePatchTargetFiles() {
 	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];

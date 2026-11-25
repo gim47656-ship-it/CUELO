@@ -77,8 +77,12 @@ export function formatUpkeepValue(unit: UpkeepUnit, value: number | null): strin
       return `${groupDigits(round(value, 2))}건`;
     case "ratio":
       return `${(value * 100).toFixed(1)}%`;
-    case "usd":
+    case "usd": {
+      // 1센트 미만 금액은 둘째 자리 반올림이 $0으로 지워 「$0 / $0인데 문제」처럼 읽히므로 유효숫자 둘을 남긴다.
+      const abs = Math.abs(value);
+      if (abs > 0 && abs < 0.01) return `$${value.toFixed(1 - Math.floor(Math.log10(abs)))}`;
       return `$${groupDigits(round(value, 2))}`;
+    }
     case "ms":
       return value >= 1000 ? `${groupDigits(round(value / 1000, 1))}초` : `${groupDigits(round(value, 0))}ms`;
     case "tokens":

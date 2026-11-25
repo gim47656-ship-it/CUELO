@@ -199,6 +199,89 @@ describe("편집 직후 조기 알림", () => {
     expect(env.turnEnd()).toEqual([]);
   });
 
+  test("uncommitted work that predates the session's first tool is not announced as the session's change", async () => {
+    const env = setup();
+    for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package earlier\n");
+    const bash = { toolName: "bash", input: { command: "ls" } };
+    await env.emit("tool_call", bash);
+    await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toEqual([]);
+    expect(env.turnEnd()).toEqual([]);
+    // Later writes by this session, to an inherited file or a new one, still count.
+    writeFileSync(join(env.work, "b.go"), "package earlier\nvar changed = 1\n");
+    for (const file of ["d.go", "e.go"]) writeFileSync(join(env.work, file), "package mine\n");
+    await env.emit("tool_call", bash);
+    await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+    expect(env.sent.map(({ message }) => message.content.split(" ")[3]).sort()).toEqual(["b.go", "d.go", "e.go"]);
+  });
+
+  test("an inherited file the session edits with edit or write is announced", async () => {
+    const env = setup();
+    for (const file of ["a.ts", "b.ts"]) writeFileSync(join(env.work, file), "export const earlier = 1;\n");
+    await env.emit("tool_call", { toolName: "bash", input: { command: "git status" } });
+    await env.emit("tool_call", { toolName: "write", input: { path: "a.ts" } });
+    writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
+    await env.edited("write", "a.ts");
+    expect(env.sent.map(({ message }) => message.content.split(" ")[3])).toEqual(["a.ts"]);
+  });
+
+  test("a clean repository at the first tool still announces bash-only writes", async () => {
+    const env = setup();
+    const bash = { toolName: "bash", input: { command: "shell writes" } };
+    await env.emit("tool_call", bash);
+    for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package example\n");
+    await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+    expect(env.sent).toHaveLength(3);
+  });
+
+  test("a failed first root lookup never lets a later call baseline the session's own writes", async () => {
+    const env = setup();
+    const spawn = Bun.spawn;
+    let failed = false;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const [command, ...rest] = args;
+      if (failed || !Array.isArray(command) || !command.includes("rev-parse")) return spawn(...args);
+      failed = true;
+      return spawn(["git", "no-such-subcommand"], ...(rest as []));
+    }) as typeof spawn);
+    try {
+      const bash = { toolName: "bash", input: { command: "shell writes" } };
+      await env.emit("tool_call", bash);
+      writeFileSync(join(env.work, "a.go"), "package mine\n");
+      await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+      await env.emit("tool_call", bash);
+      for (const file of ["b.go", "c.go"]) writeFileSync(join(env.work, file), "package mine\n");
+      await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+    } finally { hook.mockRestore(); }
+    expect(failed).toBe(true);
+    expect(env.sent.map(({ message }) => message.content.split(" ")[3]).sort()).toEqual(["a.go", "b.go", "c.go"]);
+  });
+
+  test("a baseline that misses its wait does not hold back the earlier repository-wide notice", async () => {
+    const env = setup();
+    for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package earlier\n");
+    const hold = Promise.withResolvers<void>();
+    const spawn = Bun.spawn;
+    let held = false;
+    const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      if (held || !Array.isArray(args[0]) || !args[0].includes("status")) return child;
+      held = true;
+      return new Proxy(child, { get: (target, key) => key === "exited"
+        ? hold.promise.then(() => target.exited) : Reflect.get(target, key, target) });
+    }) as typeof spawn);
+    try {
+      const bash = { toolName: "bash", input: { command: "ls" } };
+      await env.emit("tool_call", bash);
+      await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
+      expect(held).toBe(true);
+      expect(env.sent).toHaveLength(3);
+    } finally {
+      hold.resolve();
+      hook.mockRestore();
+    }
+  });
+
   test.each([
     ["eval", {}],
     ["ast_edit", { applied: true }],

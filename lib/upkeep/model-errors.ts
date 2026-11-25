@@ -67,16 +67,16 @@ function emptyCounts(): ErrorCounts {
 }
 
 /** 줄바꿈으로 끝나지 않은 마지막 조각은 쓰는 중일 수 있어 건너뛰고, 줄바꿈까지 쓰인 깨진 줄은 `malformed`로 알린다. */
-function parseLines(text: string): { entries: RawEntry[]; malformed: boolean } {
+export function parseLines<T = RawEntry>(text: string): { entries: T[]; malformed: boolean } {
   const lines = text.split("\n");
   const inProgress = lines.pop() ?? "";
-  const entries: RawEntry[] = [];
+  const entries: T[] = [];
   let malformed = false;
   const read = (line: string, complete: boolean) => {
     if (!line.trim()) return;
     try {
       const entry = JSON.parse(line);
-      if (entry && typeof entry === "object" && !Array.isArray(entry)) return void entries.push(entry as RawEntry);
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) return void entries.push(entry as T);
     } catch {
       // 아래에서 깨진 줄로 센다.
     }
