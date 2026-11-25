@@ -35,20 +35,11 @@
   naming what you newly confirmed or ruled out is not progress; when the first failure leaves no
   changed next action and no safe way forward, report the cause analysis, what you ruled out, and
   the remaining blocker to Main.
-- At the retry boundary the runtime extension already emits the `pre-retry` advisory from observed
-  flags only: the failed tool, its error category, whether the input changed, and the intervening
-  tools. Read that advisory and supplement only what the runtime cannot observe — applicable Skill
-  guidance, approval, and unobservable judgment. Never re-ask the observed parts yourself and never
-  make a second batched `judge()` call for them. Send only your
-  minimal structured summary, never the raw user/system prompt, Skill text, source, diff, secret, or raw tool
-  output. A probabilistic bool is true at `>= 0.5`. When the cause is the same and no new evidence
-  or condition exists, stop the identical retry and re-analyze or report. Otherwise change the next
-  action from the new evidence and use the authentication/provider-versus-code result to choose the
-  diagnostic path. Deterministic exit status and the actual error override that classification.
-  If the judgment contradicts deterministic evidence, or the advisory is unavailable, times out, or
-  lacks credentials, follow the existing evidence-led procedure without a general-model
-  fallback. File/path ownership, permissions, approvals, and test results remain authoritative.
-  `routing.typedJudgmentRouting.observation` is authoritative.
+- The `pre-retry` advisory reports locally observed facts only: the failed tool, error category,
+  changed input and intervening tools. Do not ask a judge to repeat those observations. Apply
+  the relevant Skill and approval boundaries; never send raw prompts, Skill text, source, diff,
+  secrets or raw output to a judge. Change the next action only on new evidence, or report the
+  blocker. Exact errors, exit status, ownership, approval and test evidence take precedence.
 - After a failure is resolved, compare the failed and successful evidence and identify the cause:
   invocation/path/argument error, environment/dependency, authorization/provider, product defect,
   or an expected negative probe. Counts do not establish that classification. Before terminal

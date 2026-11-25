@@ -3,16 +3,16 @@ import { dirname, join } from "node:path";
 import type { DispatchRequiredSkills } from "./skill-evidence";
 
 /**
- * 발주 라우팅 이력. 추천·실제 선택·실행 상태·Main 수용 판정을 append-only JSON Lines로 남기고,
- * 다음 maker_route에 advisory로만 요약한다. 규칙·후보·강도는 이 기록으로 자동 변경하지 않는다.
+ * 발주, 선택된 모델, 실행 상태와 Main 수용 판정을 append-only JSON Lines로 남긴다.
+ * 과거 발주의 추천과 분류 필드는 기존 이력 분석을 위해 읽을 수 있다.
  *
  * 귀속은 name이 아니라 결정적 identity(sessionId·assignmentId·attemptId)로 한다. name은 표시용이다.
  * - assignment: 작업 단위. 같은 session에서 이름이 같아도 새 비재작업 발주면 새 assignment다.
  * - attempt: assignment 안의 시도. FINDING_ID 재작업은 assignmentId를 유지하고 attempt만 늘린다.
- *   실제로 spawn되지 않은 prepared attempt는 판정 대상이 아니다.
+ *   실제 spawn identity를 관측하지 못한 행은 판정 대상이 아니다.
  */
 
-/** 발주 시도 하나의 결정적 identity. maker_route 호출 id·session·batch index와 spawn 관측 agentId에서 파생한다. */
+/** 실제 task 호출 id, session, batch index와 spawn에서 관측한 child/job id를 잇는다. */
 export interface AttemptIdentity {
   sessionId: string;
   assignmentId: string;
@@ -40,9 +40,9 @@ export interface DispatchRecord extends AttemptIdentity {
   ts: string;
   /** 표시용 이름. 귀속에는 쓰지 않는다. */
   name: string;
-  /** Jev가 고른 작업 등급(NORMAL|HARD). Jev 불가면 null. TASK_GUARD WORK_CLASS가 아니다. */
+  /** 과거 Jev 등급(NORMAL|HARD). 직접 발주에서는 null이며 TASK_GUARD WORK_CLASS가 아니다. */
   workClass: string | null;
-  /** HARD일 때 Jev hardFocus. NORMAL이면 null. */
+  /** 과거 Jev HARD 분류. 직접 발주에서는 null. */
   focus: string | null;
   recommendedProfile: string | null;
   recommendedModel: string | null;
@@ -57,17 +57,14 @@ export interface DispatchRecord extends AttemptIdentity {
   /** Jev workClass 등급별 확률(각 0~1). 위와 같은 조건에서 null이거나 없다. */
   workClassProbabilities?: Record<string, number> | null;
   /**
-   * Jev 위임 조언(MAIN·MAKER·UNKNOWN 중 choice와 confidence). maker_route 결과에는 싣지 않고 이 원장에만 남긴다
-   * (2026-10-30 사용자 결정: 68건 중 MAIN 60, 그중 52건이 그대로 발주돼 Main 판단을 바꾸지 못했다). Jev 불가·미제공이면 null이고,
-   * 이 필드가 생기기 전 기록에는 없다.
+   * Retained for historical dispatch rows only. Direct task admission does not produce delegation advice.
    */
   delegationAdvice?: { choice: string; confidence: number | null } | null;
   purpose: string | null;
   /** 이 필드가 생기기 전 기록에는 없다. 없으면 소유 미상이며 빈 소유가 아니다. */
   ownership?: DispatchOwnership;
   /**
-   * maker_route가 분류한 산출물별 필수 스킬 기대값과 브리프의 SKILL_EXCLUSIONS. 완료 advisory가 실제 읽기와 대조한다.
-   * 이 필드가 생기기 전 기록에는 없고, 없으면 기대값 미관측이다(필수 없음이 아니다).
+   * 과거 발주에서 기록한 필수 스킬 기대값과 제외 신고. 없으면 기대값 미관측이다(필수 없음이 아니다).
    */
   requiredSkills?: DispatchRequiredSkills;
 }

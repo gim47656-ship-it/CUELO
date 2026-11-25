@@ -10,7 +10,7 @@ globs: ["Tools/OMP_Global_Config/**"]
 
 - `agent/agents/maker.md`는 `agent/sop/` 조각에서 `patches/build-agents.mjs`가 생성한다.
 - 위임 정의는 `maker` 하나이며 `_writer.md`와 `_common.md`를 합친다.
-- `thinking-level`은 SOP에 쓰지 않는다. 생성된 정의의 기본 추론은 `auto`, 기본 모델은 `model:"@implSonnet"`이다. 이 모델 기본값은 `maker_route`의 발주별 추천과 별개다.
+- `thinking-level`은 SOP에 쓰지 않는다. 생성 기본값은 추론 `auto`, 모델 `model:"@implSonnet"`이다.
   발주 때 Main이 고른 `tasks[].model`의 `:auto` selector가 child auto를 켜고, 선택된 프로필이 시작 강도와 상한을 정한다.
   모델·fallback은 `modelRoles`, 모델 분류·추론은 `routing.modelSelection`·`routing.effortSelection`이 정한다.
 - frontmatter 도구는 `read, bash, edit, write, grep, glob, skim, draft, lsp, eval,

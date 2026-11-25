@@ -305,7 +305,7 @@ export function renderStartRejectNotice(notice: StartRejectNotice): string {
   if (notice.stage === "redispatched") {
     return `${head} 같은 child를 대체 순서의 다음 모델 ${notice.toModel}로 자동 재발주했다(2026-11-18 사용자 결정, 한 번만). automatic redispatch done; Main must not redispatch manually.${repeat}`;
   }
-  const cleanup = " 추가 자동 시도는 없다. 이 child는 owner·placement 후보에서 뺐으니 Main이 같은 준비(preparedId·이름)로 다시 발주할 수 있다.";
+  const cleanup = " 추가 자동 시도는 없다. 이 child는 active owner에서 뺐으니 Main이 같은 이름과 전체 브리프로 task를 다시 발주할 수 있다.";
   if (notice.stage === "no-replacement") {
     return `${head} ${notice.fromModel}의 retry.fallbackChains에 쓸 수 있는 다음 모델이 없어 재발주하지 않았다.${cleanup}${repeat}`;
   }

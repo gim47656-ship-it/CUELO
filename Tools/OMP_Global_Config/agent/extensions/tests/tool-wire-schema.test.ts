@@ -188,7 +188,8 @@ describe("custom tool wire schemas", () => {
 
   test("discovers the registered tools", () => {
     const names = registered.map(({ tool }) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(["git_finalize", "windows_build", "windows_control", "skim", "draft", "maker_route", "routing_verdict"]));
+    expect(names).toEqual(expect.arrayContaining(["git_finalize", "windows_build", "windows_control", "skim", "draft", "routing_verdict"]));
+    expect(names).not.toContain("maker_route");
   });
 
   for (const { source, tool } of registered) {

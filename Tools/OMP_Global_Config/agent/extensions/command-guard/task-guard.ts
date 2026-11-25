@@ -176,7 +176,7 @@ export function resetTaskGuardState(state: TaskGuardState): void {
   state.refunded = 0;
 }
 
-/** SideQuestGuard가 PRIMARY_DELIVERABLE을 비교하는 정규형. maker_route 준비·발주 검사도 같은 함수를 쓴다. */
+/** SideQuestGuard와 task 발주가 PRIMARY_DELIVERABLE을 비교하는 정규형. */
 export function normalizeDeliverable(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
@@ -256,7 +256,7 @@ function isEscapingOwnedPath(value: string): boolean {
 const SAME_LINE_SPACE = "[^\\S\\n\\r\\u2028\\u2029]";
 
 /**
- * guard 블록 안의 필드 한 줄을 읽는다. SpawnGuard와 maker_route 준비가 같은 reader를 쓴다. 필드 이름 앞뒤와 값 앞뒤
+ * guard 블록의 필드 한 줄을 SpawnGuard와 task 발주가 같이 읽는다. 필드 이름 앞뒤와 값 앞뒤
  * 공백은 같은 줄 안만 넘는다. `\s`면 값을 비운 줄(`OWNED_PATHS:`)의 개행을 건너 다음 필드 줄을 그 값으로 읽는다.
  */
 export function readGuardField(block: string, name: string): string | undefined {
@@ -271,8 +271,8 @@ const PURPOSES = ["primary", "rework"] as const;
 
 /**
  * TASK_GUARD marker 바로 뒤에서 연속된 정본 필드만 읽는다. LLM이 빈 줄 없이
- * ROUTING_REASON·character marker·과제 본문을 이어 붙여도 그 후속 본문은 guard 블록이 아니다.
- * 블록 경계는 SpawnGuard와 maker_route 준비가 같아야 하므로 이 함수 하나만 계산한다.
+ * character marker나 과제 본문을 이어 붙여도 그 후속 본문은 guard 블록이 아니다.
+ * SpawnGuard와 task 발주의 블록 경계는 이 함수가 정한다.
  */
 export function extractGuardBlock(task: string): { block: string; span: { start: number; end: number } } | null {
   const marker = /^\s*TASK_GUARD\s*:\s*$/im.exec(task);
@@ -849,10 +849,9 @@ export function getTaskGuardUsage(state: TaskGuardState): Readonly<Usage> {
 }
 
 /**
- * maker_route 준비가 읽는 session별 TaskGuard 정본 lock. command-guard가 자기 state를 session id로 묶고,
- * 준비 쪽은 같은 session id의 lock만 읽는다. lock을 복제해 따로 들고 있으면 취소 환불·영수 정산으로 TaskGuard가
- * lock을 풀어도 남는 stale 상속이 생기므로 사본을 만들지 않는다. 확장 module이 여러 번 평가되어도 같은 map을
- * 보도록 prepared-task와 같이 globalThis 심볼에 둔다.
+ * task admission이 읽는 session별 TaskGuard 정본 lock. command-guard는 자기 state를 session id에 묶는다.
+ * 취소 환불이나 정산으로 lock이 풀리면 admission에도 바로 반영된다. 확장 module이 여러 번 평가되어도
+ * 같은 map을 보도록 globalThis 심볼에 둔다.
  */
 const TASK_GUARD_SESSIONS = Symbol.for("@oh-my-pi/omp/task-guard-sessions/v2");
 /** command-guard가 소유한 캐릭터 호출 상태의 읽기 창구. */
@@ -894,7 +893,7 @@ export function taskGuardLockOf(sessionId: string): { workClass: string; primary
 }
 
 /**
- * maker_route 준비·발주가 TaskGuard와 같은 결론을 내도록 쓰는 SideQuestGuard 면제 판정: 이 session이 USER_REQUEST로 이미 받아들인
+ * task 발주가 사용하는 SideQuestGuard 면제 판정: 이 session이 USER_REQUEST로 이미 받아들인
  * 완료물이거나, 인용이 이번 요청의 사용자 입력에 글자 그대로 있다. 연결된 session이 없으면 기준 글이 없으므로 false다.
  */
 export function admitsUserRequestedDeliverable(

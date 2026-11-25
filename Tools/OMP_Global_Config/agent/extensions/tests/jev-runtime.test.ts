@@ -33,9 +33,9 @@ interface RecordedJudgment {
   state: Record<string, unknown>;
   questions: Record<string, { type: string }>;
 }
-interface RegisteredRouteTool {
+interface RegisteredTool {
   name: string;
-  execute: (...args: unknown[]) => Promise<{ details: { routes: { status: string; recommendations: unknown; history?: unknown }[] } }>;
+  execute: (...args: unknown[]) => Promise<{ details: Record<string, unknown> }>;
 }
 interface EventHarness {
   emit(name: string, event: unknown): Promise<unknown>;
@@ -107,7 +107,7 @@ function createHarness(options: HarnessOptions = {}) {
   const sent: SentMessage[] = [];
   const judgments: RecordedJudgment[] = [];
   const warnings: string[] = [];
-  const tools: Record<string, RegisteredRouteTool> = {};
+  const tools: Record<string, RegisteredTool> = {};
   const asyncJobs: Array<{ id: string; agentId: string }> = (options.asyncJobs ?? []) as Array<{ id: string; agentId: string }>;
   const zodChain = (): { nullable(): unknown; optional(): unknown; describe(): unknown } => ({ nullable: zodChain, optional: zodChain, describe: zodChain });
 
@@ -144,24 +144,7 @@ function createHarness(options: HarnessOptions = {}) {
             state: request.state as Record<string, unknown>,
             questions: request.questions,
           });
-          const answers: Record<string, unknown> = {};
-          for (const id in request.questions) {
-            const question = request.questions[id];
-            answers[id] =
-              options.judgeAnswers?.[id] ??
-              (question.type === "noul"
-                // Fixture routing uses a settled design (designOpen low).
-                ? { type: "noul", noul: 0.1 }
-                // 강도 질문은 픽스처가 실제로 발주하는 high로 답한다.
-                : id.startsWith("effort")
-                  ? { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 }
-                  // General integration fixtures keep their original Sonnet dispatch in the routine UI lane.
-                  : id === "uiDifficulty"
-                    ? { type: "choice", choice: "ROUTINE", probabilities: { ROUTINE: 1 }, confidence: 1 }
-                    : id === "reworkNature" || id === "boundedDesign"
-                    ? { type: "choice", choice: "NONE", probabilities: { ok: 1 }, confidence: 1 }
-                    : { type: "choice", choice: "lo", probabilities: { lo: 1 }, confidence: 1 });
-          }
+          const answers = options.judgeAnswers ?? {};
           return { answers, provider: "fake", model: "jev" };
         },
       };
@@ -208,7 +191,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     // SDK가 소유하는 schema parsing은 실제 zod 등록 smoke에서 확인한다. 여기 stub은 등록 경로만 통과시킨다.
     zod: { object: (shape: unknown) => shape, string: zodChain, array: zodChain },
-    registerTool(definition: RegisteredRouteTool) { tools[definition.name] = definition; },
+    registerTool(definition: RegisteredTool) { tools[definition.name] = definition; },
     on(name: string, handler: Handler) {
       (handlers[name] ??= []).push(handler);
     },
@@ -225,7 +208,6 @@ function createHarness(options: HarnessOptions = {}) {
 
   createJevRuntime(deps)(pi as never);
 
-  let routeCalls = 0;
   return {
     sent,
     judgments,
@@ -236,14 +218,6 @@ function createHarness(options: HarnessOptions = {}) {
       sentWaiters.push(resolve);
       return promise;
     },
-    prepare: (task = GUARDED_TASK, name = "Next") => tools.maker_route.execute(`route-${++routeCalls}`, {
-      context: "", tasks: [{ name, task, assessment: {
-        goal: "소유 범위의 구현", acceptance: ["검사 통과"], facts: ["기존 패턴이 있다"],
-        paths: ["a.ts"], invariants: ["호출 계약"], checks: ["bun test"],
-        hypotheses: null, unknowns: null, callBoundaries: null, settledImplementation: null,
-        reusedPatterns: null, remainingJudgments: ["국소 구현 선택"], failureEvidence: null,
-      } }],
-    }, undefined, undefined, ctx),
     // routing_verdict 실제 등록 handler를 그대로 지난다.
     verdict: (params: Record<string, unknown>) =>
       tools.routing_verdict!.execute("verdict", params, undefined, undefined, ctx) as unknown as Promise<{ details: Record<string, unknown> }>,
@@ -286,7 +260,7 @@ function taskCall(id: string, task: string, extra: Record<string, unknown> = {})
     type: "tool_call",
     toolCallId: id,
     toolName: "task",
-    input: { agent: "maker", task, ...extra },
+    input: { agent: "maker", task, model: "test/local:auto", ...extra },
   };
 }
 
@@ -327,67 +301,37 @@ TODO_TASKS: ["stable title 구현","focused 검증"]
 
 
 describe("jev-runtime pre-dispatch", () => {
-  test("준비 없이 task를 호출하면 spawn 전에 멈추고 hook은 Jev를 호출하지 않는다", async () => {
+  test("direct dispatch normalizes a candidate and spawns without invoking Jev", async () => {
     const harness = createHarness();
-    const result = await harness.emit("tool_call", taskCall("call-1", GUARDED_TASK));
-    expect(result).toMatchObject({ block: true });
+    const task = taskCall("direct", GUARDED_TASK, { name: "Direct", model: "@implOpus:low", effort: "medium" });
+    const result = await harness.emit("tool_call", task) as { input: Record<string, unknown> };
+    expect(result.input).toMatchObject({ name: "Direct", task: GUARDED_TASK, model: "test/broad:auto" });
+    expect(result.input).not.toHaveProperty("effort");
+    await harness.emit("tool_result", {
+      ...task, type: "tool_result", input: result.input, isError: false,
+      details: { async: { jobId: "job-direct" }, progress: [{ index: 0, id: "agent-direct", status: "running" }] },
+    });
+    const dispatch = JSON.parse(readFileSync(harness.ledgerPath, "utf8").trim());
+    expect(dispatch).toMatchObject({ type: "dispatch", attemptId: "session-1#direct#0#a1", agentId: "agent-direct", chosenModel: "test/broad" });
     expect(harness.judgments).toHaveLength(0);
   });
-  test("등록한 maker_route가 최소 사실과 독립 질문을 Main에게 돌려주고 후보 강도는 registry 단계 그대로다", async () => {
+
+  test("task rejects non-candidates, missing paths, and overlapping shared items in one batch", async () => {
     const harness = createHarness();
-    const result = await harness.prepare();
-    expect(result.details.routes[0].status).toBe("judged");
-    expect(harness.judgments).toHaveLength(1);
-    expect(harness.judgments[0]!.questions).toHaveProperty("workClass");
-    expect(harness.judgments[0]!.questions).not.toHaveProperty("easyFocus");
-    expect(result.details.candidates.find((candidate: { profile: string }) => candidate.profile === "HARD_CODE_OPUS").efforts).toEqual(["low", "medium", "high"]);
-    expect(JSON.stringify(harness.judgments[0]!.state)).not.toContain("본문 내용은");
-    expect(JSON.stringify(harness.judgments[0]!.state)).not.toContain("test/local");
-  });
-  test("진행 입력 뒤에도 prepared ref를 재사용하고 canonical brief를 task hook에 전달한다", async () => {
-    const harness = createHarness({
-      judgeAnswers: {
-        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-        hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
-      },
-    });
-    const prepared = await harness.prepare();
-    const preparedId = prepared.details.routes[0].preparedId as string;
-    await harness.emit("input", { type: "input", source: "rpc", text: "현재 진행 상황만 알려줘" });
-    const result = await harness.emit("tool_call", taskCall(
-      "call-prepared",
-      `PREPARED_TASK: ${preparedId}`,
-      { name: "Next", context: "PREPARED_CONTEXT", model: "test/local:auto" },
-    )) as { input?: Record<string, unknown> };
-    expect(result.input?.context).toBe("");
-    expect(result.input?.task).toBe(GUARDED_TASK);
-    expect(harness.judgments).toHaveLength(1);
-  });
-  test("NORMAL 대안 후보 변경은 명시한 Main 근거와 auto selector를 실제 task hook에서 검사한다", async () => {
-    const harness = createHarness({
-      judgeAnswers: {
-        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-      },
-    });
-    await harness.prepare();
-    const reasoned = GUARDED_TASK.replace("OWNED_PATHS: a.ts,b.ts", "OWNED_PATHS: a.ts,b.ts\nROUTING_REASON: Main이 한도 참고로 대안 후보를 선택함");
-    expect(await harness.emit("tool_call", taskCall("call-alternate", reasoned, { name: "Next", model: "test/broad:auto" }))).toBeUndefined();
-    await harness.emit("tool_execution_end", { toolName: "task", toolCallId: "call-alternate" });
-    expect(await harness.emit("tool_call", taskCall("call-alternate-low", reasoned, { name: "Next", model: "test/broad:low" })))
-      .toMatchObject({ input: expect.objectContaining({ model: "test/broad:auto" }) });
-  });
-  test("session reset은 prepared ref와 준비 판단을 함께 끊는다", async () => {
-    const harness = createHarness();
-    const prepared = await harness.prepare();
-    const preparedId = prepared.details.routes[0].preparedId as string;
-    await harness.emit("session_start", { type: "session_start" });
-    const result = await harness.emit("tool_call", taskCall(
-      "call-stale",
-      `PREPARED_TASK: ${preparedId}`,
-      { name: "Next", context: "PREPARED_CONTEXT", model: "test/local:auto" },
-    ));
-    expect(result).toMatchObject({ block: true });
-    expect(harness.judgments).toHaveLength(1);
+    const first = taskCall("one", GUARDED_TASK, { name: "One" }).input;
+    const second = { ...first, name: "Two", task: GUARDED_TASK.replace("a.ts,b.ts", "b.ts") };
+    for (const [input, reason] of [
+      [{ ...first, model: "hive/zai-org/glm-5.3-flash:auto" }, "Maker 후보"],
+      [{ ...first, task: GUARDED_TASK.replace("OWNED_PATHS: a.ts,b.ts\n", "") }, "OWNED_PATHS"],
+      [{ tasks: [first, second] }, "같은 task 배치"],
+    ] as const) {
+      const blocked = await harness.emit("tool_call", { toolName: "task", toolCallId: "invalid", input }) as { block: boolean; reason: string };
+      expect(blocked?.block).toBe(true);
+      expect(blocked.reason).toContain(reason);
+      expect(blocked.reason).not.toMatch(/maker_route|preparedId|ROUTING_REASON/);
+    }
+    expect(await harness.emit("tool_call", { toolName: "task", toolCallId: "valid", input: { tasks: [first, { ...second, isolated: true }] } })).toBeUndefined();
+    expect(harness.judgments).toHaveLength(0);
   });
   test("사용자 경계가 routing 상속 lock만 해제해 B의 명시 첫 task 뒤 생략 둘째 task를 B에 연결한다", async () => {
     const boundaries: Array<[string, (harness: EventHarness) => Promise<unknown>]> = [
@@ -398,13 +342,7 @@ describe("jev-runtime pre-dispatch", () => {
       })],
     ];
     for (const [label, crossBoundary] of boundaries) {
-      const harness = createHarness({
-        judgeAnswers: {
-          workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-          hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
-        },
-      });
-      await harness.prepare(GUARDED_TASK, `FirstA-${label}`);
+      const harness = createHarness();
       const firstInput = taskCall(`call-a-${label}`, GUARDED_TASK, {
         name: `FirstA-${label}`,
         model: "test/local:auto",
@@ -422,7 +360,6 @@ describe("jev-runtime pre-dispatch", () => {
       const bTask = GUARDED_TASK
         .replace("PRIMARY_DELIVERABLE: x", "PRIMARY_DELIVERABLE: y")
         .replace("OWNED_PATHS: a.ts,b.ts", "OWNED_PATHS: c.ts");
-      await harness.prepare(bTask, `FirstB-${label}`);
       const firstBInput = taskCall(`call-b-${label}`, bTask, {
         name: `FirstB-${label}`,
         model: "test/local:auto",
@@ -436,42 +373,37 @@ describe("jev-runtime pre-dispatch", () => {
         details: { async: { jobId: `job-b-${label}` }, progress: [{ index: 0, id: `agent-b-${label}`, status: "running" }] },
       });
 
-      const inherited = "TASK_GUARD:\nOWNED_PATHS: d.ts\n\nB의 둘째 child";
-      await harness.prepare(inherited, `SecondB-${label}`);
-      const explicitB = bTask.replace("OWNED_PATHS: c.ts", "OWNED_PATHS: d.ts");
-      expect(await harness.emit("tool_call", taskCall(`call-second-${label}`, explicitB, {
-        name: `SecondB-${label}`,
-        model: "test/local:auto",
-      }))).toBeUndefined();
+      const second = taskCall(`call-second-${label}`, "TASK_GUARD:\nOWNED_PATHS: d.ts\n\nB의 둘째 child", { name: `SecondB-${label}` });
+      expect(await harness.emit("tool_call", second)).toBeUndefined();
+      await harness.emit("tool_result", {
+        ...second, type: "tool_result", isError: false,
+        details: { async: { jobId: `job-second-${label}` }, progress: [{ index: 0, id: `agent-second-${label}`, status: "running" }] },
+      });
+      const dispatch = JSON.parse(readFileSync(harness.ledgerPath, "utf8").trim().split("\n").at(-1)!);
+      expect(dispatch.ownership.primaryDeliverable).toBe("y");
     }
   });
 
-  test("성공 task result만 후속 inherited TaskGuard 준비의 lock을 확립한다", async () => {
-    const inherited = "TASK_GUARD:\nOWNED_PATHS: next.ts\n\nlock 상속 child";
-    const success = createHarness();
-    await registerLiveMaker(success, "First");
-    expect((await success.prepare(inherited, "Second")).details.routes[0].status).toBe("judged");
-
-    const failed = createHarness();
-    await failed.emit("tool_result", {
-      type: "tool_result",
-      toolCallId: "failed-spawn",
-      toolName: "task",
-      input: { agent: "maker", name: "First", task: GUARDED_TASK },
-      content: [{ type: "text", text: "spawn failed" }],
-      isError: true,
+  test("an unspawned task does not establish the inherited lock", async () => {
+    const harness = createHarness();
+    const first = taskCall("failed-spawn", GUARDED_TASK, { name: "First" });
+    expect(await harness.emit("tool_call", first)).toBeUndefined();
+    await harness.emit("tool_result", { ...first, type: "tool_result", isError: true });
+    const next = taskCall("after-failure", "TASK_GUARD:\nOWNED_PATHS: next.ts\n\nIndependent task.", { name: "Second" });
+    expect(await harness.emit("tool_call", next)).toBeUndefined();
+    await harness.emit("tool_result", {
+      ...next, type: "tool_result", isError: false,
+      details: { async: { jobId: "job-next" }, progress: [{ index: 0, id: "agent-next" }] },
     });
-    await failed.prepare(inherited, "Second");
-    const explicitDefault = inherited.replace("TASK_GUARD:", "TASK_GUARD:\nWORK_CLASS: feature\nPRIMARY_DELIVERABLE: Second") + "\nROUTING_REASON: Main selects the local candidate";
-    expect(await failed.emit("tool_call", taskCall("default-after-failure", explicitDefault, { name: "Second", model: "test/local:auto" }))).toBeUndefined();
+    const dispatch = JSON.parse(readFileSync(harness.ledgerPath, "utf8").trim());
+    expect(dispatch.ownership.primaryDeliverable).toBe("Second");
   });
   async function spawnAndSettle(
-    harness: { prepare(task: string, name: string): Promise<unknown>; emit(name: string, event: unknown): Promise<unknown> },
+    harness: EventHarness,
     name: string,
     callId: string,
     agentId: string,
   ) {
-    await harness.prepare(GUARDED_TASK, name);
     const input = taskCall(callId, GUARDED_TASK, { name, model: "test/local:auto" });
     await harness.emit("tool_call", input);
     await harness.emit("tool_result", {
@@ -514,7 +446,6 @@ describe("jev-runtime pre-dispatch", () => {
         const finding = mode === "spawn-rework-lower" ? "finding_id: F-old"
           : mode === "spawn-rework-spaced" ? "FINDING_ID:   F-old  " : "FINDING_ID: F-old";
         const task = GUARDED_TASK.replace("PURPOSE: primary", `PURPOSE: rework\n${finding}`);
-        await harness.prepare(task, "Fix");
         const call = taskCall("new-rework", task, { name: "Fix", model: "test/local:auto" });
         expect(await harness.emit("tool_call", call)).toBeUndefined();
         await harness.emit("tool_result", { ...call, type: "tool_result", isError: false,
@@ -548,8 +479,6 @@ describe("jev-runtime pre-dispatch", () => {
         uiDifficulty: { type: "choice", choice: "NONE", probabilities: { NONE: 1 }, confidence: 1 },
       },
     });
-    const prepared = await harness.prepare(GUARDED_TASK, "Ledger");
-    expect(prepared.details.routes[0]!.profile).toBe("NORMAL_SONNET");
     const input = taskCall("call-ledger", GUARDED_TASK, { name: "Ledger", model: "test/local:auto" });
     expect(await harness.emit("tool_call", input)).toBeUndefined();
     await harness.emit("tool_result", {
@@ -579,8 +508,6 @@ describe("jev-runtime pre-dispatch", () => {
     });
     // 중간 입력은 수용 상태를 종결하지 않는다. held가 그대로 남는다.
     await harness.emit("input", { type: "input", source: "interactive", text: "다음" });
-    expect((await harness.prepare(GUARDED_TASK, "AfterInput")).details.routes[0]!.history)
-      .toMatchObject({ attempts: 1, followed: { ok: 0, held: 1 } });
 
     // 완료 뒤에는 accepted가 기록되고, 적용한 교훈 id는 중복·공백 없이 함께 남는다.
     expect((await judge({ verdict: "accepted", revision: "rev-1", evidenceLocators: ["artifact://focused"], appliedLessons: ["mem-1", " mem-1 ", ""] })).details)
@@ -598,8 +525,8 @@ describe("jev-runtime pre-dispatch", () => {
     const records = readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(records).toMatchObject([
       {
-        type: "dispatch", name: "Ledger", workClass: "NORMAL", focus: null,
-        recommendedProfile: "NORMAL_SONNET", recommendedModel: "test/local", recommendedEffort: "auto",
+        type: "dispatch", name: "Ledger", workClass: null, focus: null,
+        recommendedProfile: null, recommendedModel: null, recommendedEffort: null,
         chosenModel: "test/local", chosenEffort: "auto", routingReason: false, purpose: "primary", ...identity,
       },
       { type: "verdict", verdict: "held", revision: null, evidenceLocators: [], reason: "검수", ...identity },
@@ -672,7 +599,7 @@ describe("jev-runtime pre-dispatch", () => {
       assignmentId: "session-1#call-b#0", attempt: 2, attemptId: "session-1#call-b#0#a2", agentId: "agent-b", jobId: "job-new", name: "Fix",
     });
     // 원 attempt의 dispatch metadata를 정확한 identity로 복사해 모델·effort 관측이 사라지지 않는다.
-    expect(resumed.recommendedModel).toBe("test/local");
+    expect(resumed.chosenModel).toBe("test/local");
     expect(resumed.chosenEffort).toBe("auto");
 
     // 새 job 결과보다 먼저 '전송 전에 알던 job'이 정산돼도 재개 attempt를 소비하지 않는다.
@@ -793,7 +720,6 @@ describe("jev-runtime pre-dispatch", () => {
       await harness.emit("tool_result", { ...call, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
     };
 
-    await harness.prepare(GUARDED_TASK, "Fix");
     const input = taskCall("call-real", GUARDED_TASK, { name: "Fix", model: "test/local:auto" });
     await harness.emit("tool_call", input);
     // 한 실행의 core row는 spawn·정산 내내 같은 startTime을 갖는다.
@@ -858,7 +784,6 @@ describe("jev-runtime pre-dispatch", () => {
       judgeAnswers: { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } },
     });
     const records = () => readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    await harness.prepare(GUARDED_TASK, "Fix");
     const input = taskCall("call-plain", GUARDED_TASK, { name: "Fix", model: "test/local:auto" });
     await harness.emit("tool_call", input);
     const firstStart = Date.now() - 120_000;
@@ -891,8 +816,6 @@ describe("jev-runtime pre-dispatch", () => {
     });
     const left = GUARDED_TASK.replace("a.ts,b.ts", "left.ts");
     const right = GUARDED_TASK.replace("a.ts,b.ts", "right.ts");
-    await harness.prepare(left, "Left");
-    await harness.prepare(right, "Right");
     const call = {
       type: "tool_call", toolName: "task", toolCallId: "batch",
       input: { context: "", tasks: [
@@ -921,8 +844,6 @@ describe("jev-runtime pre-dispatch", () => {
     const records = readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(records.filter((record) => record.type === "outcome").map((record) => [record.assignmentId, record.jobId]))
       .toEqual([["session-1#batch#1", "job-right"], ["session-1#batch#0", "job-left"]]);
-    expect((await harness.prepare(GUARDED_TASK, "AfterBatch")).details.routes[0]!.history)
-      .toMatchObject({ attempts: 2, followed: { ok: 1, pending: 1 } });
   });
   describe("restart 뒤 소유권 복원", () => {
     const NORMAL = { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } };
@@ -930,8 +851,7 @@ describe("jev-runtime pre-dispatch", () => {
     const GAMMA = GUARDED_TASK.replace("a.ts,b.ts", "c.ts");
     const alphaOwnership = { primaryDeliverable: "x", ownedPaths: ["a.ts", "b.ts"], workspace: "shared" };
     const ledgerRows = (path: string) => readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    async function spawn(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task: string, callId: string, agentId: string, jobId: string) {
-      await harness.prepare(task, name);
+    async function spawn(harness: EventHarness, name: string, task: string, callId: string, agentId: string, jobId: string) {
       const input = taskCall(callId, task, { name, model: "test/local:auto" });
       expect(await harness.emit("tool_call", input)).toBeUndefined();
       await harness.emit("tool_result", {
@@ -954,10 +874,7 @@ describe("jev-runtime pre-dispatch", () => {
       expect(ledgerRows(harness.ledgerPath)).toMatchObject([{ type: "dispatch", name: "Alpha", ownership: alphaOwnership }]);
 
       await harness.emit("session_start", { type: "session_start" });
-      const beta = await harness.prepare(BETA, "Beta");
-      expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", ownedPaths: ["a.ts", "b.ts"], active: true, workspace: "shared" }] });
       expect(await dispatch(harness, "call-beta-1", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
-      await harness.prepare(GAMMA, "Gamma");
       expect(await dispatch(harness, "call-gamma", "Gamma", GAMMA)).toBeUndefined();
 
       running.length = 0;
@@ -971,8 +888,6 @@ describe("jev-runtime pre-dispatch", () => {
       // 새 runtime 인스턴스가 같은 원장을 읽는다. core snapshot에는 그 job이 없다.
       const restarted = createHarness({ ledgerPath: first.ledgerPath, judgeAnswers: NORMAL });
       await restarted.emit("session_start", { type: "session_start" });
-      const beta = await restarted.prepare(BETA, "Beta");
-      expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Dead", ownedPaths: ["a.ts", "b.ts"], active: false }] });
       expect(await dispatch(restarted, "call-beta", "Beta", BETA)).toBeUndefined();
     });
 
@@ -987,9 +902,6 @@ describe("jev-runtime pre-dispatch", () => {
         chosenModel: "test/local", chosenEffort: "high", routingReason: false, purpose: "primary", ...identity,
       })}\n`);
       await harness.emit("session_start", { type: "session_start" });
-      const gamma = await harness.prepare(GAMMA, "Gamma");
-      // 경로를 모르는 owner는 placement 후보로 지어내지 않는다.
-      expect(gamma.details.routes[0]).toMatchObject({ existingOwners: [] });
       expect(await dispatch(harness, "call-gamma-1", "Gamma", GAMMA))
         .toMatchObject({ block: true, reason: expect.stringContaining("소유 경로가 기록되지 않은") });
       expect(await harness.emit("tool_call", taskCall("call-gamma-iso", GAMMA, { name: "Gamma", model: "test/local:auto", isolated: true }))).toBeUndefined();
@@ -1018,8 +930,6 @@ describe("jev-runtime pre-dispatch", () => {
       ]);
       for (const round of ["before-restart", "after-restart"]) {
         if (round === "after-restart") await harness.emit("session_start", { type: "session_start" });
-        const beta = await harness.prepare(BETA, "Beta");
-        expect(beta.details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", ownedPaths: ["a.ts", "b.ts"], active: true }] });
         expect(await dispatch(harness, `call-beta-${round}`, "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
       }
       // 재시작 뒤에도 같은 assignment의 재개 attempt identity로 판정이 이어진다.
@@ -1037,10 +947,10 @@ describe("jev-runtime pre-dispatch", () => {
       test("별도 task 호출의 예약은 하류 거절·실패에서 자기 것만 풀리고 spawn 결과는 실제 시작한 child로만 넘어간다", async () => {
         const running: Array<Record<string, unknown>> = [];
         const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
-        for (const [task, name] of [[GUARDED_TASK, "Alpha"], [BETA, "Beta"], [GAMMA, "Gamma"]] as const) await harness.prepare(task, name);
         expect(await dispatch(harness, "call-alpha", "Alpha", GUARDED_TASK)).toBeUndefined();
         // 첫 호출의 spawn 결과가 오기 전 같은 공유 경로(b.ts)를 쥐려는 별도 호출은 막힌다. disjoint 호출은 통과한다.
-        expect(await dispatch(harness, "call-beta-1", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
+        expect(await dispatch(harness, "call-beta-1", "Beta", BETA))
+          .toMatchObject({ block: true, reason: expect.stringMatching(/spawn 결과.*Alpha/) });
         expect(await dispatch(harness, "call-gamma", "Gamma", GAMMA)).toBeUndefined();
         // 뒤 guard가 Alpha를 막으면 core는 tool_result 없이 tool_execution_end만 낸다. Alpha 예약만 풀리고 Gamma 예약은 남는다.
         await executionEnd(harness, "call-alpha");
@@ -1055,16 +965,15 @@ describe("jev-runtime pre-dispatch", () => {
         running.push({ id: "job-beta", agentId: "agent-beta" });
         await harness.emit("tool_result", { ...betaInput, type: "tool_result", content: [{ type: "text", text: "spawned" }], isError: false, details: { async: { jobId: "job-beta" }, progress: [{ index: 0, id: "agent-beta", status: "running" }] } });
         await executionEnd(harness, "call-beta-3");
-        // owner 조건이 바뀌었으므로 Main은 maker_route를 다시 판단한다. 그래도 실제 owner Beta가 막는다.
-        await harness.prepare(GUARDED_TASK, "Alpha");
-        expect(await dispatch(harness, "call-alpha-2", "Alpha", GUARDED_TASK)).toMatchObject({ block: true, reason: expect.stringContaining("Beta") });
+        const blocked = await dispatch(harness, "call-alpha-2", "Alpha", GUARDED_TASK) as { block: boolean; reason: string };
+        expect(blocked?.block).toBe(true);
+        expect(blocked.reason).toMatch(/active owner.*Beta/);
+        expect(blocked.reason).not.toMatch(/maker_route|preparedId|ROUTING_REASON/);
       });
 
       test("부분 성공 batch는 시작한 child만 owner로 남기고 schedule에 실패한 child는 잠그지 않는다", async () => {
         const running: Array<Record<string, unknown>> = [{ id: "job-delta", agentId: "agent-delta" }];
         const harness = createHarness({ asyncJobs: running, judgeAnswers: NORMAL });
-        await harness.prepare(DELTA, "Delta");
-        await harness.prepare(EPSILON, "Epsilon");
         const call = {
           type: "tool_call", toolName: "task", toolCallId: "call-partial",
           input: { context: "", tasks: [
@@ -1084,17 +993,14 @@ describe("jev-runtime pre-dispatch", () => {
           .toMatchObject({ ok: false });
         for (const round of ["before-reload", "after-reload"]) {
           if (round === "after-reload") await harness.emit("session_start", { type: "session_start" });
-          expect([round, (await harness.prepare(DELTA, "DeltaNext")).details.routes[0]!.history])
-            .toMatchObject([round, { attempts: 1, followed: { pending: 1, rework: 0 } }]);
+          expect((await harness.verdict({ ...epsilon, verdict: "held", reason: "not started" })).details).toMatchObject({ ok: false });
         }
-        await harness.prepare(EPSILON, "EpsilonNext");
         expect(await dispatch(harness, "call-delta-next", "DeltaNext", DELTA)).toMatchObject({ block: true, reason: expect.stringContaining("Delta") });
         expect(await dispatch(harness, "call-epsilon-next", "EpsilonNext", EPSILON)).toBeUndefined();
       });
 
       test("모든 child schedule이 실패한 결과는 owner를 남기지 않는다", async () => {
         const harness = createHarness({ judgeAnswers: NORMAL });
-        await harness.prepare(DELTA, "Delta");
         const input = taskCall("call-none", DELTA, { name: "Delta", model: "test/local:auto" });
         expect(await harness.emit("tool_call", input)).toBeUndefined();
         // core 실제형태: 시작한 job이 하나도 없으면 오류가 아닌 결과에 progress·async 없이 빈 results만 싣는다.
@@ -1102,7 +1008,6 @@ describe("jev-runtime pre-dispatch", () => {
           content: [{ type: "text", text: "Failed to start background task job: agent-delta: Background job limit reached (8)." }],
           details: { projectAgentsDir: null, results: [], totalDurationMs: 0 } });
         await executionEnd(harness, "call-none");
-        await harness.prepare(DELTA, "DeltaNext");
         expect(await dispatch(harness, "call-delta-after", "DeltaNext", DELTA)).toBeUndefined();
       });
 
@@ -1113,7 +1018,6 @@ describe("jev-runtime pre-dispatch", () => {
           await spawn(harness, "Alpha", GUARDED_TASK, "call-alpha", "agent-alpha", "job-alpha");
           running.length = 0;
           await settle(harness, "job-alpha", "agent-alpha");
-          await harness.prepare(BETA, "Beta");
           expect(await dispatch(harness, "call-beta-idle", "Beta", BETA)).toBeUndefined();
           await executionEnd(harness, "call-beta-idle");
 
@@ -1130,13 +1034,11 @@ describe("jev-runtime pre-dispatch", () => {
           running.push({ id: resumedJob, agentId: "agent-alpha", startTime: Date.now() + 1 });
           await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
           expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "dispatch").at(-1)).toMatchObject({ attemptId: "session-1#call-alpha#0#a2", jobId: resumedJob });
-          expect((await harness.prepare(BETA, "Beta")).details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", active: true }] });
           expect(await dispatch(harness, "call-beta-busy", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
 
           // 재개 실행이 끝나면(terminal) 같은 경로는 다시 발주할 수 있다. 원장 running row만으로 잠그지 않는다.
           running.length = 0;
           await settle(harness, resumedJob, "agent-alpha");
-          await harness.prepare(BETA, "Beta");
           expect(await dispatch(harness, "call-beta-done", "Beta", BETA)).toBeUndefined();
         });
       }
@@ -1151,20 +1053,16 @@ describe("jev-runtime pre-dispatch", () => {
         const rework = { type: "tool_call", toolCallId: "call-rework", toolName: "write", input: { path: "agent://agent-alpha", content: "REWORK task_id=Alpha role=maker previous_revision=r1 next_revision=r2" } };
         await harness.emit("tool_call", rework);
         await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-pending", "Beta", BETA)).toBeUndefined();
         await executionEnd(harness, "call-beta-pending");
         running.push({ id: "job-alpha-late", agentId: "agent-alpha", startTime: Date.now() + 1 });
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-late", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
         running.length = 0;
         await settle(harness, "job-alpha-late", "agent-alpha");
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-free", "Beta", BETA)).toBeUndefined();
         await executionEnd(harness, "call-beta-free");
         // REWORK가 아닌 후속 지시로 깨어난 실행도 같은 checkout에 쓸 수 있는 실제 writer다.
         running.push({ id: "job-alpha-follow", agentId: "agent-alpha" });
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-follow", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
       });
 
@@ -1183,12 +1081,10 @@ describe("jev-runtime pre-dispatch", () => {
         await harness.emit("tool_call", rework);
         running.push({ id: "job-alpha-2", agentId: "agent-alpha", startTime: Date.now() + 1 });
         await harness.emit("tool_result", { ...rework, type: "tool_result", content: [{ type: "text", text: "Delivered" }], isError: false });
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-busy", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
         running.length = 0;
         await cancel(harness, "job-alpha-2", "agent-alpha");
         expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "outcome").at(-1)).toMatchObject({ attemptId: "session-1#call-alpha#0#a2", status: "cancelled" });
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-after-cancel", "Beta", BETA)).toBeUndefined();
       });
 
@@ -1200,17 +1096,14 @@ describe("jev-runtime pre-dispatch", () => {
         await settle(harness, "job-alpha", "agent-alpha");
         await harness.emit("session_start", { type: "session_start" });
         // 원장 completed attempt는 그 자체로 잠그지 않는다.
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-idle", "Beta", BETA)).toBeUndefined();
         await executionEnd(harness, "call-beta-idle");
         // REWORK가 아닌 후속 지시로 같은 canonical agent의 실행이 다시 돌면 같은 소유 경로의 writer다.
         await harness.emit("tool_call", { type: "tool_call", toolCallId: "dm-follow", toolName: "write", input: { path: "agent://agent-alpha", content: "로그도 확인해줘." } });
         running.push({ id: "job-alpha", agentId: "agent-alpha", startTime: Date.now() + 1 });
-        expect((await harness.prepare(BETA, "Beta")).details.routes[0]).toMatchObject({ existingOwners: [{ name: "Alpha", active: true }] });
         expect(await dispatch(harness, "call-beta-follow", "Beta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
         running.length = 0;
         await cancel(harness, "job-alpha", "agent-alpha");
-        await harness.prepare(BETA, "Beta");
         expect(await dispatch(harness, "call-beta-after-cancel", "Beta", BETA)).toBeUndefined();
       });
 
@@ -1247,19 +1140,16 @@ describe("jev-runtime pre-dispatch", () => {
           running.splice(0, 1);
           recent.push(row("job-alpha", "agent-alpha", "cancelled", 1_000));
           await read(harness, "job-alpha", "cancelled");
-          await harness.prepare(GAMMA.replace("c.ts", "a.ts"), "Gamma");
           expect(await dispatch(harness, "call-gamma-aborting", "Gamma", GAMMA.replace("c.ts", "a.ts"))).toMatchObject({ block: true, reason: expect.stringContaining("Alpha") });
           expect(outcomes(harness.ledgerPath)).toEqual([]);
           // 실제 종료: 같은 실행 row에 endTime이 생긴다. read 없이 다음 owner 경계에서 정산한다.
           recent.splice(0, 1, row("job-alpha", "agent-alpha", "cancelled", 1_000, 1_400));
-          await harness.prepare(GAMMA.replace("c.ts", "a.ts"), "Gamma");
           expect(await dispatch(harness, "call-gamma-ended", "Gamma", GAMMA.replace("c.ts", "a.ts"))).toBeUndefined();
           await executionEnd(harness, "call-gamma-ended");
           expect(outcomes(harness.ledgerPath)).toEqual(["agent-alpha:cancelled"]);
           // 같은 실행의 뒤 read는 중복 outcome을 만들지 않고, sibling Beta는 계속 보호된다.
           await read(harness, "job-alpha", "cancelled");
           expect(outcomes(harness.ledgerPath)).toEqual(["agent-alpha:cancelled"]);
-          await harness.prepare(BETA, "Delta");
           expect(await dispatch(harness, "call-delta", "Delta", BETA)).toMatchObject({ block: true, reason: expect.stringContaining("Beta") });
         });
 
@@ -1276,7 +1166,6 @@ describe("jev-runtime pre-dispatch", () => {
             await kill(harness, "job-alpha", receipt);
             running.length = 0;
             if (laterRow) recent.push(laterRow);
-            await harness.prepare(BETA, "Beta");
             expect([label, await dispatch(harness, `call-beta-${label}`, "Beta", BETA)]).toEqual([label, expect.objectContaining({ block: true })]);
             expect([label, outcomes(harness.ledgerPath)]).toEqual([label, []]);
           }
@@ -1301,7 +1190,6 @@ describe("jev-runtime pre-dispatch", () => {
             running.length = 0;
             recent.push(...newer);
             if (readFirst) await read(harness, "job-alpha", "cancelled");
-            await harness.prepare(BETA, "Beta");
             const result = await dispatch(harness, `call-beta-${label}`, "Beta", BETA);
             expect([label, result]).toEqual([label, released ? undefined : expect.objectContaining({ block: true, reason: expect.stringContaining("Alpha") })]);
             expect([label, outcomes(harness.ledgerPath)]).toEqual([label, released ? ["agent-alpha:cancelled"] : []]);
@@ -1352,8 +1240,6 @@ describe("jev-runtime pre-dispatch", () => {
         // held는 검수 revision이 없을 수 있다. 관계를 지어내지 않는다.
         expect((await harness.verdict({ ...alpha, verdict: "held", reason: "대기" })).details)
           .toMatchObject({ ok: true, record: { revision: null, sourceRevision: "r1", revisionRelation: "unknown" } });
-        // 기록 관계가 달라도 품질 집계 분류는 바꾸지 않는다(수용 ok는 completed+accepted).
-        expect((await harness.prepare(BETA, "Beta")).details.routes[0]!.history).toMatchObject({ attempts: 1, followed: { ok: 0, held: 1 } });
       });
 
       test("object revision은 대표 id로 읽고, 블록 없는 job이 앞선 알림에서도 자기 블록의 원 revision을 읽으며, 관계 원인을 원장에 남긴다", async () => {
@@ -1460,7 +1346,6 @@ describe("jev-runtime pre-dispatch", () => {
 
       test("성공 child는 실제 id·원 revision으로 completed가 되고 reload 전후로 명시 수용과 같은 경로 다음 발주가 가능하다", async () => {
         const harness = createHarness({ judgeAnswers: NORMAL });
-        await harness.prepare(GUARDED_TASK, "Alpha");
         const receipt = await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }), [singleResult("Alpha")]);
         // 같은 receipt 재전달은 attempt를 새로 만들거나 outcome을 다시 남기지 않는다.
         await harness.emit("tool_result", receipt);
@@ -1472,9 +1357,6 @@ describe("jev-runtime pre-dispatch", () => {
           if (round === "after-reload") await harness.emit("session_start", { type: "session_start" });
           expect([round, (await accept(harness)).details])
             .toMatchObject([round, { ok: true, record: { agentId: "Alpha", sourceRevision: "r1", revisionRelation: "same" } }]);
-          const beta = await harness.prepare(BETA, "Beta");
-          expect([round, beta.details.routes[0]])
-            .toMatchObject([round, { existingOwners: [{ name: "Alpha", active: false }], history: { attempts: 1, unobserved: 0 } }]);
           expect([round, await dispatch(harness, `call-beta-${round}`, "Beta", BETA)]).toEqual([round, undefined]);
           await executionEnd(harness, `call-beta-${round}`);
         }
@@ -1482,7 +1364,6 @@ describe("jev-runtime pre-dispatch", () => {
 
       test("inline 결과의 실제 응답 모델과 대체 여부를 outcome에 남긴다", async () => {
         const harness = createHarness({ judgeAnswers: NORMAL });
-        await harness.prepare(GUARDED_TASK, "Alpha");
         await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }),
           [singleResult("Alpha", { resolvedModel: "test/fallback", resolvedModelIsFallback: true })]);
         expect(ledgerRows(harness.ledgerPath).find((row) => row.type === "outcome"))
@@ -1498,11 +1379,9 @@ describe("jev-runtime pre-dispatch", () => {
         ];
         for (const [label, extra, isError] of variants) {
           const harness = createHarness({ judgeAnswers: NORMAL });
-          await harness.prepare(GUARDED_TASK, "Alpha");
           await runInline(harness, taskCall("call-alpha", GUARDED_TASK, { name: "Alpha", model: "test/local:auto" }), [singleResult("Alpha", extra)], isError);
           expect([label, outcomes(harness.ledgerPath)]).toEqual([label, ["failed"]]);
           expect([label, (await accept(harness)).details]).toMatchObject([label, { ok: false, error: expect.stringContaining("failed") }]);
-          await harness.prepare(BETA, "Beta");
           expect([label, await dispatch(harness, "call-beta", "Beta", BETA)]).toEqual([label, undefined]);
         }
       });
@@ -1514,7 +1393,6 @@ describe("jev-runtime pre-dispatch", () => {
         const charged = getTaskGuardUsage(budget);
         expect(charged.total).toBe(1);
         const harness = createHarness({ judgeAnswers: NORMAL });
-        await harness.prepare(GUARDED_TASK, "Alpha");
         const receipt = await runInline(harness, call, [singleResult("Alpha", { exitCode: 1, aborted: true, abortReason: "Cancelled before start" })]);
         settleTaskCall(budget, call.toolCallId, { executed: true, isError: false, details: receipt.details, registry: [] });
         expect(outcomes(harness.ledgerPath)).toEqual(["failed"]);
@@ -1526,7 +1404,6 @@ describe("jev-runtime pre-dispatch", () => {
         const DELTA = GUARDED_TASK.replace("a.ts,b.ts", "d.ts");
         const EPSILON = GUARDED_TASK.replace("a.ts,b.ts", "e.ts");
         const harness = createHarness({ judgeAnswers: NORMAL });
-        for (const [task, name] of [[DELTA, "Delta"], [EPSILON, "Epsilon"], [GAMMA, "Gamma"]] as const) await harness.prepare(task, name);
         const call = { toolCallId: "call-batch", input: { context: "", tasks: [
           { name: "Delta", agent: "maker", task: DELTA, model: "test/local:auto" },
           { name: "Epsilon", agent: "maker", task: EPSILON, model: "test/local:auto" },
@@ -1549,9 +1426,7 @@ describe("jev-runtime pre-dispatch", () => {
         expect((await accept(harness, triple(0), "r7")).details).toMatchObject({ ok: true, record: { agentId: "Delta", sourceRevision: "r7", revisionRelation: "same" } });
         expect((await accept(harness, triple(1))).details).toMatchObject({ ok: false });
         expect((await accept(harness, triple(2))).details).toMatchObject({ ok: false, error: expect.stringContaining("failed") });
-        expect((await harness.prepare(DELTA, "DeltaNext")).details.routes[0]!.history).toMatchObject({ attempts: 2, unobserved: 1 });
         for (const [task, name] of [[DELTA, "DeltaNext"], [EPSILON, "EpsilonNext"], [GAMMA, "GammaNext"]] as const) {
-          await harness.prepare(task, name);
           expect([name, await dispatch(harness, `call-${name}`, name, task)]).toEqual([name, undefined]);
         }
       });
@@ -1695,8 +1570,7 @@ describe("jev-runtime pre-dispatch", () => {
         await spawn(harness, "Fix", BETA_B, "call-b", "Fix-2", "job-b");
         return harness;
       }
-      async function overlap(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, callId: string, task: string) {
-        await harness.prepare(task, "Other");
+      async function overlap(harness: EventHarness, callId: string, task: string) {
         return harness.emit("tool_call", taskCall(callId, task, { name: "Other", model: "test/local:auto" }));
       }
 
@@ -1737,12 +1611,6 @@ describe("jev-runtime pre-dispatch", () => {
         // 재개 attempt는 B가 아니라 A의 assignment에 붙는다.
         expect(ledgerRows(harness.ledgerPath).filter((row) => row.type === "dispatch").map((row) => [row.attemptId, row.agentId, row.ownership?.ownedPaths]))
           .toEqual([["session-1#call-a#0#a1", "Fix", ["a.ts"]], ["session-1#call-b#0#a1", "Fix-2", ["b.ts"]], ["session-1#call-a#0#a2", "Fix", ["a.ts"]]]);
-        // a.ts·b.ts를 함께 쥐려는 placement 조회에는 같은 이름 두 child가 각자의 경로로 모두 보인다.
-        const both = await harness.prepare(GUARDED_TASK, "Other");
-        expect(both.details.routes[0]).toMatchObject({ existingOwners: [
-          { name: "Fix", ownedPaths: ["a.ts"], active: true },
-          { name: "Fix", ownedPaths: ["b.ts"], active: true },
-        ] });
         expect(await overlap(harness, "call-c2", ALPHA_A)).toMatchObject({ block: true, reason: expect.stringContaining("Fix") });
         expect(await overlap(harness, "call-d2", BETA_B)).toMatchObject({ block: true, reason: expect.stringContaining("Fix") });
 
@@ -1781,7 +1649,6 @@ describe("jev-runtime pre-dispatch", () => {
         workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
       },
     });
-    await harness.prepare(GUARDED_TASK, "Broken");
     const input = taskCall("call-broken", GUARDED_TASK, { name: "Broken", model: "test/local:auto" });
     expect(await harness.emit("tool_call", input)).toBeUndefined();
     await harness.emit("tool_result", {
@@ -1792,21 +1659,10 @@ describe("jev-runtime pre-dispatch", () => {
       details: { async: { jobId: "job-broken" }, progress: [{ index: 0, id: "agent-broken", status: "running" }] },
     });
     expect(harness.warnings.some((warning) => warning.includes("routing ledger"))).toBe(true);
-    expect((await harness.prepare(GUARDED_TASK, "After")).details.routes[0]!.status).toBe("judged");
+    expect(await harness.emit("tool_call", taskCall("after", GUARDED_TASK.replace("a.ts,b.ts", "other.ts"), { name: "After" }))).toBeUndefined();
   });
 
 });
-const ownerJudgments = (harness: { judgments: RecordedJudgment[] }) =>
-  harness.judgments.filter((judgment) => "ownerInstruction" in judgment.questions);
-/** 뒤에서 도는 분류의 advisory를 실제 전송 사건으로 기다린다. 확인과 대기 등록은 같은 tick이라 놓치지 않는다. */
-async function untilSent(harness: { sent: unknown[]; sentChanged(): Promise<void> }, count: number): Promise<void> {
-  while (harness.sent.length < count) await harness.sentChanged();
-}
-async function flushOwnerJudgment(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setImmediate(resolve);
-  await promise;
-}
 describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   const ownerMessage = (message: string, to = "Existing") => ({
     type: "tool_call",
@@ -1821,143 +1677,16 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
   });
   const waitCall = (id: string) => ({ type: "tool_call", toolCallId: id, toolName: "wait", input: {} });
   const CHECKPOINT = "위치: src/a.ts:1-40\n불변식:\n- 계약 유지\n동작 변화: 추가";
-  const OWNER_TASK = `${GUARDED_TASK}\n\n# Acceptance\n- 기존 a.ts 검사 통과\n\n# Notes\n본문 내용은 judge에 보내지 않는다.`;
-  const answer = (choice: string) => ({
-    ownerInstruction: { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 0.9 },
-  });
-
-  test("empty owner guard fields do not adopt the following field as their contract", async () => {
-    const harness = createHarness();
-    await registerLiveMaker(harness, "Existing",
-      "TASK_GUARD:\nWORK_CLASS: maintenance\nPRIMARY_DELIVERABLE:\nOWNED_PATHS:\nFINDING_ID: F-empty\n\nWork.");
-    await harness.emit("tool_call", ownerMessage("Adjust the acceptance criteria."));
-    await flushOwnerJudgment();
-    expect(ownerJudgments(harness)[0]?.state.contract).toMatchObject({ primaryDeliverable: null, ownedPaths: [] });
-  });
-
-  test("known owner 지시는 전송을 붙잡지 않고 원 계약 대비 분류를 뒤에 advisory로 보낸다", async () => {
-    const gate = Promise.withResolvers<void>();
-    const harness = createHarness({ judgeGate: gate.promise, judgeAnswers: answer("scope-change") });
-    await harness.emit("agent_start", {});
-    await registerLiveMaker(harness, "Existing", OWNER_TASK);
-    const message = "a.ts와 `src/c.ts`도 고쳐.\n```ts\nconst privateWire = 1;\n```\nhttps://example.test/x 참고";
-    expect(await harness.emit("tool_call", ownerMessage(message))).toBeUndefined();
-    expect(harness.sent).toHaveLength(0);
-
-    gate.resolve();
-    await flushOwnerJudgment();
-    await flushOwnerJudgment();
-    // 실행 중에는 담아 두었다가 다음 도구 경계에 싣는다(lib/quiet-delivery): wait를 끊지 않는다.
-    expect(harness.sent).toHaveLength(0);
-    await harness.emit("tool_result", { type: "tool_result", toolCallId: "read-1", toolName: "read", input: { path: "a.ts" }, content: [{ type: "text", text: "x" }], isError: false });
-    await untilSent(harness, 1);
-    expect(harness.sent).toHaveLength(1);
-    expect(harness.sent[0]!.options).toEqual({ deliverAs: "aside" });
-    const advisory = String(harness.sent[0]!.message.content);
-    expect(advisory).toContain("[JevRuntime:pre-dispatch-existing-owner-message]");
-    expect(advisory).toContain("분류: 범위 변경");
-    expect(advisory).toContain("ownerInstruction=scope-change");
-    expect(advisory).toContain("maker_route");
-    expect(advisory).not.toMatch(/privateWire|src\/c\.ts|example\.test/);
-    const judgments = ownerJudgments(harness);
-    expect(judgments).toHaveLength(1);
-    expect(judgments[0]!.state).toMatchObject({
-      source: "untrusted-main-instruction-to-existing-maker",
-      contract: { primaryDeliverable: "x", ownedPaths: ["a.ts", "b.ts"], acceptance: "- 기존 [소유 경로] 검사 통과" },
-      instructionTruncated: false,
-      grantsPermission: false,
-    });
-    const instruction = String(judgments[0]!.state.instruction);
-    expect(instruction).toContain("[소유 경로]와 [소유 밖 경로]도 고쳐.");
-    expect(instruction).toContain("[code]");
-    expect(instruction).toContain("[url]");
-    expect(JSON.stringify(judgments[0]!.state)).not.toMatch(/privateWire|src\/c\.ts|example\.test|본문 내용은/);
-  });
-
-  test("확신도 0.5 이상 범위·수용 조건 변경만 알린다", async () => {
-    for (const [choice, confidence, label] of [
-      ["scope-change", 0.41, null], ["scope-change", 0.7, "범위 변경"],
-      ["scope-change", 0.5, "범위 변경"], ["unknown", 0.9, null],
-      ["same-scope", 0.9, null], ["acceptance-change", 0.9, "수용 조건 변경"],
-    ] as const) {
-      const harness = createHarness({ judgeAnswers: {
-        ownerInstruction: { type: "choice", choice, probabilities: { [choice]: confidence }, confidence },
-      } });
-      await registerLiveMaker(harness, "Existing", OWNER_TASK);
-      await harness.emit("tool_call", ownerMessage("완료 조건에 회귀 검사를 더해."));
-      await flushOwnerJudgment();
-      expect(ownerJudgments(harness)).toHaveLength(1);
-      expect(harness.sent).toHaveLength(label ? 1 : 0);
-      if (label) expect(String(harness.sent[0]!.message.content)).toContain(`분류: ${label}.`);
-    }
-  });
-
-  test("JEV 실패·timeout·자격 없음·secret 후보는 분류 안내 없이 처리한다", async () => {
-    for (const options of [{ judgeError: "provider 401" }, { resolveError: "no credentials" }]) {
-      const harness = createHarness(options);
-      await registerLiveMaker(harness, "Existing", OWNER_TASK);
-      await harness.emit("tool_call", ownerMessage("b.ts 오류 처리도 고쳐."));
-      await flushOwnerJudgment();
-      expect(harness.sent).toHaveLength(0);
-      expect(ownerJudgments(harness)).toHaveLength(0);
-    }
-    vi.useFakeTimers();
-    try {
-      const slow = createHarness({ judgeGate: Promise.withResolvers<void>().promise });
-      await registerLiveMaker(slow, "Existing", OWNER_TASK);
-      await slow.emit("tool_call", ownerMessage("b.ts 오류 처리도 고쳐."));
-      vi.advanceTimersByTime(60_000);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(slow.sent).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
-    const secret = createHarness({ judgeAnswers: answer("same-scope") });
-    await registerLiveMaker(secret, "Existing", OWNER_TASK);
-    await secret.emit("tool_call", ownerMessage("a.ts도 고쳐.\nAuthorization: Bearer secret-token-xyz-123456"));
-    expect(ownerJudgments(secret)).toHaveLength(0);
-    expect(secret.sent).toHaveLength(0);
-  });
-
-  test("idle 세션에는 새 턴을 열지 않도록 aside 없이 다음 턴 문맥으로 붙인다", async () => {
-    const harness = createHarness({ idle: true, judgeAnswers: answer("scope-change") });
-    await registerLiveMaker(harness, "Existing", OWNER_TASK);
-    await harness.emit("tool_call", ownerMessage("a.ts 수정 방향을 이렇게 잡아."));
-    await untilSent(harness, 1);
-    expect(harness.sent[0]!.options).toBeUndefined();
-    expect(String(harness.sent[0]!.message.content)).toContain("분류: 범위 변경.");
-  });
-
-  test("세션이 바뀌면 진행 중 분류를 끊고 늦은 결과를 버리며, 복원할 수 없는 owner는 분류하지 않는다", async () => {
-    const gate = Promise.withResolvers<void>();
-    const harness = createHarness({ judgeGate: gate.promise, judgeAnswers: answer("scope-change") });
-    await registerLiveMaker(harness, "Existing", OWNER_TASK);
-    await harness.emit("tool_call", ownerMessage("c.ts까지 범위를 넓혀."));
-    await harness.emit("session_start", { type: "session_start" });
-    gate.resolve();
-    // reload 뒤 원 계약이 없는 같은 대상에는 분류를 시작하지 않는다.
-    await harness.emit("tool_call", ownerMessage("d.ts까지 범위를 넓혀 주세요."));
-    // 끊긴 판정은 이 뒤 새 owner 분류보다 먼저 끝나므로, 도착한 advisory 하나가 새 지시의 것이어야 한다.
-    await registerLiveMaker(harness, "Fresh", OWNER_TASK);
-    await harness.emit("tool_call", { ...ownerMessage("e.ts도 함께 고쳐.", "Fresh"), toolCallId: "dm-fresh" });
-    await untilSent(harness, 1);
-    expect(harness.sent).toHaveLength(1);
-    expect(String(harness.sent[0]!.message.content)).toContain("detailLocator=tool_call:dm-fresh");
-  });
-
-  test("명백한 상태 질문·승인과 체크포인트에 답하는 상태 서술은 분류하지 않는다", async () => {
+  test("writing and delivering a scope-changing instruction to a known owner does not call Jev", async () => {
     const harness = createHarness();
     await registerLiveMaker(harness);
-    await harness.emit("tool_call", ownerMessage("현재 테스트 결과 알려줘?"));
-    await harness.emit("tool_call", ownerMessage("approved: 그 방향으로 진행"));
-    await harness.emit("message_start", incomingDm("158c0220f80b33f0", "Existing", CHECKPOINT));
-    await harness.emit("tool_call", ownerMessage("결과 봤고 그 위치 맞음"));
-    expect(harness.sent).toHaveLength(0);
-    // 답한 뒤에는 체크포인트가 없으므로 같은 서술도 일반 지시로 분류한다. 앞의 제외 지시가 분류됐다면 먼저 도착했어야 한다.
-    await harness.emit("tool_call", ownerMessage("결과 봤고 그 위치 맞음"));
-    await flushOwnerJudgment();
-    expect(ownerJudgments(harness)).toHaveLength(1);
+    const write = ownerMessage("Expand the accepted scope to src/other.ts.", "Existing");
+    expect(await harness.emit("tool_call", write)).toBeUndefined();
+    await harness.emit("tool_result", { ...write, type: "tool_result", isError: false, content: [] });
+    const tick = Promise.withResolvers<void>();
+    setImmediate(tick.resolve);
+    await tick.promise;
+    expect(harness.judgments).toHaveLength(0);
     expect(harness.sent).toHaveLength(0);
   });
 
@@ -1992,40 +1721,6 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     expect(advisory).not.toContain("Stranger");
   });
 
-  test("같은 정규화 지시만 합치고 서로 다른 경로 업무와 구분 불가능 지시는 각각 분류한다", async () => {
-    const harness = createHarness({ judgeAnswers: answer("scope-change") });
-    await registerLiveMaker(harness);
-    await harness.emit("tool_call", ownerMessage("src/a.ts도 고쳐 주세요."));
-    await harness.emit("tool_call", ownerMessage("src/a.ts도 고쳐 주세요."));
-    await harness.emit("tool_call", ownerMessage("src/b.ts도 고쳐 주세요."));
-    await harness.emit("tool_call", ownerMessage("그 부분까지 부탁합니다."));
-    // 마지막 sentinel 분류가 도착하면 앞서 시작한 분류는 모두 끝났다. 중복 지시가 분류됐다면 다섯 통이다.
-    await harness.emit("tool_call", ownerMessage("sentinel 지시를 반영해."));
-    await untilSent(harness, 4);
-    expect(ownerJudgments(harness)).toHaveLength(4);
-    expect(harness.sent).toHaveLength(4);
-  });
-
-  test("완료 보고로 live routing에서 닫힌 known Maker도 분류 대상이다", async () => {
-    const harness = createHarness({ judgeAnswers: answer("acceptance-change") });
-    await registerLiveMaker(harness);
-    await harness.emit("message_start", {
-      type: "message_start",
-      message: {
-        role: "custom",
-        customType: "async-result",
-        attribution: "agent",
-        details: { jobs: [{ jobId: "job-Existing", type: "task", status: "completed" }] },
-      },
-    });
-    harness.sent.length = 0;
-    await harness.emit("tool_call", ownerMessage("완료한 범위에 회귀 검사를 추가해."));
-    await untilSent(harness, 1);
-    expect(ownerJudgments(harness)).toHaveLength(1);
-    expect(String(harness.sent[0]!.message.content)).toContain("known owner Existing에게");
-    expect(String(harness.sent[0]!.message.content)).toContain("분류: 수용 조건 변경.");
-  });
-
   test("완료 owner 후속 지시는 canonical agentId의 미기록 attempt를 한 번 알리고 기록 뒤에는 멈춘다", async () => {
     const session = { current: "session-1" };
     const harness = createHarness({
@@ -2033,7 +1728,6 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
       judgeAnswers: { workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 } },
     });
     await harness.emit("session_start", {});
-    await harness.prepare(GUARDED_TASK, "Existing");
     const spawn = taskCall("call-existing", GUARDED_TASK, { name: "Existing", model: "test/local:auto" });
     expect(await harness.emit("tool_call", spawn)).toBeUndefined();
     await harness.emit("tool_result", {
@@ -2077,7 +1771,6 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     });
     for (const name of ["First", "Second"]) {
       const task = name === "First" ? GUARDED_TASK : GUARDED_TASK.replace("a.ts,b.ts", "c.ts,d.ts");
-      await harness.prepare(task, name);
       const spawn = taskCall(`call-${name}`, task, { name, model: "test/local:auto" });
       expect(await harness.emit("tool_call", spawn)).toBeUndefined();
       await harness.emit("tool_result", {
@@ -2103,30 +1796,6 @@ describe("jev-runtime 기존 Maker 자연어 추가 지시", () => {
     expect(reminders).toHaveLength(1);
     expect(String(reminders[0]!.message.content)).toContain("session-1#call-Second#0#a1");
     expect(String(reminders[0]!.message.content)).not.toContain("session-1#call-First#0#a1");
-  });
-
-  test("새 사용자 입력은 known owner dedupe를 보존하고 서로 다른 지시는 각각 분류한다", async () => {
-    const harness = createHarness({ judgeAnswers: answer("scope-change") });
-    await registerLiveMaker(harness);
-    await harness.emit("message_start", {
-      type: "message_start",
-      message: {
-        role: "custom",
-        customType: "async-result",
-        attribution: "agent",
-        details: { jobs: [{ jobId: "job-Existing", type: "task", status: "completed" }] },
-      },
-    });
-    harness.sent.length = 0;
-    await harness.emit("tool_call", ownerMessage("완료 조건을 바꾸고 범위를 추가해."));
-    await harness.emit("input", { type: "input", source: "rpc", text: "현재 진행만 알려줘" });
-    await harness.emit("tool_call", ownerMessage("완료 조건을 바꾸고 범위를 추가해."));
-    await harness.emit("tool_call", ownerMessage("같은 범위에서 회귀 검사까지 추가해."));
-    // 마지막 sentinel 분류가 도착하면 앞서 시작한 분류는 모두 끝났다. dedupe가 깨졌다면 네 통이다.
-    await harness.emit("tool_call", ownerMessage("sentinel 지시를 반영해."));
-    await untilSent(harness, 3);
-    expect(ownerJudgments(harness)).toHaveLength(3);
-    expect(harness.sent).toHaveLength(3);
   });
 });
 
@@ -2654,9 +2323,7 @@ describe("jev-runtime pre-review", () => {
         input: { path: "agent://ProgressVisibility", content: message },
       });
     }
-    // 지시인 부정문(실행하지 마)만 원 계약 대비 분류에 가고, 질문·인용·승인 표시는 분류하지 않는다.
-    expect(ownerJudgments(harness)).toHaveLength(1);
-    await flushOwnerJudgment();
+    expect(harness.judgments).toHaveLength(0);
     expect(harness.sent).toHaveLength(sentBefore);
     const ownerAdvisories = harness.sent.map((entry) => String(entry.message.content)).join("\n");
     expect(ownerAdvisories).not.toContain("exact 허용");
@@ -2704,8 +2371,7 @@ describe("jev-runtime pre-review", () => {
       },
     });
     expect(result).toBeUndefined();
-    await flushOwnerJudgment();
-    expect(ownerJudgments(harness)).toHaveLength(1);
+    expect(harness.judgments).toHaveLength(0);
     expect(harness.sent).toHaveLength(0);
     const advisory = harness.sent.map((entry) => String(entry.message.content)).join("\n");
     expect(advisory).not.toContain("exact 허용");
@@ -2972,15 +2638,7 @@ describe("jev-runtime pre-review", () => {
     expect(advisory).toContain("unresolved=1");
   });
 
-  function createReviewHarness(options: HarnessOptions = {}) {
-    return createHarness({
-      ...options,
-      judgeAnswers: {
-        workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-        hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
-      },
-    });
-  }
+  const createReviewHarness = createHarness;
 
   async function finishReviewSpawn(harness: EventHarness, name: string, task: string) {
     await harness.emit("tool_result", {
@@ -3018,7 +2676,7 @@ describe("jev-runtime pre-review", () => {
       expect(structuralReports(harness.sent)[0]!.evidenceLocators).toEqual(["artifact://full-proof"]);
       expect(String(harness.sent.at(-1)?.message.content)).toContain("unverified=0");
       expect(String(harness.sent.at(-1)?.message.content)).toContain("unresolved=0");
-      expect(harness.judgments).toHaveLength(1);
+      expect(harness.judgments).toHaveLength(0);
     });
   }
 
@@ -3090,8 +2748,7 @@ describe("jev-runtime pre-review", () => {
     return text.split(" 원 요청 위치: ")[1]!.split(". structuralSummary=")[0]!;
   }
 
-  async function beginReviewTask(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task = `${GUARDED_TASK}\n# Acceptance\nDeliver all three requested behaviors.`) {
-    await harness.prepare(task, name);
+  async function beginReviewTask(harness: EventHarness, name: string, task = `${GUARDED_TASK}\n# Acceptance\nDeliver all three requested behaviors.`) {
     const result = await harness.emit("tool_call", taskCall(`spawn-${name}`, task, { name, model: "test/local:auto" }));
     expect(result).toBeUndefined();
     return task;
@@ -3222,14 +2879,7 @@ describe("jev-runtime pre-review", () => {
     }
   }
 
-  const skillAnswers = {
-    workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-    hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
-    requiredSkillDeliverable: { type: "choice", choice: "VISUAL", probabilities: { VISUAL: 1 }, confidence: 1 },
-    requiredSkillSet_web_ui: { type: "noul", noul: 1 },
-    requiredSkillModifier_ko_copy: { type: "noul", noul: 1 },
-  };
-  const uiTask = `${GUARDED_TASK}\nSKILL_EXCLUSIONS: {"kill-ai-slop":"이 조각은 시각 스캔 없음; 다음 조각에서 확인"}\n# Change\nskill://seed-design을 읽고 skill://hallmark 또는 skill://ui-ux-pro-max를 적용한다.`;
+  const uiTask = `${GUARDED_TASK}\n# Change\nRead skill://seed-design and skill://hallmark before editing.`;
   const skillLines = (harness: { sent: SentMessage[] }) =>
     harness.sent.flatMap((entry) => String(entry.message.content).split("\n").filter((line) => line.startsWith("[skill-read] ")));
 
@@ -3244,12 +2894,11 @@ describe("jev-runtime pre-review", () => {
     const other = await realChildTranscript(join(root, "other"), ["ui-ux-pro-max", "frontend-design"], ["skill://ui-ux-pro-max", "skill://frontend-design"]);
     copyFileSync(other, join(root, "main", "agent-Other.jsonl"));
     copyFileSync(other, parent);
-    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers, asyncJobs: [{ id: "job-Ui", agentId: "agent-Ui", startTime: 100 }] });
+    const harness = createHarness({ sessionFile: parent, asyncJobs: [{ id: "job-Ui", agentId: "agent-Ui", startTime: 100 }] });
     await beginReviewTask(harness, "Ui", uiTask);
     await finishReviewSpawn(harness, "Ui", uiTask);
     const dispatch = readFileSync(harness.ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((record) => record.type === "dispatch");
-    expect(dispatch.requiredSkills).toMatchObject({ state: "selected", sets: ["web-ui"], modifiers: ["ko-copy"], excluded: [{ skill: "kill-ai-slop" }] });
-    expect(dispatch.requiredSkills.skills).toContain("humanizer");
+    expect(dispatch).not.toHaveProperty("requiredSkills");
 
     await harness.emit("message_start", asyncResult("job-Ui"));
     const [line] = skillLines(harness);
@@ -3259,10 +2908,7 @@ describe("jev-runtime pre-review", () => {
     expect(line).toContain("실패한 skill 읽기 1건 제외");
     expect(line).not.toContain("ui-ux-pro-max[");
     expect(line).not.toContain("frontend-design[");
-    expect(line).toContain("전체 읽기 관측 seed-design;");
-    expect(line).toContain("부분 읽기만 hallmark, humanizer");
-    expect(line).toContain("읽기 관측 없음 frontend-design, ui-ux-pro-max");
-    expect(line).toContain("브리프 제외 신고 kill-ai-slop(이유 있음)");
+    expect(line).toContain("필수 세트 미관측");
     expect(line).toContain("transcript=agent-Ui.jsonl");
     expect(line).not.toContain(root);
 
@@ -3284,7 +2930,7 @@ describe("jev-runtime pre-review", () => {
     copyFileSync(child, join(root, "main", "agent-Old.jsonl"));
     const later = Date.now() + 60_000;
     const names = ["Ui", "Gone", "Old"];
-    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers, asyncJobs: names.map((name) => ({ id: `job-${name}`, agentId: `agent-${name}`, startTime: name === "Old" ? later : 100 })) });
+    const harness = createHarness({ sessionFile: parent, asyncJobs: names.map((name) => ({ id: `job-${name}`, agentId: `agent-${name}`, startTime: name === "Old" ? later : 100 })) });
     for (const [index, name] of names.entries()) {
       const task = uiTask.replace("OWNED_PATHS: a.ts,b.ts", `OWNED_PATHS: f${index}.ts`);
       await beginReviewTask(harness, name, task);
@@ -3313,7 +2959,7 @@ describe("jev-runtime pre-review", () => {
     copyFileSync(child, join(root, "main", "agent-Ui.jsonl"));
     const other = await realChildTranscript(join(root, "other"), ["hallmark"], ["skill://hallmark"]);
     copyFileSync(other, parent);
-    const harness = createHarness({ sessionFile: parent, judgeAnswers: skillAnswers });
+    const harness = createHarness({ sessionFile: parent });
     await beginReviewTask(harness, "Ui", uiTask);
     const receipt = {
       ...taskCall("spawn-Ui", uiTask, { name: "Ui", model: "test/local:auto" }),
@@ -3334,12 +2980,22 @@ describe("jev-runtime pre-review", () => {
     expect(lines[0]).not.toContain(root);
   });
 
-  test("a REWORK attempt bound as soon as its job shows up keeps the source attempt's required skills", async () => {
-    const jobs: Array<Record<string, unknown>> = [{ id: "job-Ui", agentId: "agent-Ui", startTime: 100 }];
-    const harness = createHarness({ judgeAnswers: skillAnswers, asyncJobs: jobs });
-    await beginReviewTask(harness, "Ui", uiTask);
-    await finishReviewSpawn(harness, "Ui", uiTask);
-    await harness.emit("message_start", asyncResult("job-Ui", { agentId: "agent-Ui" }));
+  test("a REWORK attempt keeps the legacy source attempt's required skills", async () => {
+    const jobs: Array<Record<string, unknown>> = [];
+    const harness = createHarness({ asyncJobs: jobs });
+    const original = {
+      type: "dispatch", ts: "2026-10-01T00:00:00.000Z", sessionId: fixtureSession,
+      name: "Ui", assignmentId: "session-1#legacy#0", attempt: 1, attemptId: "session-1#legacy#0#a1",
+      agentId: "agent-Ui", jobId: "job-Ui", chosenModel: "test/local", chosenEffort: "auto",
+      ownership: { primaryDeliverable: "x", ownedPaths: ["a.ts", "b.ts"], workspace: "shared" },
+      requiredSkills: { state: "selected", reason: null, sets: ["web-ui"], modifiers: ["ko-copy"], skills: ["seed-design"], excluded: [] },
+    };
+    appendFileSync(harness.ledgerPath, [
+      JSON.stringify(original),
+      JSON.stringify({ ...original, type: "outcome", status: "completed", durationSec: 1 }),
+      "",
+    ].join("\n"));
+    await harness.emit("session_start", {});
     jobs.splice(0);
     const write = {
       toolName: "write", toolCallId: "rework-write",
@@ -3364,18 +3020,15 @@ describe("jev-runtime pre-review", () => {
 });
 
 describe("jev-runtime fail-open과 세션 격리", () => {
-  test("judge 해석 오류와 timeout은 Main 결정이 가능한 unavailable로 돌려준다", async () => {
-    for (const options of [{ resolveError: "Cannot find module" }, { judgeError: "TimeoutError" }]) {
-      const harness = createHarness(options);
-      const result = await harness.prepare();
-      expect(result.details.routes[0].status).toBe("unavailable");
-      expect(result.details.routes[0].recommendations).toBeNull();
-    }
-  });
-
   test("batch 중 한 child만 settle돼도 sibling maker는 live로 남는다", async () => {
-    const harness = createHarness({ asyncJobs: [{ id: "job-1", agentId: "agent-1" }, { id: "job-2", agentId: "agent-2" }] });
-    const multiTask = { tasks: [{ task: GUARDED_TASK }, { task: GUARDED_TASK }] };
+    const asyncJobs = [{ id: "job-1", agentId: "agent-1" }, { id: "job-2", agentId: "agent-2" }];
+    const harness = createHarness({ asyncJobs });
+    const secondTask = GUARDED_TASK.replace("a.ts,b.ts", "c.ts");
+    const multiTask = { tasks: [
+      taskCall("a", GUARDED_TASK, { name: "First" }).input,
+      taskCall("b", secondTask, { name: "Second" }).input,
+    ] };
+    expect(await harness.emit("tool_call", { toolName: "task", toolCallId: "call-1", input: multiTask })).toBeUndefined();
     await harness.emit("tool_result", {
       type: "tool_result",
       toolCallId: "call-1",
@@ -3392,7 +3045,8 @@ describe("jev-runtime fail-open과 세션 격리", () => {
         ],
       },
     });
-    // job-1만 settle → job-2는 live로 남아 다음 dispatch의 existingMakers에 보인다.
+    // Settling job-1 must release only its ownership.
+    asyncJobs.shift();
     await harness.emit("message_start", {
       type: "message_start",
       message: {
@@ -3402,37 +3056,9 @@ describe("jev-runtime fail-open과 세션 격리", () => {
         details: { jobs: [{ jobId: "job-1", agentId: "agent-1", type: "task", status: "completed" }] },
       },
     });
-    await harness.prepare();
-    const second = harness.judgments.at(-1)!;
-    expect((second.state.existingOwners as unknown[]).length).toBe(1);
-  });
-
-  test("settled known owner는 재개 후보로 남고 다른 active 경로 owner는 placement 후보에서 빠진다", async () => {
-    const harness = createHarness();
-    const policyTask = GUARDED_TASK.replace("a.ts,b.ts", "policy.ts");
-    const snapshotTask = GUARDED_TASK.replace("a.ts,b.ts", "snapshot.ts");
-    await registerLiveMaker(harness, "PolicyScope", policyTask);
-    await harness.emit("message_start", {
-      type: "message_start",
-      message: {
-        role: "custom",
-        customType: "async-result",
-        attribution: "agent",
-        details: { jobs: [{ jobId: "job-PolicyScope", type: "task", status: "completed" }] },
-      },
-    });
-    await registerLiveMaker(harness, "SnapshotAsync", snapshotTask);
-    harness.judgments.length = 0;
-
-    await harness.prepare(policyTask, "PolicyRework");
-    expect(harness.judgments).toHaveLength(1);
-    const existingOwners = harness.judgments[0]!.state.existingOwners as Array<Record<string, unknown>>;
-    expect(existingOwners).toEqual([{
-      owner: 0,
-      name: "PolicyScope",
-      goal: "x",
-      ownedPaths: ["policy.ts"],
-    }]);
+    expect(await harness.emit("tool_call", taskCall("first-after", GUARDED_TASK, { name: "FirstAfter" }))).toBeUndefined();
+    expect(await harness.emit("tool_call", taskCall("second-overlap", secondTask, { name: "Overlap" })))
+      .toMatchObject({ block: true, reason: expect.stringContaining("Second") });
   });
 
   test("child 세션의 pre-retry는 그 세션의 advisory로만 간다", async () => {
@@ -3868,8 +3494,7 @@ describe("jev-runtime JEV 배선·취소 관측·세션 전환", () => {
   }
   const dispatch = (harness: EventHarness, callId: string, name: string, task: string) =>
     harness.emit("tool_call", taskCall(callId, task, { name, model: "test/local:auto" }));
-  async function spawn(harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, name: string, task: string, callId: string, agentId: string, jobId: string) {
-    await harness.prepare(task, name);
+  async function spawn(harness: EventHarness, name: string, task: string, callId: string, agentId: string, jobId: string) {
     const input = taskCall(callId, task, { name, model: "test/local:auto" });
     expect(await harness.emit("tool_call", input)).toBeUndefined();
     await harness.emit("tool_result", {
@@ -3896,10 +3521,7 @@ describe("jev-runtime JEV 배선·취소 관측·세션 전환", () => {
     running.length = 0;
     return harness;
   }
-  const betaBlocked = async (harness: EventHarness & { prepare(task: string, name: string): Promise<unknown> }, callId: string) => {
-    await harness.prepare(BETA, "Beta");
-    return dispatch(harness, callId, "Beta", BETA);
-  };
+  const betaBlocked = (harness: EventHarness, callId: string) => dispatch(harness, callId, "Beta", BETA);
 
   describe("취소 요청 row 관측", () => {
     test("취소 body가 늦게 끝나도 같은 실행 row의 endTime을 본 순간에만 그 child owner를 풀고, 그 뒤 관측은 멈춘다", async () => {
@@ -4062,23 +3684,7 @@ describe("시작 거절 Maker 자동 재발주(2026-11-18)", () => {
     role: "assistant", api: "openai-codex-responses", provider: "openai-codex", model: "gpt-6.1-sol", stopReason: "error",
     errorMessage: "Codex error event: Unsupported parameter: system (code=invalid_request_error)", content: [],
   };
-  // 추천을 픽스처 발주 모델(NORMAL_SONNET test/local)로 맞춘다.
-  const normal = {
-    workClass: { type: "choice", choice: "NORMAL", probabilities: { NORMAL: 1 }, confidence: 1 },
-    hardFocus: { type: "choice", choice: "CODE_SYSTEM", probabilities: { CODE_SYSTEM: 1 }, confidence: 1 },
-  };
-  // 기존 owner에게 추가 지시하라고 Jev가 답하는 판정. owner가 없으면 새 발주다.
-  const instructExisting = {
-    ...normal,
-    additionalInstruction: { type: "noul", noul: 0.9 },
-    ownerTarget: { type: "choice", choice: "owner0", probabilities: { owner0: 1 }, confidence: 1 },
-  };
-
-  /** maker_route 준비 → 발주 → spawn 영수증까지 실제 handler로 지난다. child id는 agent-Next다. */
-  async function dispatchPrepared(harness: ReturnType<typeof createHarness>, preparedId: string, callId: string) {
-    const result = await harness.emit("tool_call", taskCall(callId, `PREPARED_TASK: ${preparedId}`, { context: "PREPARED_CONTEXT", model: "test/local:auto" })) as { block?: boolean; reason?: string; input?: Record<string, unknown> };
-    return result;
-  }
+  const call = (id: string) => taskCall(id, GUARDED_TASK, { name: "Next" });
   async function spawn(harness: ReturnType<typeof createHarness>, callId: string, input: Record<string, unknown>) {
     harness.startChild("agent-Next");
     await harness.emit("tool_result", {
@@ -4087,12 +3693,11 @@ describe("시작 거절 Maker 자동 재발주(2026-11-18)", () => {
     });
   }
 
-  test("끝내 시작 거절로 실패한 child는 owner에서 빠져 같은 준비·이름으로 다시 발주되고 placement도 그 child를 가리키지 않는다", async () => {
-    const harness = createHarness({ judgeAnswers: instructExisting });
-    const preparedId = (await harness.prepare()).details.routes[0].preparedId as string;
-    const first = await dispatchPrepared(harness, preparedId, "call-first");
-    expect(first.reason).toBeUndefined();
-    await spawn(harness, "call-first", first.input!);
+  test("a terminal start rejection releases the owner for an ordinary task retry", async () => {
+    const harness = createHarness();
+    const first = call("call-first");
+    expect(await harness.emit("tool_call", first)).toBeUndefined();
+    await spawn(harness, first.toolCallId, first.input);
 
     const notified = harness.sentChanged();
     harness.emitChild("agent-Next", { type: "message_end", message: REJECTED });
@@ -4102,20 +3707,14 @@ describe("시작 거절 Maker 자동 재발주(2026-11-18)", () => {
     expect(notice.message.customType).toBe("start-reject-fallback");
     expect(String(notice.message.content)).toContain("Unsupported parameter: system");
 
-    // 소유 충돌 조건(owner revision)과 준비 이름: 실패 child가 남아 있으면 '현재 소유권 충돌 조건이 바뀌었습니다'로 막혔다.
-    const again = await dispatchPrepared(harness, preparedId, "call-again");
-    expect(again.block).toBeUndefined();
-    expect(again.input?.name).toBe("Next");
-    // placement: 다시 준비해도 실패 child를 기존 owner로 고르지 않는다(instruct-existing이면 ROUTING_REASON 없이 막혔다).
-    const reprepared = await harness.prepare();
-    expect(reprepared.details.routes[0].placement.action).toBe("dispatch-new");
+    expect(await harness.emit("tool_call", call("call-again"))).toBeUndefined();
   });
 
   test("자동 재발주가 실행 중이면 Main의 같은 이름 수동 발주를 막고, 그 child가 끝나면 이 차단은 풀린다", async () => {
-    const harness = createHarness({ judgeAnswers: normal });
-    const preparedId = (await harness.prepare()).details.routes[0].preparedId as string;
-    const first = await dispatchPrepared(harness, preparedId, "call-first");
-    await spawn(harness, "call-first", first.input!);
+    const harness = createHarness();
+    const first = call("call-first");
+    expect(await harness.emit("tool_call", first)).toBeUndefined();
+    await spawn(harness, first.toolCallId, first.input);
 
     const notified = harness.sentChanged();
     harness.emitChild("agent-Next", { type: "message_end", message: REJECTED });
@@ -4123,13 +3722,12 @@ describe("시작 거절 Maker 자동 재발주(2026-11-18)", () => {
     await notified;
     expect(String(harness.sent.at(-1)!.message.content)).toContain("automatic redispatch done; Main must not redispatch manually");
 
-    const duplicate = await dispatchPrepared(harness, preparedId, "call-dup");
-    expect(duplicate).toMatchObject({ block: true });
-    expect(duplicate.reason).toContain("anthropic/claude-sonnet-5-5");
+    const duplicate = await harness.emit("tool_call", call("call-dup"));
+    expect(duplicate).toMatchObject({ block: true, reason: expect.stringContaining("anthropic/claude-sonnet-5-5") });
 
     harness.emitChild("agent-Next", { type: "agent_end" });
     await harness.emit("tool_execution_end", { type: "tool_execution_end", toolCallId: "call-dup", toolName: "task" });
-    const later = await dispatchPrepared(harness, preparedId, "call-later");
-    expect(later.reason ?? "").not.toContain("automatic redispatch");
+    const later = await harness.emit("tool_call", call("call-later"));
+    expect(JSON.stringify(later) ?? "").not.toContain("Automatic fallback is active");
   });
 });

@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { isPhoneOperatorCall } from "../../extensions/command-guard/task-guard";
-import { resolvePreparedTaskInput } from "../../extensions/lib/prepared-task";
 import { createQuietDelivery } from "../../extensions/lib/quiet-delivery";
 import { onSessionLifecycle } from "../../extensions/lib/session-identity";
 import { carriesUserWords, compactionAdvice, forLog, handoffAdvice, messageText, stripGuardLines, unsupportedApprovalClaims } from "./requirement-carry";
@@ -122,24 +121,16 @@ export function createRequirementCarry(options: { log?: Log } = {}) {
     });
 
     pi.on("tool_call", (event, ctx) => {
-      if (!isMain(ctx) || (event.toolName !== "task" && event.toolName !== "maker_route")) return;
-      if (!isRecord(event.input) || current.length === 0) return;
+      if (!isMain(ctx) || event.toolName !== "task") return;
+      const input = event.input;
+      if (!isRecord(input) || current.length === 0) return;
       const sessionId = sessionOf(ctx);
-      let input: Record<string, unknown> = event.input;
-      // 준비 참조는 복원한 본문으로 본다. 복원할 수 없으면 preflight-routing/SpawnGuard가 이미 막는 호출이므로 건너뛴다.
-      // 복원이 끝난 context는 그대로 본문이다(복원 값이 우연히 PREPARED_CONTEXT로 시작해도 버리지 않는다).
-      try {
-        input = resolvePreparedTaskInput(input, sessionId);
-      } catch {
-        return;
-      }
       const context = typeof input.context === "string" ? stripGuardLines(input.context) : "";
       const items: unknown[] = Array.isArray(input.tasks) ? input.tasks : [input];
       const names: string[] = [];
       items.forEach((item, index) => {
         if (!isRecord(item) || typeof item.task !== "string" || isPhoneOperatorCall(item, input)) return;
         if (item.agent !== undefined && String(item.agent).trim().toLowerCase() !== "maker") return;
-        // 복원이 끝난 본문이므로 접두어로 건너뛰지 않는다(참조 형식을 설명하는 브리프도 본문이다).
         if (carriesUserWords(`${context}\n${stripGuardLines(item.task)}`, current)) return;
         names.push(typeof item.name === "string" && item.name.trim() ? item.name.trim() : `task ${index + 1}`);
       });

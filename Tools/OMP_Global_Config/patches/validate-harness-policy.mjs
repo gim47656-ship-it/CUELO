@@ -51,9 +51,6 @@ const taskGuardRulePath = "agent/rules/task-guard.md";
 // 발주 지침이 사는 자리들. guard template(정본)과 그것을 실제 발주에 쓰는 두 안내가 갈라지면
 // producer는 필수 규칙을 따랐는데 카드 제목이 비는 모순이 다시 생긴다.
 const dispatchGuidePaths = ["agent/AGENTS.md", "agent/rules/subagent.md"];
-// 준비 참조 계약의 실제 소비자. 정본이 이 경로를 가리키므로 식별자 존재를 여기서 대조한다.
-const preparedTaskSourcePath = "agent/extensions/lib/prepared-task.ts";
-const makerRoutingSourcePath = "agent/extensions/lib/maker-routing.ts";
 const expectedConcurrencyPath = "task.maxConcurrency";
 const errors = [];
 let checkCount = 0;
@@ -300,36 +297,6 @@ const requiredPolicyMembers = [
     "high-risk-classification",
     "final-verdict",
   ]],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.questions", [
-    "duplicate-or-overlapping-with-an-existing-maker",
-    "additional-instruction-to-an-existing-maker-is-sufficient",
-    "identifiable-existing-owner-for-this-slice",
-    "maker-class-choice-NORMAL-HARD",
-    "hard-dominant-judgment-UI_UX-CODE_SYSTEM-MIXED-UNKNOWN",
-    "main-waits-for-this-slice-result-before-it-can-continue-or-finish-the-user-request-probability",
-  ]],
-  // 적용 Skill·사용자 계약과의 충돌 판단은 maker_route가 JEV에 묻는 질문이 아니라 Main 소유 판단이다.
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.mainOwnedJudgments", [
-    "proposed-scope-conflicts-with-applicable-skill-or-user-contract",
-  ]],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.decisionMapping", [
-    "instruct-or-retarget-an-existing-owner-only-when-duplicate-or-additional-instruction-is-true-and-an-identifiable-existing-owner-resolves-otherwise-dispatch-new",
-    "duplicate-or-additional-instruction-true-without-an-identifiable-existing-owner-never-selects-an-owner",
-    "otherwise-main-selects-one-maker-candidate-from-the-batch-and-passes-its-explicit-model-selector-with-the-auto-suffix-never-a-concrete-effort",
-    "applicable-skill-or-user-contract-conflict-is-a-main-owned-judgment-maker_route-never-asks-judge-it-and-main-resolves-the-specific-conflict-before-the-affected-dispatch-and-no-judge-result-relaxes-the-contract",
-  ]],
-  // 2026-10-08 사용자 결정: 기존 owner 지시는 전송을 붙잡지 않고 뒤에서 JEV가 원 계약 대비 넷으로 분류한다.
-  // 분류는 Main 판단의 참고이며 승인·차단·owner 선택이 아니다.
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.questions", [
-    "the-instruction-against-the-original-contract-primary-deliverable-owned-paths-and-acceptance-is-same-scope-scope-change-acceptance-change-or-unknown",
-  ]],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.decisionMapping", [
-    "input-is-the-original-primary-deliverable-and-owned-paths-and-bounded-acceptance-and-instruction-excerpts-with-code-urls-and-literals-masked-and-each-path-replaced-by-a-local-inside-or-outside-owned-paths-marker-and-no-call-when-a-secret-or-credential-pattern-appears",
-    "same-scope-keeps-the-original-acceptance-and-sends-no-advisory-because-main-has-nothing-to-change-scope-change-means-main-rejudges-with-maker_route-from-the-changed-facts-and-uses-the-existing-rework-contract-for-real-rework-acceptance-change-means-main-states-the-changed-condition-to-the-owner-and-reviews-against-it",
-    "judge-failure-timeout-missing-credentials-or-a-secret-candidate-is-unknown-and-never-falls-back-to-another-model",
-    "the-advisory-is-an-aside-while-main-runs-and-next-turn-context-while-idle-a-session-change-aborts-pending-classifications-and-discards-late-results",
-    "the-advisory-only-informs-main-s-next-action-it-never-approves-blocks-switches-a-model-or-selects-an-owner-and-preserves-the-existing-and-completed-owner-identity-unless-main-determines-a-real-ownership-change",
-  ]],
   ["routing.typedJudgmentRouting.placements.pre-retry.questions", [
     "authentication-or-provider-problem-versus-code-problem",
     "validation-environment-problem-rather-than-source-defect",
@@ -552,11 +519,6 @@ const requiredPolicyShapes = [
   ["routing.typedJudgmentRouting.neverEveryToolCall", "string"],
   ["routing.typedJudgmentRouting.skillSelection", "string"],
   ["routing.typedJudgmentRouting.authority", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.owner", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.when", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.questions", "list"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.mainOwnedJudgments", "list"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch.decisionMapping", "list"],
   ["routing.typedJudgmentRouting.placements.pre-retry.owner", "string"],
   ["routing.typedJudgmentRouting.placements.pre-retry.when", "string"],
   ["routing.typedJudgmentRouting.placements.pre-retry.questions", "list"],
@@ -578,10 +540,6 @@ const requiredPolicyShapes = [
   ["routing.typedJudgmentRouting.observation.runtimeSource", "string"],
   ["routing.typedJudgmentRouting.observation.retrySignals", "string"],
   ["routing.typedJudgmentRouting.observation.taskProgressSignals", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.owner", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.when", "string"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.questions", "list"],
-  ["routing.typedJudgmentRouting.placements.pre-dispatch-existing-owner-message.decisionMapping", "list"],
   ["routing.high-risk.materialRiskDefinition.codeNatureAuthority", "string"],
   ["routing.high-risk.materialRiskDefinition.fixtureOrMockNeverReduces", "string"],
   ["routing.high-risk.materialRiskDefinition.modePrecedence", "string"],
@@ -741,7 +699,7 @@ const typedJudgmentRoutingKeys = [
   "skillSelection",
   "authority",
 ];
-const typedJudgmentPlacementKeys = ["pre-dispatch", "pre-dispatch-existing-owner-message", "pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability"];
+const typedJudgmentPlacementKeys = ["pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
 
 // 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
@@ -804,23 +762,6 @@ const mainTakeoverKeys = [
   "afterTakeover",
   "evidenceRule",
 ];
-// 준비 참조 복원과 판단 재사용 계약. 키 하나가 빠지면 복원 범위·오류 조건·재사용 범위 중 하나가
-// 조용히 사라지고, 소비 경로가 바뀐 문장은 다음 발주를 막는다. 그래서 키 집합을 정확히 대조한다.
-const preparedReferenceKeys = ["produce", "consume", "restore", "linkage", "errors", "sessionScope", "preserved"];
-const preparedReferenceErrorKeys = [
-  "variant-reference-syntax",
-  "different-session-or-batch",
-  "unknown-or-cleared-reference",
-  "name-mismatch",
-  "missing-session-id",
-];
-const judgmentReuseKeys = [
-  "sameInputs",
-  "policyOrCandidateChange",
-  "ownerRevisionChange",
-  "activeOwnerCollision",
-  "sessionChange",
-];
 // 사람만 할 수 있는 확인을 agent가 흉내내지 않고 넘기는 두 계약. 같은 인계의 두 경우(사용자가 보는
 // 화면, 실장비)이므로 둘 다 키 집합을 정확히 대조한다.
 const userObservationKeys = [
@@ -855,13 +796,6 @@ const userAbsentAcceptanceKeys = [
   "stillUserOnly",
   "unreachable",
 ];
-
-// 위임 판단 기준의 키 집합. 이 세 키는 문구가 아니라 **선택지 도메인**이다(runtime `decisionQuestions`가
-// criteria 객체를 그대로 choice로 쓰고 `recommendations.delegation`으로 돌려준다). 키가 늘면 유령 선택지가
-// 생기고, 키가 사라지면 기준이 조용히 약해진다.
-const delegationCriteriaKeys = ["MAIN", "MAKER", "UNKNOWN"];
-// 교차검증 필요성 자문의 선택지 도메인. runtime crossReviewAdviceOf가 키마다 정해진 다음 행동을 붙이므로 키가 어긋나면 자문이 비어 버린다.
-const crossReviewNeedCriteriaKeys = ["NOT_NEEDED", "RECOMMENDED", "REQUIRED", "UNKNOWN"];
 
 // 누적 child budget의 기계 판독 계약. 새 범용 숫자 설정 엔진을 만들지 않고 이 네 자리만 runtime과
 // 운영 규칙에 맞춘다. 키가 늘면 역할별 예외 budget 같은 두 번째 계약이 조용히 생긴 것이므로 거부한다.
@@ -1301,15 +1235,12 @@ if (policy !== null) {
     const contract = isPlainObject(typedJudgmentPlacements[placement])
       ? typedJudgmentPlacements[placement]
       : {};
-    const expectedContractKeys = placement === "pre-dispatch"
-      ? [...typedJudgmentPlacementContractKeys, "mainOwnedJudgments"]
-      : typedJudgmentPlacementContractKeys;
     check(
       Object.keys(contract).sort().join("\u0000") ===
-        [...expectedContractKeys].sort().join("\u0000"),
+        [...typedJudgmentPlacementContractKeys].sort().join("\u0000"),
       `routing.typedJudgmentRouting.placements.${placement}의 키 집합이 다르다: ${Object.keys(contract).sort().join(", ")}`,
     );
-    for (const field of placement === "pre-dispatch" ? ["questions", "mainOwnedJudgments", "decisionMapping"] : ["questions", "decisionMapping"]) {
+    for (const field of ["questions", "decisionMapping"]) {
       const path = `routing.typedJudgmentRouting.placements.${placement}.${field}`;
       check(
         JSON.stringify(contract[field]) === JSON.stringify(requiredMemberLookup.get(path)),
@@ -1318,8 +1249,6 @@ if (policy !== null) {
     }
   }
   check(
-    typedJudgmentPlacements["pre-dispatch"]?.owner === "main" &&
-      typedJudgmentPlacements["pre-dispatch-existing-owner-message"]?.owner === "main" &&
       typedJudgmentPlacements["pre-retry"]?.owner === "the-owner-about-to-retry" &&
       typedJudgmentPlacements["pre-review"]?.owner === "main" &&
       typedJudgmentPlacements["turn-end-confirmation"]?.owner === "main" &&
@@ -1342,8 +1271,8 @@ if (policy !== null) {
   );
   check(
     typedJudgmentRouting?.applicability ===
-      "apply-a-result-only-when-any-owner-it-points-to-actually-exists-and-it-does-not-contradict-deterministic-evidence-otherwise-ignore-that-placement-result-and-run-the-existing-procedure",
-    "typed judgment는 owner 부재나 deterministic evidence 모순에서 결과를 무시하고 기존 절차로 fail-open해야 한다.",
+      "use-a-result-only-when-it-does-not-contradict-deterministic-evidence",
+    "typed judgment는 결정론적 증거와 모순되는 결과를 쓰지 않아야 한다.",
   );
   check(
     typedJudgmentRouting?.failure ===
@@ -1356,8 +1285,8 @@ if (policy !== null) {
     "typed judgment deterministic authority 목록이 다르다.",
   );
   check(
-    typedJudgmentRouting?.skillSelection === "candidate-advisory-only-never-an-automatic-gate",
-    "skill selection은 후보 advisory만 허용하고 자동 gate를 금지해야 한다.",
+    typedJudgmentRouting?.skillSelection === "main-and-maker-follow-the-required-skills-rules-directly",
+    "필수 스킬은 Main과 Maker가 규칙을 직접 따라야 한다.",
   );
   check(
     typedJudgmentRouting?.authority ===
@@ -1538,10 +1467,6 @@ if (policy !== null) {
     ["implementationOwnership.writerValidation", writerValidationKeys, "작성자 검증 계약"],
     ["implementationOwnership.writerValidation.endConditions", writerValidationEndConditionKeys, "변경 종류별 검증 종료 조건"],
     ["implementationOwnership.reworkRouting.mainTakeover", mainTakeoverKeys, "명시적 소유권 인수 계약"],
-    ["routing.modelSelection.preparedReference", preparedReferenceKeys, "준비 참조 복원 계약"],
-    ["routing.modelSelection.judgmentReuse", judgmentReuseKeys, "판단 재사용·owner 충돌 계약"],
-    ["routing.modelSelection.delegationCriteria", delegationCriteriaKeys, "위임 판단 기준(MAIN·MAKER·UNKNOWN)"],
-    ["routing.modelSelection.crossReviewNeedCriteria", crossReviewNeedCriteriaKeys, "교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN)"],
     ["implementationOwnership.writerValidation.userObservation", userObservationKeys, "사용자 관찰 우선 계약"],
     ["implementationOwnership.writerValidation.deviceVerificationHandoff", deviceVerificationHandoffKeys, "실장비 확인 인계 계약"],
     ["implementationOwnership.writerValidation.userAbsentAcceptance", userAbsentAcceptanceKeys, "사용자 미참여 인수 실행 계약"],
@@ -1619,44 +1544,14 @@ if (policy !== null) {
     );
   }
 
-  // 준비 참조·판단 재사용 계약은 실제 소비 경로가 있을 때만 정본이다. 소비자가 사라진 문장은
-  // 과거 설명이고, 소비자가 바뀐 문장은 다음 발주를 막는다. 그래서 식별자 존재와 핵심 조건만 본다.
-  const preparedReference = valueAt(policy, "routing.modelSelection.preparedReference") ?? {};
-  const preparedReferenceErrors = Array.isArray(preparedReference.errors) ? new Set(preparedReference.errors) : new Set();
-  const missingReferenceErrors = preparedReferenceErrorKeys.filter((member) => !preparedReferenceErrors.has(member));
+  const structuralPlacements = valueAt(policy, "routing.typedJudgmentRouting.observation.localStructuralPlacements");
   check(
-    missingReferenceErrors.length === 0,
-    `routing.modelSelection.preparedReference.errors에 빠진 오류 조건이 있다: ${missingReferenceErrors.join(", ")}(빠지면 잘못된 참조가 조용히 통과한다).`,
+    isNonEmptyString(structuralPlacements) && structuralPlacements.includes("without-a-judge-call"),
+    "routing.typedJudgmentRouting.observation.localStructuralPlacements는 외부 judge 없이 로컬에서 처리해야 한다.",
   );
-  for (const [path, needle, why] of [
-    ["routing.modelSelection.preparedReference.linkage", "session-local-task-name", "연결 키가 preparedId로 오해되면 이름·의미 필드 계약이 무너진다"],
-    ["routing.modelSelection.judgmentReuse.sameInputs", "never-ask-again", "같은 입력의 재사용과 재질문 금지가 사라진다"],
-    ["routing.modelSelection.judgmentReuse.activeOwnerCollision", "blocks-dispatch-new", "active owner 경로 충돌이 dispatch-new를 막는다는 조건이 사라진다"],
-    ["routing.typedJudgmentRouting.observation.localStructuralPlacements", "without-a-judge-call", "구조 판정이 로컬 확정이라는 문장이 사라진다"],
-    ["routing.typedJudgmentRouting.observation.ownerMessageAdvisory", "main-owns-the-meaning-and-explicit-assessment-decision", "owner-message 의미와 정식 assessment 판단의 Main 소유가 사라진다"],
-  ]) {
-    const value = valueAt(policy, path);
-    check(
-      isNonEmptyString(value) && value.includes(needle),
-      `${path}가 "${needle}"를 담지 않는다(${why}).`,
-    );
-  }
-  // 정본이 가리키는 소비 경로가 실제로 있는지 확인한다. 파서를 복제하지 않고 식별자만 본다.
-  for (const [path, members] of [
-    [preparedTaskSourcePath, ["PREPARED_CONTEXT", "PREPARED_TASK", "resolvePreparedTaskInput", "storePreparedTaskBatch", "clearPreparedTaskSession"]],
-    [makerRoutingSourcePath, ["resolvePreparedTaskInput", "storePreparedTaskBatch"]],
-  ]) {
-    const source = readText(path);
-    const missing = members.filter((member) => !source.includes(member));
-    check(
-      missing.length === 0,
-      `${path}에 prepared 참조 소비 식별자가 없다: ${missing.join(", ")}(정본이 가리키는 소비 경로가 사라졌다).`,
-    );
-  }
   // Each Maker profile must resolve to a configured slot and carry its Auto range.
   {
     const profiles = valueAt(policy, "routing.modelSelection.profiles");
-    const grades = Object.keys(valueAt(policy, "routing.modelSelection.criteria") ?? {});
     check(isPlainObject(profiles) && Object.keys(profiles).length > 0, "routing.modelSelection.profiles가 비어 있다.");
     for (const [profile, entry] of Object.entries(isPlainObject(profiles) ? profiles : {})) {
       const where = `routing.modelSelection.profiles.${profile}`;
@@ -1664,7 +1559,7 @@ if (policy !== null) {
         isPlainObject(entry) && Object.keys(entry).sort().join(",") === "maxEffort,modelConfigPath,startEffort,workClass",
         `${where}는 modelConfigPath, workClass, startEffort와 maxEffort를 가져야 한다.`,
       );
-      check(grades.includes(entry?.workClass), `${where}.workClass는 modelSelection.criteria의 등급(${grades.join(", ")}) 중 하나여야 한다.`);
+      check(["NORMAL", "HARD"].includes(entry?.workClass), `${where}.workClass는 NORMAL 또는 HARD여야 한다.`);
       check(["medium", "high"].includes(entry?.startEffort) && entry?.maxEffort === "xhigh",
         `${where}는 medium 또는 high에서 시작하고 xhigh를 최대 강도로 써야 한다.`);
     }
@@ -1777,13 +1672,12 @@ if (policy !== null) {
   }
 
 
-  // 검수는 게이트 1회가 아니라 세 접점의 누적 과정이다. 접점 이름이 값에서 사라지면 정책이 다시
-  // "최종 한 번"으로 읽히고, 조향으로 아낀 재확인이 최종에서 그대로 되돌아온다.
+  // Mid-course review has explicit triggers; final acceptance is still required.
   const reviewComposition = valueAt(policy, "mainLane.workerReview.composition");
   for (const contact of ["pre-edit-steering", "confirmed-delta-review", "final-judgement"]) {
     check(
       isNonEmptyString(reviewComposition) && reviewComposition.includes(contact),
-      `mainLane.workerReview.composition이 ${contact} 접점을 담지 않는다(검수는 게이트 1회가 아니라 누적 과정이다).`,
+      `mainLane.workerReview.composition에 ${contact}가 없다.`,
     );
   }
   const reviewFinalScope = valueAt(policy, "mainLane.workerReview.finalScope");

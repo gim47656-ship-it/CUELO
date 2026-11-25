@@ -81,7 +81,7 @@ description: Before mistake correction or rule changes.
 | R42 | 검토와 게이트 판정 모델은 `crossReview*` 슬롯만 | 구조(부분) | `extensions/cross-review.ts`, `extensions/slop-gate.ts`(슬롯에서만 reviewer 해석) | 브리프에 다른 모델을 적는 실수는 문서(2026-10-26 지적) |
 | R43 | `git_finalize`는 상대경로·한 저장소 | 구조 | `tools/git-finalizer/index.ts` `finalizeTool`, `tools/git-finalizer/finalizer.test.ts` | 2026-11-11 RULES.md에서 글을 지웠다. raw Git fallback 네 조건만 `rule://subagent`를 가리킨다 |
 | R44 | lock·ancestry·non-ff 우회 금지, rebase·merge·pull·reset 금지 | 차단(부분) | `extensions/command-guard/matcher.ts` `REASONS.gitIntegrate`·`gitReset`·`gitClean`·`gitDiscard`·`gitDelete` | `index.lock` 삭제는 막지 않음 |
-| R45 | 사용자 관찰은 수용하고 진단과 제안은 근거와 대조하며, 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | 호출 계약 회귀: `extensions/tests/argon-preflight.test.ts`, `extensions/tests/cross-review.test.ts` | 사전 점검의 반대 계열 한 자리와 교차검토의 필수 자리 계약을 검사한다. 일반적인 사용자 의도 해석은 강제하지 않는다. 선택적 주장 확인의 비용 제한은 필수 검증을 면제하지 않는다 |
+| R45 | 사용자 관찰은 수용하고 진단·제안은 근거와 대조하며 원하는 결과와 승인은 사용자에게 맡긴다 | 문서 | `extensions/tests/argon-preflight.test.ts`, `extensions/tests/cross-review.test.ts` | 명시 `lab_preflight`의 반대 계열 한 자리와 교차검토 필수 자리를 검사한다. 조언은 필수 검증을 면제하지 않는다 |
 | R46 | 새 답변과 새 문서 산문에서 U+00B7 낱말 결합을 피하고 원문과 기존 내용을 보존한다 | 차단(부분) | `extensions/slop-gate/review.ts` `buildReviewRequest`, `tools/git-finalizer/index.ts` `runSlopGate` | 기존 검사 대상 산출물에 한해 reviewer가 판단한다. 채팅과 제외된 Markdown은 문서 수준이며 문자 필터나 일괄 치환은 없다 |
 
 ## 전역 AGENTS.md
@@ -100,10 +100,10 @@ description: Before mistake correction or rule changes.
 | A10 | 같은 산출물 상태가 두 번이면 결과부터 확인 | 문서 | — | |
 | A11 | 원인 확인 뒤 예상 초과·같은 막힘이면 Main이 회수 | 문서 | — | 2026-10-18 사용자 결정 |
 | A12 | 역할은 Main·`maker` 둘 | 차단 | `extensions/command-guard/task-guard.ts`(허용 child `maker`, 예외는 폰 프로필의 앱 조작 child `phone-operator`), `patches/build-agents.mjs --check`, `patches/validate-harness-policy.mjs` | `phone-operator`는 `model`·격리 지정이 없을 때만 면제되고 도구 범위는 폰 프로필의 정의 파일이 정한다(2026-11-15 사용자 결정). 과거 세션은 transcript 직접 읽기와 기존 세션 검색을 쓴다 |
-| A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`(`routing.high-risk.materialRiskDefinition.codeNatureTriggers`), `evals/cases/industrial/*.json` | 실제 분류 판단은 `maker_route` 안내 |
-| A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 안내, 검사(부분) | `extensions/lib/maker-routing.ts` `delegationAdviceOf`, `extensions/tests/maker-routing.test.ts` | 기존 판단을 결과의 행동 권고로 보여 주고 기존 담당자를 우선한다. Main의 실제 위임 선택을 강제하는 새 차단은 없으며 요청당 child 상한과 소유권 가드는 그대로다 |
+| A13 | 작업 모드·high-risk 우선·코드 성질 7분류 | 검사 | `patches/validate-harness-policy.mjs`, `evals/cases/industrial/*.json` | 실제 분류는 Main 판단 |
+| A14 | 직접 끝낼 일은 위임하지 않고 독립 조각은 병렬 | 문서 | — | 요청별 상한과 소유권은 Task Guard가 검사하지만 위임 여부는 Main이 판단한다. |
 | A15 | `consult`는 상담 전용, 대체·게이트 증거 없음 | 구조 | `extensions/consult.ts` | |
-| A16 | 판단 경계는 `maker_route`와 런타임 advisory | 안내, 차단(부분) | `extensions/lib/maker-routing.ts` `beforeTask`, `extensions/tests/maker-routing.test.ts`, `extensions/jev-runtime.ts`, `extensions/lib/anthropic-quota.ts` | 큰 재설계와 반복 실패는 Astra를 추천하며 그 판정 자체로 막지 않는다. 모름과 후보 소진은 Main이 판단한다. Anthropic 하루 몫은 추천, 발주와 새 세션 모델을 바꾸지 않는다. |
+| A16 | `task`에서 Maker 후보·소유 경로를 검사한다 | 차단 | `extensions/jev-runtime.ts`, `extensions/command-guard/task-guard.ts` | 후보 선택은 Main이 한다. |
 | A17 | Main은 Maker 경로를 고치지 않고 검사를 반복하지 않는다 | 문서 | — | OwnerWriteGuard는 Maker 쓰기만 본다 |
 | A18 | 검증은 변경 owner, 어느 조각도 검사 없이 닫지 않는다 | eval | `evals/cases/security/missing-evidence.json` | 최종 확인과 N회 반복 순서는 `writerValidation.finalSuiteOrder`와 Maker SOP를 따른다. 사건 근거는 보존 원문 A18. |
 | A19 | `wait`는 Main 전용 | 구조 | `patches/core-subagent-wait-test.ts` | |

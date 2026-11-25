@@ -12,7 +12,7 @@ reviewer는 모든 finding에 재현 방법 `probe{steps, expectIfReal, expectIf
 
 Main이나 Maker는 재현 방법을 실행한 뒤 `previousReviewId`와 `probeResults[{findingId, command, exitCode, output}]`로 체인당 한 번 판단을 받을 수 있다. probe는 검토 파일과 묶인 입력이 그대로일 때만 실행 결과를 심사한다. 새 검토 파일이나 inputs/references를 받지 않고 검토한 코드의 지문도 바꾸지 않는다. reviewer는 결과마다 `confirmed|withdrawn|unresolved`를 돌려준다(판단이 빠지면 `unresolved`). 체인에 없는 id, 중복 결과, 두 번째 probe, 개인키 블록이 든 결과는 거절한다. 출력은 건당 8KB(넘으면 앞뒤만 남김), 합계 40KB(넘으면 거절)로 제한하고 비밀 값을 가린다. verdict는 자문이며 finding을 자동으로 닫지 않는다. probe를 쓰지 못해도 직접 실행한 명령과 출력으로 1라운드 지적을 반박하거나 수정할 수 있다.
 
-첫 라운드의 reviewer는 호출한 세션의 사용자 메시지(하네스 주입 제외, Maker는 최초 발주문 포함)를 `USER REQUEST`로 받는다. 비밀 값은 코드와 같은 필터로 가린다. UTF-8 32KiB 예산에서 최초 요청을 보존하고 최근 메시지를 우선한다. 최초 요청만으로 상한을 넘으면 앞뒤를 남기며, 빠진 구간은 검증할 수 없다고 표시한다. 같은 브랜치에 저장된 goal-lane의 명시 조건도 예산 안에서 싣는다. 원문은 다음 라운드로 넘기지 않는다.
+첫 라운드는 사용자 메시지(하네스 주입 제외, Maker의 최초 발주 포함)를 `USER REQUEST`로 싣는다. 코드와 같은 필터로 비밀을 가린다. UTF-8 32KiB 안에서 최초 요청을 보존하고 최근 메시지를 우선한다. 최초 요청만으로 넘으면 앞뒤를 남기고 빠진 구간은 검증 불가로 표시한다. 같은 브랜치에서 Main이 선택적으로 `lab_goal`에 적은 명시 조건도 예산 안에서 싣는다. 원문은 다음 라운드로 넘기지 않는다.
 
 첫 라운드에는 세션 기록에서 하네스가 고른 bash·eval 실행도 `OBSERVED RUNS`로 싣는다. 검수 대상 파일의 경로나 이름을 부르거나 검사 명령인 실행 가운데 최신 10건, 24KiB까지이며, 마지막 수정 전후 표시와 종료 코드를 붙인다. 이미 돌린 실행의 출력은 acceptance에 다시 붙이지 않아도 된다. acceptance가 경로로 부른 미커밋 변경이 `files`·`inputs`·`references`에 없으면 그 diff를 맥락으로만 싣고, 통과는 그 파일을 덮지 않는다. BOM·CRLF·UTF-8 아닌 바이트가 있는 파일에는 바이트 사실 한 줄을 붙인다(2026-11-25, doc/history/2026/11/25-xr-evidence).
 

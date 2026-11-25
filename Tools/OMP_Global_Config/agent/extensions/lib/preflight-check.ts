@@ -1,4 +1,4 @@
-// Model calls and session context shared by the explicit check and automatic routing plugins.
+// Opposite-family model calls and session context for the explicit plan check.
 import type { Api, AssistantMessage, Model, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { helperAttemptRecorder } from "./helper-usage";
@@ -99,15 +99,10 @@ function messageText(message: unknown): string {
   if (!Array.isArray(content)) return "";
   return content.map((b) => (record(b) && b.type === "text" ? String(b.text ?? "") : "")).join("");
 }
-// The host reloads each plugin's module graph independently; keep the existing combined panel across those copies.
-const PANEL_HISTORY = Symbol.for("cuelo.preflight.panel-history");
-const shared = globalThis as typeof globalThis & { [PANEL_HISTORY]?: WeakMap<object, string[]> };
-const panelHistory = shared[PANEL_HISTORY] ??= new WeakMap<object, string[]>();
-
-export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = () => {}) {
+export function createPreflightCheck(pi: ExtensionAPI) {
   let main = true;
   let userTurns: UserTurn[] = [];
-  let panelSession: object | undefined;
+  let history: string[] = [];
   /** Provider calls to abort when their session or turn ends. */
   const inflight = new Set<AbortController>();
   let lastInputText = "";
@@ -125,15 +120,16 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   const reset = () => {
     // Session changes abort in-flight work. Steering is handled separately by redirect.
     abortInflight();
-    userTurns = []; invalidate(); lastInputText = ""; gen += 1; session += 1;
-    if (panelSession) panelHistory.delete(panelSession);
+    userTurns = [];
+    history = [];
+    lastInputText = "";
+    gen += 1;
+    session += 1;
   };
 
   const note = (ctx: ExtensionContext, line: string) => {
     const stamp = new Date().toLocaleTimeString("ko-KR", { hour12: false });
-    panelSession = ctx.sessionManager;
-    const history = [...(panelHistory.get(panelSession) ?? []), `[${stamp}] ${line}`].slice(-40);
-    panelHistory.set(panelSession, history);
+    history = [...history, `[${stamp}] ${line}`].slice(-40);
     try { ctx.ui.setWidget(WIDGET, history); } catch { /* panel optional */ }
   };
 
@@ -239,9 +235,7 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
   pi.on("session_start", (_event, ctx) => { reset(); main = ctx.agent?.kind !== "sub"; seedFromBranch(ctx); });
   pi.on("session_switch", (_event, ctx) => { reset(); main = ctx.agent?.kind !== "sub"; seedFromBranch(ctx); });
   pi.on("session_shutdown", () => reset());
-  // The core runs a blocking tool_call handler inside its own timeout race and never exposes that race's signal here,
-  // so a cancelled turn is observed through the settle the core does publish: an interrupt abandons the handler and
-  // ends the run, and `agent_end` then aborts provider work instead of leaving it running to the deadline.
+  // Agent cancellation must not leave a provider request running to its deadline.
   pi.on("agent_end", () => { abortInflight(); });
 
   const rememberUser = (text: string) => {
@@ -285,11 +279,10 @@ export function createPreflightCheck(pi: ExtensionAPI, invalidate: () => void = 
 
   function redirect(text: string) {
     rememberUser(text);
-    invalidate();
     gen += 1;
   }
 
   return { ask, note, inflight, get main() { return main; }, get gen() { return gen; }, get session() { return session; } };
 }
 
-export { record, opinionText, secs };
+export { opinionText };

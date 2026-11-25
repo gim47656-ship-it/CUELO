@@ -1,80 +1,12 @@
 import { readFileSync } from "node:fs";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isPhoneOperatorCall, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
-import { resolvePreparedTaskInput, storePreparedTaskBatch } from "./prepared-task";
-import { assignmentsByName, summarizeHistory, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingHistory, type RoutingLedger } from "./routing-ledger";
-import { briefSkillCoverage, dispatchRequiredSkills, isRequiredSkillAnswerKey, loadRequiredSkillContract, requiredSkillGaps, requiredSkillQuestions, selectRequiredSkills, type RequiredSkillSelection, type RequiredSkillSource } from "./skill-evidence";
-import { accountUnusable, readSidecarQuota, type QuotaSnapshot } from "./anthropic-quota";
+import { assignmentsByName, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingLedger } from "./routing-ledger";
 import type { MakerEffortRange } from "./auto-effort-policy";
-export type { QuotaSnapshot } from "./anthropic-quota";
 
-export interface RoutingFacts {
-  goal: string;
-  acceptance: string[];
-  facts: string[];
-  hypotheses: string[] | null;
-  unknowns: string[] | null;
-  paths: string[];
-  callBoundaries: string[] | null;
-  settledImplementation: string[] | null;
-  reusedPatterns: string[] | null;
-  remainingJudgments: string[] | null;
-  invariants: string[];
-  checks: string[];
-  failureEvidence: string[] | null;
-}
-
-/**
- * 발주 전 빈 조건 경고. acceptance·checks가 비었거나 공백뿐이면 무엇을 만족해야 끝나는지, 어떻게 확인할지가 없는 발주다.
- * 발주를 막지 않는 advisory다(2026-10-17 사용자 결정: 경고로 시작해 실제 누락·재작업이 줄어드는지 본다).
- * FINDING_ID 재작업인데 failureEvidence가 비면 Jev와 Maker가 재작업이라는 사실만 받고 실패 원인과 이전 접근의 한계를 모른다.
- * OWNED_PATHS에 경로가 아닌 항목(설명 괄호·glob)이 있으면 함께 알린다. 소유 판정은 문자열 정확 일치라
- * `app/globals.css (panel, deck)`은 콤마로 쪼개진 뒤 실제 파일과 일치하지 않아 겹침 검사와 완료 뒤 소유 검사를 모두 빠져나간다(2026-10-18).
- */
-export function briefGaps(
-  assessment: Pick<RoutingFacts, "acceptance" | "checks" | "failureEvidence">,
-  ownedPaths: readonly string[] = [],
-  findingId: string | null = null,
-): string[] | null {
-  const gaps: string[] = [];
-  if (!assessment.acceptance.some((item) => item.trim())) gaps.push("acceptance가 비어 있음: 무엇을 만족해야 끝나는지 적으세요.");
-  if (!assessment.checks.some((item) => item.trim())) gaps.push("checks가 비어 있음: 어떻게 확인할지(명령·관측 대상) 적으세요.");
-  if (findingId && !(assessment.failureEvidence ?? []).some((item) => item.trim())) {
-    gaps.push("FINDING_ID 재작업인데 failureEvidence가 비어 있음: 이전 시도가 무엇 때문에 실패했는지와 그 접근의 한계를 적으세요.");
-  }
-  const notPaths = ownedPaths.filter(isNotOwnedPath);
-  if (notPaths.length > 0) {
-    gaps.push(`OWNED_PATHS에 경로가 아닌 항목: ${clippedList(notPaths.map((entry) => `'${entry}'`))}. 설명·괄호·glob 없이 파일 또는 후행 /의 디렉터리만 콤마로 적으세요. 같은 파일을 블록으로 나눠 맡기는 범위는 소유 검사가 표현하지 못하므로 # Target에 적습니다.`);
-  }
-  return gaps.length > 0 ? gaps : null;
-}
-
-/** 공백 뒤 여는 괄호(설명 주석), 짝이 안 맞는 괄호(콤마로 잘린 주석 조각), glob `*`. Next의 `(group)`·`[id]` 세그먼트는 경로다. */
-function isNotOwnedPath(entry: string): boolean {
-  const opens = entry.split("(").length - 1;
-  const closes = entry.split(")").length - 1;
-  return /\s\(/.test(entry) || opens !== closes || entry.includes("*");
-}
-/**
- * 같은 준비 배치를 공유 작업공간으로 냈을 때 task가 배치 전체를 거절할 OWNED_PATHS 겹침. 발주를 막지 않는 advisory다.
- * isolated 여부는 발주 때 정해지므로 준비 단계에서는 공유 작업공간으로 본다. 2026-10-18 겹침을 발주 때에야 알고
- * 경로를 고치자 준비 계약 불일치로 한 번 더 막혔다. 같은 판정 함수(sharedOwnedPaths)를 써서 발주 검사와 어긋나지 않는다.
- */
-function batchOwnershipOverlaps(names: readonly string[], contracts: readonly DispatchContract[]): (string[] | null)[] {
-  const shared = (contract: DispatchContract): DispatchOwnership => ({ primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace: "shared" });
-  return contracts.map((contract, index) => {
-    const hits = contracts.flatMap((other, otherIndex) => {
-      const paths = otherIndex === index ? [] : sharedOwnedPaths(shared(contract), shared(other));
-      return paths.length > 0 ? [`'${clipped(names[otherIndex]!, 40)}'과 겹침: ${clippedList(paths)}`] : [];
-    });
-    return hits.length > 0 ? hits : null;
-  });
-}
-interface RouteTask { name: string; task: string; assessment: RoutingFacts }
 export interface Owner {
   name: string | null;
-  primaryDeliverable: string | null;
   ownedPaths: string[];
   active?: boolean;
   /** 관측된 spawn의 작업공간. 없으면 공유로 본다. */
@@ -82,217 +14,21 @@ export interface Owner {
   /** 과거 원장 row처럼 소유 경로를 알 수 없는 owner. ownedPaths가 비어도 빈 소유가 아니다. */
   ownershipUnknown?: boolean;
 }
-/** `efforts` is the model's supported ladder; the selected profile supplies its Maker range. */
-interface Candidate { profile: string; model: string; efforts: readonly string[] }
-/** registry·추론 강도 확인에 실패한 후보. 다른 후보의 발주를 막지 않고, 다른 모델로 대체하지도 않는다. */
-export interface UnavailableCandidate { profile: string; model: string; reason: string }
-interface CandidateSet { available: Candidate[]; unavailable: UnavailableCandidate[] }
-export interface NormalAllocation {
-  state: "observed" | "unavailable";
-  profile: string | null;
-  reason: string;
-  returnToMain: false;
-}
-/** 같은 준비→발주 계약에서 공유하는 provider online 갱신 시도. 값은 실패 사유이고 null이면 성공이다. */
-type RefreshAttempts = Map<string, Promise<string | null>>;
 interface RoutingPolicy {
   modelSelection: {
-    profiles: Record<string, { modelConfigPath: string; workClass: string; startEffort: MakerEffortRange["start"]; maxEffort: MakerEffortRange["max"] }>;
-    criteria: Record<string, string>;
-    hardFocusCriteria: Record<string, string>;
-    uiUxBoundaryCriteria: string;
-    designOpenCriteria: string;
-    /** FINDING_ID 재작업의 성격 choice 정본(NONE·BOUNDED_FAILURE·RETURN_TO_MAIN·NOT_FAILURE). */
-    reworkNatureCriteria: Record<string, string>;
-    /** 남은 UI 판단의 난이도 choice 정본(NONE·ROUTINE·DIFFICULT). uiUxBoundary(남은 UI 판단의 존재)와 별개다. */
-    uiDifficultyCriteria: Record<string, string>;
-    /** 남은 비시각 설계 판단(알고리즘·상태 모델·배치·근본 원인)이 기존 상태 소유자·승인된 계약 안에 한정되는지 choice 정본(NONE·BOUNDED·UNKNOWN). */
-    boundedDesignCriteria: Record<string, string>;
-    /** 위임 판정 정본(MAIN·MAKER·UNKNOWN). 정책이 항상 싣는다. */
-    delegationCriteria: Record<string, string>;
-    /** 교차검증 필요성 자문 기준(REQUIRED·RECOMMENDED·NOT_NEEDED·UNKNOWN). 답은 Main의 지시서 판단을 돕는 자문이며 게이트를 바꾸지 않는다. */
-    crossReviewNeedCriteria: Record<string, string>;
+    profiles: Record<string, { modelConfigPath: string; startEffort: MakerEffortRange["start"]; maxEffort: MakerEffortRange["max"] }>;
   };
 }
-export interface RoutingQuestion {
-  type: "choice" | "noul";
-  instructions: string;
-  criteria?: Record<string, string | null>;
-}
-interface RoutingAnswer { type?: string; choice?: string; noul?: number; confidence?: number; probabilities?: Record<string, number> }
-/** 원장에 남기는 ROUTING_REASON 본문 상한. 근거 한 줄이 원장 한 행을 키우지 않게 자른다. */
-const ROUTING_REASON_TEXT_LIMIT = 300;
-/** Jev 답의 확률 하나. 0~1 유한값만 받고 그 밖은 관측 실패로 null이다. */
-function probabilityOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
-}
-/** Jev choice 답의 선택지별 확률. 하나라도 0~1 유한값이 아니면 전체를 관측 실패로 본다. */
-function probabilitiesOf(value: unknown): Record<string, number> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const entries = Object.entries(value);
-  return entries.length > 0 && entries.every(([, probability]) => probabilityOf(probability) !== null)
-    ? Object.fromEntries(entries) as Record<string, number>
-    : null;
-}
-/** 원본 위임 답은 일반 recommendations에서 제외하고 별도 delegationAdvice로 공개한다. */
-function withoutDelegation(answers: Record<string, RoutingAnswer>): Record<string, RoutingAnswer> {
-  const { delegation: _delegation, ...visible } = answers;
-  return visible;
-}
-export interface RoutingPlacement {
-  action: "dispatch-new" | "instruct-existing" | "retarget-existing" | "main-decision";
-  ownerIndex: number | null;
-  owner: Owner | null;
-}
-export interface RoutingDeps {
-  judge: (ctx: ExtensionContext, request: { state: unknown; questions: Record<string, RoutingQuestion> }, signal?: AbortSignal) => Promise<{ answers: Record<string, RoutingAnswer> }>;
+
+interface RoutingDeps {
   settings: (ctx: ExtensionContext) => Promise<{ getModelRoles(): Readonly<Record<string, string>> } | undefined>;
-  /** 현재 owner 목록. ctx는 실행 중 여부를 core async snapshot으로 확인할 때 쓴다. */
   owners: (ctx: ExtensionContext) => Owner[];
-  policy?: () => RoutingPolicy;
-  candidates?: (ctx: ExtensionContext, policy: RoutingPolicy) => Promise<Candidate[]>;
-  /** 후보 provider별 계정 잔량. 생략하면 CUELO usage 사이드카(`OMP_USAGE_PORT`, 기본 30142)를 읽는다. */
-  quota?: (providers: string[], signal?: AbortSignal) => Promise<QuotaSnapshot>;
-  /** 준비 단계 진단용 단조 시계(ms). 생략하면 performance.now. */
-  clock?: () => number;
-  /** 발주 이력. 생략하면 기록·history 요약을 하지 않는다. 실패는 발주를 막지 않는다. */
   ledger?: RoutingLedger;
-  /** 산출물별 필수 스킬 정본. 생략하면 rules/frontend.md의 required-skills 블록을 준비마다 읽는다. */
-  requiredSkills?: () => RequiredSkillSource;
 }
 
 const policyUrl = new URL("../../rules/harness-policy.json", import.meta.url);
 export function loadRoutingPolicy(): RoutingPolicy {
   return JSON.parse(readFileSync(policyUrl, "utf8")).routing;
-}
-
-// 명시된 사실 필드만 전달한다. task 원문·현재 모델·이전 등급은 로컬 바인딩에만 남는다.
-function routingFactsState(input: RoutingFacts) {
-  return {
-    goal: input.goal, acceptance: input.acceptance, facts: input.facts,
-    hypotheses: input.hypotheses ?? null, unknowns: input.unknowns ?? null,
-    paths: input.paths, callBoundaries: input.callBoundaries ?? null,
-    settledImplementation: input.settledImplementation ?? null, reusedPatterns: input.reusedPatterns ?? null,
-    remainingJudgments: input.remainingJudgments ?? null, invariants: input.invariants,
-    checks: input.checks, failureEvidence: input.failureEvidence ?? null,
-  };
-}
-
-export function routingState(input: RoutingFacts, owners: Owner[]) {
-  return {
-    ...routingFactsState(input),
-    existingOwners: owners.map((owner, index) => ({
-      owner: index, name: owner.name, goal: owner.primaryDeliverable, ownedPaths: owner.ownedPaths,
-    })),
-  };
-}
-
-// 2026-10-08 사용자 결정: Maker 강도는 child auto 분류기가 고른다. 후보별 강도 질문은 두지 않는다.
-function decisionQuestions(policy: RoutingPolicy) {
-  const questions: Record<string, RoutingQuestion> = {
-    workClass: {
-      type: "choice", criteria: policy.modelSelection.criteria,
-      instructions: "위 criteria를 정본으로 facts·remainingJudgments·callBoundaries·invariants에 남은 판단을 대조한다. Main이 정한 목표·방향과 구현자가 해결할 설계·검증 판단을 구분한다. 가설과 미확인은 사실로 바꾸지 않는다. 다른 질문의 답이나 목표 분류 비율을 가정하지 않는다.",
-    },
-    hardFocus: {
-      type: "choice", criteria: policy.modelSelection.hardFocusCriteria,
-      instructions: "남은 판단의 지배적 성격을 분류한다. 프론트엔드 경로라도 실행·동시성·상태 불변식이면 CODE_SYSTEM이다. 다른 질문의 답을 가정하지 않는다.",
-    },
-    uiUxBoundary: {
-      type: "noul",
-      instructions: `${policy.modelSelection.uiUxBoundaryCriteria}. 남은 UI/UX 판단의 존재를 난이도·지배 분야와 독립적으로 판단한다. 혼합 작업의 UI/UX 경계도 포함하고 파일 확장자만으로 추정하지 않는다.`,
-    },
-    designOpen: {
-      type: "noul",
-      instructions: `${policy.modelSelection.designOpenCriteria}. 근거가 부족해 큰 재설계인지 정해진 방향인지 알 수 없으면 높은 값으로 채우지 말고 이 질문의 답을 비운다(모름). 모름은 열린 설계가 아니다. 여기서 높은 값은 새 정본 상태 소유권·모듈 간 공개 계약·모듈 경계를 바꿔야 하는 큰 교차 경계 재설계나 제품·구조 방향 자체가 열린 경우뿐이다. 기존 상태 소유자와 승인된 계약 안에서 목표와 수용 조건이 분명한 설계 선택은 낮은 값으로 두고 boundedDesign이 따로 분류한다. 화면의 시각·상호작용 설계 판단은 uiDifficulty가 분류한다. HARD 등급이라는 이름, 코드 양, 파일 수, 복잡도만으로 열린 설계로 보지 않는다. Main이 방향과 해법을 정했고 구현·검증만 남았으면 복잡한 상태 처리도 열린 설계가 아니다.`,
-    },
-    uiDifficulty: {
-      type: "choice", criteria: policy.modelSelection.uiDifficultyCriteria,
-      instructions: "위 criteria를 정본으로 facts·remainingJudgments·settledImplementation·reusedPatterns에 적힌 사실만으로 남은 UI/UX 판단의 난이도를 분류한다. UI 파일이거나 uiUxBoundary가 있다는 사실, HARD 등급, 작업 크기만으로 DIFFICULT로 정하지 않는다. 기존 화면 패턴·명세·Main이 준비한 방향이 배치·문구·동작을 정했으면 ROUTINE이다. 사실이 부족해 보통인지 어려운지 정할 수 없으면 DIFFICULT로 올리지도 ROUTINE으로 확정하지도 말고 UNKNOWN을 고른다.",
-    },
-    boundedDesign: {
-      type: "choice", criteria: policy.modelSelection.boundedDesignCriteria,
-      instructions: "위 criteria를 정본으로 facts·remainingJudgments·settledImplementation·hypotheses에 적힌 사실만으로 남은 비시각 설계 판단(알고리즘·상태 모델·배치·근본 원인 선택)을 분류한다. Main이 접근과 계약을 정해 구현·검증만 남았으면 복잡한 상태 처리여도 NONE이다. 구현자가 대안 가운데 골라야 하지만 목표·수용 조건·승인된 계약이 분명하고 기존 상태 소유자·공개 계약·모듈 경계 안에서 끝나면 BOUNDED다. 새 상태 소유권이나 공개 계약이 필요한 큰 재설계는 designOpen의 몫이므로 여기서 BOUNDED로 만들지 않는다. 테스트가 실패했다는 사실이나 반복 수정만으로 BOUNDED로 정하지 않는다(실패 재작업은 reworkNature가 본다). 사실이 부족해 NONE인지 BOUNDED인지 정할 수 없으면 둘 중 어느 쪽으로도 추측하지 말고 UNKNOWN을 고른다.",
-    },
-    reworkNature: {
-      type: "choice", criteria: policy.modelSelection.reworkNatureCriteria,
-      instructions: "위 criteria를 정본으로 failureEvidence·facts·hypotheses·remainingJudgments에 적힌 사실만으로 이 조각이 이전 구현 시도의 실패를 다시 하는 것인지 분류한다. FINDING_ID 표기 유무는 근거가 아니다. 의도한 RED 테스트, 일시적 인프라 실패, 일상적 검증 보정은 구현 실패가 아니다. 과거 실패 기록이 있어도 Main이 접근·범위·계약을 바꿔 지금 접근에는 그 실패가 해당하지 않는다고 적었으면 RETURN_TO_MAIN으로 정하지 않는다(과거 기록만으로 정하지 않고 지금 접근의 미해결 실패를 본다). 사실이 없으면 NONE이다. 재시도 횟수나 파일 수 같은 숫자 기준은 만들지 않는다.",
-    },
-  };
-  // 위임 판정은 정책 정본(delegationCriteria = MAIN·MAKER·UNKNOWN)을 그대로 choice 선택지로 쓴다.
-  questions.delegation = {
-    type: "choice",
-    criteria: policy.modelSelection.delegationCriteria,
-    instructions: "위 criteria를 정본으로 이 조각의 수행 주체를 독립적으로 판단한다. facts·callBoundaries·reusedPatterns·remainingJudgments·unknowns에 있는 독립 완결성, Main 보유 문맥, 실제 병렬·전문성 이득, 설명·검수 부담을 대조한다. 난이도나 병렬 실행 가능성만으로 위임 이득을 단정하지 않는다. 결과는 Main의 조언이며 자동 발주·owner 변경이 아니다.",
-  };
-  // 교차검증 필요성은 같은 판단 묶음의 typed choice로만 묻는다(추가 모델 호출 없음). 답은 자문이며 git_finalize 게이트는 이 답을 읽지 않는다.
-  questions.crossReviewNeed = {
-    type: "choice",
-    criteria: policy.modelSelection.crossReviewNeedCriteria,
-    instructions: "위 criteria를 정본으로 이 조각의 바뀔 실행 코드·설정이 다른 계열 교차검증을 필요로 하는지 facts·paths·invariants·remainingJudgments에 적힌 사실만으로 판단한다. 파일 확장자나 작업 크기만으로 정하지 않는다. 실행 코드·설정을 전혀 바꾸지 않는다는 사실(읽기 전용 조사·보고)이 있으면 NOT_NEEDED이고, 코드·설정을 바꾸는데 그 코드가 하는 일을 적은 사실이 없으면 UNKNOWN이다. 조사·진단이라는 이름만으로 NOT_NEEDED로 정하지 않고, REQUIRED 사실이 하나라도 있으면 REQUIRED다. 결과는 Main의 조언이며 게이트 면제나 강제가 아니다.",
-  };
-  return questions;
-}
-
-/** Jev의 crossReviewNeed 선택을 Main이 읽을 자문으로 바꾼다. 이유는 정책 기준 문장, 다음 행동은 선택마다 정해진 문장이며 Jev의 자유 문장은 없다. */
-export interface CrossReviewAdvice { choice: string | null; reason: string; nextAction: string; missingEvidence?: string }
-const CROSS_REVIEW_NEXT: Record<string, string> = {
-  REQUIRED: "Put a plain cross-family review line in the brief's # Acceptance (and highRisk if Main declares it); the owning Maker runs cross_review before reporting and Main only resolves.",
-  RECOMMENDED: "Main decides: add the review line when the slice changes a contract or behaviour other code relies on; otherwise leave it out. The git_finalize markers and sample still apply either way.",
-  NOT_NEEDED: "Leave the review line out. The Maker still reviews if a git_finalize trigger marker hits its diff or Main forwards a sample hit; this advice never waives the gate.",
-  UNKNOWN: "Main decides from the brief; the git_finalize markers and sample still apply.",
-};
-const CROSS_REVIEW_MISSING = "Add to assessment facts what the changed code does (process termination, deletion, destructive SQL, deploy/release/migration, credentials/auth, encoding, device I/O, state transitions or a shared contract) and the paths it touches, then re-run maker_route.";
-export function crossReviewAdviceOf(answers: Record<string, RoutingAnswer> | null, criteria: Record<string, string>): CrossReviewAdvice {
-  const choice = answers?.crossReviewNeed?.choice;
-  if (!choice || !(choice in criteria) || !(choice in CROSS_REVIEW_NEXT)) {
-    return { choice: null, reason: "Jev gave no usable crossReviewNeed answer (unavailable or missing).", nextAction: CROSS_REVIEW_NEXT.UNKNOWN!, missingEvidence: CROSS_REVIEW_MISSING };
-  }
-  return { choice, reason: criteria[choice]!, nextAction: CROSS_REVIEW_NEXT[choice]!, ...(choice === "UNKNOWN" ? { missingEvidence: CROSS_REVIEW_MISSING } : {}) };
-}
-
-/** Owner advice is read before the conditional model recommendation; it never changes admission. */
-function delegationAdviceOf(
-  answers: Record<string, RoutingAnswer> | null,
-  placement: RoutingPlacement,
-  criteria: Record<string, string>,
-) {
-  const value = answers?.delegation?.choice;
-  const choice = value === "MAIN" || value === "MAKER" ? value : "UNKNOWN";
-  if (placement.owner && (placement.action === "instruct-existing" || placement.action === "retarget-existing")) return {
-    choice, action: placement.action, reason: "이 범위를 맡은 기존 담당자가 식별됐습니다.",
-    nextAction: `기존 담당자 ${placement.owner.name ?? ""}에게 이어서 지시합니다. 국소 수정은 현재 모델을 유지하고, 실제 이관은 변경과 검증 근거를 보존해 소유권을 넘긴 뒤 결정합니다.`,
-  };
-  if (choice === "UNKNOWN" || placement.action === "main-decision") return {
-    choice, action: "main-decision", reason: criteria.UNKNOWN,
-    nextAction: "Main이 현재 근거로 수행 주체를 정합니다. 모름만으로 다시 묻거나 새 작업자나 더 비싼 모델을 고르지 않습니다.",
-  };
-  return {
-    choice, action: choice === "MAIN" ? "main-direct" : "dispatch-new", reason: criteria[choice],
-    nextAction: choice === "MAIN"
-      ? "Main이 직접 구현하고 필요한 검증을 마칩니다. 작은 일을 확인하려고 다시 maker_route를 부르지 않습니다."
-      : "독립적으로 끝낼 범위를 새 Maker에게 맡길 때만 아래 모델 추천을 적용합니다.",
-  };
-}
-function placementQuestions(owners: Owner[]) {
-  if (owners.length === 0) return {};
-  return {
-    duplicate: { type: "noul", instructions: "이 조각이 existingOwners 중 기존 owner의 완료물과 소유 범위를 중복하는가?" },
-    additionalInstruction: { type: "noul", instructions: "새 발주 없이 existingOwners 중 기존 owner에게 추가 지시하는 것으로 충분한가?" },
-    ownerTarget: {
-      type: "choice",
-      criteria: {
-        ...Object.fromEntries(owners.map((_owner, index) => [`owner${index}`, `existingOwners[${index}]가 이 조각을 이어서 맡을 식별 가능한 owner다.`])),
-        NONE: "어느 existingOwners와도 완료물·소유 범위가 맞지 않는다.",
-        UNKNOWN: "주어진 사실만으로 어느 existingOwners인지 식별할 수 없다.",
-      },
-      instructions: "duplicate/additionalInstruction의 답을 가정하지 말고, 이 조각을 맡을 식별 가능한 기존 owner 하나를 고른다.",
-    },
-  } satisfies Record<string, RoutingQuestion>;
-}
-
-export function routingQuestions(policy: RoutingPolicy, owners: Owner[]) {
-  return { ...decisionQuestions(policy), ...placementQuestions(owners) };
 }
 
 export interface DispatchContract {
@@ -304,10 +40,7 @@ export interface DispatchContract {
 
 type DispatchContractLock = Pick<DispatchContract, "workClass" | "primaryDeliverable">;
 
-/**
- * TASK_GUARD 블록의 필드 reader. 블록이 없으면 null. 블록 경계는 SpawnGuard가 쓰는 `extractGuardBlock` 하나뿐이라
- * 준비와 발주가 같은 필드를 읽는다(guard 필드 사이에 끼어든 줄 뒤의 필드는 둘 다 읽지 않는다).
- */
+/** SpawnGuard and dispatch read the same Task Guard block and fields. */
 function guardFields(task: string): ((name: string) => string) | null {
   const extracted = extractGuardBlock(task);
   if (!extracted) return null;
@@ -397,10 +130,7 @@ function canonicalOwnedPaths(paths: readonly string[]): string[] {
 }
 
 function briefKey(name: string, contract: DispatchContract) {
-  // extension 인스턴스가 session 귀속을 보장한다. 본문·context 문구가 아니라 task 이름과
-  // SpawnGuard가 실제로 소비하는 Task Guard 의미 필드로 준비 판단을 연결한다.
-  // 소유 경로만 정규형으로 직렬화해, 같은 소유 범위를 뜻하는 계약이 표기 순서나 중복 기재만으로
-  // 어긋나지 않게 한다. 정규형은 키·비교용이고 파싱한 계약과 소유 판정 입력은 그대로 둔다.
+  // Match the admitted contract to the spawn receipt; path order does not change ownership.
   return JSON.stringify([name.trim(), { ...contract, ownedPaths: canonicalOwnedPaths(contract.ownedPaths) }]);
 }
 
@@ -420,91 +150,8 @@ function clippedList(values: readonly string[]): string {
     : shown.join(", ");
 }
 
-/**
- * 같은 이름으로 준비된 계약과 이번 발주 계약이 어긋난 필드. 한 항목이 한 필드이므로 길이가 곧
- * 어긋난 필드 수이고, 두 계약이 정확히 같으면 빈 배열이다. OWNED_PATHS는 집합으로 비교하므로
- * 표기 순서와 중복 기재는 차이가 아니다.
- */
-function contractDelta(prepared: DispatchContract, requested: DispatchContract): string[] {
-  const delta: string[] = [];
-  const pair = (label: string, left: string | null, right: string | null) => {
-    if ((left ?? "") === (right ?? "")) return;
-    delta.push(`${label} 준비=${left === null ? "<없음>" : `'${clipped(left)}'`} 발주=${right === null ? "<없음>" : `'${clipped(right)}'`}`);
-  };
-  pair("WORK_CLASS", prepared.workClass, requested.workClass);
-  pair("PRIMARY_DELIVERABLE", prepared.primaryDeliverable, requested.primaryDeliverable);
-  pair("FINDING_ID", prepared.findingId, requested.findingId);
-  const preparedPaths = canonicalOwnedPaths(prepared.ownedPaths);
-  const requestedPaths = canonicalOwnedPaths(requested.ownedPaths);
-  const added = requestedPaths.filter((path) => !preparedPaths.includes(path));
-  const removed = preparedPaths.filter((path) => !requestedPaths.includes(path));
-  if (added.length > 0) delta.push(`OWNED_PATHS 추가: ${clippedList(added)}`);
-  if (removed.length > 0) delta.push(`OWNED_PATHS 빠짐: ${clippedList(removed)}`);
-  return delta;
-}
-
-/**
- * 같은 이름의 준비 계약 중 이번 발주 계약과 차이가 가장 적은 것을 고른다. 어긋난 필드 수가 먼저이고,
- * 동률이면 OWNED_PATHS 차집합 크기가 작은 쪽, 그마저 동률이면 목록의 마지막(최신)을 쓴다.
- */
-function closestPreparedContract(prepared: readonly DispatchContract[], requested: DispatchContract): DispatchContract {
-  const requestedPaths = canonicalOwnedPaths(requested.ownedPaths);
-  let best = prepared[0]!;
-  let bestFields = Number.POSITIVE_INFINITY;
-  let bestPaths = Number.POSITIVE_INFINITY;
-  for (const candidate of prepared) {
-    const fields = contractDelta(candidate, requested).length;
-    const candidatePaths = canonicalOwnedPaths(candidate.ownedPaths);
-    const paths = candidatePaths.filter((path) => !requestedPaths.includes(path)).length
-      + requestedPaths.filter((path) => !candidatePaths.includes(path)).length;
-    if (fields < bestFields || (fields === bestFields && paths <= bestPaths)) {
-      best = candidate;
-      bestFields = fields;
-      bestPaths = paths;
-    }
-  }
-  return best;
-}
-
-/** 빈 delta 안내가 무엇을 비교했는지 함께 보여줄 때 쓰는 비교 범위. */
-const COMPARED_CONTRACT_FIELDS = "WORK_CLASS·PRIMARY_DELIVERABLE·OWNED_PATHS(집합)·FINDING_ID";
-
-/**
- * prepared 미일치 거절 문구. 같은 이름으로 준비된 계약이 있으면 가장 가까운 계약과 어긋난 필드만
- * 지목하고, 이름 자체가 없으면 이 session에 준비된 이름 목록을 보여준 뒤 다음 한 수를 제시한다.
- */
-function preparedMismatchReason(
-  name: string,
-  requested: DispatchContract,
-  prepared: readonly DispatchContract[],
-  preparedNames: readonly string[],
-): string {
-  const label = name ? `이름 '${clipped(name)}'` : "빈 task 이름";
-  if (prepared.length === 0) {
-    const known = preparedNames.length > 0
-      ? `이 session에 준비된 이름: ${clippedList(preparedNames)}`
-      : "이 session에는 준비된 발주가 없습니다";
-    return `${label}으로 준비된 발주가 없습니다. ${known}. 그 이름과 이번 Task Guard 계약·관측 사실로 maker_route를 다시 부르고 그 결과의 preparedId로 발주하세요. 본문·context 문구는 연결 키가 아니며 같은 브리프를 두 번 판정하지 않습니다.`;
-  }
-  const delta = contractDelta(closestPreparedContract(prepared, requested), requested);
-  if (delta.length === 0) {
-    // 키가 정규형이라 여기 도달하면 준비 기록과 발주 입력의 연결 자체가 어긋난 상태다. 없는 차이를
-    // 지어내지 않고, 비교한 범위와 다음 한 수만 말한다.
-    return `${label}의 준비 계약과 이번 발주 계약은 ${COMPARED_CONTRACT_FIELDS}에서 차이가 없습니다. 같은 이름과 같은 Task Guard 계약으로 maker_route를 다시 불러 새 preparedId를 받은 뒤 그 값으로 발주하세요. 본문·context 문구는 연결 키가 아닙니다.`;
-  }
-  return `${label}의 준비 계약과 이번 발주 계약이 다릅니다: ${delta.join("; ")}. 위 차이를 포함한 이번 계약으로 maker_route를 다시 부르고 그 결과의 preparedId로 발주하세요. 본문·context 문구는 연결 키가 아닙니다.`;
-}
-
 function ownedPathsOverlap(left: string, right: string): boolean {
   return isPathOwned([left], right) || isPathOwned([right], left);
-}
-
-function relevantOwners(contract: DispatchContract, owners: Owner[]): Owner[] {
-  return owners.filter((owner) =>
-    owner.ownedPaths.some((owned) =>
-      contract.ownedPaths.some((requested) => ownedPathsOverlap(owned, requested))
-    )
-  );
 }
 
 type Workspace = DispatchOwnership["workspace"];
@@ -535,7 +182,7 @@ function activeConflicts(ownedPaths: readonly string[], workspace: Workspace, ow
 
 function activeConflictReason(conflicts: readonly Owner[]): string {
   const unknown = conflicts.some((owner) => owner.ownershipUnknown === true);
-  return `현재 active owner의 소유 경로와 충돌합니다: ${conflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 오래된 owner index나 다른 경로 owner로 자동 배정하지 말고 현재 owner에게 지시하거나 maker_route로 placement를 다시 판단하세요.${unknown ? " 소유 경로가 기록되지 않은 과거 발주가 아직 실행 중이라 공유 작업공간의 어느 경로와도 겹칠 수 있다고 봅니다. 그 owner가 끝난 뒤 발주하거나 isolated로 발주하세요." : ""}`;
+  return `현재 active owner의 소유 경로와 충돌합니다: ${conflicts.map((owner) => owner.name ?? "<unnamed>").join(", ")}. 현재 owner에게 지시하거나 경로를 나누거나, 작업이 끝난 뒤 다시 발주하거나 isolated로 발주하세요.${unknown ? " 소유 경로가 기록되지 않은 과거 발주가 아직 실행 중이라 공유 작업공간의 어느 경로와도 겹칠 수 있다고 봅니다." : ""}`;
 }
 
 /** 두 소유 계약이 같은 checkout에서 겹치는 경로. 격리 worktree가 끼면 겹침이 없다. */
@@ -544,153 +191,24 @@ function sharedOwnedPaths(left: DispatchOwnership, right: DispatchOwnership): st
   return left.ownedPaths.filter((path) => right.ownedPaths.some((other) => ownedPathsOverlap(path, other)));
 }
 
-function ownerRevision(owners: Owner[]): string {
-  return JSON.stringify(owners.map((owner) => [
-    owner.name,
-    owner.primaryDeliverable,
-    owner.ownedPaths,
-  ]));
-}
-
-function placementOf(
-  prepared: { status: "judged" | "unavailable"; answers: Record<string, RoutingAnswer> | null },
-  owners: Owner[],
-): RoutingPlacement {
-  if (prepared.status !== "judged" || !prepared.answers) {
-    return { action: "main-decision", ownerIndex: null, owner: null };
-  }
-  const duplicate = (prepared.answers.duplicate?.noul ?? 0) >= 0.5;
-  const additional = (prepared.answers.additionalInstruction?.noul ?? 0) >= 0.5;
-  const target = prepared.answers.ownerTarget?.choice?.match(/^owner(\d+)$/);
-  const ownerIndex = target ? Number(target[1]) : -1;
-  const owner = owners[ownerIndex] ?? null;
-  if (!owner || (!duplicate && !additional)) {
-    return { action: "dispatch-new", ownerIndex: null, owner: null };
-  }
-  return {
-    action: additional ? "instruct-existing" : "retarget-existing",
-    ownerIndex,
-    owner,
-  };
-}
-
 const isRetired = (model: string) => /(?:^|\/)swe-2(?:[:/]|$)|^devin\//i.test(model);
 
-const ASTRA_ORDER = ["HARD_ASTRA"];
-const SETTLED_NORMAL_ORDER = ["NORMAL_SONNET"];
-const SETTLED_HARD_ORDER = ["HARD_CODE_SOL"];
-const OPUS_NORMAL_ORDER = ["NORMAL_OPUS"];
-const OPUS_HARD_UI_ORDER = ["HARD_UI_OPUS"];
-const SOL_NORMAL_ORDER = ["NORMAL_SOL"];
-const SOL_HARD_ORDER = ["HARD_BOUNDED_SOL"];
-const SONNET_NORMAL_UI_ORDER = ["NORMAL_SONNET"];
-const SONNET_HARD_UI_ORDER = ["HARD_UI_SONNET"];
 const MAKER_EFFORT = Symbol.for("cuelo.makerEffort");
 const effortRangeOf = (profile: RoutingPolicy["modelSelection"]["profiles"][string]): MakerEffortRange =>
   ({ start: profile.startEffort, max: profile.maxEffort });
-const SETTLED_BASIS = "Main이 방향을 정했고 남은 UI 판단이 없는 구현입니다.";
-const DIFFICULT_UI_BASIS = "정말 어려운 UI/UX 판단이 남아 Opus가 맡습니다.";
-const ROUTINE_UI_BASIS = "기존 화면 패턴이나 명세 안에서 UI 판단이 남아 Sonnet이 맡습니다.";
-const BOUNDED_DESIGN_BASIS = "기존 상태 소유자와 승인된 계약 안에서 한정된 설계 판단이 남아 Sol이 맡습니다.";
-const BOUNDED_REWORK_BASIS = "경계가 정해진 구현 실패 재작업은 Sol이 맡습니다.";
-const REPEAT_FAILURE_BASIS = "같은 원인이 해결되지 않았거나 현재 접근이 실패한 반복 실패는 Astra 6.2가 맡습니다. Main은 실패 근거와 이전 접근의 한계를 브리프에 적습니다.";
-const OPEN_DESIGN_BASIS = "상태 소유권, 모듈 간 공개 계약 또는 구조 방향이 열린 큰 재설계는 Astra 6.2가 맡습니다. Main은 남은 판단과 보존할 계약을 브리프에 적습니다.";
-const UNKNOWN_DESIGN_REASON = "Jev가 열린 설계 여부를 판단하지 못했습니다(모름). 모르는 것은 실패가 아니며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
-const UNKNOWN_UI_REASON = "Jev가 남은 UI/UX 판단의 난이도를 판단하지 못했습니다(모름). 어렵다고 올리지도 보통이라고 확정하지도 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
-const UNKNOWN_BOUNDED_REASON = "Jev가 남은 설계 판단이 한정된 것인지 정해진 것인지 판단하지 못했습니다(모름). 어느 쪽으로도 추측하지 않으며 더 비싼 모델의 근거도 아닙니다. Main이 같은 기준으로 정해 ROUTING_REASON 한 줄에 근거를 남기고 발주하거나, 사실을 보강해 다시 준비하세요.";
-
-
-
-/** 크레딧이 사용 한도를 넘겨 이어 주는 provider다. 관측 사용률이나 계정 신호로 미리 빼지 않고 실제로 발주해 보며,
- * 실제 거절은 config.yml `retry.fallbackOn: usage-limit`과 그 모델의 fallback 체인이 받는다
- * (2026-11-11 사용자 결정: 「sol 한도도 크레딧이있으니까 실제 발주가 나갔다가 거절되면 돌리는걸로하자」). */
-const DISPATCH_THEN_FALLBACK_PROVIDERS: Record<string, true> = { "openai-codex": true };
-
-/** 그 모델 provider의 관측된 계정이 모두 쓸 수 없을 때만 소진으로 본다. 계정을 관측하지 못하면 소진이 아니다. */
-function modelQuotaExhausted(quota: QuotaSnapshot, model: string) {
-  if (quota.state !== "observed") return false;
-  const provider = model.slice(0, model.indexOf("/"));
-  if (DISPATCH_THEN_FALLBACK_PROVIDERS[provider]) return false;
-  const accounts = quota.providers[provider] ?? [];
-  return accounts.length > 0 && accounts.every((account) => accountUnusable(account, quota.observedAt));
-}
-
-/** `order`에서 처음 쓸 수 있는 후보를 추천한다. 모두 없거나 관측 소진이면 Main이 다시 판단한다. */
-function allocate(
-  candidates: readonly Candidate[], quota: QuotaSnapshot, order: readonly string[], basis: string,
-): NormalAllocation {
-  let selected: Candidate | undefined;
-  let primaryUnavailable = "없어서";
-  for (const profile of order) {
-    const candidate = candidates.find((entry) => entry.profile === profile);
-    if (!candidate) continue;
-    if (modelQuotaExhausted(quota, candidate.model)) {
-      if (profile === order[0]) primaryUnavailable = "관측 소진이라";
-      continue;
-    }
-    selected = candidate;
-    break;
-  }
-  const reason = !selected
-    ? `${basis} 추천 가능한 후보(${order.join("→")})가 없거나 관측 소진입니다. 자동으로 다른 모델로 대체하지 않으니 Main이 한도를 확인해 다시 판단하세요. 다른 후보를 쓰려면 ROUTING_REASON 한 줄에 근거를 남겨 직접 지정할 수 있습니다(구조 재설계가 아니라 가용성 사안이라 발주를 막지는 않습니다).`
-    : selected.profile === order[0]
-      ? `${basis} 기본 추천은 ${selected.profile}입니다.`
-      : `${basis} 우선 후보(${order[0]})가 ${primaryUnavailable} ${selected.profile}을 추천합니다.`;
-  return {
-    state: quota.state === "observed" && selected ? "observed" : "unavailable",
-    profile: selected?.profile ?? null,
-    reason: quota.state === "unavailable" ? `${reason} 한도 미관측은 소진이 아닙니다: ${quota.reason}` : reason,
-    returnToMain: false,
-  };
-}
-
-/** Jev가 모른다는 결정이다. 막지 않고 Main이 ROUTING_REASON으로 정하는 기존 경로에 남긴다. */
-const unknownDecision = (quota: QuotaSnapshot, reason: string): NormalAllocation => ({
-  state: quota.state === "observed" ? "observed" : "unavailable", profile: null, reason, returnToMain: false,
-});
-
 
 export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
-  type Judgment = {
-    answers: Record<string, RoutingAnswer> | null;
-    status: "judged" | "unavailable";
-    error?: string;
-  };
-  type Prepared = Judgment & {
-    revision: string;
-    profile: string | null;
-    candidates: Candidate[];
-    owners: Owner[];
-    publicationToken: symbol;
-    refreshAttempts: RefreshAttempts;
-    /** 이 준비의 Jev 분류로 고른 필수 스킬 세트. 발주 원장 dispatch 행에 브리프의 제외 신고와 함께 남는다. */
-    requiredSkills: RequiredSkillSelection;
-  };
-  const bindings = new Map<string, Promise<Prepared>>();
   // 검사를 통과한 발주의 이력 초안. spawn 성공(noteSpawned) 때만 identity와 함께 ledger에 남긴다.
   // 새 초안은 항상 소유 계약을 싣는다. 원장의 과거 row만 ownership이 없을 수 있다.
   type DispatchDraft = Omit<DispatchRecord, "ts" | "ownership" | keyof AttemptIdentity> & { ownership: DispatchOwnership };
   // 검사를 통과했지만 spawn 결과를 아직 받지 못한 task 호출의 실행 초안(toolCallId → 그 호출 tasks[]의 itemIndex별 초안).
-  // 초안은 이 호출 실행에만 속한다. 같은 이름·같은 계약의 다른 호출도 자기 초안을 갖고, 준비 판단(bindings)은 그대로 재사용한다.
-  // 별도 task 호출의 admission이 이 예약과 충돌을 검사한다. spawn 관측(noteSpawned)은 자기 초안만 소비해 실제 owner 목록으로
-  // 넘기며 지우고, spawn 없이 끝난 호출은 releaseCall이 자기 예약만 지운다.
+  // Spawn consumes its own drafts; a call ending without a spawn releases only its own reservation.
   const reservations = new Map<string, { itemIndex: number; key: string; draft: DispatchDraft }[]>();
-  // 거절 진단 전용 색인. 준비된 계약을 이름별로 시간순으로 모아 어긋난 필드를 지목하며,
-  // 통과·차단 판정에는 관여하지 않는다.
-  const preparedContracts = new Map<string, DispatchContract[]>();
-  const decisionCache = new Map<string, Promise<Judgment>>();
-  const placementCache = new Map<string, Promise<Judgment>>();
-  const latestPublications = new Map<string, { identity: string; token: symbol; pending: number }>();
   let generation = 0;
   let contractLock: DispatchContractLock | undefined;
   const reset = () => {
     generation++;
-    bindings.clear();
     reservations.clear();
-    preparedContracts.clear();
-    decisionCache.clear();
-    placementCache.clear();
-    latestPublications.clear();
     contractLock = undefined;
   };
   const releaseContractLock = () => {
@@ -705,433 +223,12 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const bound = taskGuardLockOf(sessionId);
     return bound === undefined ? contractLock : bound ?? undefined;
   };
-  const policy = deps.policy ?? loadRoutingPolicy;
-  async function candidateSet(ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts): Promise<CandidateSet> {
-    // Keep the full registry ladder; the selected profile clamps it in the child.
-    if (deps.candidates) return {
-      available: (await deps.candidates(ctx, current)).filter((candidate) => candidate.efforts.length > 0),
-      unavailable: [],
-    };
-    const settings = await deps.settings(ctx);
-    if (!settings) throw new Error("Maker 라우팅 설정을 읽을 수 없습니다.");
-    // 임의 slot은 modelRoles record에서 읽는다(OMP 18.3.1은 Settings.get을 없앴고 getModelRoles만 남겼다).
-    const modelRoles = settings.getModelRoles();
-    const profiles = Object.entries(current.modelSelection.profiles);
-    // 후보 하나의 장애는 그 후보만 unavailable로 표시한다. 선택하지 않을 후보 때문에 발주 전체를 막지 않는다.
-    // 자리(slot)는 profile 순서를 지킨다. 강도 확인은 registry에서 찾은 뒤 그 자리에서 한 번만 한다.
-    const slots: (Candidate | UnavailableCandidate)[] = [];
-    const retryable: { index: number; profile: string; base: string; provider: string; id: string }[] = [];
-    profiles.forEach(([profile, entry], index) => {
-      const selector = modelRoles[entry.modelConfigPath.slice("modelRoles.".length)] ?? "";
-      const base = selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max|auto)$/, "");
-      if (!base) { slots[index] = { profile, model: "", reason: "설정되지 않은 Maker slot" }; return; }
-      if (isRetired(base)) { slots[index] = { profile, model: base, reason: "SWE-2는 새 작업 후보에서 제외되어 있습니다." }; return; }
-      const slash = base.indexOf("/");
-      const provider = base.slice(0, slash), id = base.slice(slash + 1);
-      const model = ctx.modelRegistry.find(provider, id);
-      if (model) {
-        const efforts = model.thinking?.efforts ?? [];
-        slots[index] = efforts.length > 0
-          ? { profile, model: base, efforts }
-          : { profile, model: base, reason: "auto로 고를 추론 강도를 확인할 수 없는 후보" };
-        return;
-      }
-      if (slash > 0) { retryable.push({ index, profile, base, provider, id }); return; }
-      slots[index] = { profile, model: base, reason: "registry에 없는 Maker 후보" };
-    });
-    if (retryable.length > 0) {
-      // 같은 준비→발주 계약에서 같은 provider의 online 갱신은 한 번만 시작하고,
-      // 서로 다른 provider는 함께 시작한다. 새 prepare/reset은 새 map으로 다시 시도한다.
-      // refreshProvider는 그 provider의 rate-limit 쿨다운(suppressed selector)을 지우고 정적 모델을
-      // 다시 읽으므로, 발견만 다시 하는 refreshDiscoverableProviders를 쓴다(character-voice와 같은 경로).
-      const attempt = (provider: string): Promise<string | null> => {
-        const shared = attempts?.get(provider);
-        if (shared) return shared;
-        const started = (async () => {
-          try {
-            await ctx.modelRegistry.refreshDiscoverableProviders([provider], "online");
-            return null;
-          } catch (error) {
-            return `provider 갱신 실패: ${error instanceof Error ? error.message : String(error)}`;
-          }
-        })();
-        attempts?.set(provider, started);
-        return started;
-      };
-      const failures = new Map<string, string | null>();
-      await Promise.all([...new Set(retryable.map((item) => item.provider))].map(async (provider) => {
-        failures.set(provider, await attempt(provider));
-      }));
-      for (const item of retryable) {
-        const failure = failures.get(item.provider);
-        const model = failure ? undefined : ctx.modelRegistry.find(item.provider, item.id);
-        const efforts = model?.thinking?.efforts ?? [];
-        slots[item.index] = efforts.length > 0
-          ? { profile: item.profile, model: item.base, efforts }
-          : {
-            profile: item.profile,
-            model: item.base,
-            reason: model ? "auto로 고를 추론 강도를 확인할 수 없는 후보" : failure ?? "registry에 없는 Maker 후보",
-          };
-      }
-    }
-    const available = slots.filter((slot): slot is Candidate => "efforts" in slot);
-    const unavailable = slots.filter((slot): slot is UnavailableCandidate => !("efforts" in slot));
-    if (!available.length) {
-      throw new Error(`사용 가능한 Maker 후보가 없습니다: ${unavailable.map((item) => `${item.profile}=${item.model || "<빈 slot>"} (${item.reason})`).join("; ")}`);
-    }
-    return { available, unavailable };
-  }
-  const candidateList = async (ctx: ExtensionContext, current: RoutingPolicy, attempts?: RefreshAttempts) =>
-    (await candidateSet(ctx, current, attempts)).available;
-  const revisionOf = (current: RoutingPolicy, candidates: Candidate[]) =>
-    JSON.stringify([current.modelSelection, candidates]);
-
-  const answersFor = (
-    answers: Record<string, RoutingAnswer>,
-    questions: Record<string, RoutingQuestion>,
-  ): Record<string, RoutingAnswer> =>
-    Object.fromEntries(Object.keys(questions).flatMap((key) => answers[key] ? [[key, answers[key]!]] : []));
-  const cacheJudgment = (
-    cache: Map<string, Promise<Judgment>>,
-    key: string,
-    pending: Promise<Judgment>,
-  ): Promise<Judgment> => {
-    cache.set(key, pending);
-    void pending.then((result) => {
-      if (result.status === "unavailable" && cache.get(key) === pending) cache.delete(key);
-    });
-    return pending;
-  };
-
-  const judge = async (
-    ctx: ExtensionContext,
-    state: unknown,
-    questions: Record<string, RoutingQuestion>,
-    signal?: AbortSignal,
-  ): Promise<Judgment> => {
-    try {
-      const result = await deps.judge(ctx, { state, questions }, signal);
-      return { answers: result.answers, status: "judged" };
-    } catch (error) {
-      return {
-        answers: null,
-        status: "unavailable",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  };
-
-  const INSTRUCTION = `Main이 준비하고 검수합니다. 새 발주 추천 순서: 1 반복 실패(RETURN_TO_MAIN)와 2 큰 재설계(designOpen 0.5 이상)는 Astra 6.2, 3 어려운 UI는 Opus 5.5, 4 한정된 설계와 5 한정된 실패 재작업은 Sol 6.2, 6 보통 UI와 7 NORMAL 구현은 Sonnet 5.5, 7 HARD 구현은 Sol 6.2입니다. 7 HARD만 medium에서 시작하고 나머지는 high에서 시작하며 최대는 xhigh입니다. Main은 실패 근거와 열린 판단을 브리프에 적습니다. FINDING_ID 표기, 의도한 RED, 일시적 인프라 오류와 검증 보정은 실패 근거가 아닙니다. DeepSeek는 추천하지 않으며 명시 선택에는 ROUTING_REASON이 필요합니다. 모름과 후보 소진은 추천을 내지 않으며 Main이 ROUTING_REASON과 함께 후보를 직접 선택하거나 사실을 보강합니다. 추천과 다른 선택과 기존 owner 대신 새 발주에도 ROUTING_REASON이 필요합니다. 계정 하루 몫은 추천을 바꾸지 않습니다. 발주는 task({context:'PREPARED_CONTEXT', tasks:[{task:'PREPARED_TASK: <preparedId>', model:'<후보 selector>:auto', solutionSpace:'<남은 판단>'}]})로 보냅니다. name을 생략하면 복원되고 agent를 생략하면 maker입니다.`;
-  /** 배치 공통 정보(candidates·quota·instruction)는 한 번만, task별 route는 배열로 돌려준다. */
-  async function prepareBatch(context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal, callId = "") {
-    const current = policy();
-    // 필수 스킬 질문은 기존 decision 판단 묶음에 붙인다(별도 모델 호출 없음). 정본이 바뀌면 cache key도 바뀐다.
-    const skillSource = (deps.requiredSkills ?? loadRequiredSkillContract)();
-    const skillQuestions = requiredSkillQuestions(skillSource);
-    const skillSourceKey = JSON.stringify(skillSource);
-    const allOwners = deps.owners(ctx);
-    const atGeneration = generation;
-    // TaskGuard는 같은 요청의 첫 child가 확립한 WORK_CLASS/PRIMARY_DELIVERABLE을 이후 child에
-    // 파생한다. 준비 도구도 같은 batch와 이미 연결된 task에서 그 두 필드만 상속한다.
-    let candidateLock = lockFor(sessionIdOf(ctx));
-    const lockSource = candidateLock ? "request" : "batch";
-    const admission = userRequestAdmission(sessionIdOf(ctx));
-    const advisories: (string | null)[] = [];
-    const contracts = tasks.map((task) => {
-      const contract = dispatchContract(task.task, candidateLock, task.name);
-      if (!contract) throw new Error(`maker_route는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task.task, candidateLock, task.name)}`);
-      advisories.push(contractLockConflict(task.name, contract, candidateLock, lockSource, () => admission(task.task, contract)));
-      candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
-      return contract;
-    });
-    const keys = tasks.map((task, index) => briefKey(task.name, contracts[index]!));
-    // 준비 handle. 실제 발주 identity는 spawn에서 task 호출 id·index·session으로 캡처한다.
-    // 이 값으로 실제 발주를 식별하지 않으며, 중첩 prepare가 서로를 덮지 않도록 공유 map에 두지 않는다.
-    const sessionId = (ctx.sessionManager?.getSessionId?.() ?? "").trim();
-    const plans = tasks.map((_task, index) => ({ sessionId, planId: `${sessionId}#${callId}#${index}` }));
-    const publicationClaims = tasks.map((task, index) => {
-      const key = keys[index]!;
-      const identity = JSON.stringify([
-        routingFactsState(task.assessment),
-        current.modelSelection,
-      ]);
-      const latest = latestPublications.get(key);
-      if (latest?.identity === identity && latest.pending > 0) {
-        latest.pending += 1;
-        return { key, token: latest.token };
-      }
-      const token = Symbol(key);
-      latestPublications.set(key, { identity, token, pending: 1 });
-      return { key, token };
-    });
-    const requireLatest = () => {
-      if (atGeneration !== generation) throw new Error("session이 변경되어 이전 라우팅 판단은 폐기되었습니다.");
-      if (publicationClaims.some((claim) => latestPublications.get(claim.key)?.token !== claim.token)) {
-        throw new Error("같은 task 계약에 더 최신 facts 준비가 있어 이전 라우팅 판단은 폐기되었습니다.");
-      }
-    };
-    const clock = deps.clock ?? (() => performance.now());
-    const startedAt = clock();
-    const elapsed = (from: number, to: number) => Math.max(0, Math.round(to - from));
-    // 고정 필드 진단. 숫자만 담으며 task 수와 무관하다. jevStarted는 이 호출이 실제로 시작한 judge 요청 수이고,
-    // 분류별 건수와 합산해 해석하지 않는다(한 요청이 decision·placement를 함께 판단할 수 있다).
-    const counts = { jevStarted: 0, decisionNew: 0, decisionReused: 0, placementNew: 0, placementReused: 0 };
-    let quotaAbort: AbortController | undefined;
-    try {
-      const ownersByTask = contracts.map((contract) => relevantOwners(contract, allOwners));
-      const overlapsByTask = batchOwnershipOverlaps(tasks.map((task) => task.name), contracts);
-      const refreshAttempts: RefreshAttempts = new Map();
-      const candidatesStartedAt = clock();
-      const { available: candidates, unavailable: unavailableCandidates } = await candidateSet(ctx, current, refreshAttempts);
-      const candidatesDoneAt = clock();
-      requireLatest();
-      // 잔량은 시각마다 바뀌므로 revision·identity·Jev state 밖의 참고 정보로만 붙인다.
-      // Jev 판단과 함께 시작하고, 이번 계정 잔량 조회가 끝난 뒤 배정 결과를 반환한다.
-      // 기존 조회 시간 제한과 사용자 AbortSignal은 유지한다.
-      const quotaProviders = [...new Set([...candidates.map((candidate) => candidate.model.slice(0, candidate.model.indexOf("/"))), "anthropic"])];
-      quotaAbort = new AbortController();
-      const quotaSignal = signal
-        ? AbortSignal.any([signal, quotaAbort.signal])
-        : quotaAbort.signal;
-      let quotaPending: Promise<QuotaSnapshot>;
-      try {
-        quotaPending = (deps.quota ?? readSidecarQuota)(quotaProviders, quotaSignal).catch(
-          (error): QuotaSnapshot => ({
-            state: "unavailable",
-            observedAt: Date.now(),
-            reason: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      } catch (error) {
-        quotaPending = Promise.resolve({
-          state: "unavailable",
-          observedAt: Date.now(),
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-      const judgeStartedAt = clock();
-      const publications = await Promise.all(tasks.map(async (task, index) => {
-        const contract = contracts[index]!;
-        const owners = ownersByTask[index]!;
-        const revision = revisionOf(current, candidates);
-        const key = keys[index]!;
-        const decisionState = routingFactsState(task.assessment);
-        const decisionKey = JSON.stringify([key, decisionState, revision, skillSourceKey]);
-        const placementKey = JSON.stringify([decisionKey, ownerRevision(owners)]);
-        const baseQuestions = { ...decisionQuestions(current), ...skillQuestions };
-        const ownerQuestions = placementQuestions(owners);
-        let decisionPending = decisionCache.get(decisionKey);
-        let placementPending = placementCache.get(placementKey);
-
-        // 소유자가 없으면 placement 판단 자체가 없으므로 어느 쪽으로도 세지 않는다. 새 decision 판단은 placement를 함께 덮어쓴다.
-        if (decisionPending) counts.decisionReused += 1;
-        if (decisionPending && placementPending && owners.length > 0) counts.placementReused += 1;
-        if (!decisionPending) {
-          const fullQuestions = { ...baseQuestions, ...ownerQuestions };
-          counts.jevStarted += 1;
-          counts.decisionNew += 1;
-          if (owners.length > 0) counts.placementNew += 1;
-          const fullPending = judge(ctx, routingState(task.assessment, owners), fullQuestions, signal);
-          decisionPending = cacheJudgment(
-            decisionCache,
-            decisionKey,
-            fullPending.then((result) => ({
-              ...result,
-              answers: result.answers ? answersFor(result.answers, baseQuestions) : null,
-            })),
-          );
-          if (owners.length > 0) {
-            placementPending = cacheJudgment(
-              placementCache,
-              placementKey,
-              fullPending.then((result) => ({
-                ...result,
-                answers: result.answers ? answersFor(result.answers, ownerQuestions) : null,
-              })),
-            );
-          }
-        } else if (!placementPending && owners.length > 0) {
-          counts.jevStarted += 1;
-          counts.placementNew += 1;
-          placementPending = cacheJudgment(
-            placementCache,
-            placementKey,
-            judge(
-              ctx,
-              routingState(task.assessment, owners),
-              ownerQuestions,
-              signal,
-            ).then((result) => ({
-              ...result,
-              answers: result.answers ? answersFor(result.answers, ownerQuestions) : null,
-            })),
-          );
-        }
-
-        const decision = await decisionPending;
-        const placement = placementPending
-          ? await placementPending
-          : { status: "judged" as const, answers: {} };
-        const requiredSkills = selectRequiredSkills(skillSource, decision.answers, decision.error);
-        // 필수 스킬 누락·선택형 축소·제외 문제도 같은 advisory 목록에 싣는다. 발주를 막지 않는다.
-        const gaps = [
-          ...(advisories[index] ? [advisories[index]!] : []),
-          ...(briefGaps(task.assessment, contracts[index]!.ownedPaths, contracts[index]!.findingId) ?? []),
-          ...requiredSkillGaps(requiredSkills, requiredSkills.skills.length > 0 ? briefSkillCoverage(task.task, requiredSkills) : null),
-        ];
-        const prepared: Prepared = {
-          revision,
-          profile: null,
-          candidates,
-          publicationToken: publicationClaims[index]!.token,
-          refreshAttempts: new Map(refreshAttempts),
-          requiredSkills,
-          owners,
-          status: decision.status === "judged" && placement.status === "judged" ? "judged" : "unavailable",
-          error: [decision.error, placement.error].filter(Boolean).join("; ") || undefined,
-          answers: decision.answers === null
-            ? null
-            : { ...decision.answers, ...(placement.answers ?? {}) },
-        };
-        requireLatest();
-        return {
-          key,
-          prepared,
-          route: {
-            name: task.name,
-            briefGaps: gaps.length > 0 ? gaps : null,
-            ownershipOverlaps: overlapsByTask[index]!,
-            status: prepared.status,
-            error: prepared.error,
-            // 원본 위임 답은 여기서 제외하고 routes[].delegationAdvice와 발주 원장에는 각각 남긴다.
-            recommendations: prepared.answers === null ? null : Object.fromEntries(Object.entries(withoutDelegation(prepared.answers)).filter(([answerKey]) => !isRequiredSkillAnswerKey(answerKey))),
-            placement: placementOf(prepared, owners),
-            existingOwners: owners,
-            normalAllocation: null as NormalAllocation | null,
-            hardAllocation: null as NormalAllocation | null,
-          },
-        };
-      }));
-      const quotaWaitStartedAt = clock();
-      const quota = await quotaPending;
-      const quotaDoneAt = clock();
-      requireLatest();
-      // Historic summaries remain advisory; FINDING_ID is the per-dispatch rework signal.
-      const ledgerRecords = deps.ledger?.read();
-      const historyOf = (answers: Record<string, RoutingAnswer> | null): RoutingHistory | null => {
-        const grade = answers?.workClass?.choice;
-        if (!ledgerRecords || !grade || !(grade in current.modelSelection.criteria)) return null;
-        return summarizeHistory(ledgerRecords, grade, grade === "HARD" ? answers?.hardFocus?.choice ?? null : null);
-      };
-      for (const [index, publication] of publications.entries()) {
-        const answers = publication.prepared.answers;
-        const normal = answers?.workClass?.choice === "NORMAL";
-        const hard = answers?.workClass?.choice === "HARD";
-        const design = answers?.designOpen?.noul;
-        const designKnown = typeof design === "number" && Number.isFinite(design);
-        const architectureOpen = designKnown && design >= 0.5;
-        const uiChoice = answers?.uiDifficulty?.choice;
-        const uiKnown = uiChoice === "NONE" || uiChoice === "ROUTINE" || uiChoice === "DIFFICULT";
-        const difficultUi = uiChoice === "DIFFICULT";
-        const routineUi = uiChoice === "ROUTINE";
-        const boundedChoice = answers?.boundedDesign?.choice;
-        const boundedKnown = boundedChoice === "NONE" || boundedChoice === "BOUNDED";
-        const boundedDesign = boundedChoice === "BOUNDED";
-        // 재작업은 FINDING_ID 표기가 아니라 failureEvidence·facts에 적힌 사실로 Jev가 본다. 표기를 빼도 반복 실패가 우회되지 않는다.
-        const nature = answers?.reworkNature?.choice;
-        const failedRework = nature === "BOUNDED_FAILURE";
-        const repeatFailure = nature === "RETURN_TO_MAIN";
-        const decide = (): NormalAllocation => {
-          if (repeatFailure) return allocate(candidates, quota, ASTRA_ORDER, REPEAT_FAILURE_BASIS);
-          if (architectureOpen) return allocate(candidates, quota, ASTRA_ORDER, OPEN_DESIGN_BASIS);
-          if (!designKnown) return unknownDecision(quota, UNKNOWN_DESIGN_REASON);
-          if (!uiKnown) return unknownDecision(quota, UNKNOWN_UI_REASON);
-          if (!boundedKnown) return unknownDecision(quota, UNKNOWN_BOUNDED_REASON);
-          if (difficultUi) return allocate(candidates, quota, hard ? OPUS_HARD_UI_ORDER : OPUS_NORMAL_ORDER, DIFFICULT_UI_BASIS);
-          if (boundedDesign) return allocate(candidates, quota, hard ? SOL_HARD_ORDER : SOL_NORMAL_ORDER, BOUNDED_DESIGN_BASIS);
-          if (failedRework) return allocate(candidates, quota, hard ? SOL_HARD_ORDER : SOL_NORMAL_ORDER, BOUNDED_REWORK_BASIS);
-          if (routineUi) return allocate(candidates, quota, hard ? SONNET_HARD_UI_ORDER : SONNET_NORMAL_UI_ORDER, ROUTINE_UI_BASIS);
-          return allocate(candidates, quota, hard ? SETTLED_HARD_ORDER : SETTLED_NORMAL_ORDER, SETTLED_BASIS);
-        };
-        const decided = normal || hard || repeatFailure || architectureOpen ? decide() : null;
-        publication.prepared.profile = decided?.profile ?? null;
-        if (repeatFailure && !tasks[index]!.assessment.failureEvidence?.some(item => item.trim())) {
-          (publication.route.briefGaps ??= []).push("반복 실패의 failureEvidence에 실패 근거와 이전 접근의 한계를 적으세요.");
-        }
-        if (architectureOpen && !tasks[index]!.assessment.remainingJudgments?.some(item => item.trim())) {
-          (publication.route.briefGaps ??= []).push("큰 재설계의 remainingJudgments에 열린 판단과 보존할 계약을 적으세요.");
-        }
-        publication.route.normalAllocation = hard ? null : decided;
-        publication.route.hardAllocation = hard ? decided : null;
-      }
-      const sessionId = ctx.sessionManager?.getSessionId?.();
-      if (typeof sessionId !== "string" || !sessionId.trim()) {
-        throw new Error("maker_route prepared 참조를 저장할 current session id가 없습니다.");
-      }
-      const preparedIds = storePreparedTaskBatch(context, tasks, sessionId);
-      publications.forEach((publication, index) => {
-        bindings.set(publication.key, Promise.resolve(publication.prepared));
-        const name = tasks[index]!.name.trim();
-        preparedContracts.set(name, [...(preparedContracts.get(name) ?? []), contracts[index]!]);
-      });
-      const diagnostics = {
-        totalMs: elapsed(startedAt, quotaDoneAt),
-        candidatesMs: elapsed(candidatesStartedAt, candidatesDoneAt),
-        judgeWaitMs: elapsed(judgeStartedAt, quotaWaitStartedAt),
-        quotaExtraWaitMs: elapsed(quotaWaitStartedAt, quotaDoneAt),
-        ...counts,
-      };
-      return {
-        diagnostics,
-        candidates,
-        unavailableCandidates,
-        quota,
-        instruction: `먼저 routes[].delegationAdvice와 placement로 수행 주체를 정합니다. 명백한 작은 직접 작업은 maker_route 없이 Main이 끝내고, 이미 준비했다면 main-direct 조언을 따릅니다. 기존 담당자의 국소 수정은 새 발주 없이 그 담당자가 이어갑니다. 아래 모델 추천은 실제 새 발주를 선택한 경우에만 적용하며 이 조언은 새 차단 조건이 아닙니다. 발주 전 routes[].briefGaps와 ownershipOverlaps를 확인하세요. ${INSTRUCTION}`,
-        routes: publications.map((publication, index) => ({
-          delegationAdvice: delegationAdviceOf(publication.prepared.answers, publication.route.placement, current.modelSelection.delegationCriteria),
-          ...publication.route,
-          profile: publication.prepared.profile,
-          effortRange: publication.prepared.profile ? effortRangeOf(current.modelSelection.profiles[publication.prepared.profile]!) : null,
-          normalAllocation: publication.route.normalAllocation,
-          hardAllocation: publication.route.hardAllocation,
-          uiUxHandoff: (publication.prepared.answers?.uiUxBoundary?.noul ?? 0) >= 0.5
-            ? "기존 owner가 있으면 그 owner가 이어 가며 실행 중 모델은 바꾸지 않습니다. Opus가 아닌 owner에 UI/UX 경계가 새로 드러났으면 Main이 미완 변경·증거를 freeze한 뒤 소유권을 넘길지 정합니다. active owner를 동시에 새 발주하거나 완료된 작업을 되풀이하지 않습니다."
-            : null,
-          history: historyOf(publication.prepared.answers),
-          crossReviewAdvice: crossReviewAdviceOf(publication.prepared.answers, current.modelSelection.crossReviewNeedCriteria),
-          preparedId: preparedIds[index],
-          plan: plans[index] ?? { sessionId, planId: null },
-        })),
-      };
-    } finally {
-      quotaAbort?.abort();
-      for (const claim of publicationClaims) {
-        const latest = latestPublications.get(claim.key);
-        if (latest?.token === claim.token && latest.pending > 0) latest.pending -= 1;
-      }
-    }
-  }
-  /** task별 route만 필요한 호출부용. 배치 공통 정보는 `prepareBatch`가 준다. */
-  const prepare = async (context: string, tasks: RouteTask[], ctx: ExtensionContext, signal?: AbortSignal) =>
-    (await prepareBatch(context, tasks, ctx, signal)).routes;
-
-  async function beforeTask(input: Record<string, unknown>, ctx: ExtensionContext, callId = "") {
-    let canonicalInput: Record<string, unknown>;
+  async function beforeTask(input: Record<string, unknown>, ctx: ExtensionContext, callId: string) {
+    const tasks = (Array.isArray(input.tasks) ? input.tasks : [input]) as Record<string, unknown>[];
     const notices: string[] = [];
-    try {
-      const sessionId = ctx.sessionManager?.getSessionId?.();
-      canonicalInput = resolvePreparedTaskInput(input, typeof sessionId === "string" ? sessionId : "", notices);
-    } catch (error) {
-      return { block: true, reason: error instanceof Error ? error.message : String(error) };
-    }
-    const tasks = (Array.isArray(canonicalInput.tasks) ? canonicalInput.tasks : [canonicalInput]) as Record<string, unknown>[];
     const normalizedItems = new Map<number, Record<string, unknown>>();
     const ranges: [index: number, range: MakerEffortRange][] = [];
     const atGeneration = generation;
-    // 현재 후보는 배치 전체의 준비 참조를 모은 뒤 한 번 해석한다.
-    // 준비에서 시작한 online provider 시도만 공유하며, 다음 발주는 새로 해석한다.
-    const refreshAttempts: RefreshAttempts = new Map();
     let candidateLock = lockFor(sessionIdOf(ctx));
     const lockSource = candidateLock ? "request" : "batch";
     const admission = userRequestAdmission(sessionIdOf(ctx));
@@ -1140,14 +237,14 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       const task = typeof item.task === "string" ? item.task : "";
       locksBefore.push(candidateLock);
       // 파일을 쓰지 않는 폰 앱 조작 child는 발주 계약과 lock을 세우지 않는다.
-      if (isPhoneOperatorCall(item, canonicalInput)) return null;
+      if (isPhoneOperatorCall(item, input)) return null;
       const contract = dispatchContract(task, candidateLock, String(item.name ?? ""));
       if (!contract) return null;
       candidateLock ??= { workClass: contract.workClass, primaryDeliverable: contract.primaryDeliverable };
       return contract;
     });
     const drafts: [number, DispatchDraft][] = [];
-    const ready: { itemIndex: number; item: Record<string, unknown>; contract: DispatchContract; key: string; prepared: Prepared }[] = [];
+    const ready: { itemIndex: number; item: Record<string, unknown>; contract: DispatchContract }[] = [];
     for (const [itemIndex, item] of tasks.entries()) {
       const requested = typeof item.model === "string" ? item.model : "";
       const task = typeof item.task === "string" ? item.task : "";
@@ -1158,7 +255,7 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       // 정확하지 않은 문자열이나 summon 요청이 없는 marker는 면제하지 않는다.
       if (parseCharacterSummonMarker(task) !== undefined || isSummonCall(sessionIdOf(ctx), callId)) continue;
       // 폰 앱 조작 child는 정의 파일의 Sonnet 슬롯으로만 돌고(model 지정이 있으면 면제가 아니다) 파일을 쓰지 않는다.
-      if (isPhoneOperatorCall(item, canonicalInput)) continue;
+      if (isPhoneOperatorCall(item, input)) continue;
       // core schema는 solutionSpace를 필수 string으로 두지만 task 도구가 lenientArgValidation이라 누락·다른 타입도 원 인자 그대로
       // 실행에 넘어오고, 공백은 schema를 통과한다. child auto 분류기는 trim 뒤 빈 값이면 brief 전문으로 강도를 고른다.
       if (typeof item.solutionSpace !== "string" || !item.solutionSpace.trim()) {
@@ -1168,114 +265,75 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
       const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource, () => admission(task, contract));
       if (conflict) notices.push(conflict);
-      const name = String(item.name ?? "").trim();
-      const key = briefKey(String(item.name ?? ""), contract);
-      const pending = bindings.get(key);
-      if (!pending) {
-        return { block: true, reason: preparedMismatchReason(name, contract, preparedContracts.get(name) ?? [], [...preparedContracts.keys()]) };
-      }
-      const prepared = await pending;
-      for (const [provider, attempt] of prepared.refreshAttempts) {
-        if (!refreshAttempts.has(provider)) refreshAttempts.set(provider, attempt);
-      }
-      if (atGeneration !== generation) {
-        return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
-      }
-      if (latestPublications.get(key)?.token !== prepared.publicationToken) {
-        return { block: true, reason: "같은 task 계약에 더 최신 maker_route 준비가 있습니다. 최신 판단이 끝난 뒤 그 결과로 발주하세요." };
-      }
-      ready.push({ itemIndex, item, contract, key, prepared });
+      ready.push({ itemIndex, item, contract });
     }
-    const current = policy();
-    const candidates = ready.length > 0 ? await candidateList(ctx, current, refreshAttempts) : [];
-    if (atGeneration !== generation) {
-      return { block: true, reason: "session이 변경되어 이전 라우팅 판단은 발주에 사용할 수 없습니다." };
+    if (ready.length === 0) return;
+
+    let modelRoles: Readonly<Record<string, string>>;
+    try {
+      const settings = await deps.settings(ctx);
+      if (!settings) return { block: true, reason: "Maker 모델 후보 설정을 읽을 수 없습니다." };
+      modelRoles = settings.getModelRoles();
+    } catch {
+      return { block: true, reason: "Maker 모델 후보 설정을 읽을 수 없습니다." };
     }
-    const revision = revisionOf(current, candidates);
-    const allOwners = ready.length > 0 ? deps.owners(ctx) : [];
-    // 마지막 await 이후 모든 항목을 같은 snapshot으로 검사하고 예약한다.
-    // 앞 항목을 검사한 뒤 뒤 항목의 후보 조회를 기다리는 stale publication 틈도 없앤다.
-    for (const { itemIndex, item, contract, key, prepared } of ready) {
+    const profiles = Object.entries(loadRoutingPolicy().modelSelection.profiles).flatMap(([profileId, profile]) => {
+      const role = profile.modelConfigPath.slice("modelRoles.".length);
+      const model = modelRoles[role]?.replace(/:(?:off|minimal|low|medium|high|xhigh|max|auto)$/, "");
+      return model && !isRetired(model) ? [{ profileId, role: `@${role}`, model, profile }] : [];
+    });
+    const refreshed = new Set<string>();
+    for (const { itemIndex, item, contract } of ready) {
       const name = String(item.name ?? "").trim();
       const task = typeof item.task === "string" ? item.task : "";
       const requested = typeof item.model === "string" ? item.model : "";
-      if (latestPublications.get(key)?.token !== prepared.publicationToken) {
-        return { block: true, reason: "candidate 확인 중 같은 task 계약에 더 최신 maker_route 준비가 생겼습니다. 최신 판단으로 발주하세요." };
-      }
-      if (prepared.revision !== revision) return { block: true, reason: "후보 또는 판단 기준이 바뀌었습니다. maker_route로 변경된 조건만 다시 판단하세요." };
-      const owners = relevantOwners(contract, allOwners);
-      if (ownerRevision(prepared.owners) !== ownerRevision(owners)) return { block: true, reason: "현재 소유권 충돌 조건이 바뀌었습니다. maker_route로 owner placement만 다시 판단하세요." };
-      // A recommendation disambiguates a shared model; an override normally uses the
-      // assessed work grade. A prepared profile remains the fallback without an assessment.
       const cut = requested.lastIndexOf(":");
-      const sameModel = candidates.filter((candidate) => candidate.model === (cut > 0 ? requested.slice(0, cut) : requested));
-      const answers = prepared.answers;
-      const grade = answers?.workClass?.choice ?? current.modelSelection.profiles[prepared.profile]?.workClass;
-      const sameGrade = sameModel.filter((candidate) => current.modelSelection.profiles[candidate.profile]?.workClass === grade);
-      const bounded = answers?.boundedDesign?.choice === "BOUNDED" || answers?.reworkNature?.choice === "BOUNDED_FAILURE";
-      const solProfile = grade === "HARD" ? bounded ? "HARD_BOUNDED_SOL" : "HARD_CODE_SOL" :
-        grade === "NORMAL" ? "NORMAL_SOL" : undefined;
-      const selected = sameModel.find((candidate) => candidate.profile === prepared.profile)
-        ?? sameModel.find((candidate) => candidate.profile === solProfile)
-        ?? sameGrade[0]
-        ?? sameModel[0];
-      if (!selected) return { block: true, reason: "maker_route가 확인한 후보를 지정하세요." };
+      const base = cut > 0 ? requested.slice(0, cut) : requested;
+      const selected = profiles.find((candidate) => requested === candidate.profileId || base === candidate.role || base === candidate.model);
+      if (!selected) return { block: true, reason: `'${clipped(name, 40)}': task의 model에 Maker 후보 역할, 모델 또는 프로필 ID를 지정하세요(rule://agent-workflow).` };
+      const slash = selected.model.indexOf("/");
+      const provider = selected.model.slice(0, slash), id = selected.model.slice(slash + 1);
+      let model = slash > 0 ? ctx.modelRegistry.find(provider, id) : undefined;
+      if (!model && slash > 0 && !refreshed.has(provider)) {
+        // This refresh discovers models without clearing the provider's rate-limit cooldown.
+        try {
+          await ctx.modelRegistry.refreshDiscoverableProviders([provider], "online");
+          refreshed.add(provider);
+          model = ctx.modelRegistry.find(provider, id);
+        } catch {
+          return { block: true, reason: `Maker 후보 '${clipped(selected.model)}'의 provider를 갱신하지 못했습니다.` };
+        }
+      }
+      if (!model?.thinking?.efforts?.length) {
+        return { block: true, reason: `Maker 후보 '${clipped(selected.model)}'의 auto 추론 강도를 registry에서 확인할 수 없습니다.` };
+      }
       const canonicalModel = `${selected.model}:auto`;
-      const rewritesModel = requested !== canonicalModel || item.effort !== undefined;
-      if (rewritesModel) {
+      if (requested !== canonicalModel || item.effort !== undefined) {
         const { effort: _effort, ...normalized } = item;
         normalizedItems.set(itemIndex, { ...normalized, model: canonicalModel });
         notices.push(`[MakerRoute] model '${requested}' → '${canonicalModel}'${item.effort !== undefined ? "; effort 제거" : ""}.`);
       }
-      const profile = prepared.profile;
-      const placement = placementOf(prepared, owners);
-      const workspace = workspaceOf(canonicalInput, item);
-      const conflicts = activeConflicts(contract.ownedPaths, workspace, allOwners);
-      if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
-      const existingOwner = placement.action === "instruct-existing" || placement.action === "retarget-existing";
-      const changed = prepared.status !== "judged" || profile !== selected.profile || existingOwner;
-      // 승인 판정과 원장 본문은 같은 해석을 쓴다: ROUTING_REASON 줄 안의 비어 있지 않은 근거만 인정하고 줄바꿈은 소비하지 않는다.
-      // (예전 승인 판정의 `\s*`는 줄바꿈까지 먹어 빈 줄 다음 제목을 근거로 인정했다.)
-      const reasonText = /^[^\S\r\n\u2028\u2029]*ROUTING_REASON:[^\S\r\n\u2028\u2029]*(\S.*)$/m.exec(task)?.[1]?.trim() ?? null;
-      const routingReason = reasonText !== null;
-      if (changed && !routingReason) {
-        // 11-12 거절 연쇄(doc/history/2026/11/12-dispatch-rejects-reason): 어느 항목인지·왜인지·어디에 쓰는지를 말하지 않으면
-        // Main이 다른 항목이나 context 형식을 고치다 다시 막힌다.
-        const label = `'${clipped(name, 40)}'`;
-        const where = "이 항목 task 본문에 `ROUTING_REASON: <근거 한 줄>` 줄을 넣으세요(준비 참조면 `PREPARED_TASK: <preparedId>` 다음 줄). 다른 항목에 적은 근거는 이 항목에 적용되지 않습니다.";
-        if (existingOwner) return { block: true, reason: `${label}: 기존 owner${placement.owner?.name ? ` ${placement.owner.name}` : ""}에게 추가 지시하거나 범위를 retarget하세요. Main이 새 발주를 선택하면 ${where}` };
-        const recommendedModel = candidates.find((candidate) => candidate.profile === profile)?.model;
-        const why = prepared.status !== "judged"
-          ? `Jev가 이 준비를 판정하지 못했습니다(${prepared.status})`
-          : `추천 ${profile ?? "없음"}${recommendedModel ? `(${recommendedModel})` : ""} 대신 ${selected.profile}(${selected.model})을 골랐습니다`;
-        return { block: true, reason: `${label}: ${why}. Main이 같은 기준으로 정한 근거를 남기려면 ${where}` };
-      }
-      ranges.push([itemIndex, effortRangeOf(current.modelSelection.profiles[selected.profile]!)]);
-      const recommended = candidates.findIndex((candidate) => candidate.profile === profile);
-      const recommendedCandidate = candidates[recommended];
-      const workClass = answers?.workClass?.choice ?? null;
+      ranges.push([itemIndex, effortRangeOf(selected.profile)]);
       drafts.push([itemIndex, {
         type: "dispatch",
         name,
-        workClass,
-        focus: workClass === "HARD" ? answers?.hardFocus?.choice ?? null : null,
-        recommendedProfile: profile,
-        recommendedModel: recommendedCandidate?.model ?? null,
-        recommendedEffort: recommendedCandidate ? "auto" : null,
+        workClass: null,
+        focus: null,
+        recommendedProfile: null,
+        recommendedModel: null,
+        recommendedEffort: null,
         chosenModel: selected.model,
         chosenEffort: "auto",
-        routingReason,
-        routingReasonText: reasonText === null ? null : clipped(reasonText, ROUTING_REASON_TEXT_LIMIT),
-        workClassConfidence: probabilityOf(answers?.workClass?.confidence),
-        workClassProbabilities: probabilitiesOf(answers?.workClass?.probabilities),
-        delegationAdvice: answers?.delegation?.choice
-          ? { choice: answers.delegation.choice, confidence: probabilityOf(answers.delegation.confidence) }
-          : null,
+        routingReason: false,
+        routingReasonText: null,
+        workClassConfidence: null,
+        workClassProbabilities: null,
         purpose: guardFields(task)?.("PURPOSE").toLowerCase() || null,
-        ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace },
-        // 완료 때 실제 읽기와 대조할 기대값. 실제 발주한 브리프의 SKILL_EXCLUSIONS를 함께 남긴다(제외는 읽기가 아니다).
-        requiredSkills: dispatchRequiredSkills(prepared.requiredSkills, task),
+        ownership: { primaryDeliverable: contract.primaryDeliverable, ownedPaths: contract.ownedPaths, workspace: workspaceOf(input, item) },
       }]);
+    }
+    if (atGeneration !== generation) {
+      return { block: true, reason: "session이 변경되어 이전 task를 발주하지 않았습니다." };
     }
     // 같은 배치의 공유 작업공간 항목끼리는 게시 전에 한꺼번에 비교한다. 하나라도 겹치면 어떤 초안도 게시하지 않는다.
     const overlaps: string[] = [];
@@ -1291,10 +349,8 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
         reason: `같은 task 배치에서 공유 작업공간 Maker의 OWNED_PATHS가 겹칩니다: ${overlaps.slice(0, DIAGNOSTIC_LIST_LIMIT).join("; ")}. 배치 전체를 발주하지 않았습니다. 경로를 나누거나 한 owner에게 맡기거나, 겹치는 쪽을 순서대로 내거나 isolated로 발주하세요.`,
       };
     }
-    // 여기부터 게시까지는 await가 없는 한 구간이다. 항목별 검사 뒤 다른 호출이 owner나 예약을 바꿨을 수 있으므로
-    // 지금의 active owner와, 다른 task 호출이 승인받아 아직 spawn 결과를 기다리는 예약을 함께 다시 보고 통과한 호출만 예약한다.
-    // core는 한 assistant 메시지의 task 호출을 차례로 준비하므로 앞 호출의 예약이 뒤 호출의 준비에 보인다.
-    const currentOwners = drafts.length > 0 ? deps.owners(ctx) : [];
+    // No awaits from here to reservation: check owners and pending calls on the current snapshot.
+    const currentOwners = deps.owners(ctx);
     for (const [, draft] of drafts) {
       const conflicts = activeConflicts(draft.ownership.ownedPaths, draft.ownership.workspace, currentOwners);
       if (conflicts.length > 0) return { block: true, reason: activeConflictReason(conflicts) };
@@ -1316,20 +372,11 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       };
     }
     if (callId && drafts.length > 0) reservations.set(callId, drafts.map(([itemIndex, draft]) => ({ itemIndex, key: briefKey(draft.name, contracts[itemIndex]!), draft })));
-    if (normalizedItems.size > 0) {
-      canonicalInput = Array.isArray(canonicalInput.tasks)
-        ? { ...canonicalInput, tasks: tasks.map((item, index) => normalizedItems.get(index) ?? item) }
-        : normalizedItems.get(0)!;
-    }
-    // The symbol is not an argument revision. Attach it only after the entire
-    // call passes, including when a prepared brief or another guard clones it.
-    const submitted = Array.isArray(input.tasks) ? input.tasks : [input];
-    for (const [index, range] of ranges) {
-      const normalized = normalizedItems.get(index);
-      const item = normalized ?? tasks[index]!;
-      Reflect.set(item, MAKER_EFFORT, range);
-      if (!normalized && submitted[index] !== item) Reflect.set(submitted[index], MAKER_EFFORT, range);
-    }
+    const canonicalInput = normalizedItems.size === 0 ? input : Array.isArray(input.tasks)
+      ? { ...input, tasks: tasks.map((item, index) => normalizedItems.get(index) ?? item) }
+      : normalizedItems.get(0)!;
+    // Only attach the effort range once the entire batch passes admission.
+    for (const [index, range] of ranges) Reflect.set(normalizedItems.get(index) ?? tasks[index]!, MAKER_EFFORT, range);
     if (notices.length > 0) {
       pi.sendMessage?.({ customType: "maker-route-advisory", content: notices.join("\n"), display: true }, { triggerTurn: false });
       return { ...(canonicalInput === input ? {} : { input: canonicalInput }), notices };
@@ -1401,28 +448,5 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     return dispatched;
   }
 
-  if (pi.registerTool) {
-    const z = pi.zod;
-    const strings = () => z.array(z.string());
-    const nullable = () => strings().nullable();
-    const parameters = z.object({ context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string().describe("Full brief; read rule://task-guard first. maker-only."), assessment: z.object({ goal: z.string(), acceptance: strings(), facts: strings(), hypotheses: nullable(), unknowns: nullable(), paths: strings(), callBoundaries: nullable(), settledImplementation: nullable(), reusedPatterns: nullable(), remainingJudgments: nullable(), invariants: strings(), checks: strings(), failureEvidence: nullable() }) })) });
-    // SDK 18.2.6 TSchema의 unknown generic 불변성만 연결한다. 실제 Zod schema 검증은 그대로다.
-    const toolParameters = parameters as unknown as ToolDefinition["parameters"];
-    pi.registerTool({
-      name: "maker_route", label: "Maker Route", loadMode: "essential", approval: "read",
-      description: "Main-only preparation immediately before a chosen Maker dispatch; never call to decide whether Main can finish alone. Candidate selector:auto; overrides and UNKNOWN need ROUTING_REASON. Keep owner/account pin. No dispatch of Main-returned work.",
-      parameters: toolParameters,
-      async execute(callId, params, signal, _onUpdate, ctx) {
-        // core가 위 schema로 검증한 입력이며 SDK generic 경계에서 소실된 타입만 복원한다.
-        const request = params as { context: string; tasks: RouteTask[] };
-        const batch = await prepareBatch(request.context, request.tasks, ctx, signal, String(callId ?? ""));
-        // 준비 handle(plan)은 발주 identity가 아니므로(routing_verdict는 spawn identity) 모델 문맥에는 싣지 않고 details에만 둔다.
-        // 준비 진단(diagnostics)도 details 전용이다. 모델 문맥에는 싣지 않는다.
-        const { diagnostics: _diagnostics, ...shared } = batch;
-        const view = { ...shared, routes: batch.routes.map(({ plan: _plan, ...route }) => route) };
-        return { content: [{ type: "text", text: JSON.stringify(view) }], details: batch };
-      },
-    });
-  }
-  return { prepare, prepareBatch, beforeTask, releaseCall, noteSpawned, reset, releaseContractLock };
+  return { beforeTask, releaseCall, noteSpawned, reset, releaseContractLock };
 }

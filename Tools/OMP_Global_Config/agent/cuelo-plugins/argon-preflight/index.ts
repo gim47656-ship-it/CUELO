@@ -12,7 +12,7 @@ export default function argonPreflight(pi: ExtensionAPI): void {
     name: "lab_preflight",
     label: "사전 점검",
     loadMode: "essential",
-    description: "Main-only plan check against the user's request. Skip for bounded solo work without risk. Send the full plan/brief and optional question; one model from the opposite-family preflight slot returns advice. Content goes to that provider: no secrets. Advisory only, never approval or a review gate.",
+    description: "Optional Main-only plan check for high-risk or large cross-boundary design changes. Send the full plan and optional question; one model from the opposite-family preflight slot returns advice. Content goes to that provider: no secrets. Advisory only, never approval or a review gate.",
     parameters: z.object({
       plan: z.string().describe("Full plan/brief"),
       question: z.string().optional().describe("Specific question (optional)"),

@@ -29,7 +29,7 @@ Linux에서 다음을 사용자가 직접 설치합니다. Node/Bun/Git은 배�
 | [Bun](https://bun.sh/docs/installation) `>=1.4.4` | 외부 필수. 공식 Linux 설치 안내를 따라 설치하고 `bun --version`을 확인합니다. 앱과 `usage`, `btw`가 사용합니다. |
 | [Git](https://git-scm.com/downloads/linux) | 전체 코딩과 Git 기능 기준 외부 필수. 공식 Linux 패키지 안내에 따라 설치하고 `git --version`을 확인합니다. 소스 `git clone`, worktree, commit 등에 사용합니다. npm 설치와 기본 대화만 시험할 때는 생략할 수 있으나 Git 명령은 제공되지 않습니다. |
 | 모델 제공자 계정과 자격 | 대화의 외부 필수. 본인이 지원 제공자 계정(OAuth 또는 API 키)을 준비하고 아래 4단계에서 직접 로그인합니다. 사용한 제공자의 과금·권한 조건은 본인이 확인합니다. 자격 없이 `health`만 성공해도 대화는 불가능합니다. |
-| Jev 판정 자격 | 하네스의 `maker_route`·typed judgment를 쓰려면 외부 필수. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 기본은 TypeSafe API 키로 `modelRoles.judge`에 `typesafe/jev-1.14.0`을 지정하는 방법이고, 그 키가 없으면 OpenRouter의 Jev로 넘어갑니다. |
+| Jev 판정 자격 | 하네스의 구조화 판정(턴 끝 확인 분류 등)을 쓰려면 외부 필수. Maker 발주에는 쓰지 않습니다. 아래 Jev 절에서 판정 모델과 자격을 고릅니다. 기본은 TypeSafe API 키로 `modelRoles.judge`에 `typesafe/jev-1.14.0`을 지정하는 방법이고, 그 키가 없으면 OpenRouter의 Jev로 넘어갑니다. |
 | 독립 `omp` CLI | 기본 앱 대화의 필수는 아닙니다. 터미널 `omp` 작업, usage의 CLI fallback, `stats` 집계가 필요할 때 [공식 설치 절차](https://github.com/can1357/oh-my-pi#install)를 따르고 `omp --version`을 확인합니다. 사용량 사이드카는 같은 패키지 SDK를 우선 읽고 실패 시 `OMP_EXE`를 먼저 보며, 없으면 CUELO 폴더의 `node_modules/.bin/omp`를 쓰고 없을 때만 `PATH`의 `omp`를 찾습니다. CUELO 설치기는 CLI를 설치하지 않습니다. |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/)와 NVIDIA SkillSpector v2.13.4 | 선택. 외부 스킬을 설치하거나 업데이트하기 전에 보안 검사를 하는 데 씁니다. 없으면 CUELO가 검사하지 못했다는 경고를 보이고, 사용자가 확인해야만 설치합니다. 설치 명령과 자세한 내용은 [스킬 설치와 업데이트](skills.md)를 봅니다. |
 
@@ -148,12 +148,12 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
    | `implSol` | 한정된 설계와 실패 재작업, 일반 HARD 구현 | 지원되는 Sol 모델을 지정합니다. |
    | `implSonnet` | NORMAL 구현과 보통 UI 작업 | 지원되는 Sonnet 모델을 지정합니다. |
    | `implOpus` | 어려운 UI 작업의 기본 추천(NORMAL) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
-   | `implDeepSeek` | 명세가 완전히 정해진 반복 작업에서 Main이 명시적으로 선택하는 후보 (자동 추천 안 함) | `provider/model[:effort]` 형식으로 지원되는 DeepSeek 모델을 설정하고, Main이 직접 선택하여 `ROUTING_REASON`을 기록 |
+   | `implDeepSeek` | 명세가 완전히 정해진 반복 작업에서 Main이 명시적으로 선택하는 후보 (기본 기준에 없음) | `provider/model[:effort]` 형식으로 지원되는 DeepSeek 모델을 설정하고, Main이 직접 선택 |
    | `makerHardUiOpus` | 어려운 UI 작업의 기본 추천(HARD) | 지원되는 Opus 모델과 추론 단계를 지정합니다. |
    | `makerHardCodeOpus` | Main이 명시적으로 선택하는 HARD 코드 후보 | `provider/model[:effort]` 형식으로 지원되는 Opus 모델을 설정하고 선택 이유를 기록 |
    | `makerHardCodeSonnet` | 보통 UI의 기본 추천(HARD) 또는 명시 선택 HARD 코드 | 지원되는 Sonnet 모델을 지정합니다. |
 
-   일부만 쓰면 빠진 후보는 `maker_route`에서 사용 불가로 나타나며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 자리를 대신 채우지 않습니다. 기존 프로필에는 위 YAML 기본값이 자동 주입되지 않습니다. 필요한 키만 기존 설정과 비교해 병합하세요. 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
+   일부만 쓰면 빠진 후보로는 발주가 거절되며, 후보가 하나도 없으면 발주할 수 없습니다. `default`는 이 자리를 대신 채우지 않습니다. 기존 프로필에는 위 YAML 기본값이 자동 주입되지 않습니다. 필요한 키만 기존 설정과 비교해 병합하세요. 자동 제공자 호출 옵션은 사용자 판단 없이 켜지 마세요.
 3. Jev는 판정 전용 모델이라 판정 한 번이 1초 안에 끝납니다. 기본 경로는 [TypeSafe API 키](https://console.typesafe.ai/)를 발급받아 `typesafe/jev-1.14.0`을 직접 지정하는 것이고, 그 키가 없으면 요청은 OpenRouter의 `typesafe/jev-1.14`로 넘어갑니다. OpenRouter를 쓰려면 본인의 [OpenRouter API 키](https://openrouter.ai/settings/keys)를 발급받아(키별 금액 한도 설정 권장) CUELO **설정 > 모델·계정 > OpenRouter > API Key**에 입력합니다. 어느 쪽이든 같은 프로필의 `config.yml`에서 기존 키를 보존하면서 다음을 **추가하거나 변경**합니다.
 
    ```yaml
@@ -182,7 +182,7 @@ node install.mjs setup --model <provider>/<model> --role implOpus=<provider>/<mo
 | `draft` | 문서·표·화면 문구 초안 작성 | 사용자가 연결한 텍스트 모델을 고릅니다. |
 | `ocr` | 이미지의 글자·숫자·표 전사 | 시각 입력을 지원하는 모델을 고릅니다. |
 | `interpreter` | 사용자의 한국어 입력을 영어로 옮겨 Main에 덧붙이고, Main의 한국어가 아닌 답을 한국어로 번역 | 빠른 텍스트 모델을 고릅니다. 비우면 `tiny` 역할 모델을 씁니다. |
-| `judge` | 라우팅 등 구조화 판정 | Jev를 쓰려면 위의 [역할과 Jev 보완](#기존-프로필의-역할과-jev-보완) 절차를 따릅니다. |
+| `judge` | 턴 끝 확인 분류 등 구조화 판정 | Jev를 쓰려면 위의 [역할과 Jev 보완](#기존-프로필의-역할과-jev-보완) 절차를 따릅니다. |
 
 코드 교차검토의 필수 검토자는 작성 모델의 반대 계열을 사용합니다. 한 제공자에 로그인했다는 사실만으로 다른 계열의 검토 모델까지 사용할 수 있는 것은 아닙니다.
 

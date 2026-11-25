@@ -16,7 +16,6 @@ import {
   rewriteTaskInputForCharacterSummon,
   type CharacterAlias,
 } from "../character-voice";
-import { resolvePreparedTaskInput } from "../lib/prepared-task";
 import { onSessionLifecycle } from "../lib/session-identity";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 import { defaultExec as egoBrowserExec, isNativeLinux, linuxHostPath } from "../../tools/ego-browser/index";
@@ -1193,7 +1192,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     bindSpawnAliases(ownership, toolCallId, after, progress);
   };
 
-  // maker_route 준비가 이 session의 TaskGuard 정본 lock을 읽도록 이 인스턴스의 state를 현재 session id에 묶는다.
+  // Bind the canonical Task Guard lock that the task admission hook reads.
   // 사본을 만들지 않으므로 취소 환불·정산이 lock을 풀면 준비 쪽도 같은 순간 푼 상태를 본다.
   let boundSessionId = "";
   const bindSession = (ctx: { sessionManager?: { getSessionId?: () => string } } | undefined): void => {
@@ -1316,20 +1315,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     const evalGateReason = matchBlockedEvalGateOrigin(event);
     if (evalGateReason) return { block: true, reason: evalGateReason };
     if (isToolCallEventType<"task", TaskCallInput>("task", event)) {
-      let canonicalInput: TaskCallInput;
-      const preparedNotices: string[] = [];
-      try {
-        canonicalInput = resolvePreparedTaskInput(event.input, ctx.sessionManager.getSessionId(), preparedNotices);
-      } catch (error) {
-        return {
-          block: true,
-          reason:
-            error instanceof Error && error.message
-              ? error.message
-              : "[SpawnGuard] prepared task 입력을 복원할 수 없습니다.",
-        };
-      }
-
+      const canonicalInput = event.input;
       // summon 입력 인식 여부와 무관하게, marker를 쓴 task는 exact target이어야 한다.
       const taskTexts = Array.isArray(canonicalInput.tasks)
         ? canonicalInput.tasks.map((item) => (item && typeof item.task === "string" ? item.task : ""))
@@ -1337,15 +1323,14 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       for (const text of taskTexts) {
         const malformed = malformedSummonMarkerReason(text);
         if (malformed) return { block: true, reason: malformed };
-        // 정확한 marker는 일반 발주의 maker_route 경계를 면제받는 신호다. 사용자가 이번에 요청한 캐릭터의 것이 아니면
-        // 모델이 쓴 marker로 그 경계를 건너뛸 수 있으므로 막는다. 일반 구현 발주는 marker 없이 maker_route로 낸다.
+        // Only a character requested by the user may use the summon exception.
         const marked = parseCharacterSummonMarker(text);
         if (marked !== undefined && !pendingSummons.includes(marked)) {
           return {
             block: true,
             reason:
               `[CharacterSummonGuard] character-summon marker ${marked}은 이번 사용자 호출이 요청한 캐릭터가 아니거나 이미 사용됐습니다. ` +
-              "marker는 사용자가 캐릭터를 부른 요청에서만 쓰며, 일반 구현 발주는 marker 없이 maker_route로 준비해 내세요.",
+              "marker는 사용자가 캐릭터를 부른 요청에서만 쓰며, 일반 구현은 marker 없이 task로 발주하세요.",
           };
         }
       }
@@ -1364,9 +1349,8 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
 
       const decision = reserveTaskCall(taskGuard, event.toolCallId, guardedInput);
       if (!decision.ok) return { block: true, reason: decision.reason };
-      const notices = [...preparedNotices, ...(decision.notices ?? [])];
-      if (notices.length) {
-        pi.sendMessage({ customType: "task-guard-advisory", content: notices.join("\n"), display: true }, { triggerTurn: false });
+      if (decision.notices?.length) {
+        pi.sendMessage({ customType: "task-guard-advisory", content: decision.notices.join("\n"), display: true }, { triggerTurn: false });
       }
       const makers = reservedMakers(taskGuard, event.toolCallId);
       if (claimedAliases.length > 0) {

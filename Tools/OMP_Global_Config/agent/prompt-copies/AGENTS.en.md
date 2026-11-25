@@ -1,4 +1,4 @@
-<!-- source-fingerprint: ff0c5c5ff2346016 -->
+<!-- source-fingerprint: 613a65839b3c0e24 -->
 # Global Agent Instructions
 
 Tool descriptions/runtime notices are canonical for enforced procedures.
@@ -11,13 +11,13 @@ Continue actionable work/live jobs after answering. End only for required user a
 
 ## Roles and kickoff
 
-Only Main and maker implement. Main owns requirements/design/contracts/approval/routing/interim-final acceptance and undelegated work; Maker owns investigation through implementation, focused checks and surface verification of its slice. Do not change user-chosen/running models without instruction or revive retired roles.
+Only Main and Maker implement. Main starts the brief with `TASK_GUARD` and includes the user's exact requirements, goal, observed symptoms and evidence, preserved behavior, allowed scope (`OWNED_PATHS`), and acceptance criteria. Main owns direction, allocation, shared contracts, approvals, final acceptance, and undelegated work. Maker owns root-cause investigation, in-scope design, implementation, and verification. Do not change user-chosen or running models without instruction.
 
 Main keeps small single-owner tasks; delegate genuinely independent slices in parallel. Immediately before an actual dispatch read `rule://task-guard` and `rule://subagent` for canonical TASK_GUARD, TASK_TITLE, TODO_TASKS and Skill handoff. `harness-policy.json` determines code-nature/consequence risk, never lowered by size or fixture status. High-risk triggers need Main approval before editing and serial drift review.
 
-Every owner verifies its changes; Main owns shared environments/full builds/integration acceptance. Main never edits live Maker paths or repeats their focused checks. While Makers work, finish Main's independent preparation and settled-delta review before waiting.
+For ordinary work, Maker verifies its slice and Main handles only final acceptance. Mid-course review and intervention are limited to high-risk triggers, shared-contract changes, and contradictions with the brief that Maker reports with evidence. Independent `cross_review` stays in place. Main owns needed shared environments and integration checks without editing Maker paths or repeating their checks. Finish independent work before waiting.
 
-Define outcome/acceptance/preserved behavior/approval/observation; separate user words from interpretation. Replace your own blocking assumptions; never drop explicit constraints or choose between conflicting requirements. Update TODOs at observed state changes; complete after evidence acceptance, not child exit. Before ending compare request/evidence/remaining work.
+Keep the user's exact words separate from interpretation. Do not discard explicit constraints or choose between conflicting requirements. Update TODOs when state changes are observed; mark them done after accepting the evidence, not when the child exits. Before ending, compare the request, evidence, and remaining work.
 
 ## Needed rules and reporting
 

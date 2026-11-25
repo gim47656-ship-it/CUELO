@@ -6,9 +6,8 @@ description: Before accepting Maker work, multi-owner contracts or efficiency co
 
 ## 착수 전에 확정할 것
 
-- 최종 목표와 산출물, 완료 조건과 필요한 증거.
-- 확정된 설계·인터페이스·제약과 보존해야 할 기존 동작.
-- 검증되지 않았지만 진행에 사용하는 가정, 데이터·보안·호환성·배포·회귀 위험, 사용자 승인이 필요한 항목.
+- 발주 전 Main은 요구 원문, 목표, 관측 근거, 보존 동작, 허용 범위와 수용 조건을 정한다.
+  공유 계약과 승인 경계는 Main이 맡고 원인 조사와 범위 안 설계는 Maker에게 맡긴다.
 - 완료 조건은 **관측 경로가 실재하는 것만** 쓴다. 통과 경로가 없는 조건은 조건이 아니라 미확인
   항목이고, 그런 조건을 기대치·채점표에 넣으면 영구 실패만 만든다. 새 계약을 정본에 단정으로
   쓰기 전에 그것을 소비하는 경로(도구 스키마·설정 키·코드)를 증거로 확인한다.
@@ -35,20 +34,14 @@ description: Before accepting Maker work, multi-owner contracts or efficiency co
   Main은 불변 원문 증거로 판단하며 같은 조건의 owner 검사를 반복하지 않는다. 실행 중 필수 검사는 pending이고 PASS가 아니다.
   검수 절차의 정본은 같은 문서 「검수와 수용」이다.
 
-`large` 분해 트리거와 검수 트리거는 다르다. public/shared interface, cross-module contract,
-shared state, data flow, complex state transition, 여러 조각이 한 실행 경로로 합류, meaningful
-existing-caller regression risk, auth/authz/secret review, Main이 제공 증거로 닫을 수 없는 경우 중
-하나가 있으면 `integration-risk`이고 Main이 그 delta를 검수한다. 나머지 `independent-only`
-large에는 별도 검수를 요구하지 않는다. material/high-risk는 모든 관련 owner 수렴 → Main 검수의
-직렬 계약을 유지한다.
+`large`는 작업 분해 기준이지 중간 검수 조건이 아니다. 중간 검수·개입은 high-risk 트리거,
+공유 계약 변경, Maker가 근거로 보고한 브리프 모순에 한한다. 필요한 통합 확인은 최종 수용에
+연결한다. high-risk는 모든 관련 owner 수렴 뒤 Main의 직렬 drift 검수를 유지한다.
 
 ## 검수와 최종 판정
 
-검수는 Main이 중간과 최종 두 단계로 소유한다. 아래는 Main이 검수할 때 적용하는 기준이다.
-
-`pre-review` advisory는 `routing.typedJudgmentRouting.observation`이 정한 로컬 구조 관측이며 judge를 부르지 않는다.
-Main도 같은 보고에 중복 judge를 부르지 않는다. 요구와 증거의 정합, 미확인 조건과 과장 주장은 Main이 원문으로 판단한다.
-미관측 의미는 unknown이고 개수나 키워드로 추정하지 않는다. 결정론 증거와 Main의 승인, 최종 판정 권한은 유지한다.
+Main은 원문으로 요구와 증거의 정합, 미확인 조건과 과장 주장을 판단한다. 검수 전 안내는 로컬
+구조 관측일 뿐이며 미관측 의미를 개수나 키워드로 추정하지 않는다.
 
 - **증거 요구사항.** 판정 전에 검수 대상과 계약, 변경 경로, 최종 Diff, 영향 경계, raw 출력이
   있는 검증 증거, 알려진 미검증 항목을 갖춘다. `TARGET`·`CHANGED PATHS`·`FINAL DIFF`·
@@ -111,9 +104,8 @@ Main은 근거가 있는 finding을 각각 다음 중 하나로 닫는다.
 ## 종료 조건
 
 - 모든 검수 finding이 `ACCEPTED`, `REJECTED_WITH_EVIDENCE`, `ESCALATED` 중 하나로 닫혔다.
-- `integration-risk` large와 material-risk 산출물에는 Main의 중간 검수와 최종 수용 증거가 있다:
-  확정 delta에 대한 검수와, 그 revision의 수용 조건별 증거 연결을 실제로 확인한 기록.
-  `independent-only` large에는 별도 검수를 요구하지 않는다.
+- 정상 작업은 owner 검증 증거로 Main이 최종 수용한다. 중간 개입한 경우 해당 delta의 판단
+  근거를 남기고, high-risk 변경은 직렬 drift 검수 근거를 포함한다.
 - 인터페이스, 공유 타입, 설정, 데이터 흐름에 필요한 최소 통합 검사를 마쳤다.
 - material-risk 변경에는 실제 출력 안전, 측정·판정 정확성, 데이터·설정 보존, 권한,
   롤백 가능성 중 해당 증거가 있다.

@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { carriesUserWords, forLog, stripGuardLines, unsupportedApprovalClaims } from "../../cuelo-plugins/requirement-carry/requirement-carry";
 import { createRequirementCarry } from "../../cuelo-plugins/requirement-carry/index";
-import { clearPreparedTaskSession, storePreparedTaskBatch } from "../lib/prepared-task";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -23,7 +22,7 @@ function harness(options: { sub?: boolean; branch?: string[]; session?: string; 
   };
   const fire = (name: string, event: unknown) => handlers.get(name)?.(event, ctx);
   let id = 0;
-  const dispatch = (toolName: "task" | "maker_route", input: Record<string, unknown>) => {
+  const dispatch = (toolName: "task", input: Record<string, unknown>) => {
     const toolCallId = `call-${++id}`;
     fire("tool_call", { toolName, toolCallId, input });
     const result = fire("tool_result", { toolName, toolCallId, input, content: [{ type: "text", text: "dispatched" }] }) as
@@ -240,27 +239,9 @@ describe("requirement-carry handoff check", () => {
     h.fire("message_start", { message: { role: "user", content: [{ type: "text", text: "그리고 로그 경로도 주입 가능하게 해줘" }] } });
     expect(h.dispatch("task", { context: "x", tasks: [{ name: "C", task: "로그 경로도 주입 가능하게 구현" }] })).toEqual(["dispatched"]);
   });
-
-  test("PREPARED_TASK references are resolved: the stored brief decides, not the reference line", () => {
-    const h = harness({ session: "s-prepared" });
-    h.say(USER);
-    const [carrying, bare] = storePreparedTaskBatch("", [{ name: "carry", task: withQuote }, { name: "bare", task: paraphrase }], "s-prepared");
-    try {
-      expect(h.dispatch("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${carrying}` }] })).toEqual(["dispatched"]);
-      const out = h.dispatch("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${bare}` }] });
-      expect(out).toHaveLength(2);
-      expect(out[1]).toContain("bare");
-      // 참조 줄에 원문 조각을 덧붙이면 복원 본문과 합쳐 통과한다.
-      expect(h.dispatch("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${bare}\n${USER}` }] })).toEqual(["dispatched"]);
-    } finally {
-      clearPreparedTaskSession("s-prepared");
-    }
-  });
-
-  test("maker_route and task are each checked, a repeat is flagged again, and a child session and non-maker agents are not checked", () => {
+  test("a repeated task is flagged again, but child sessions and non-Maker agents are not checked", () => {
     const h = harness();
     h.say(USER);
-    expect(h.dispatch("maker_route", { context: "c", tasks: [{ name: "A", task: paraphrase }] })).toHaveLength(2);
     expect(h.dispatch("task", { context: "c", tasks: [{ name: "A", task: paraphrase }] })).toHaveLength(2);
     // A call that never produced a result (blocked) must not silence its retry.
     h.fire("tool_call", { toolName: "task", toolCallId: "aborted", input: { context: "c", tasks: [{ name: "A", task: paraphrase }] } });
@@ -271,12 +252,12 @@ describe("requirement-carry handoff check", () => {
     expect(child.dispatch("task", { context: "c", tasks: [{ name: "A", task: paraphrase }] })).toEqual(["dispatched"]);
   });
 
-  test("guard fields after a blank line are still excluded; a context that only starts like PREPARED_CONTEXT is real text", () => {
+  test("guard fields after a blank line are still excluded; literal shared context is checked", () => {
     const spread = `TASK_GUARD:\nWORK_CLASS: feature\n\nDONE_WHEN: ${USER}\nDo other work`;
     expect(carriesUserWords(stripGuardLines(spread), [USER])).toBe(false);
     const h = harness();
     h.say(USER);
-    expect(h.dispatch("task", { name: "A", task: "other work", context: `PREPARED_CONTEXTUAL 메모: ${USER}` })).toEqual(["dispatched"]);
+    expect(h.dispatch("task", { name: "A", task: "other work", context: `Shared context: ${USER}` })).toEqual(["dispatched"]);
   });
 
   test("steering keeps every earlier input of the request; short requests are judged by whole-input presence", () => {
@@ -291,19 +272,6 @@ describe("requirement-carry handoff check", () => {
     expect(out).toHaveLength(2);
     expect(out[1]).toContain("A");
     expect(out[1]).not.toContain("B");
-  });
-
-  test("a PREPARED_TASK on maker_route is resolved too, and restored context that starts with the marker still counts", () => {
-    const h = harness({ session: "s-mr" });
-    h.say("rotate blue widgets");
-    const [bare] = storePreparedTaskBatch("", [{ name: "bare", task: "Draw a chart" }], "s-mr");
-    const [ctxCarrier] = storePreparedTaskBatch("PREPARED_CONTEXT\nrotate blue widgets", [{ name: "ctx", task: "Draw a graph" }], "s-mr");
-    try {
-      expect(h.dispatch("maker_route", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${bare}` }] })).toHaveLength(2);
-      expect(h.dispatch("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${ctxCarrier}` }] })).toEqual(["dispatched"]);
-    } finally {
-      clearPreparedTaskSession("s-mr");
-    }
   });
 
   test("a BOM before a guard field does not let the field satisfy the check", () => {
@@ -327,17 +295,5 @@ describe("requirement-carry handoff check", () => {
     expect(carriesUserWords("Document the deployment diagram.", ["deploy"])).toBe(false);
     expect(carriesUserWords("Please deploy it.", ["deploy"])).toBe(true);
     expect(carriesUserWords("Use CI, then report.", ["Run CI, then deploy."])).toBe(true);
-  });
-
-  test("a restored brief that itself starts with the reference marker is still checked", () => {
-    const h = harness({ session: "s-doc" });
-    h.say("revise handbook");
-    const [id] = storePreparedTaskBatch("", [{ name: "docs", task: "PREPARED_TASK: document this syntax" }], "s-doc");
-    try {
-      // Resolution turns the reference into the stored text, which carries none of the request.
-      expect(h.dispatch("task", { context: "PREPARED_CONTEXT", tasks: [{ task: `PREPARED_TASK: ${id}` }] })).toHaveLength(2);
-    } finally {
-      clearPreparedTaskSession("s-doc");
-    }
   });
 });

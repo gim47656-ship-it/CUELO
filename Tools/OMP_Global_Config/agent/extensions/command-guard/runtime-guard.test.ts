@@ -7,10 +7,6 @@ import { isSummonCall, taskGuardLockOf } from "./task-guard";
 import { MIN_BUILD_AVAILABLE_BYTES, type BuildResourceReaders } from "./build-concurrency";
 import { createBuildReservationStore, BUILD_RESERVATION_MS, type BuildReservationStore } from "./build-reservations";
 import { setCharacterIntentJudgeResolver } from "../character-voice";
-import {
-  clearPreparedTaskSession,
-  storePreparedTaskBatch,
-} from "../lib/prepared-task";
 
 // Test-only loader boundary: the mirror has no runtime OMP package, so register the Bun mock before loading index.ts.
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
@@ -642,7 +638,7 @@ describe("command guard runtime gates", () => {
       },
     });
 
-    test("사용자 summon 요청 없이 모델이 쓴 정확한 marker는 maker_route 경계를 건너뛰지 못한다", async () => {
+    test("a model-written summon marker cannot bypass Task Guard without a user summon", async () => {
       const harness = createGuardHarness();
       await harness.emit("input", { type: "input", text: "표시 오류를 고쳐줘", source: "rpc" });
       const blocked = await harness.emit("tool_call", markedTask("task-spoof")) as { block?: boolean; reason?: string } | undefined;
@@ -712,7 +708,7 @@ describe("command guard runtime gates", () => {
       expect(taskGuardLockOf("session-a")?.primaryDeliverable).toBe("완료물 A");
     });
 
-    test("maker_route가 읽는 TaskGuard lock은 session id별이며 확인된 취소 환불·session 전환·shutdown을 따라간다", async () => {
+    test("the task admission lock is session-scoped and tracks refunds, session changes and shutdown", async () => {
       const cwd = await mkdtemp(join(tmpdir(), "command-guard-lock-"));
       try {
         const harness = createGuardHarness({ sessionId: "lock-a", cwd });
@@ -742,7 +738,7 @@ describe("command guard runtime gates", () => {
       }
     });
 
-    test("maker_route가 읽는 summon 창구는 사용자 요청 중·claim한 호출만 summon으로 보고 그 밖은 아니다", async () => {
+    test("summon admission only recognizes the current user request or the call that claimed it", async () => {
       const cwd = await mkdtemp(join(tmpdir(), "command-guard-summon-"));
       try {
         const harness = createGuardHarness({ sessionId: "summon-a", cwd });
@@ -1172,108 +1168,6 @@ describe("command guard runtime gates", () => {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
       await rm(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("prepared task guard glue", () => {
-  test("참조를 TaskGuard 전에 canonical input으로 복원하고 invalid session ref를 차단한다", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "omp-prepared-guard-"));
-    const sessionId = "example";
-    const canonicalEvent = makerTaskEvent("prepared-source", "PreparedGuard");
-    const [preparedId] = storePreparedTaskBatch(
-      "canonical prepared context",
-      [{ name: "PreparedGuard", task: canonicalEvent.input.task }],
-      sessionId,
-    );
-    try {
-      const harness = createGuardHarness({ cwd: directory, sessionId });
-      const result = await harness.emit("tool_call", {
-        type: "tool_call",
-        toolName: "task",
-        toolCallId: "prepared-ref",
-        input: {
-          context: "PREPARED_CONTEXT",
-          tasks: [{
-            agent: "maker",
-            name: "PreparedGuard",
-            task: `PREPARED_TASK: ${preparedId}`,
-          }],
-        },
-      });
-      expect(result).toMatchObject({
-        input: {
-          context: "canonical prepared context",
-          tasks: [{ name: "PreparedGuard", task: canonicalEvent.input.task }],
-        },
-      });
-
-      const otherSession = createGuardHarness({ cwd: directory, sessionId: "sample" });
-      expect(await otherSession.emit("tool_call", {
-        type: "tool_call",
-        toolName: "task",
-        toolCallId: "prepared-wrong-session",
-        input: {
-          context: "PREPARED_CONTEXT",
-          tasks: [{
-            agent: "maker",
-            name: "PreparedGuard",
-            task: `PREPARED_TASK: ${preparedId}`,
-          }],
-        },
-      })).toMatchObject({
-        block: true,
-        reason: expect.stringContaining("prepared task"),
-      });
-    } finally {
-      clearPreparedTaskSession(sessionId);
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("agent를 생략한 prepared 참조는 maker로 복원·기록하고 명시한 task·scout는 예약 없이 거절한다", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "omp-prepared-omitted-"));
-    const sessionId = "placeholder";
-    const canonicalEvent = makerTaskEvent("prepared-omitted-source", "OmittedAgent");
-    const [preparedId] = storePreparedTaskBatch(
-      "canonical omitted context",
-      [{ name: "OmittedAgent", task: canonicalEvent.input.task }],
-      sessionId,
-    );
-    try {
-      const harness = createGuardHarness({ cwd: directory, sessionId });
-      const reference = { name: "OmittedAgent", task: `PREPARED_TASK: ${preparedId}` };
-      const bad = await harness.emit("tool_call", {
-        type: "tool_call",
-        toolName: "task",
-        toolCallId: "explicit-task",
-        input: { context: "PREPARED_CONTEXT", tasks: [{ ...reference, agent: "task" }] },
-      }) as { block?: boolean; reason?: string };
-      expect(bad.block).toBe(true);
-      expect(bad.reason).toContain("허용 child는 maker뿐입니다: task");
-      const scout = await harness.emit("tool_call", {
-        type: "tool_call",
-        toolName: "task",
-        toolCallId: "explicit-scout",
-        input: { context: "PREPARED_CONTEXT", tasks: [{ ...reference, agent: "scout" }] },
-      }) as { block?: boolean; reason?: string };
-      expect(scout.reason).toContain("허용 child는 maker뿐입니다: scout");
-
-      const result = await harness.emit("tool_call", {
-        type: "tool_call",
-        toolName: "task",
-        toolCallId: "omitted-agent",
-        input: { context: "PREPARED_CONTEXT", tasks: [{ task: reference.task }] },
-      });
-      expect(result).toMatchObject({
-        input: {
-          context: "canonical omitted context",
-          tasks: [{ name: "OmittedAgent", agent: "maker", task: canonicalEvent.input.task }],
-        },
-      });
-    } finally {
-      clearPreparedTaskSession(sessionId);
-      await rm(directory, { recursive: true, force: true });
     }
   });
 });
