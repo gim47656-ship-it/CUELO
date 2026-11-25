@@ -282,3 +282,16 @@ export async function readCharacterModePayload(agentDir: string): Promise<Charac
   const seats = await readOfficeSeats(agentDir);
   return { mode, rosterAvailable: seats.length > 0, seats: mode === "office" ? seats : [] };
 }
+
+/** This seat has no voice, cue manifest, harness alias or model binding. */
+export async function readAntigravityCharacter(agentDir: string) {
+  const seats = asRecord(asRecord(await readOfficeJson(agentDir, OFFICE_ROSTER_FILE_NAME))?.seats);
+  const entry = asRecord(seats?.antigravity);
+  const id = text(entry?.id);
+  const alias = text(entry?.alias);
+  if (!id || !ID_PATTERN.test(id) || !alias || alias.length > MAX_ALIAS_LENGTH || UNSAFE_ALIAS.test(alias)) return null;
+  const names = Array.isArray(entry?.names) ? entry.names.map(text).filter((name): name is string => name !== null) : [];
+  const face = text(entry?.face);
+  const asset = face ? await resolveOfficeAsset(agentDir, face) : null;
+  return { id, alias, names, faceUrl: asset && face && asset.contentType.startsWith("image/") ? assetUrl(face) : null };
+}

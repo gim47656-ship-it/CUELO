@@ -47,6 +47,7 @@ import { useSyncedAccountFaces } from "@/hooks/useAccountFaces";
 import { SidebarUsage, createReloginCheck } from "./SidebarUsage";
 import { ModelsConfig, type OAuthReloginOutcome, type OAuthReloginTarget } from "./ModelsConfig";
 import { TranslatorPanel, TranslatorView } from "./translator/TranslatorView";
+import { AntigravityWorkspace } from "./antigravity/AntigravityWorkspace";
 import { useTranslatorText } from "./translator/i18n";
 import { OmpUpdateIndicator } from "./OmpUpdateIndicator";
 import { RepoSyncIndicator } from "./RepoSyncIndicator";
@@ -241,6 +242,7 @@ export function AppShell({
   // 보수 점검판도 통역처럼 처음 열 때 마운트하고 계속 둬, 다시 열면 읽어 둔 보고서가 바로 보인다.
   const [upkeepOpen, setUpkeepOpen] = useState(false);
   const [upkeepVisited, setUpkeepVisited] = useState(false);
+  const [antigravityOpen, setAntigravityOpen] = useState(false);
   const [upkeepNotice, setUpkeepNotice] = useState<string | null>(null);
   const dismissUpkeepNotice = useCallback(() => setUpkeepNotice(null), []);
   const notifiedAttentionRequestIdsRef = useRef(new Set<string>());
@@ -353,13 +355,26 @@ export function AppShell({
   const requestComposerFocus = useCallback(() => {
     setComposerFocusRequest((request) => request + 1);
   }, []);
+  const setAntigravityActive = useCallback((active: boolean) => {
+    try { sessionStorage.setItem("cuelo-antigravity-view", active ? "open" : "closed"); } catch { /* The view still works without storage. */ }
+    setAntigravityOpen(active);
+    if (!active) requestComposerFocus();
+  }, [requestComposerFocus]);
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("cuelo-antigravity-view") === "open") setAntigravityOpen(true);
+    } catch { /* A blocked store cannot restore the view. */ }
+  }, []);
   // 통역 화면을 열고 닫는다. 작업 ChatWindow는 그대로 마운트된 채 가려질 뿐이라 선택 세션·초안·
   // 실행 중인 작업이 그대로 남고, 닫으면 작업 입력창으로 초점을 돌려준다.
   const setTranslatorActive = useCallback((active: boolean) => {
-    if (active) setTranslatorVisited(true);
+    if (active) {
+      setAntigravityActive(false);
+      setTranslatorVisited(true);
+    }
     setTranslatorOpen(active);
     if (!active) requestComposerFocus();
-  }, [requestComposerFocus]);
+  }, [requestComposerFocus, setAntigravityActive]);
   // 홈 화면 앱의 「통역」 바로가기(`/?view=translator`, `app/manifest.ts`)로 열면 처음부터 통역 화면을 띄운다.
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -2495,8 +2510,14 @@ export function AppShell({
       <SessionSidebar
         selectedSessionId={pendingSession?.id ?? selectedSession?.id ?? null}
         optimisticSession={pendingSession ?? selectedSession}
-        onSelectSession={handleSelectSession}
-        onNewSession={handleNewSession}
+        onSelectSession={antigravityOpen ? (session, restore) => {
+          if (!restore) setAntigravityActive(false);
+          handleSelectSession(session, restore);
+        } : handleSelectSession}
+        onNewSession={antigravityOpen ? (id, cwd) => {
+          setAntigravityActive(false);
+          handleNewSession(id, cwd);
+        } : handleNewSession}
         initialSessionId={initialSessionId}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
         onInitialRestoreDone={handleInitialRestoreDone}
@@ -2534,10 +2555,11 @@ export function AppShell({
   // The rail names places: the list column's 프로젝트 / 우선순위, the 통역 screen, and the 보수
   // and 설정 places at its foot. It stays on screen when Ctrl B hides the list; in the drawer it rides
   // along with the list.
-  const sidePlaceOpen = translatorOpen;
+  const sidePlaceOpen = translatorOpen || antigravityOpen;
   const openListPlace = (mode: NavigatorMode) => {
     setNavigatorMode(mode);
     if (translatorOpen) setTranslatorActive(false);
+    if (antigravityOpen) setAntigravityActive(false);
     if (!isCompactWorkspace && !sidebarOpen) handleSidebarToggle();
   };
   const railItem = (
@@ -2547,17 +2569,19 @@ export function AppShell({
     current: boolean,
     onClick: () => void,
     extra?: ReactNode,
+    shortLabel?: string,
   ) => (
     <button
       key={key}
       type="button"
       className="workspace-rail-item"
       aria-current={current ? "page" : undefined}
+      aria-label={shortLabel ? label : undefined}
       title={label}
       onClick={onClick}
     >
       <WorkbenchIcon name={icon} />
-      <span className="workspace-rail-label">{label}</span>
+      <span className="workspace-rail-label">{shortLabel ?? label}</span>
       {extra}
     </button>
   );
@@ -2578,6 +2602,12 @@ export function AppShell({
         ) : undefined,
       )}
       {railItem("translator", "languages", translatorTabLabel, translatorOpen, () => setTranslatorActive(!translatorOpen))}
+      {railItem("antigravity", "bot", "Antigravity", antigravityOpen, () => {
+        setTranslatorActive(false);
+        setActiveTopPanel(null);
+        if (isCompactWorkspace) setCompactDrawerOpen(false);
+        setAntigravityActive(!antigravityOpen);
+      }, undefined, "Anti")}
       <span className="workspace-rail-spacer" />
       {railItem("upkeep", "activity", UPKEEP_TEXT.menu, upkeepOpen, () => {
         if (isCompactWorkspace) setCompactDrawerOpen(false);
@@ -2716,6 +2746,7 @@ export function AppShell({
             >
               <WorkbenchIcon name={isCompactWorkspace ? "menu" : "panel-left"} />
             </ActionButton>
+            {!antigravityOpen && <>
             <div className="workspace-session-identity" title={sessionIdentityTooltip}>
               <div className="workspace-session-where">
                 {conversationProjectName && (
@@ -2942,6 +2973,7 @@ export function AppShell({
                 </Menu.Content>
               </Menu.Positioner>
             </Menu.Root>
+            </>}
           </header>
           {/* Top panel: one at a time, rendered on <body> so the header's stacking context cannot put the stream above it */}
           {activeTopPanel && topPanelPos && createPortal(
@@ -3163,10 +3195,12 @@ export function AppShell({
             ref={chatLayoutRef}
             className="chat-session-column"
             data-translator-open={translatorOpen ? "true" : undefined}
-            onDragOver={handleChatDragOver}
-            onDragLeave={handleChatDragLeave}
-            onDrop={handleChatDrop}
+            style={antigravityOpen ? { overflow: "clip" } : undefined}
+            onDragOver={antigravityOpen ? undefined : handleChatDragOver}
+            onDragLeave={antigravityOpen ? undefined : handleChatDragLeave}
+            onDrop={antigravityOpen ? undefined : handleChatDrop}
           >
+          <div style={{ display: "contents", visibility: antigravityOpen ? "hidden" : undefined }} inert={antigravityOpen}>
           {besideDropActive && (
             <div
               className="chat-beside-drop"
@@ -3279,6 +3313,8 @@ export function AppShell({
               </div>
             )
           ) : null}
+          </div>
+          {antigravityOpen && <AntigravityWorkspace key={activeCwd} cwd={activeCwd} onBack={() => setAntigravityActive(false)} />}
           {/* 통역 화면은 작업 화면 위에 덮인다. 작업 쪽은 visibility로만 가려 ChatWindow·초안·스크롤·
               실행 상태가 그대로 살아 있고, 닫으면 떠나기 전 그대로 돌아온다. */}
           {translatorVisited ? (
