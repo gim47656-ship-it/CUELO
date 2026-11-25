@@ -1,8 +1,8 @@
 import {
-  getAvailableThemes,
   getResolvedThemeColors,
   isLightTheme,
-} from "@oh-my-pi/pi-tui/theme/theme";
+} from "@oh-my-pi/pi-coding-agent/ui/theme/service";
+import { builtinThemes, listThemes } from "@oh-my-pi/pi-tui/theme/loader";
 import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import { cfgThemeDark, cfgThemeLight } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import type { WebThemeConfig, WebThemePalette } from "@/lib/settings-api";
@@ -48,6 +48,7 @@ export async function getWebThemeConfig(settings: Settings): Promise<WebThemeCon
 }
 
 export async function getAvailableWebThemes(): Promise<Array<{ name: string; colorScheme: "dark" | "light" }>> {
-  const names = await getAvailableThemes();
+  // An unreadable custom-theme directory must not hide the built-in web themes.
+  const names = await listThemes().catch(() => Object.keys(builtinThemes()).sort());
   return names.map((name) => ({ name, colorScheme: isLightTheme(name) ? "light" : "dark" }));
 }

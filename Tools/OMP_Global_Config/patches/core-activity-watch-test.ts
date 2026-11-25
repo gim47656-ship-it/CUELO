@@ -1,7 +1,7 @@
 // Advisory supervision regression: deterministic clocks plus actual SDK/IRC delivery.
 // OMP_CORE_PATCH_TARGET=<source SDK> bun --no-install patches/core-activity-watch-test.ts
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
@@ -44,9 +44,10 @@ const { IrcBus } = await import(`${core}/irc/bus.ts`);
 const { Agent } = await import(`${core}/../../pi-agent-core/src/agent.ts`);
 const { PARENT_REQUEST_STEER } = await import(`${core}/../../pi-agent-core/src/agent-loop.ts`);
 const { AskTool } = await import(`${core}/tools/ask.ts`);
-const { initThemeSync } = await import(`${core}/../../pi-tui/src/theme/theme.ts`);
+const themeService = `${core}/ui/theme/service.ts`;
 const { closeModelCache } = await import(`${core}/../../pi-catalog/src/model-cache.ts`);
-initThemeSync();
+if (existsSync(themeService)) (await import(themeService)).initTheme();
+else (await import(`${core}/../../pi-tui/src/theme/theme.ts`)).initThemeSync();
 let passed = 0, failed = 0;
 async function check(name: string, body: () => Promise<void> | void) {
   try { await body(); passed++; console.log(`PASS ${name}`); }

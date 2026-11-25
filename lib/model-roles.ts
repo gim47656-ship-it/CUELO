@@ -10,7 +10,7 @@ import {
   type ModelRole,
 } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
-import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
+import { parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-selector";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRoleAssignment, ModelRoleModelRef, ModelRoleScope } from "./api-types";
 import { HARNESS_ROLES } from "./harness-roles";

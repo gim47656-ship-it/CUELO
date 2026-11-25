@@ -11,9 +11,9 @@ import {
   fieldError as coreFieldError,
   isArrayChoice as coreIsArrayChoice,
   textValue as coreTextValue,
-} from "@oh-my-pi/pi-tui/html-form/data";
-import { loadMedia as loadFormImage, MAX_MEDIA_BYTES as MAX_FORM_IMAGE_BYTES, svgMedia, type Media as FormMedia } from "@oh-my-pi/pi-tui/media";
-import { type FormField, type HtmlForm, parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
+} from "@oh-my-pi/pi-coding-agent/tools/html-form/data";
+import { type FormField, type HtmlForm, parseHtmlForm } from "@oh-my-pi/pi-coding-agent/tools/html-form/parse";
+import { loadMedia as loadFormImage, MAX_MEDIA_BYTES as MAX_FORM_IMAGE_BYTES, svgMedia, type Media as FormMedia } from "./media";
 import { ASK_FORM_ORDERED_ACTIVITY_TAG, type AskFormBlock, type AskFormData, type AskFormModel, type AskFormValue } from "./types";
 
 /** Largest `activity` payload the server keeps as a form snapshot. */

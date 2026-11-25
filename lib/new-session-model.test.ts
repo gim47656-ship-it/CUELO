@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking/levels";
 import characterVoice from "../Tools/OMP_Global_Config/agent/extensions/character-voice";
 import { readSidecarQuota } from "../Tools/OMP_Global_Config/agent/extensions/lib/anthropic-quota";
 import { selectNewSessionModel } from "./new-session-model";

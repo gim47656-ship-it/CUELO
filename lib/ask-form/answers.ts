@@ -1,7 +1,7 @@
 /**
  * Value shapes and validation of an agent HTML form, shared by the browser card and the server.
  *
- * The core's `@oh-my-pi/pi-tui/html-form/data` imports its HTML parser, which the browser bundle must
+ * The core's `@oh-my-pi/pi-coding-agent/tools/html-form/data` imports its HTML parser, which the browser bundle must
  * not carry, so these few rules are written out here. `answers.test.mjs` runs them against the core's
  * own `choiceValue`, `textValue`, `fieldError` and `defaultFormData` so a core change shows up as a
  * failing test rather than as a form that accepts different values than the core.

@@ -16,10 +16,12 @@ const TUI = resolve(target, "..", "pi-tui", "src").replace(/\\/g, "/");
 // Module roots are runtime-selected by OMP_CORE_PATCH_TARGET so the test never imports the live installation.
 const { AskTool } = await import(`${CORE}/tools/ask.ts`);
 const { Settings } = await import(`${CORE}/config/settings.ts`);
-const { initThemeSync } = await import(`${TUI}/theme/theme.ts`);
-const { parseHtmlForm } = await import(`${TUI}/html-form/parse.ts`);
-const { defaultFormData } = await import(`${TUI}/html-form/data.ts`);
-initThemeSync();
+const formDir = existsSync(`${CORE}/tools/html-form/parse.ts`) ? `${CORE}/tools/html-form` : `${TUI}/html-form`;
+const { parseHtmlForm } = await import(`${formDir}/parse.ts`);
+const { defaultFormData } = await import(`${formDir}/data.ts`);
+const themeService = `${CORE}/ui/theme/service.ts`;
+if (existsSync(themeService)) (await import(themeService)).initTheme();
+else (await import(`${TUI}/theme/theme.ts`)).initThemeSync();
 let pass = 0;
 let fail = 0;
 function check(name: string, cond: boolean, detail = ""): void {

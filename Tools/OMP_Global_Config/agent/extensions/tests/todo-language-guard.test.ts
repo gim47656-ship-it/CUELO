@@ -3,7 +3,7 @@ import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensio
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/details/todo";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";

@@ -25942,6 +25942,316 @@ export type FromNativeHost =
 	alternate(one("dist/cli.js", 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'), advisor, advisor);
 }
 
+// 19.2.0 (ADAPT): the reactive TUI split presentation from tool details and moved context
+// accounting into the session. Gate same-file candidates on stable 19.2.0 source text.
+{
+	const one = predicate => {
+		const entries = EDITS.filter(predicate);
+		if (entries.length !== 1) throw new Error(`19.2.0 candidate: ${entries.length}/1 entries`);
+		return entries[0];
+	};
+	const byMarker = (file, marker) => one(entry => entry.file === file && entry.marker.startsWith(marker));
+	const alternate = (entry, candidate, discriminator) => {
+		const file = candidate.file ?? entry.file;
+		for (const old of [entry, ...(entry.alternates ?? [])]) {
+			if (old.file === file) old.excludes = [...[old.excludes ?? []].flat(), discriminator];
+		}
+		(entry.alternates ??= []).push({ file, ...candidate, requires: discriminator });
+	};
+	const swap = (text, from, to) => {
+		if (text.split(from).length !== 2) throw new Error(`19.2.0 anchor: ${JSON.stringify(from)}`);
+		return text.replace(from, () => to);
+	};
+	const prior = entry => entry.alternates?.at(-1) ?? entry;
+	const port = (entry, discriminator, transform, marker = prior(entry).marker) => {
+		const old = prior(entry);
+		alternate(entry, { anchor: transform(old.anchor), patched: transform(old.patched), marker }, discriminator);
+	};
+	const move = (entry, file, discriminator) => {
+		const { anchor, patched, marker } = prior(entry);
+		alternate(entry, { file, anchor, patched, marker }, discriminator);
+	};
+	const absorbed = (entry, file, discriminator, upstream = discriminator) =>
+		alternate(entry, { file, anchor: upstream, patched: upstream, marker: upstream }, discriminator);
+
+	const project = byMarker("src/prompts/system/project-prompt.md", "- As a subagent, that proof is a scoped check");
+	const verifyEvery = "- Before yielding, MUST verify every code change once, after your last edit: the cheapest check that covers it. NEVER run checks while edits are still coming.";
+	const verifyReply = "- A reply to a code change MUST name the check you ran after your last edit, and its result.";
+	alternate(project, {
+		anchor: swap(project.anchor, "- Before yielding, MUST verify significant behavioral changes: run the specific test, command, or scenario covering the change.",
+			`${verifyEvery}\n${verifyReply} No such check? You are not done: run it, then reply.`),
+		patched: `${project.patched}\n${verifyReply}`,
+		marker: project.marker,
+	}, verifyReply);
+
+	const persisted = "src/registry/persisted-agents.ts";
+	const scan = "src/registry/persisted-scan.ts";
+	const scanLoader = 'const { scanPersistedSubagents } = await import("./persisted-scan");';
+	const scanImport = '\tMAIN_AGENT_ID,\n} from "./agent-registry";\nimport { type PersistedScanOptions, sessionFileBelongsToRoot } from "./persisted-agents";';
+	const owner = byMarker(persisted, "function registeredRootOwnerId(");
+	alternate(owner, {
+		anchor: prior(owner).anchor,
+		marker: "export function registeredRootOwnerId(",
+		patched: swap(prior(owner).patched, "function registeredRootOwnerId(", "export function registeredRootOwnerId("),
+	}, scanLoader);
+	move(byMarker(persisted, "parentId: parentId ?? registeredRootOwnerId("), scan, "export async function scanPersistedSubagents(");
+	move(byMarker(persisted, "const owner = parentId ?? registeredRootOwnerId("), scan, "export async function scanPersistedSubagents(");
+	const inlineScan = "async function registerPersistedSubagentsFromDir(";
+	const scanOwnerImport = swap(swap(scanImport, "\tMAIN_AGENT_ID,\n", ""), "sessionFileBelongsToRoot", "registeredRootOwnerId, sessionFileBelongsToRoot");
+	EDITS.push({
+		file: scan, requires: "export async function scanPersistedSubagents(",
+		anchor: scanImport, marker: scanOwnerImport, patched: scanOwnerImport,
+		alternates: [{ file: persisted, anchor: inlineScan, marker: inlineScan, patched: inlineScan }],
+	});
+
+	// Preserve upstream's structured fallback cause separately from CUELO's spawn evidence.
+	const manager = byMarker("src/session/session-manager.ts", "resolvedModelIsFallback === undefined");
+	const modelCause = "\t\t\tfallback: options?.fallback,";
+	const modelAnchor = swap(swap(swap(manager.anchor,
+		"\t * @param resolvedModelIsFallback Whether this transition selected a retry-fallback model",
+		"\t * @param options.fallback Why a retry fallback selected this model; it marks the entry `resolvedModelIsFallback`"),
+		"resolvedModelIsFallback = false", "options?: { fallback?: ModelFallbackCause }"),
+		"\t\t\tresolvedModelIsFallback,", `\t\t\tresolvedModelIsFallback: options?.fallback !== undefined,\n${modelCause}`);
+	const modelPatched = swap(swap(modelAnchor,
+		"options?: { fallback?: ModelFallbackCause }",
+		"options?: { fallback?: ModelFallbackCause; resolvedModelIsFallback?: true; requestedModel?: string }"),
+		"\t\t\tresolvedModelIsFallback: options?.fallback !== undefined,",
+		"\t\t\t...(options?.fallback || options?.resolvedModelIsFallback ? { resolvedModelIsFallback: true } : {}),\n" +
+		"\t\t\t...(options?.requestedModel === undefined ? {} : { requestedModel: options.requestedModel }),");
+	alternate(manager, {
+		anchor: modelAnchor, patched: modelPatched, marker: "resolvedModelIsFallback?: true; requestedModel?: string",
+	}, modelCause);
+	const sdk = byMarker("src/sdk.ts", "options.modelPatternAuthFallbackUsed === true");
+	const sdkOld = sdk.alternates.find(candidate => candidate.requires === "const recordInitialModelChange = (initialModel: string) => {");
+	const sdkRecord = [
+		"\t\t\tsessionManager.appendModelChange(initialModel, undefined, {",
+		"\t\t\t\tresolvedModelIsFallback: options.modelPatternAuthFallbackUsed === true ? true : undefined,",
+		"\t\t\t\trequestedModel: options.modelPatternRequested ??",
+		'\t\t\t\t\t(typeof options.modelPattern === "string" ? options.modelPattern : options.modelPattern?.[0]),',
+		"\t\t\t});",
+	].join("\n");
+	alternate(sdk, { anchor: sdkOld.anchor, patched: swap(sdkOld.anchor, "\t\t\tsessionManager.appendModelChange(initialModel);", sdkRecord),
+		marker: sdk.marker }, 'import type { CursorMcpResourceAdapter } from "./cursor";');
+
+	const events = byMarker("src/session/agent-session-events.ts", "import type { TodoItem, TodoPhase }");
+	const todoImport = "../tools/details/todo";
+	port(events, todoImport, text => swap(text, "@oh-my-pi/pi-tui/tools/todo", todoImport),
+		swap(events.marker, "@oh-my-pi/pi-tui/tools/todo", todoImport));
+	const executor = byMarker("src/task/executor.ts", "import { formatModelSelectorValue, parseModelString }");
+	const modelSelector = "../config/model-selector";
+	port(executor, modelSelector, text => swap(text, "@oh-my-pi/pi-tui/overlays/model-selector", modelSelector),
+		swap(executor.marker, "@oh-my-pi/pi-tui/overlays/model-selector", modelSelector));
+
+	const detailsDir = "src/tools/details/";
+	for (const [tool, marker, discriminator] of [
+		["bash", "Exit code of a completed command whenever", "export interface BashToolDetails {"],
+		["eval", 'executionObservation?: "observed" | "rejected";', "export interface EvalToolDetails {"],
+		["todo", '| "append" | "view" | "depend";', "export function todoTaskTargets("],
+		["todo", "CUELO: contents of prerequisite tasks", "export function todoTaskTargets("],
+		["ask", "\twaitingForUser?: boolean;", "export interface AskToolDetails {"],
+	]) move(byMarker(`../pi-tui/src/tools/${tool}.ts`, marker), `${detailsDir}${tool}.ts`, discriminator);
+
+	const oldTask = "../pi-tui/src/tools/task.ts";
+	const taskDetails = "src/task/task-details.ts";
+	const taskDetailsGate = "export interface TaskParams {";
+	for (const [shape, field] of [
+		["item", "\t/** One exact per-call model, gated by `task.perCallModel`. */\n\tmodel?: string;"],
+		["flat form", "\t/** See {@link TaskItem.model}. */\n\tmodel?: string;"],
+	]) {
+		const entry = byMarker(oldTask, `Standard model selector for this spawn (${shape})`);
+		const detail = entry.patched.slice(entry.patched.indexOf("\t/**\n\t * Standard model"), entry.patched.indexOf("\tmodel?: string;") + "\tmodel?: string;".length);
+		alternate(entry, { file: taskDetails, anchor: field, patched: detail, marker: entry.marker }, taskDetailsGate);
+	}
+	move(byMarker(oldTask, "\tisolated?: boolean | \"capture\";\n}\n\n/**\n * Runtime params union"), taskDetails, taskDetailsGate);
+	move(byMarker(oldTask, "\t/** Run in an isolated worktree (flat form; per-item in batch form). */"), taskDetails, taskDetailsGate);
+	const taskView = "src/ui/tools/task/model.ts";
+	const spawns = "export function requestedSpawns(";
+	for (const [marker, source] of [['if (item?.isolated === true ||', "entry?"], ['const showIsolated = "isolated" in args', "args"]]) {
+		const anchor = `isolated: ${source}.isolated === true,`;
+		const patched = `isolated: ${source}.isolated === true || ${source}.isolated === "capture",`;
+		alternate(byMarker(oldTask, marker), { file: taskView, anchor, patched, marker: patched }, spawns);
+	}
+	// The settled-result presenter already recognizes any truthy isolation value.
+	absorbed(byMarker(oldTask, "badges: agentBadges(false, isolated === true"), "src/ui/tools/task.tsx",
+		"export const taskPresenter:", 'if (result.isolated) badges.push({ text: "isolated" });');
+	// Flat calls also have a separate header in the ANSI look; its input is the raw args.
+	const styleIsolation = "if (args?.isolated === true) head +=";
+	const styleCapture = swap(styleIsolation, " === true)", ' === true || args?.isolated === "capture")');
+	const oldTaskDetails = "export interface TaskToolDetails {";
+	EDITS.push({
+		file: "src/ui/styles/tools/task.ts", requires: 'defineToolLook("task", { paint: paintTask, margin: true });',
+		anchor: styleIsolation, marker: styleCapture, patched: styleCapture,
+		alternates: [{ file: oldTask, anchor: oldTaskDetails, marker: oldTaskDetails, patched: oldTaskDetails }],
+	});
+
+	// Context tool fragments, pruning, and both cache keys had already been absorbed in 19.1.1.
+	// The same implementation now lives beside the session/view that use it.
+	const contextUsage = "src/session/context-usage.ts";
+	const schemaOpts = "export interface ToolSchemaFragmentOptions {";
+	for (const entry of EDITS.filter(entry => entry.file === "../pi-tui/src/status-line/context-usage.ts")) {
+		absorbed(entry, contextUsage, schemaOpts);
+	}
+
+	const select = byMarker("../pi-ai/src/auth/select.ts", "options?.cueloOnWeeklyExhausted !== undefined &&");
+	const blockedCheck = "let checkPoolExhaustion = this.#deps.affinity.isRestricted(provider, sessionId);";
+	const selectLoop = "\t\t\tfor (const candidate of pass.allowBlocked ? lastResortCandidates : candidates) {";
+	const selectAnchor = `\t\t${blockedCheck}
+		for (const pass of passes) {
+			if (pass.allowBlocked && checkPoolExhaustion) {
+				checkPoolExhaustion = false;
+				const reason = this.#deps.blocks.describeOrgPolicyPoolExhaustion(
+					provider,
+					sessionId,
+					this.#deps.affinity,
+					blockScopes,
+				);
+				if (reason) throw new AIError.MissingApiKeyError(provider, reason);
+			}
+${selectLoop}`;
+	const weeklyFallback = swap(prior(select).patched.split("\n").slice(1, -1).join("\n"),
+		"pass === passes[1]", "pass === weeklyFallbackPass");
+	alternate(select, { anchor: selectAnchor, marker: select.marker,
+		patched: swap(swap(selectAnchor, `\t\t${blockedCheck}`,
+			`\t\tconst weeklyFallbackPass = passes.find(pass => pass.allowBlocked);\n\t\t${blockedCheck}`),
+			selectLoop, `${weeklyFallback}\n${selectLoop}`) }, blockedCheck);
+	const cascade = byMarker("../pi-ai/src/auth/cascade.ts", "cueloIsFallbackKeyBillingRejection, cueloNoteFallbackKey,");
+	const refreshReason = "\trefreshReasonFor,\n";
+	const cascadeAnchor = `import {
+	type ApiKeyResolver,
+	createOAuthProvenance,
+	type ResolvedApiKey,
+${refreshReason}	resolveAfterRotation,
+} from "../auth-retry";`;
+	const fallbackImports = "\tcueloIsFallbackKeyBillingRejection,\n\tcueloNoteFallbackKey,\n";
+	alternate(cascade, { anchor: cascadeAnchor, patched: swap(cascadeAnchor, "\ttype ResolvedApiKey,", `${fallbackImports}\ttype ResolvedApiKey,`),
+		marker: fallbackImports }, refreshReason);
+	// Upstream now uses refreshReasonFor in the SDK resolver, but our last-chance
+	// guard still classifies usage errors with AIError.
+	const aiError = 'import * as AIError from "@oh-my-pi/pi-ai/error";';
+	const resolverTypes = 'import type { Api, Model } from "@oh-my-pi/pi-ai/types";';
+	EDITS.push({
+		file: "src/config/api-key-resolver.ts", requires: refreshReason,
+		anchor: resolverTypes, marker: aiError, patched: `${aiError}\n${resolverTypes}`,
+		alternates: [{ file: "src/config/api-key-resolver.ts", excludes: refreshReason, anchor: aiError, marker: aiError, patched: aiError }],
+	});
+
+	// The new third argument only enables live timing; it is not the old options bag.
+	const completion = byMarker("src/async/job-control.ts", "\t\t\t...(options.includeResults !== false && j.completion");
+	const liveSnapshot = "export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[], live = false)";
+	const completed = completion.alternates.find(candidate =>
+		candidate.requires === "export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobSnapshot[] {");
+	alternate(completion, { anchor: completed.anchor, patched: completed.patched, marker: completed.marker }, liveSnapshot);
+
+	const broker = byMarker("src/launch/broker.ts", "brokerDroppedHostEnv.add(name);");
+	const daemon = "src/daemon/client.ts";
+	const daemonCwd = "cwd: spawn.cwd ?? daemonDir(),";
+	const brokerOld = prior(broker);
+	const spawnCwd = text => swap(text, "cwd: spawn.cwd,", daemonCwd);
+	alternate(broker, { file: daemon, anchor: spawnCwd(brokerOld.anchor), patched: spawnCwd(brokerOld.patched),
+		marker: brokerOld.marker }, daemonCwd);
+
+	const agentSession = "src/session/agent-session.ts";
+	const mcp = byMarker(agentSession, 'import type { MCPManager } from "../mcp/manager";');
+	const advisorConfig = "../advisor/advisor-config-types";
+	port(mcp, advisorConfig, text => swap(text, "@oh-my-pi/pi-tui/overlays/advisor-config", advisorConfig));
+	const opus = byMarker("../pi-catalog/src/compat/rules.json", '{"source":"classes/anthropic.kdl:139"');
+	const opusRow = swap(prior(opus).anchor, "classes/anthropic.kdl:361", "classes/anthropic.kdl:369");
+	absorbed(opus, opus.file, opusRow);
+	const subSessions = "src/session/sub-sessions.ts";
+	const transcriptNames = 'import { isAdvisorTranscriptName } from "../advisor/transcript-names";';
+	const includeAdvisorGate = "(!scope.includeAdvisors && isAdvisorTranscriptName(transcriptName))";
+	const html = "src/export/html/index.ts";
+	absorbed(byMarker(html, "import { isAdvisorTranscriptName }"), subSessions, transcriptNames);
+	const bundleAdvisorGate = 'if(!c.endsWith(".jsonl")||a.includes(".bak")||!r.includeAdvisors&&oee(c))continue';
+	absorbed(byMarker("dist/cli.js", 'if(!o.endsWith(".jsonl")||o.includes(".bak")||o==="__advisor.jsonl"'),
+		"dist/cli.js", bundleAdvisorGate);
+
+	// npm declarations moved with their implementations; keep exported detail types in sync.
+	const types = "../pi-tui/dist/types/";
+	const newTypes = "dist/types/";
+	for (const marker of ['| "append" | "view" | "depend";', "CUELO: contents of prerequisite tasks"]) {
+		move(byMarker(types + "tools/todo.d.ts", marker), newTypes + "tools/details/todo.d.ts", "export declare function todoTaskTargets(");
+	}
+	move(byMarker(types + "tools/ask.d.ts", "    waitingForUser?: boolean;"), newTypes + "tools/details/ask.d.ts",
+		'from "../html-form/data.js";');
+	for (const marker of ["/** Run this spawn in an isolated worktree", "/** Run in an isolated worktree (flat form"]) {
+		move(byMarker(types + "tools/task.d.ts", marker), newTypes + "task/task-details.d.ts", taskDetailsGate);
+	}
+	for (const entry of EDITS.filter(entry => entry.file === types + "status-line/context-usage.d.ts")) {
+		absorbed(entry, newTypes + "session/context-usage.d.ts", schemaOpts);
+	}
+	absorbed(byMarker(html, "\t\t// Advisor transcripts share this directory"), subSessions, transcriptNames, includeAdvisorGate);
+
+	const image = byMarker("src/utils/image-question.ts", "export const OCR_QUESTION_MARK");
+	const imageDoc = "/**\n * Resolve the vision model used by `read <image>?q=<question>`. Offline mode\n * (`models.offline`) keeps every candidate on the active model's provider.\n */";
+	alternate(image, {
+		anchor: swap(image.anchor, "/** Resolve the vision model used by `read <image>?q=<question>`. */", imageDoc),
+		patched: swap(image.patched, "first and falls back to the `?q=` order when that role is unset, unavailable or cannot take images.",
+			"first and falls back to the `?q=` order when that role is unset, unavailable or cannot take images.\n * Offline mode (`models.offline`) keeps every candidate on the active model's provider."),
+		marker: image.marker,
+	}, "const offline = cfgOffline.get(session.settings);");
+	const proc = one(entry => entry.file === "src/internal-urls/proc-protocol.ts" &&
+		entry.marker === "${formatAgentActivityWatch((context?.agentRegistry ?? session.agentRegistry ?? AgentRegistry.global()).get(job.agentId ?? job.id)?.activityWatch)}");
+	const procOld = prior(proc);
+	alternate(proc, { anchor: procOld.anchor, patched: procOld.patched, marker: procOld.marker },
+		'import type { UnitSnapshot } from "../daemon/daemon-types";');
+
+	const decision = byMarker("src/session/model-controls.ts", "const decisionBefore = this.#thinkingLevel;");
+	const stateGuard = [
+		"\t\t// Drop the result if the turn was aborted/superseded while classifying, or if another model was",
+		"\t\t// selected meanwhile: the classifier chose from this model's levels.",
+		"\t\tif (this.#host.promptGeneration() !== generation || !this.#autoThinking || !modelsAreEqual(this.#model, model)) {",
+		"\t\t\treturn;",
+		"\t\t}",
+	].join("\n");
+	port(decision, "!modelsAreEqual(this.#model, model)", text => swap(text, decision.anchor.trimEnd(), stateGuard));
+	const shell = byMarker("src/tools/bash-interactive.ts", "// CUELO: sandbox runtime imports");
+	const ptyConsole = 'import { CONSOLE_SHEET, PtyConsole, PtyConsoleModel } from "../ui/overlays/panels/pty-console";';
+	port(shell, ptyConsole, text => swap(text, shell.anchor, ptyConsole));
+
+	// Upstream now tells the model to use `cwd`, not `cd`, on each call; it also documents set -e.
+	const bashPrompt = byMarker("src/prompts/tools/bash.md", "Persistent bash 5.3; explicit cwd");
+	absorbed(bashPrompt, bashPrompt.file, "Each call starts in the session cwd with `set -e` off; use `cwd`, not `cd`");
+
+	const system = "src/prompts/system/system-prompt.md";
+	const systemGate = "- **Single-pass edits.**";
+	const toolPolicy = byMarker(system, "Verified: stop/report, no unasked audits/suites.");
+	alternate(toolPolicy, {
+		anchor: "Every turn costs seconds: batch independent reads, searches, and edits into the fewest turns. SHOULD resolve prerequisites, parallelize independent calls. Retry empty/partial/narrow results differently.",
+		patched: toolPolicy.patched, marker: toolPolicy.marker,
+	}, systemGate);
+	const verify = byMarker(system, "Narrowest check once; investigation output is proof.");
+	const upstreamVerify = [
+		// The earlier patch already replaced the Maker-only branch; this body is Main's.
+		"Work statically: read, reason, edit. Run nothing while edits are still coming. After your last edit, verify once, then stop:",
+		"- **Question or investigation:** read and answer; the output is the proof; execute nothing.",
+		"- **Change that keeps behavior** (rename, move, signature, import, typing): the static check the project defines (a `check`, `typecheck`, `lint`, or compile script in its manifest) is the whole verification. NEVER run tests for it. None defined? The one test file touching the edit.",
+		"- **Behavior change:** the command or test the request names; else the one test file exercising the changed behavior. A whole suite ONLY when nothing narrower covers the change.",
+		"- **Asked to verify, optimize, or measure:** the request does not widen the check. Verify with the tests of the code in question and of its callers. Optimize and measure on a micro-benchmark or a scaled-down input that runs in a second: quick timings between edits are the work there, so iterate on them, and run the full case once, last. A reported slowness is the baseline; NEVER rerun the slow case to see it.",
+		"- About to edit code without knowing the project's checks? Read its manifest's scripts alongside your first reads.",
+		"- Check fails, or you edit again? Fix, then rerun that one check. NEVER yield code you have not checked since its last edit.",
+		"- Reported failure whose cause the code does not show? Reproduce it once before editing.",
+		"- Fix the root cause wherever it lives; include every directly affected caller and existing assertion in the edit.",
+		"- Unrelated pre-existing failure: mention it; NEVER fix it.",
+	];
+	const verifySurface = verify.anchor.slice(verify.anchor.indexOf("\n- UI:") + 1, verify.anchor.indexOf("\n- Bug:"));
+	alternate(verify, {
+		anchor: [...upstreamVerify, verifySurface, "- New tests ONLY on request or for uncertain edges.",
+			...verify.anchor.split("\n").slice(-2)].join("\n"),
+		patched: [verify.patched, ...upstreamVerify.slice(-5)].join("\n"), marker: verify.marker,
+	}, systemGate);
+	const critical = byMarker(system, "- NEVER yield with actionable work;");
+	alternate(critical, {
+		anchor: swap(critical.anchor, " or run git to validate them; tool results are verification.", " or run git to validate them."),
+		patched: critical.patched, marker: critical.marker,
+	}, systemGate);
+
+	const read = byMarker("src/tools/read.ts", 'import { openLegacyArtifactForRead } from "../internal-urls/router";\nimport { isMarkdownPath }');
+	const artifactImport = 'import { openLegacyArtifactForRead } from "../internal-urls/router";';
+	const markdownImport = 'import { isMarkdownPath } from "../utils/lang-from-path";';
+	alternate(read, { anchor: markdownImport, patched: `${artifactImport}\n${markdownImport}`, marker: artifactImport }, markdownImport);
+}
+
 /** All possible targets, including files reached only by a version alternate. */
 export function corePatchTargetFiles() {
 	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];

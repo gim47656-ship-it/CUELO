@@ -59,8 +59,8 @@ const { createAgentSession } = await import(`${CORE}/sdk.ts`);
 const { Settings } = await import(`${CORE}/config/settings.ts`);
 const { getBundledModel } = await import(`${CORE}/../../pi-catalog/src/models.ts`);
 const { closeModelCache } = await import(`${CORE}/../../pi-catalog/src/model-cache.ts`);
-const { initThemeSync } = await import(`${CORE}/../../pi-tui/src/theme/theme.ts`);
-initThemeSync();
+const { initTheme } = await import(`${CORE}/ui/theme/service.ts`);
+initTheme();
 
 type Manager = InstanceType<typeof AsyncJobManager>;
 type Session = { asyncJobManager: Manager | undefined; isDisposed: boolean; dispose(): Promise<void> };

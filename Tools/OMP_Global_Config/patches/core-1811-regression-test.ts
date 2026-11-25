@@ -391,17 +391,32 @@ await section("[3] 상대 API 주소와 로컬 이미지 경로 분류", async (
 	// 18.2.5 에서 custom-editor 가 pi-coding-agent/src/modes/components 에서
 	// pi-tui/src/prompt 로 옮겨갔다. 집(18.2.4)·사무실(18.2.5) 양쪽에서 돌아야 한다.
 	const legacyEditor = join(CORE_PACKAGE, "src/modes/components/custom-editor.ts");
-	const tuiPackage = resolveScopePackage(CORE_PACKAGE, "pi-tui", "src/prompt/custom-editor.ts");
-	const editorPath = existsSync(legacyEditor)
+	const currentEditor = join(CORE_PACKAGE, "src/modes/view-model/prompt/custom-editor.ts");
+	const hasInputDecoder = existsSync(currentEditor);
+	const tuiSource = hasInputDecoder ? "src/driver/input/decoder.ts" : "src/prompt/custom-editor.ts";
+	const tuiPackage = resolveScopePackage(CORE_PACKAGE, "pi-tui", tuiSource);
+	const editorPath = hasInputDecoder ? currentEditor : existsSync(legacyEditor)
 		? legacyEditor
 		: tuiPackage === undefined
 			? undefined
-			: join(tuiPackage, "src/prompt/custom-editor.ts");
+			: join(tuiPackage, tuiSource);
 	if (editorPath === undefined) {
-		throw new Error("custom-editor.ts 를 두 배치(core/modes/components, pi-tui/prompt) 모두에서 찾지 못했다");
+		throw new Error("custom-editor.ts 를 현재 또는 이전 core 배치에서 찾지 못했다");
 	}
 	const editor = await import(importBase(editorPath));
 	const { extractBracketedImagePastePaths, extractImagePastePathsFromText, extractImagePathFromText } = editor;
+	// Reactive TUI delivers decoded PasteEvents to the same text classifier.
+	const classifyBracketed = hasInputDecoder
+		? await (async () => {
+				if (!tuiPackage) throw new Error("Reactive paste decoder is unavailable");
+				const { decodeInput } = await import(importBase(join(tuiPackage, tuiSource)));
+				return (raw: string): string[] | undefined => {
+					const [event] = decodeInput(raw);
+					if (event?.type !== "paste") throw new Error("Expected a bracketed paste event");
+					return extractImagePastePathsFromText(event.paste.text);
+				};
+			})()
+		: extractBracketedImagePastePaths;
 
 	check("앵커 없는 상대 API 주소는 이미지 경로가 아니다", extractImagePathFromText("v1/assets/logo.png") === undefined);
 	check("중첩 상대 API 주소도 이미지 경로가 아니다", extractImagePathFromText("api/v2/users/avatar.jpeg") === undefined);
@@ -409,7 +424,7 @@ await section("[3] 상대 API 주소와 로컬 이미지 경로 분류", async (
 	check("URI 스킴이 붙은 주소는 이미지 경로가 아니다", extractImagePathFromText("https://example.invalid/logo.png") === undefined);
 	check(
 		"bracketed paste 로 온 상대 API 주소도 텍스트로 남는다",
-		extractBracketedImagePastePaths("\x1b[200~v1/assets/logo.png\x1b[201~") === undefined,
+		classifyBracketed("\x1b[200~v1/assets/logo.png\x1b[201~") === undefined,
 	);
 
 	check("절대 POSIX 경로는 이미지 경로로 인정한다", extractImagePathFromText("/tmp/shot.png") === "/tmp/shot.png");
@@ -429,7 +444,7 @@ await section("[3] 상대 API 주소와 로컬 이미지 경로 분류", async (
 	);
 	check(
 		"bracketed paste 로 온 절대 이미지 경로는 인정한다",
-		extractBracketedImagePastePaths("\x1b[200~/tmp/shot.png\x1b[201~")?.join(",") === "/tmp/shot.png",
+		classifyBracketed("\x1b[200~/tmp/shot.png\x1b[201~")?.join(",") === "/tmp/shot.png",
 	);
 });
 

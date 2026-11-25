@@ -76,6 +76,7 @@ try {
 	check("lifecycle 경로에 #reconcileTodosWithSubagents() 호출이 없다", !/this\.#reconcileTodosWithSubagents\(/.test(patched));
 	const upstreamOwnsTodos = !patched.includes("#observerUiSyncNeedsTodoReconcile");
 	const optimized = patched.includes("const badgeChanged = this.syncRunningSubagentBadge(");
+	const reactiveTodoHud = patched.includes("todo.descriptions.set(descriptions);");
 
 	console.log("\n[3] 패치된 flush·schedule 본문 실행");
 	const method = (name: string): string => {
@@ -147,7 +148,8 @@ try {
 	{
 		const f = makeFake({ descs: ["a", "b"], key: "a" });
 		flush.call(f);
-		check("활성 subagent 설명이 바뀌면 HUD 는 재동기화 없이 다시 그린다", f.calls.syncHud === 0 && f.calls.renderTodo === 1 && f.calls.requestRender === 1, JSON.stringify(f.calls));
+		check("활성 subagent 설명이 바뀌면 HUD 는 재동기화 없이 갱신한다", f.calls.syncHud === 0 && f.calls.renderTodo === 1 &&
+			f.calls.requestRender === (reactiveTodoHud ? 0 : 1), JSON.stringify(f.calls));
 	}
 	if (optimized) {
 		const badge = makeFake({ badge: true });

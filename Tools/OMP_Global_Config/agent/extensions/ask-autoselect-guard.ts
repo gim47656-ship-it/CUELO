@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { type FormSpan, parseHtmlForm, spansText } from "@oh-my-pi/pi-tui/html-form/parse";
+import { type FormSpan, parseHtmlForm, spansText } from "@oh-my-pi/pi-coding-agent/tools/html-form/parse";
 
 // Match explicit decision topics, not incidental words such as "model", "cost" or "account" alone.
 // Words that also name ordinary code concepts (비용·계정·권한·공개·account·permission) count only next to an action.

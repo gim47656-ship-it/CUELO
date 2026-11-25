@@ -1,5 +1,5 @@
 import { cfgEnabledModels } from "@oh-my-pi/pi-coding-agent/config/model-settings";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
 import { isProviderRefusalMessage, normalizeTools } from "@oh-my-pi/pi-agent-core";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import {
@@ -10,7 +10,6 @@ import {
   getAgentDir,
   initTheme,
   SessionManager,
-  Theme,
 } from "@oh-my-pi/pi-coding-agent";
 import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
 import { executeAcpBuiltinSlashCommand, type AcpBuiltinSlashCommandResult } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
@@ -29,7 +28,8 @@ import {
   RpcSubagentRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON } from "@oh-my-pi/pi-coding-agent/async/job-manager";
-import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings/keybindings";
+import type { ExtensionCustomFactory, ExtensionCustomOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { randomUUID } from "crypto";
 import { appendFileSync, existsSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -77,7 +77,7 @@ import type {
   SessionMessageEntry,
   SubagentSnapshot,
 } from "./types";
-import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
+import { createHeadlessCustomUi, CUSTOM_UI_THEME, type HeadlessCustomUi } from "./custom-ui-terminal";
 import {
   parseAskFormActivity,
   parseAskFormSnapshot,
@@ -256,18 +256,9 @@ type PendingUiResponse = {
   activity?: (payload?: string) => void;
 };
 
-type CustomUiComponent = {
-  render: (width: number) => string[];
-  handleInput?: (data: string) => void;
-  dispose?: () => void;
-  invalidate?: () => void;
-};
-
 type ActiveCustomUi = {
-  component: CustomUiComponent;
-  width: number;
-  resolve: (value: unknown) => void;
-  settled: boolean;
+  readonly view: HeadlessCustomUi;
+  close(): void;
 };
 
 type ExtensionUiRequestBody = Record<string, unknown> & {
@@ -584,36 +575,7 @@ const CODING_TOOL_NAMES: Record<string, true> = Object.fromEntries(
   PRESET_FULL.map((name) => [name, true]),
 );
 
-// Extensions require a complete Theme, while the web UI applies its own styling.
-class PlainTextTheme extends Theme {
-  constructor() {
-    super(
-      { thinkingXhigh: "" } as ConstructorParameters<typeof Theme>[0],
-      // OMP 18.22 reads statusLineBg in the constructor when no terminal background is given.
-      { statusLineBg: "" } as ConstructorParameters<typeof Theme>[1],
-      "truecolor",
-      "unicode",
-      {},
-    );
-  }
-
-  override fg(...[, text]: Parameters<Theme["fg"]>): string { return text; }
-  override bg(...[, text]: Parameters<Theme["bg"]>): string { return text; }
-  override bold(text: string): string { return text; }
-  override italic(text: string): string { return text; }
-  override underline(text: string): string { return text; }
-  override inverse(text: string): string { return text; }
-  override strikethrough(text: string): string { return text; }
-  override getFgAnsi(): string { return ""; }
-  override getBgAnsi(): string { return ""; }
-  override getThinkingBorderColor(): (text: string) => string {
-    return (text) => text;
-  }
-  override getBashModeBorderColor(): (text: string) => string { return (text) => text; }
-}
-
-const PLAIN_TEXT_THEME = new PlainTextTheme();
-const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
+const CUSTOM_UI_KEYBINDINGS = KeybindingsManager.inMemory();
 
 const TOOL_SELECTION_ENTRY_TYPE = "cuelo-tool-selection";
 
@@ -2332,7 +2294,7 @@ export class AgentSessionWrapper {
     this.subagentHistory.clear();
     this.keepAliveListeners.clear();
     for (const pending of this.pendingUiResponses.values()) pending.cancel();
-    for (const id of Array.from(this.activeCustomUis.keys())) this.closeCustomUi(id, undefined);
+    for (const custom of this.activeCustomUis.values()) custom.close();
     this.pendingUiResponses.clear();
     this.pendingUiRequests.clear();
     try {
@@ -2415,24 +2377,7 @@ export class AgentSessionWrapper {
     return Array.from(this.extensionWidgets.values());
   }
 
-  private getCustomUiWidth(options: unknown): number {
-    if (!options || typeof options !== "object") return DEFAULT_CUSTOM_UI_COLUMNS;
-    const overlayOptions = (options as { overlayOptions?: unknown }).overlayOptions;
-    const resolved = typeof overlayOptions === "function" ? overlayOptions() : overlayOptions;
-    if (!resolved || typeof resolved !== "object") return DEFAULT_CUSTOM_UI_COLUMNS;
-    const width = (resolved as { width?: unknown }).width;
-    return typeof width === "number" && Number.isFinite(width)
-      ? Math.max(40, Math.min(140, Math.round(width)))
-      : 92;
-  }
-
-  private emitCustomUiRender(id: string, custom: ActiveCustomUi): void {
-    let lines: string[];
-    try {
-      lines = custom.component.render(custom.width);
-    } catch (error) {
-      lines = [`Extension custom UI render failed: ${error instanceof Error ? error.message : String(error)}`];
-    }
+  private emitCustomUiRender(id: string, lines: string[]): void {
     const event = {
       type: "extension_ui_request",
       id,
@@ -2443,17 +2388,8 @@ export class AgentSessionWrapper {
     this.emit(event);
   }
 
-  private closeCustomUi(id: string, value: unknown): void {
-    const custom = this.activeCustomUis.get(id);
-    if (!custom || custom.settled) return;
-    custom.settled = true;
-    this.activeCustomUis.delete(id);
-    this.pendingUiRequests.delete(id);
-    try {
-      custom.component.dispose?.();
-    } catch {
-      // Ignore dispose errors from extension UI components.
-    }
+  private clearCustomUiRender(id: string): void {
+    if (!this.pendingUiRequests.delete(id)) return;
     this.emit({
       type: "extension_ui_request",
       id,
@@ -2461,7 +2397,6 @@ export class AgentSessionWrapper {
       lines: [],
       closed: true,
     } as ExtensionUiRequest as AgentEvent);
-    custom.resolve(value);
   }
 
   private handleExtensionUiInput(id: string, data: string): void {
@@ -2476,10 +2411,9 @@ export class AgentSessionWrapper {
       return;
     }
     try {
-      custom.component.handleInput?.(data);
-      if (this.activeCustomUis.has(id)) this.emitCustomUiRender(id, custom);
+      custom.view.handleInput(data);
     } catch (error) {
-      this.closeCustomUi(id, undefined);
+      custom.close();
       this.emit({
         type: "extension_error",
         extensionPath: `custom-ui:${id}`,
@@ -2490,71 +2424,71 @@ export class AgentSessionWrapper {
   }
 
   private requestExtensionCustomUi<T>(
-    factory: unknown,
-    options?: unknown,
+    factory: ExtensionCustomFactory<T>,
+    options?: ExtensionCustomOptions,
   ): Promise<T> {
-    if (typeof factory !== "function") return Promise.resolve(undefined as T);
+    if (!this._alive || typeof factory !== "function") return Promise.resolve(undefined as T);
+    const signal = options?.signal;
+    if (signal?.aborted) return Promise.reject(signal.reason);
 
     const id = randomUUID();
-    const width = this.getCustomUiWidth(options);
-
-    return new Promise<T>((resolve) => {
-      let completed = false;
-      const tui = createHeadlessCustomUiTui(
-        () => {
-          const custom = this.activeCustomUis.get(id);
-          if (custom) this.emitCustomUiRender(id, custom);
-        },
-        width,
-      );
-      const finish = (value: T) => {
-        if (completed) return;
-        completed = true;
-        resolve(value);
-      };
-      const done = (value: T) => {
-        if (this.activeCustomUis.has(id)) {
-          this.closeCustomUi(id, value);
-        } else {
-          finish(value);
+    const { promise, resolve, reject } = Promise.withResolvers<T>();
+    let hidden = false;
+    let presented = false;
+    const onError = (error: unknown) => {
+      // Hiding an overlay must not settle the request, even if view cleanup fails.
+      if (hidden || !this.activeCustomUis.has(id)) return;
+      finish(() => resolve(undefined as T));
+      this.emit({
+        type: "extension_error",
+        extensionPath: `custom-ui:${id}`,
+        event: "custom_ui",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    const view = createHeadlessCustomUi((lines) => {
+      if (hidden) return;
+      this.emitCustomUiRender(id, lines);
+      if (presented || hidden) return;
+      presented = true;
+      if (options?.overlay && options.onHandle) {
+        try {
+          options.onHandle({ get closed() { return hidden; }, close: hide });
+        } catch (error) {
+          onError(error);
         }
-      };
+      }
+    }, onError);
+    // The web already presents all custom views in a modal. Like the TUI, the
+    // extension's overlay handle may hide the view without settling custom().
+    const hide = () => {
+      if (hidden) return;
+      hidden = true;
+      try {
+        view.dispose();
+      } finally {
+        this.clearCustomUiRender(id);
+      }
+    };
+    const finish = (settle: () => void) => {
+      if (!this.activeCustomUis.delete(id)) return;
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        hide();
+      } finally {
+        settle();
+      }
+    };
+    const onAbort = () => finish(() => reject(signal?.reason));
+    const done = (value: T) => finish(() => resolve(value));
+    this.activeCustomUis.set(id, { view, close: () => finish(() => resolve(undefined as T)) });
+    signal?.addEventListener("abort", onAbort, { once: true });
 
-      Promise.resolve()
-        .then(() => factory(tui, PLAIN_TEXT_THEME, CUSTOM_UI_KEYBINDINGS, done))
-        .then((component) => {
-          if (completed) {
-            try {
-              (component as CustomUiComponent | undefined)?.dispose?.();
-            } catch {
-              // Ignore dispose errors from a component completed before mounting.
-            }
-            return;
-          }
-          if (!component || typeof component !== "object" || typeof (component as CustomUiComponent).render !== "function") {
-            finish(undefined as T);
-            return;
-          }
-          const custom: ActiveCustomUi = {
-            component: component as CustomUiComponent,
-            width,
-            resolve: (value) => finish(value as T),
-            settled: false,
-          };
-          this.activeCustomUis.set(id, custom);
-          this.emitCustomUiRender(id, custom);
-        })
-        .catch((error) => {
-          if (completed) return;
-          this.emit({
-            type: "extension_error",
-            extensionPath: `custom-ui:${id}`,
-            event: "custom_ui",
-            error: error instanceof Error ? error.message : String(error),
-          });
-          finish(undefined as T);
-        });
-    });
+    void Promise.try(async () => {
+      const output = await view.run(() => factory(view.ui, CUSTOM_UI_THEME, CUSTOM_UI_KEYBINDINGS, done));
+      await view.mount(output);
+    }).catch(onError);
+    return promise;
   }
 
   private requestExtensionUi<T>(
@@ -2772,7 +2706,7 @@ export class AgentSessionWrapper {
           title,
         } as ExtensionUiRequest as AgentEvent);
       },
-      custom: <T = unknown>(factory: unknown, options?: unknown) => this.requestExtensionCustomUi<T>(factory, options),
+      custom: (factory, options) => this.requestExtensionCustomUi(factory, options),
       pasteToEditor: (text) => {
         this.emit({
           type: "extension_ui_request",
@@ -2791,9 +2725,7 @@ export class AgentSessionWrapper {
       },
       getEditorText: () => "",
       addAutocompleteProvider: () => {},
-      setEditorComponent: () => {},
-      getEditorComponent: () => undefined,
-      get theme() { return PLAIN_TEXT_THEME; },
+      theme: CUSTOM_UI_THEME,
       getAllThemes: () => [],
       getTheme: () => undefined,
       setTheme: () => ({ success: false, error: "Theme switching is not supported in CUELO extension UI yet" }),
@@ -3137,7 +3069,7 @@ export async function startRpcSession(
   assertUpdateTurnAdmission(sessionId);
   const starting = (async () => {
     // Some extensions access the SDK's global theme even outside the terminal UI.
-    await initTheme(false);
+    initTheme({ watch: false });
     const agentDir = getAgentDir();
     const sessionManager = sessionFile
       ? await SessionManager.open(sessionFile, undefined)

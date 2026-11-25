@@ -1,6 +1,6 @@
-import type { FormField, FormSpan } from "@oh-my-pi/pi-tui/html-form/parse";
+import type { FormField, FormSpan } from "@oh-my-pi/pi-coding-agent/tools/html-form/parse";
 
-export type { ChoiceField, FormField, FormSpan, TextField } from "@oh-my-pi/pi-tui/html-form/parse";
+export type { ChoiceField, FormField, FormSpan, TextField } from "@oh-my-pi/pi-coding-agent/tools/html-form/parse";
 
 /** Submitted value of one control, as the core's `HtmlFormValue` defines it. */
 export type AskFormValue = string | number | string[];

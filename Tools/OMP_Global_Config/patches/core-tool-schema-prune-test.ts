@@ -4,7 +4,7 @@
 // 추정(상태줄·압축 기준·응답에 기록하는 toolSchemaTokens)도 그 wire 와 같아야 하고, 꺼진 세션은 /context 의 도구 항목 합과 같은 옛 값 그대로다.
 // 네트워크·`~/.omp` 접근 없음(임시 HOME, 가짜 키, 요청 없음). 동적 import 는 OMP_CORE_PATCH_TARGET 이 고른 core 사본을 읽기 위해서다.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -21,7 +21,8 @@ const { Settings } = await import(`${core}/config/settings.ts`);
 const { getBundledModel } = await import(`${core}/../../pi-catalog/src/models.ts`);
 const { normalizeTools } = await import(`${core}/../../pi-agent-core/src/agent-loop.ts`);
 const { SessionStatsTracker } = await import(`${core}/session/session-stats.ts`);
-const usage = await import(Bun.resolveSync("@oh-my-pi/pi-tui/status-line/context-usage", core));
+const sessionUsage = `${core}/session/context-usage.ts`;
+const usage = await import(existsSync(sessionUsage) ? sessionUsage : Bun.resolveSync("@oh-my-pi/pi-tui/status-line/context-usage", core));
 const { cfgToolsFormat } = await import(`${core}/session/context-settings.ts`);
 const { cfgInlineToolDescriptors } = await import(`${core}/session/settings.ts`);
 const { buildSessionContextView } = await import(`${core}/session/context-view.ts`);

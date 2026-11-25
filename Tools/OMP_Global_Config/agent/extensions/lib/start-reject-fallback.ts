@@ -212,7 +212,10 @@ export function createChildFallback(deps: ChildFallbackDeps = {}): ChildFallback
       assistants += 1;
       if (assistants === 1) {
         const initial = ctx?.sessionManager?.getEntries?.().find(entry => entry.type === "model_change");
-        const requested = initial?.type === "model_change" ? initial.requestedModel : undefined;
+        // CUELO's core patch writes this optional field; stock npm declarations do not expose it.
+        const requested = initial && "requestedModel" in initial && typeof initial.requestedModel === "string"
+          ? initial.requestedModel
+          : undefined;
         deepSeekOrigin = requested ? isDeepSeekRequest(requested) : isDeepSeek(message.model);
       }
       if (flipped) {
@@ -498,7 +501,7 @@ export function createStartRejectTracker(deps: StartRejectTrackerDeps): StartRej
 
 const isMakerChild = (ctx: ExtensionContext | undefined) => ctx?.agent?.kind === "sub" && ctx.agent.name === "maker";
 
-/** core `@oh-my-pi/pi-tui/overlays/session-observer-registry` TASK_SUBAGENT_LIFECYCLE_CHANNEL. `started`가 child id와 agent 이름을 싣는다. */
+/** core `@oh-my-pi/pi-coding-agent/task/session-observer-registry` TASK_SUBAGENT_LIFECYCLE_CHANNEL. `started`가 child id와 agent 이름을 싣는다. */
 export const SUBAGENT_LIFECYCLE_CHANNEL = "task:subagent:lifecycle";
 const SUBAGENT_PROGRESS_CHANNEL = "task:subagent:progress";
 

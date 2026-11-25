@@ -15,7 +15,8 @@ const candidates = process.env.OMP_CORE_PATCH_TARGET
 const core = candidates.find(candidate => existsSync(join(candidate, "src/task/executor.ts")));
 if (!core) throw new Error(`core 사본을 찾지 못했다: ${candidates.join(", ")}`);
 const packages = resolve(core, "..").replace(/\\/g, "/");
-const { resolveTaskEffortLevel } = await import(`${packages}/pi-tui/src/thinking.ts`);
+const sessionThinking = resolve(core, "src/thinking/levels.ts").replace(/\\/g, "/");
+const { resolveTaskEffortLevel } = await import(existsSync(sessionThinking) ? sessionThinking : `${packages}/pi-tui/src/thinking.ts`);
 const { getBundledModels } = await import(`${packages}/pi-catalog/src/models.ts`);
 const { buildTransformedCodexRequestBody } = await import(`${packages}/pi-ai/src/providers/openai-codex-responses.ts`);
 

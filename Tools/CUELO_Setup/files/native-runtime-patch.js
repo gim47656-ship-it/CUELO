@@ -9,9 +9,9 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.10.361',
+    version: '0.10.362',
     distribution: 'cuelo',
-    coreVersion: '19.1.1',
+    coreVersion: '19.2.0',
 };
 
 // OMP core `src/sdk.ts`: session-scoped AsyncJobManager for a process that hosts

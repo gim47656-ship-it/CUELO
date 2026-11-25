@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { parseConfiguredThinkingLevel as parseOmpThinkingLevel, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { parseConfiguredThinkingLevel as parseOmpThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking/levels";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/utils/render-utils";
 import { existsSync } from "fs";
 import { allowFileRoot, getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";

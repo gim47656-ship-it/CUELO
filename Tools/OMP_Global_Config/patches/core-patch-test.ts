@@ -1102,8 +1102,16 @@ try {
 	const mrManager = SessionManager.create(mrSessionDir, mrSessionDir);
 	if (typeof mrManager.ensureOnDisk === "function") mrManager.ensureOnDisk();
 	// 대체 실행(요청은 b-ai, 실제는 Muse) / 정상 실행 / 미관측 호출 세 가지를 영속시킨다.
-	mrManager.appendModelChange("opencode-go/muse-spark-1.3-contributor", undefined, true, "b-ai/deepseek-v4.1-flash:max");
-	mrManager.appendModelChange("anthropic/claude-opus-4-6", undefined, undefined, "anthropic/claude-opus-4-6:xhigh");
+	const substitute = ["opencode-go/muse-spark-1.3-contributor", "b-ai/deepseek-v4.1-flash:max"];
+	const selected = ["anthropic/claude-opus-4-6", "anthropic/claude-opus-4-6:xhigh"];
+	const structuredFallback = mrReadFile(`${CORE}/session/session-manager.ts`, "utf8").includes("fallback: options?.fallback,");
+	if (structuredFallback) {
+		mrManager.appendModelChange(substitute[0], undefined, { resolvedModelIsFallback: true, requestedModel: substitute[1] });
+		mrManager.appendModelChange(selected[0], undefined, { requestedModel: selected[1] });
+	} else {
+		mrManager.appendModelChange(substitute[0], undefined, true, substitute[1]);
+		mrManager.appendModelChange(selected[0], undefined, undefined, selected[1]);
+	}
 	mrManager.appendModelChange("anthropic/claude-opus-4-6");
 	const file = mrReaddir(mrSessionDir).find(name => name.endsWith(".jsonl"));
 	const mrEntries = file

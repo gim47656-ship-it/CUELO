@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { orderedSettings } from "@oh-my-pi/pi-coding-agent/config/all-settings";
 import { type AnySetting, lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
-import { SETTING_TABS, TAB_GROUPS, TAB_METADATA } from "@oh-my-pi/pi-tui/overlays/settings-defs";
+import { SETTING_TABS, TAB_GROUPS } from "@oh-my-pi/pi-coding-agent/config/settings-defs";
+import { SETTINGS_PAGES } from "@oh-my-pi/pi-coding-agent/ui/overlays/settings/pages";
 import { getOmpRuntime, getSettingsForCwd } from "@/lib/omp-runtime";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { getAvailableWebThemes, getWebThemeConfig } from "@/lib/omp-theme";
@@ -145,7 +146,7 @@ export async function GET(req: Request) {
     }
 
     const response: SettingsResponse = {
-      tabs: SETTING_TABS.map((id) => ({ id, label: TAB_METADATA[id].label, groups: [...TAB_GROUPS[id]] })),
+      tabs: SETTING_TABS.map((id) => ({ id, label: SETTINGS_PAGES[id].label, groups: [...TAB_GROUPS[id]] })),
       fields,
       availableThemes,
       theme,

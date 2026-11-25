@@ -3,13 +3,14 @@ import type {
   SessionManager,
   Settings,
   SlashCommandInfo as OmpSlashCommandInfo,
-  Theme,
 } from "@oh-my-pi/pi-coding-agent";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import type { SkillsSettings } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
-import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
+import type { Goal } from "@oh-my-pi/pi-coding-agent/tools/details/goal";
+import type { ExtensionCustomFactory, ExtensionCustomOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { ExtensionTheme } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/render-types";
 import type { AskFormData } from "./ask-form/types";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
 import type { TodoPhase } from "./todo-state";
@@ -157,14 +158,12 @@ export interface ExtensionUiContextLike {
   setFooter(factory: unknown): void;
   setHeader(factory: unknown): void;
   setTitle(title: string): void;
-  custom<T = unknown>(...args: unknown[]): Promise<T>;
+  custom<T>(factory: ExtensionCustomFactory<T>, options?: ExtensionCustomOptions): Promise<T>;
   pasteToEditor(text: string): void;
   setEditorText(text: string): void;
   getEditorText(): string;
   addAutocompleteProvider(): void;
-  setEditorComponent(): void;
-  getEditorComponent(): undefined;
-  readonly theme: Theme;
+  readonly theme: ExtensionTheme;
   getAllThemes(): unknown[];
   getTheme(name: string): undefined;
   setTheme(theme: unknown): { success: boolean; error?: string };

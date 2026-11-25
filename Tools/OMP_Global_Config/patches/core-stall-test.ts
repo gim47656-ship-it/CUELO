@@ -1,6 +1,7 @@
 // Model-free regression for scoped lifecycle shutdown, pending job receipts, and ask steering preemption.
 // bun run patches/core-stall-test.ts (OMP_CORE_PATCH_TARGET is required)
 import { strict as assert } from "node:assert";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createSettingsTestScope } from "./core-test-settings";
 const target = process.env.OMP_CORE_PATCH_TARGET;
@@ -22,8 +23,9 @@ const { Agent } = await import(`${agentCore}/agent.ts`);
 const { createAssistantMessageEventStream } = await import(`${piAi}/utils/event-stream.ts`);
 const { getBundledModel } = await import(`${piCatalog}/models.ts`);
 const { AskTool } = await import(`${core}/tools/ask.ts`);
-const { initThemeSync } = await import(`${piTui}/theme/theme.ts`);
-initThemeSync();
+const themeService = `${core}/ui/theme/service.ts`;
+if (existsSync(themeService)) (await import(themeService)).initTheme();
+else (await import(`${piTui}/theme/theme.ts`)).initThemeSync();
 let failures = 0;
 async function test(name: string, run: () => Promise<void>) {
  try { await run(); console.log(`PASS ${name}`); }
