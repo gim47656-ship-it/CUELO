@@ -556,9 +556,13 @@ async function runSelectedChecks(
   const envKey = createHash("sha256").update(JSON.stringify(Object.entries(env).sort())).digest("hex");
   // No ignored paths are transferred. CUELO installs and prepares SDK/native
   // dependencies in cwd; a private Bun cache cannot hardlink back into the source.
+  // A check that installs by copying may opt into OMP_FINALIZE_BUN_CACHE, which outlives the
+  // candidate (a fresh cache re-downloaded 1,107 packages in 450s on 11-26). Checks that ignore it,
+  // including older revisions that patch hardlinked files, keep the disposable cache.
   if (bunCache) {
     env.BUN_INSTALL_CACHE_DIR = bunCache;
     env.PWD = cwd;
+    env.OMP_FINALIZE_BUN_CACHE = join(agentDir, "finalize-checks-bun-cache");
   }
   const runtimeFingerprint = runtimeFingerprints(cwd, env, options.signal);
   const results: CheckResult[] = [];

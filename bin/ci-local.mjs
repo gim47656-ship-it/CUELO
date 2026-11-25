@@ -256,7 +256,10 @@ async function main(args) {
       console.log(`\n=== CI local: ${suite} ===`);
       try {
         if (!sourcePrepared) {
-          await run(["bun", "install", "--frozen-lockfile"], root, env, signal);
+          // prepare:source patches SDK files in node_modules. Copying keeps those writes out of the Bun
+          // cache, so this install may use the cache git_finalize keeps between candidates.
+          const installEnv = env.OMP_FINALIZE_BUN_CACHE ? { ...env, BUN_INSTALL_CACHE_DIR: env.OMP_FINALIZE_BUN_CACHE } : env;
+          await run(["bun", "install", "--frozen-lockfile", "--backend=copyfile"], root, installEnv, signal);
           await run(["bun", "run", "prepare:source"], root, env, signal);
           sourcePrepared = true;
         }

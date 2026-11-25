@@ -25,6 +25,9 @@ const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const RELEASE_DOWNLOAD_URL = "https://github.com/gim47656-ship-it/CUELO/releases/download";
+// A version bump changes no crate source, but its own release does not exist until after the
+// push. The newest release's asset is used then, under the same source and digest checks.
+const LATEST_DOWNLOAD_URL = "https://github.com/gim47656-ship-it/CUELO/releases/latest/download";
 // The six targets of the omp SDK's own native packages (@oh-my-pi/pi-natives optionalDependencies).
 const RUST_TARGETS = {
   "linux-x64": "x86_64-unknown-linux-gnu",
@@ -187,8 +190,30 @@ async function download(url, fetchImpl) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+// The asset at assetUrl if its metadata names the current source: "downloaded", or the reason it
+// does not apply. Invalid metadata or bytes fail closed instead of falling back to a build.
+async function fromRelease({ root, outDir, target, source, assetUrl, label, fetchImpl }) {
+  const metaBytes = await download(`${assetUrl}.json`, fetchImpl);
+  // A source change while metadata was in flight must not read as a miss that starts a build.
+  if (sourceSha256(root) !== source) throw new PrepareError(`${crateDir(root)} changed while the release asset was downloading`);
+  if (!metaBytes) return `${label} has no published upkeep reader for ${target}`;
+  const meta = parseMetadata(metaBytes.toString("utf8"), target);
+  if (!meta) throw new PrepareError(`${assetUrl}.json is not valid ${target} metadata`);
+  if (meta.sourceSha256 !== source) return `the current crate source differs from the source of the ${label} release asset`;
+  const bytes = await download(`${assetUrl}.node`, fetchImpl);
+  if (!bytes) throw new PrepareError(`${assetUrl}.node is missing although its metadata is published`);
+  if (sha256(bytes) !== meta.binarySha256) throw new PrepareError(`${assetUrl}.node does not match its published SHA-256`);
+  if (sourceSha256(root) !== source) throw new PrepareError(`${crateDir(root)} changed while the release asset was downloading`);
+  writeArtifact(outDir, target, bytes, source);
+  load(outDir);
+  return "downloaded";
+}
+
 // Returns "reused" | "downloaded" | "built".
-async function ensure({ root, outDir = defaultOut(root), cargo = "cargo", baseUrl = RELEASE_DOWNLOAD_URL, fetchImpl = fetch, log = console.log }) {
+async function ensure({
+  root, outDir = defaultOut(root), cargo = "cargo", baseUrl = RELEASE_DOWNLOAD_URL, latestUrl = LATEST_DOWNLOAD_URL,
+  fetchImpl = fetch, log = console.log,
+}) {
   const target = hostTarget();
   const source = sourceSha256(root);
   const local = inspect({ root, outDir, target, source });
@@ -199,25 +224,11 @@ async function ensure({ root, outDir = defaultOut(root), cargo = "cargo", baseUr
   if (local.state === "corrupt") throw new PrepareError(`${local.reason}. Remove ${outDir} and prepare again.`);
 
   const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  const assetUrl = `${baseUrl}/v${version}/upkeep-reader-${target}`;
-  const metaBytes = await download(`${assetUrl}.json`, fetchImpl);
-  let reason;
-  if (!metaBytes) {
-    reason = `CUELO v${version} has no published upkeep reader for ${target}`;
-  } else {
-    const meta = parseMetadata(metaBytes.toString("utf8"), target);
-    if (!meta) throw new PrepareError(`${assetUrl}.json is not valid ${target} metadata`);
-    if (meta.sourceSha256 === source) {
-      const bytes = await download(`${assetUrl}.node`, fetchImpl);
-      if (!bytes) throw new PrepareError(`${assetUrl}.node is missing although its metadata is published`);
-      if (sha256(bytes) !== meta.binarySha256) throw new PrepareError(`${assetUrl}.node does not match its published SHA-256`);
-      if (sourceSha256(root) !== source) throw new PrepareError(`${crateDir(root)} changed while the release asset was downloading`);
-      writeArtifact(outDir, target, bytes, source);
-      load(outDir);
-      return "downloaded";
-    }
-    reason = `the current crate source differs from the source of the CUELO v${version} release asset`;
-  }
+  const asset = `upkeep-reader-${target}`;
+  const common = { root, outDir, target, source, fetchImpl };
+  const reason = await fromRelease({ ...common, assetUrl: `${baseUrl}/v${version}/${asset}`, label: `CUELO v${version}` });
+  if (reason === "downloaded") return reason;
+  if (await fromRelease({ ...common, assetUrl: `${latestUrl}/${asset}`, label: "latest CUELO" }) === "downloaded") return "downloaded";
   if (!cargoAvailable(cargo)) {
     throw new PrepareError(`${reason}, and no cargo is available to build ${crateDir(root)}. ` +
       "Install a Rust toolchain or use a released CUELO version.");

@@ -23691,6 +23691,35 @@ ${TAIL}`,
 	revise(effective, text => swap(text, "options?.agentOrigin ? this.#thinkingLevel", "agentHold ? this.#thinkingLevel"));
 	revise(uncapped, text => text.replaceAll("if (!options?.agentOrigin)", "if (!agentHold)"));
 
+	// Each tool_call handler got the original event.input and only the last returned input ran,
+	// so a guard rebuilding the task dropped routing's profile-name → model revision
+	// (11-25 NORMAL_SONNET, 11-26 NORMAL_SOL: "no usable model was resolved").
+	const TOOL_CALL_LOOP_HEAD = `		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("tool_call");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				const handlerResult = (await this.#runHandlerWithTimeout(
+					handler,
+					event,`;
+	const TOOL_CALL_LOOP_TAIL = `				accumulateToolCallResult(aggregated, handlerResult);
+				result = controlResult;`;
+	EDITS.push({
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "// CUELO: a later tool_call handler receives the input earlier handlers revised.",
+		anchor: TOOL_CALL_LOOP_HEAD,
+		patched: `		// CUELO: a later tool_call handler receives the input earlier handlers revised.
+		let handlerEvent = event;
+${TOOL_CALL_LOOP_HEAD.replace(/\tevent,$/, "\thandlerEvent,")}`,
+	}, {
+		file: "src/extensibility/extensions/runner.ts",
+		marker: "if (handlerResult.input !== undefined) handlerEvent = {",
+		anchor: TOOL_CALL_LOOP_TAIL,
+		patched: `				accumulateToolCallResult(aggregated, handlerResult);
+				if (handlerResult.input !== undefined) handlerEvent = { ...handlerEvent, input: handlerResult.input } as ToolCallEvent;
+				result = controlResult;`,
+	});
+
 	const BATCH = `			entry.args = revised;`;
 	EDITS.push({
 		file: "src/extensibility/extensions/runner.ts",

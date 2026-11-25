@@ -88,12 +88,13 @@ const settings = Settings.isolated({
 const task = {
   context: "maker effort smoke",
   tasks: [
-    { name: "HardSol", agent: "maker", task: "Implement fixture HARD Sol", model: `openai/${SOL}:auto`, solutionSpace: "fixed contract" },
+    // A profile name only becomes a usable model through the routing hook's revision.
+    { name: "HardSol", agent: "maker", task: "Implement fixture HARD Sol", model: "NORMAL_SOL", solutionSpace: "fixed contract" },
     { name: "BoundedSol", agent: "maker", task: "Implement fixture bounded Sol", model: `openai/${SOL}:auto`, solutionSpace: "bounded choice" },
     { name: "Astra", agent: "maker", task: "Implement fixture Astra", model: `openai/${ASTRA}:auto`, solutionSpace: "open design" },
   ],
 };
-let beforeTask = "";
+let routedTask = "";
 const parentHeads: string[] = [];
 const runtimeErrors: unknown[] = [];
 const rootModel = { ...getBundledModel("anthropic", HARNESS_MODEL), provider: "fixture-parent", baseUrl: fixtureUrl };
@@ -107,16 +108,20 @@ try {
     extensions: [
       (pi: ExtensionAPI) => pi.on("tool_call", event => {
         if (event.toolName !== "task") return;
-        beforeTask = JSON.stringify(event.input);
-        // A separate guard clones the task before routing admits it.
-        const items = event.input.tasks as typeof task.tasks;
-        return { input: { ...event.input, tasks: items.map(item => ({ ...item })) } };
+        assert.match(JSON.stringify(event.input), /"model":"NORMAL_SOL"/);
+        // Routing resolves the profile name to the canonical model and attaches each range
+        // before returning its revision, as beforeTask does.
+        const items = (event.input.tasks as typeof task.tasks).map(item => item.model === "NORMAL_SOL" ? { ...item, model: `openai/${SOL}:auto` } : item);
+        items.forEach((item, i) => Reflect.set(item, rangeKey, { start: i === 0 ? "medium" : "high", max: "xhigh" }));
+        return { input: { ...event.input, tasks: items } };
       }),
       (pi: ExtensionAPI) => pi.on("tool_call", event => {
         if (event.toolName !== "task") return;
-        // Match actual unchanged admission: annotate the original, return nothing.
+        // A later guard rebuilds the task from the input it receives; the routed model and range must survive.
+        routedTask = JSON.stringify(event.input);
         const items = event.input.tasks as typeof task.tasks;
-        items.forEach((item, i) => Reflect.set(item, rangeKey, { start: i === 0 ? "medium" : "high", max: "xhigh" }));
+        assert.ok(items.every(item => Reflect.has(item, rangeKey)), "the guard receives routing's ranged items");
+        return { input: { ...event.input, tasks: items.map(item => ({ ...item })) } };
       }),
     ],
   });
@@ -148,7 +153,7 @@ try {
   assert.deepEqual(runtimeErrors, []);
   const taskCall = session.messages.flatMap(m => m.role === "assistant" ? m.content : []).find(block => block.type === "toolCall" && block.id === "task-routed-makers");
   assert.ok(taskCall && taskCall.type === "toolCall");
-  assert.equal(JSON.stringify(taskCall.arguments), beforeTask, "admission data did not alter serialized task arguments");
+  assert.equal(JSON.stringify(taskCall.arguments), routedTask, "only the routed model, never admission data, reaches serialized task arguments");
   assert.equal(parentHeads.length, 2);
   assert.equal(parentHeads[1], parentHeads[0], "the same task schema, tool descriptions and Main system prompt are replayed");
   assert.doesNotMatch(parentHeads[0]!, /cuelo[.-]maker[.-]?effort|startEffort|maxEffort/i);

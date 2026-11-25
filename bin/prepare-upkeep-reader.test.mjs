@@ -44,7 +44,9 @@ async function releaseServer(assets) {
     response.end(typeof asset === "function" ? asset() : asset);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  const url = `http://127.0.0.1:${server.address().port}`;
+  // latestUrl stays on this server, so no test reaches the real GitHub release.
+  return { url, latestUrl: `${url}/latest`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 const unusedFetch = async (url) => {
@@ -125,7 +127,7 @@ test("a downloaded binary that differs from its published digest is refused", as
   try {
     // A cargo that exists: the refusal must not turn into a local build.
     await assert.rejects(
-      reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, log: () => {} }),
+      reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }),
       /does not match its published SHA-256/,
     );
   } finally {
@@ -147,7 +149,7 @@ test("a download is refused when the crate source changes while it runs", async 
     },
   });
   try {
-    await assert.rejects(reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, log: () => {} }), /changed while/);
+    await assert.rejects(reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }), /changed while/);
   } finally {
     await server.close();
   }
@@ -169,7 +171,7 @@ test("invalid published metadata or a missing published binary fails closed", as
   ]) {
     const server = await releaseServer(assets);
     try {
-      await assert.rejects(reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, log: () => {} }), error);
+      await assert.rejects(reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }), error);
     } finally {
       await server.close();
     }
@@ -189,12 +191,63 @@ test("an unpublished version or other release source without cargo names what is
     const server = await releaseServer(assets);
     try {
       await assert.rejects(
-        reader.ensure({ root, outDir, cargo: missingCargo, baseUrl: server.url, log: () => {} }),
+        reader.ensure({ root, outDir, cargo: missingCargo, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }),
         (error) => reason.test(error.message) && /no cargo is available/.test(error.message),
       );
     } finally {
       await server.close();
     }
+  }
+});
+
+// A version bump is committed and checked before its own release exists.
+test("an unpublished version takes the latest release asset built from the same source", async () => {
+  const root = sourceTree("latest-same");
+  const outDir = path.join(root, "out");
+  const bytes = fs.readFileSync(path.join(repo, "bin", "native", "upkeep-reader", `${host}.node`));
+  const server = await releaseServer({
+    [`/latest/upkeep-reader-${host}.json`]: JSON.stringify({ target: host, sourceSha256: reader.sourceSha256(root), binarySha256: sha256(bytes) }),
+    [`/latest/upkeep-reader-${host}.node`]: bytes,
+  });
+  try {
+    // No cargo: the asset must come from the latest release, not a build.
+    assert.equal(await reader.ensure({ root, outDir, cargo: path.join(root, "no-such-cargo"), baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }), "downloaded");
+  } finally {
+    await server.close();
+  }
+  assert.equal(reader.inspect({ root, outDir }).state, "valid");
+});
+
+test("a latest release built from other source still leads to a build", async () => {
+  const root = sourceTree("latest-other");
+  const outDir = path.join(root, "out");
+  const server = await releaseServer({
+    [`/latest/upkeep-reader-${host}.json`]: JSON.stringify({ target: host, sourceSha256: "0".repeat(64), binarySha256: sha256("x") }),
+  });
+  try {
+    await assert.rejects(
+      reader.ensure({ root, outDir, cargo: path.join(root, "no-such-cargo"), baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }),
+      (error) => /CUELO v9\.9\.9 has no published upkeep reader/.test(error.message) && /no cargo is available/.test(error.message),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a crate change while the latest metadata downloads fails closed instead of building", async () => {
+  const root = sourceTree("latest-moved");
+  const outDir = path.join(root, "out");
+  const server = await releaseServer({
+    [`/latest/upkeep-reader-${host}.json`]: () => {
+      fs.appendFileSync(path.join(root, "native", "upkeep-reader", "src", "lib.rs"), "\n");
+      return JSON.stringify({ target: host, sourceSha256: reader.sourceSha256(root), binarySha256: sha256("x") });
+    },
+  });
+  try {
+    // A cargo that exists: the refusal must not turn into a local build.
+    await assert.rejects(reader.ensure({ root, outDir, cargo: process.execPath, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }), /changed while/);
+  } finally {
+    await server.close();
   }
 });
 
@@ -211,7 +264,7 @@ test("a cargo installed by rustup in CARGO_HOME/bin is found when PATH leaves it
     process.env.PATH = path.join(root, "empty-path");
     process.env.CARGO_HOME = cargoHome;
     await assert.rejects(
-      reader.ensure({ root, outDir, baseUrl: server.url, log: () => {} }),
+      reader.ensure({ root, outDir, baseUrl: server.url, latestUrl: server.latestUrl, log: () => {} }),
       /cargo build failed \(exit 7\)/,
     );
   } finally {
