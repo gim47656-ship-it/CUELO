@@ -17,8 +17,7 @@ import { NotificationPermission, useNotificationPermission } from "./Notificatio
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { AuxiliaryDeck, type AuxiliaryDeckView } from "./workspace/AuxiliaryDeck";
 import { CueloMark, WorkbenchIcon, type WorkbenchIconName } from "./workspace/WorkbenchIcon";
-import { readSessionDragId, SESSION_DRAG_TYPE, SessionBesideContext, SessionBrowserContext, type SessionBesideControls } from "./workspace/session-beside";
-import { BrowserHandoffNotice, BrowserPane } from "./workspace/BrowserPane";
+import { readSessionDragId, SESSION_DRAG_TYPE, SessionBesideContext, type SessionBesideControls } from "./workspace/session-beside";
 import {
   LEGACY_PRIORITY_MODE_STORAGE_KEY,
   NAVIGATOR_MODE_STORAGE_KEY,
@@ -193,7 +192,6 @@ const PALETTE_VIEW_ICONS: Record<WorkspaceViewId, WorkbenchIconName> = {
   efficiency: "gauge",
   plugins: "puzzle",
   memory: "brain",
-  browser: "globe",
 };
 
 /** 헤더 위 패널(세션 정보·시스템 프롬프트·분기)을 연 조작부. 메뉴 항목은 메뉴와 함께 사라지므로 더 보기 버튼을 돌려준다. */
@@ -302,26 +300,8 @@ export function AppShell({
   const [mainPaneFirst, setMainPaneFirst] = useState(true);
   const [chatLayoutWidth, setChatLayoutWidth] = useState(0);
   const [besideDropActive, setBesideDropActive] = useState(false);
-  // 브라우저 옆 칸: the side pane shows the selected session's ego TaskSpace instead of a second
-  // session. A session that was beside stays remembered, so 「대화로 바꾸기」 can bring it back.
-  const [besideBrowser, setBesideBrowser] = useState(false);
-  // 크게 보기: the browser stands alone although two panes would fit.
-  const [browserEnlarged, setBrowserEnlarged] = useState(false);
-  // With one pane on screen (narrow window or 크게 보기), whether it is the browser or the
-  // conversation: the one asked for or used last, like the existing split folds to the active pane.
-  const [browserFront, setBrowserFront] = useState(true);
-  // 「브라우저 옆에 열기」 on another session's row: the pane waits until that session is the
-  // selected one, so it never opens on the session being left.
-  const [browserWaitFor, setBrowserWaitFor] = useState<string | null>(null);
   // Read by handlers defined above the render-time split decision.
   const splitShownRef = useRef(false);
-  // Read by handlers defined above the render-time pane decision.
-  const browserPaneShownRef = useRef(false);
-  // The request (index of its first message) whose browser call the shell already answered, per
-  // session: the browser shows by itself once per request, so a tab the user picks afterwards stays.
-  const browserAnsweredRef = useRef(new Map<string, number>());
-  // Sessions whose running request uses the browser while the shell did not show it by itself.
-  const [browserUseSessions, setBrowserUseSessions] = useState<ReadonlySet<string>>(new Set());
   // The beside pane's key while it can be promoted; -1 right after a promotion until the next render,
   // so a second event from the same gesture cannot trade the roles back.
   const besideKeyRef = useRef(-1);
@@ -1516,10 +1496,8 @@ export function AppShell({
     // Close any session that belongs to a different project — it no longer
     // matches the selected project directory.
     setSelectedSession(null);
-    // The 옆 창 belongs to the workspace being left, like its file tabs; so does the browser pane.
+    // The 옆 창 belongs to the workspace being left, like its file tabs.
     setBesideSession(null);
-    setBesideBrowser(false);
-    setBrowserEnlarged(false);
     setNewSessionAutoWorktree(undefined);
     setNewSessionCwd((prev) => {
       if (prev && prev !== cwd) return null;
@@ -1575,10 +1553,7 @@ export function AppShell({
   }, [besideKey, besideSession, invalidateWorkspaceRestore, router, selectedSession, sessionKey]);
 
   const openBeside = useCallback((session: SessionInfo) => {
-    if (session.id === selectedSession?.id) return;
-    // A session opened beside takes the side pane back from the browser.
-    setBesideBrowser(false);
-    if (session.id === besideSession?.id) return;
+    if (session.id === selectedSession?.id || session.id === besideSession?.id) return;
     // A first 옆 창 opens on the right; a replacement takes the current beside pane's side.
     if (!besideSession) setMainPaneFirst(true);
     setBesideSession(session);
@@ -1592,63 +1567,6 @@ export function AppShell({
     promoteBesidePane();
     setBesideSession(null);
   }, [promoteBesidePane]);
-
-  const showBrowserPane = useCallback(() => {
-    // Like a first 옆 창, a browser with no pane to replace opens on the right.
-    if (!besideSession) setMainPaneFirst(true);
-    setBesideBrowser(true);
-    setBrowserFront(true);
-    setBrowserWaitFor(null);
-  }, [besideSession]);
-
-  // 인스펙터의 브라우저 탭. Opening it never moves focus: the agent's first browser call of a
-  // request opens it by itself, possibly while the user is typing.
-  const showBrowserInspector = useCallback(() => {
-    setInspectorOpen(true);
-    dispatchWorkspaceLayout({ type: "select-view", view: "browser" });
-  }, [setInspectorOpen]);
-
-  const forgetBrowserUse = useCallback((sessionId: string) => {
-    setBrowserUseSessions((current) => {
-      if (!current.has(sessionId)) return current;
-      const next = new Set(current);
-      next.delete(sessionId);
-      return next;
-    });
-  }, []);
-
-  // The way in from a composer notice: the inspector's tab where the inspector sits beside the
-  // conversation, the browser pane where the inspector would take the conversation's place.
-  const revealBrowser = useCallback(() => {
-    if (selectedSession) forgetBrowserUse(selectedSession.id);
-    if (inspectorPinned) showBrowserInspector();
-    else showBrowserPane();
-  }, [forgetBrowserUse, inspectorPinned, selectedSession, showBrowserInspector, showBrowserPane]);
-
-  const handleBrowserUse = useCallback((sessionId: string, request: number | null) => {
-    if (request === null) {
-      // Nothing runs: the next run starts unanswered, even if compaction gives its request an index seen before.
-      browserAnsweredRef.current.delete(sessionId);
-      forgetBrowserUse(sessionId);
-      return;
-    }
-    // Only the selected session's own conversation reports here.
-    if (sessionId !== selectedSession?.id || browserAnsweredRef.current.get(sessionId) === request) return;
-    browserAnsweredRef.current.set(sessionId, request);
-    // A browser already on screen needs no second view.
-    if (browserPaneShownRef.current) return;
-    // Switching the inspector's view would drop a focus that sits inside the view being replaced,
-    // so there, as on layouts without a pinned inspector, the composer notice offers the way in.
-    if (inspectorPinned && !document.activeElement?.closest(".auxiliary-deck-panel")) showBrowserInspector();
-    else setBrowserUseSessions((current) => new Set(current).add(sessionId));
-  }, [forgetBrowserUse, inspectorPinned, selectedSession?.id, showBrowserInspector]);
-
-  // Closing the browser closes the side pane as a whole; 「대화로 바꾸기」 is the way back to a session.
-  const closeBrowserPane = useCallback(() => {
-    setBesideBrowser(false);
-    setBrowserEnlarged(false);
-    setBesideSession(null);
-  }, []);
 
   // The 옆 창 finishing refreshes the list; its own chat already played its cue.
   const handleBesideAgentEnd = useCallback(() => {
@@ -1767,15 +1685,6 @@ export function AppShell({
         setPendingSession(null);
       });
   }, [besideSession?.id, commitSessionSelection, invalidateWorkspaceRestore, isCompactWorkspace, pendingSession?.id, promoteBesidePane, selectedSession, setCompactDrawerOpen]);
-
-  // 「브라우저 옆에 열기」 on a session row: the pane shows the selected session's browser, so
-  // another session is selected first and the pane opens when that selection has landed.
-  const openBrowserBeside = useCallback((session: SessionInfo) => {
-    showBrowserPane();
-    if (session.id === selectedSession?.id) return;
-    setBrowserWaitFor(session.id);
-    handleSelectSession(session);
-  }, [handleSelectSession, selectedSession?.id, showBrowserPane]);
 
   const handleNewSession = useCallback((_sessionId: string, cwd: string, autoWorktree?: boolean) => {
     sessionPreloadRequestRef.current += 1;
@@ -2322,8 +2231,8 @@ export function AppShell({
     return () => observer.disconnect();
   }, [windowTitle]);
   const viewLabels: Record<WorkspaceViewId, string> = locale === "ko"
-    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적", browser: "브라우저" }
-    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace", browser: "Browser" };
+    ? { chat: "대화", process: "작업 과정", efficiency: "효율", subagents: "서브에이전트", files: "파일", resource: "캐릭터", sidechat: "사이드챗", plugins: "플러그인", memory: "기억 추적" }
+    : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace" };
   const inspectorViewLabels: Record<AuxiliaryDeckView, string> = { ...viewLabels, turn: translate("inspector.turn") };
   const inspectorShown = showAuxiliaryDeck && !deckPresentation.expanded;
   // One context indicator. The number carries the meaning; the bar and the
@@ -2459,11 +2368,6 @@ export function AppShell({
   const turnSlotContent = showChat
     ? <div ref={setTurnSlot} className="turn-inspector-slot" />
     : <p className="inspector-empty">{translate("inspector.noTurn")}</p>;
-  // Mounted only while the tab shows, so the stream runs only while someone can see it.
-  const inspectorBrowserShown = showAuxiliaryDeck && inspectorView === "browser";
-  const browserSlotContent = !inspectorBrowserShown ? null : selectedSession
-    ? <BrowserPane key={`inspector-browser-${selectedSession.id}`} sessionId={selectedSession.id} sessionTitle={sessionTitle} chrome={null} />
-    : <p className="inspector-empty">{translate("browserPane.noneTitle")}</p>;
   const nativeAuxiliaryDeck = showAuxiliaryDeck ? (
     <AuxiliaryDeck
       activeView={inspectorView}
@@ -2477,7 +2381,6 @@ export function AppShell({
       liveSubagents={subagents}
       processSlot={processLogSlot}
       fileSlot={fileViewerSlot}
-      browserSlot={browserSlotContent}
       sideChatSlot={sideChatSlot}
       resourceSlot={resourcePanelContent}
       efficiencySlot={efficiencyPanelContent}
@@ -2507,25 +2410,16 @@ export function AppShell({
   // layouts never split, and neither does a view that replaces the conversation.
   const splitAvailable = !isCompactWorkspace && !isMobile && showChat && !deckReplacesTranscript;
   const splitFits = chatLayoutWidth >= SPLIT_PANE_MIN_PX * 2 + SPLIT_GUTTER_PX;
-  // The browser pane belongs to the selected session. It shares the split when two panes fit and
-  // otherwise (narrow window, compact layout, 크게 보기) trades places with the conversation.
-  const browserHeld = browserWaitFor !== null && selectedSession?.id !== browserWaitFor && pendingSession !== null;
-  const browserOpen = besideBrowser && !browserHeld && showChat && !deckReplacesTranscript && selectedSession !== null;
-  const browserSplit = browserOpen && splitAvailable && splitFits && !browserEnlarged;
-  const browserAlone = browserOpen && !browserSplit && browserFront;
-  // While the browser waits for its session, the remembered 옆 창 does not flash back in.
-  const besideChatShown = splitAvailable && splitFits && besideSession !== null && !browserOpen && !(besideBrowser && browserHeld);
-  const splitShown = besideChatShown || browserSplit;
-  splitShownRef.current = besideChatShown;
-  browserPaneShownRef.current = browserSplit || browserAlone;
+  const splitShown = splitAvailable && splitFits && besideSession !== null;
+  splitShownRef.current = splitShown;
   const besideBlockedReason = splitFits
     ? null
     : translate(showAuxiliaryDeck && inspectorPinned ? "sidebar.openBesideNarrowDeck" : "sidebar.openBesideNarrow");
   const besideControls = useMemo<SessionBesideControls | null>(() => (
     splitAvailable
-      ? { besideSessionId: besideChatShown ? besideSession?.id ?? null : null, blockedReason: besideBlockedReason, openBeside }
+      ? { besideSessionId: splitShown ? besideSession?.id ?? null : null, blockedReason: besideBlockedReason, openBeside }
       : null
-  ), [besideBlockedReason, besideChatShown, besideSession?.id, openBeside, splitAvailable]);
+  ), [besideBlockedReason, besideSession?.id, openBeside, splitAvailable, splitShown]);
 
   const handleChatDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     if (!splitAvailable || !event.dataTransfer.types.includes(SESSION_DRAG_TYPE)) return;
@@ -2547,27 +2441,19 @@ export function AppShell({
     if (session) openBeside(session);
   };
 
-  const renderPaneHead = (title: string, onClose: (() => void) | null, action?: ReactNode) => (
+  const renderPaneHead = (title: string, onClose: () => void) => (
     <div className="chat-pane-head">
       <span className="chat-pane-title" title={title}>{title}</span>
-      {action}
-      {onClose && (
-        <button
-          type="button"
-          className="chat-pane-close"
-          onClick={onClose}
-          aria-label={translate("workspace.closePane")}
-          title={translate("workspace.closePane")}
-        >
-          <WorkbenchIcon name="x" size={14} />
-        </button>
-      )}
+      <button
+        type="button"
+        className="chat-pane-close"
+        onClick={onClose}
+        aria-label={translate("workspace.closePane")}
+        title={translate("workspace.closePane")}
+      >
+        <WorkbenchIcon name="x" size={14} />
+      </button>
     </div>
-  );
-  const toBrowserButton = (
-    <button type="button" className="browser-pane-button" onClick={showBrowserPane}>
-      {translate("workspace.toBrowser")}
-    </button>
   );
   // The 옆 창 title follows the header's rule for the selected session (name, else first message).
   const besideListed = besideSession ? fullSessions.find((session) => session.id === besideSession.id) ?? besideSession : null;
@@ -2578,14 +2464,14 @@ export function AppShell({
     if (event.target instanceof Element && event.target.closest(".chat-pane-head")) return;
     promoteBesidePane(besideKey);
   };
-  const besidePane = besideChatShown && besideSession ? (
+  const besidePane = splitShown && besideSession ? (
     <div
       key={`pane-${besideKey}`}
       className="chat-pane is-idle"
       onPointerDownCapture={promoteFromEvent}
       onFocusCapture={promoteFromEvent}
     >
-      {renderPaneHead(besidePaneTitle, closeBesidePane, selectedSession ? toBrowserButton : undefined)}
+      {renderPaneHead(besidePaneTitle, closeBesidePane)}
       <ChatWindow
         session={besideSession}
         newSessionCwd={null}
@@ -2602,26 +2488,9 @@ export function AppShell({
       />
     </div>
   ) : null;
-  const browserPane = browserOpen && selectedSession && (browserSplit || browserFront) ? (
-    <BrowserPane
-      key={`pane-browser-${selectedSession.id}`}
-      sessionId={selectedSession.id}
-      sessionTitle={sessionTitle}
-      chrome={{
-        canSplit: splitAvailable && splitFits,
-        enlarged: browserEnlarged && splitAvailable && splitFits,
-        onToggleEnlarge: () => setBrowserEnlarged((enlarged) => !enlarged),
-        onShowChat: browserSplit ? (besideSession ? () => setBesideBrowser(false) : null) : () => setBrowserFront(false),
-        onClose: closeBrowserPane,
-        onUse: () => setBrowserFront(true),
-        narrowNote: splitAvailable && !splitFits ? translate("workspace.foldedNarrow") : null,
-      }}
-    />
-  ) : null;
 
   const sidebarContent = (
     <>
-      <SessionBrowserContext.Provider value={openBrowserBeside}>
       <SessionBesideContext.Provider value={besideControls}>
       <SessionSidebar
         selectedSessionId={pendingSession?.id ?? selectedSession?.id ?? null}
@@ -2646,7 +2515,6 @@ export function AppShell({
         onActivityChange={setSessionActivity}
       />
       </SessionBesideContext.Provider>
-      </SessionBrowserContext.Provider>
       {/* 공개 릴리스 알림은 정보만 보여 주며 적용·복구는 CUELO_Setup이 맡는다. 보수·설정은 레일에 있다. */}
       <div className="navigator-footer">
         <SidebarUsage
@@ -3311,16 +3179,9 @@ export function AppShell({
           )}
           {showChat ? (
             <div className={`chat-split${splitShown ? " is-split" : ""}`}>
-              {orderPanes(mainPaneFirst, browserOpen ? browserPane : besidePane, (
-                <div
-                  key={`pane-${sessionKey}`}
-                  className={`chat-pane is-active${browserAlone ? " is-covered" : ""}`}
-                  onPointerDownCapture={browserSplit ? () => setBrowserFront(false) : undefined}
-                  onFocusCapture={browserSplit ? () => setBrowserFront(false) : undefined}
-                >
-                  {splitShown
-                    ? renderPaneHead(sessionTitle, browserSplit ? null : closeMainPane)
-                    : browserOpen && !browserFront && renderPaneHead(sessionTitle, null, toBrowserButton)}
+              {orderPanes(mainPaneFirst, besidePane, (
+                <div key={`pane-${sessionKey}`} className="chat-pane is-active">
+                  {splitShown && renderPaneHead(sessionTitle, closeMainPane)}
             <ChatWindow
               session={selectedSession}
               newSessionCwd={effectiveNewSessionCwd}
@@ -3344,10 +3205,6 @@ export function AppShell({
               onOpenSessionList={navigatorPresentation.presented ? undefined : handleSidebarToggle}
               onRevealToolCall={revealToolCallInLog}
               composerStartPlace={composerStartPlace}
-              composerNotice={selectedSession && !browserSplit && !browserAlone && !inspectorBrowserShown
-                ? <BrowserHandoffNotice key={selectedSession.id} sessionId={selectedSession.id} inUse={browserUseSessions.has(selectedSession.id)} onOpen={revealBrowser} />
-                : undefined}
-              onBrowserUse={handleBrowserUse}
               onOpenMaker={openMaker}
               selectedMaker={selectedMaker}
               onProcessLogChange={setProcessLog}

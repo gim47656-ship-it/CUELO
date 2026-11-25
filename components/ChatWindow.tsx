@@ -130,13 +130,6 @@ interface Props {
   onRevealToolCall?: (toolCallId: string) => void;
   /** The composer's "start in" project control on the empty new-session screen; it replaces the centre project block. */
   composerStartPlace?: ReactNode;
-  /** A notice of this session shown in the composer's banner area, above the input. */
-  composerNotice?: ReactNode;
-  /**
-   * The agent's use of the browser in this session: the request (index of its first message) with an
-   * `ego_browser` call running now, or null once nothing runs. The shell shows the browser from it.
-   */
-  onBrowserUse?: (sessionId: string, request: number | null) => void;
   /** Opens one Maker's detail in the deck from an in-answer dispatch card; passed through to the cards unchanged. */
   onOpenMaker?: AnswerStatusContextValue["onOpenMaker"];
   /** The Maker the deck shows now; the matching card row is marked. */
@@ -539,7 +532,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, composerNotice, onBrowserUse, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -658,13 +651,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
   const handleEditContent = useCallback((message: UserMessage) => {
     chatInputRef?.current?.replaceMessage(message);
   }, [chatInputRef]);
-  // The shell shows the browser at a request's first `ego_browser` call. The call is reported from
-  // its start event with the request it belongs to; a call that was already running when this view
-  // attached is not seen, because the restored run state carries no tool names.
-  const requestStartRef = useRef(-1);
-  const handleToolStart = useCallback((toolName: string) => {
-    if (toolName === "ego_browser" && session?.id) onBrowserUse?.(session.id, requestStartRef.current);
-  }, [onBrowserUse, session?.id]);
 
   const {
     loading, error, messages: sessionMessages, entryIds, streamState,
@@ -689,7 +675,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, ensureNewSession, refreshLiveTranscript,
   } = useAgentSession({
-    session, newSessionCwd, initialData: initialSessionData, transitioning, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onToolStart: handleToolStart, onSessionCreated, onSessionForked,
+    session, newSessionCwd, initialData: initialSessionData, transitioning, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     newSessionAutoWorktree,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   });
@@ -1327,7 +1313,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         cwd={session?.cwd ?? newSessionCwd}
         sessionTitle={session?.name}
         startPlace={isEmptyNew && !transcriptReplacement ? composerStartPlace : undefined}
-        notice={composerNotice}
       />
     </div>
   );
@@ -1373,13 +1358,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
       jobNotices: collectJobNotices(messages, start + 1, messages.length),
     };
   }, [messages, toolResultsMap]);
-  useEffect(() => {
-    requestStartRef.current = stripRequest.start;
-  }, [stripRequest.start]);
-  const browserUseSessionId = session?.id;
-  useEffect(() => {
-    if (onBrowserUse && browserUseSessionId && runStateKnown && !sessionBusy) onBrowserUse(browserUseSessionId, null);
-  }, [browserUseSessionId, onBrowserUse, runStateKnown, sessionBusy]);
   const stripFlow = useMemo(() => {
     const blocks = streamingAssistant ? [...stripRequest.blocks, ...(streamingAssistant.content ?? [])] : stripRequest.blocks;
     return deriveWorkFlow(blocks, toolResultsMap, sessionBusy, stripRequest.priorCiHeads, messageCwd, stripRequest.jobNotices);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import {
   PRIORITY_REFRESH_MS,
@@ -33,7 +33,7 @@ import { CloudProjectPicker } from "./CloudProjectPicker";
 import { OmpWordmark } from "./OmpWordmark";
 import { useTranslatorText } from "./translator/i18n";
 import { missingSubdirectoryText, readWorktreeNotice, rememberWorktreeNotice, worktreeText, type SessionWorktreeNotice } from "@/lib/session-worktree/client";
-import { SESSION_DRAG_TYPE, SessionBrowserContext, useSessionBeside } from "./workspace/session-beside";
+import { SESSION_DRAG_TYPE, useSessionBeside } from "./workspace/session-beside";
 import { SessionRowMenu, type SessionRowMenuItem } from "./workspace/SessionRowMenu";
 import { WorkbenchIcon } from "./workspace/WorkbenchIcon";
 
@@ -3522,7 +3522,6 @@ function SessionItem({
     setConfirmDelete(false);
   }, []);
 
-  const openBrowserBeside = useContext(SessionBrowserContext);
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number } | null>(null);
   const closeRowMenu = useCallback(() => setRowMenu(null), []);
 
@@ -3552,9 +3551,6 @@ function SessionItem({
   if (rowMenu) {
     if (canOfferBeside && beside) {
       rowMenuItems.push({ id: "beside", label: t("sidebar.openBeside"), disabledReason: beside.blockedReason, onSelect: () => beside.openBeside(session) });
-    }
-    if (openBrowserBeside) {
-      rowMenuItems.push({ id: "browser", label: t("sidebar.openBrowserBeside"), onSelect: () => openBrowserBeside(session) });
     }
     rowMenuItems.push({ id: "rename", label: t("sidebar.rename"), onSelect: beginRename });
     if (onTogglePin) {

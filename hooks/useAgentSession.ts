@@ -286,8 +286,6 @@ export interface UseAgentSessionOptions {
   transitioning?: boolean;
   onAgentEnd?: (completion: AgentCompletionResult) => void;
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
-  /** A tool call of this session started. Called from the event itself, so a call that ends before the next render is still reported. */
-  onToolStart?: (toolName: string) => void;
   onSessionCreated?: (session: SessionInfo) => void;
   onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
@@ -601,8 +599,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     session, newSessionCwd, initialData, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   } = opts;
-  const onToolStartRef = useRef(opts.onToolStart);
-  onToolStartRef.current = opts.onToolStart;
 
   const isNew = session === null && newSessionCwd !== null;
   const seededData = initialData && initialData.sessionId === session?.id ? initialData : null;
@@ -2132,7 +2128,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!tools.some((t) => t.id === id)) tools.push({ id, name, args });
           return { kind: "running_tools", tools };
         });
-        onToolStartRef.current?.(name);
         break;
       }
       case "tool_execution_update": {

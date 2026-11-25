@@ -257,8 +257,6 @@ interface Props {
   onLiveTranscriptPersisted?: (sessionId: string) => void | Promise<void>;
   /** Shown above the input on the empty new-session screen: where the first message starts. */
   startPlace?: React.ReactNode;
-  /** A session notice shown with the composer's banners, above the input. */
-  notice?: React.ReactNode;
 }
 
 export interface ChatInputHandle {
@@ -679,7 +677,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onEnsureSession,
   onLiveTranscriptPersisted,
   startPlace,
-  notice,
 }: Props, ref) {
   const { t } = useI18n();
   // 사무실 모드에서는 openai-codex 자리의 이름과 얼굴이 바뀐다.
@@ -2711,7 +2708,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div className="chat-column-cap" style={{ maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
-        {notice}
         {/* Inputs sent while busy: queued (server queue) and their observed delivery stage */}
         {deliveryRows.length > 0 && (
           <div style={{

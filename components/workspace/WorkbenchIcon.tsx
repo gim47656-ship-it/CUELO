@@ -15,7 +15,6 @@ const PATHS = {
   "panel-right": <><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></>,
   "panel-left": <><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 3v18" /></>,
   "columns-2": <><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M12 3v18" /></>,
-  globe: <><circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" /></>,
   menu: <><line x1="4" x2="20" y1="12" y2="12" /><line x1="4" x2="20" y1="6" y2="6" /><line x1="4" x2="20" y1="18" y2="18" /></>,
   "chevron-right": <path d="m9 18 6-6-6-6" />,
   "chevron-up": <path d="m18 15-6-6-6 6" />,
