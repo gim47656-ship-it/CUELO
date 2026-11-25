@@ -20,7 +20,7 @@ For agent-assisted setup and operation, see [docs/agent-guide.md](https://github
 
 - **One agent home, two surfaces**: the terminal `omp` CLI and the browser share the same `~/.omp/agent` sessions, credentials and model settings. Start in one, continue in the other.
 - **Multi-agent work you can inspect**: Main delegates to Makers; each task gets a card with live status, Main's review verdict, a flow graph and the files it changed. Async reports keep the original accessible without repeating a summary already present in a structured summary field.
-- **Maker routing by task shape**: Work with settled direction and acceptance goes to the cheapest configured candidate, difficult UI design goes to the Anthropic side, bounded design and failed rework go to the OpenAI side, and large redesigns or repeated failures return to Main.
+- **Maker routing by task shape**: Main picks the model candidate or policy profile for each task and sends it in one `task` call. Repeated failures, large redesigns, bounded design and rework, and general hard implementation go to OpenAI-side candidates; difficult and ordinary UI work and normal implementation go to different Anthropic-side candidates.
 - **Accounts and models at a glance**: per-account usage cards with limit windows and reset guidance, plus model roles you switch from the composer.
 - **Voice call and face-to-face interpreter**: a live voice call with the agent, and an interpreter for Korean with English, Chinese, Vietnamese, Japanese or Thai, using your ChatGPT account.
 - **Phone-ready**: install as a PWA, lock it with a password, and reach it over your own HTTPS proxy or VPN.
@@ -30,7 +30,7 @@ For agent-assisted setup and operation, see [docs/agent-guide.md](https://github
 
 - **한 곳의 에이전트, 두 개의 화면**: 터미널 `omp` CLI와 브라우저가 같은 `~/.omp/agent`의 세션·계정·모델 설정을 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고 다시 돌아갈 수 있습니다.
 - **들여다볼 수 있는 여러 에이전트 작업**: Main이 Maker에게 일을 맡기면 작업마다 카드가 붙어 실행 상태, Main의 검수 판정, 흐름 그래프, 바뀐 파일을 보여 줍니다. 비동기 결과는 구조화 필드에 이미 있는 요약을 되풀이하지 않으며 원문도 열어 볼 수 있습니다.
-- **작업 성격별 Maker 배정**: 방향과 완료 조건이 정해진 작업은 가장 저렴한 설정 후보에게, 열린 시각 및 상호작용 설계가 있는 어려운 UI 작업은 Anthropic 쪽 후보에게, 범위가 제한된 설계와 실패 후 재작업은 OpenAI 쪽 후보에게 맡기며, 경계를 넘는 큰 재설계와 반복 실패는 Main으로 돌아옵니다.
+- **작업 성격별 Maker 배정**: Main이 작업 성격에 맞는 모델 후보나 정책 프로필 이름을 직접 골라 `task` 한 번으로 발주합니다. 반복 실패와 큰 재설계, 범위가 제한된 설계와 재작업, 일반 HARD 구현은 OpenAI 쪽 후보에게, 어려운 UI와 보통 UI, NORMAL 구현은 Anthropic 쪽의 서로 다른 후보에게 맡깁니다.
 - **계정과 모델 한눈에**: 계정별 사용량 카드에서 한도 창과 리셋 권장을 보고, 입력창에서 모델 역할을 바꿉니다.
 - **실시간 통화와 대면 통역**: 에이전트와 음성으로 통화하고, 한국어와 영어·중국어·베트남어·일본어·태국어 사이를 ChatGPT 계정으로 통역합니다.
 - **휴대폰에서도**: PWA로 설치하고 비밀번호로 잠근 뒤, 직접 둔 HTTPS 프록시나 VPN으로 접속합니다.
@@ -161,10 +161,9 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 - 검증된 이번 작업은 커밋과 푸시까지 마치는 것을 기본 마감으로 삼으며, 종료 시점에 누락 여부를 확인하도록 안내합니다. 이 안내는 사용자의 명시적 보류 요청과 실패 보고를 그대로 유지하며, 배포 승인과는 별도로 동작합니다.
 - 보수 점검 요청에서도 이미 확인된 배포 상시 승인을 유지합니다. 승인 범위 밖의 배포와 비용, 삭제, 기준 변경은 별도로 확인합니다.
 - 자식 에이전트의 발화가 해당 턴 아래 대화 흐름에 끼어들어 누가 무슨 말을 했는지 이어서 읽힙니다.
-- 공개 하네스는 시작을 기다리거나 재작업 중인 에이전트에게 같은 파일을 중복 배정하지 않도록 확인합니다. 잘못된 작업 유형은 발주 준비 단계에서 알려주며, 에이전트 역할을 생략하면 메이커를 사용합니다. 완료 결과와 Main이 검수한 결과의 출처를 구분하고, 재작업 이력과 최종 수용을 따로 남깁니다. 적용 경계는 [하네스 안내](./docs/harness.md#발주와-검수-계약)를 따릅니다.
-- 여러 작업을 한꺼번에 맡길 때 공통 준비 확인의 반복을 줄였습니다. 작업별 담당 경로와 충돌 확인은 유지하며, 다음 발주에서는 바뀐 조건을 다시 확인합니다.
+- 공개 하네스는 시작을 기다리거나 재작업 중인 에이전트에게 같은 파일을 중복 배정하지 않도록 확인합니다. 잘못된 작업 유형은 발주 단계에서 알려주며, 에이전트 역할을 생략하면 메이커를 사용합니다. 완료 결과와 Main이 검수한 결과의 출처를 구분하고, 재작업 이력과 최종 수용을 따로 남깁니다. 적용 경계는 [하네스 안내](./docs/harness.md#발주와-검수-계약)를 따릅니다.
 - 요청별 Maker 발주 한도는 실제로 시작한 Maker만 셉니다. 승인 거부·거절로 실행되지 않은 발주는 한도를 쓰지 않고, 취소한 Maker는 이름이 같아도 그 Maker 몫만 돌려받습니다([하네스 안내](./docs/harness.md#task-guard와-command-guard)).
-- 발주 준비와 실행은 같은 작업 계약을 읽습니다. 캐릭터 호출 예외는 이번 사용자 요청에만 적용하며, 다른 세션으로 옮길 때 이전 요청의 호출·안내 상태를 넘기지 않습니다. 같은 세션을 다시 불러올 때는 진행 중인 상태를 유지합니다.
+- 발주 검사와 실행은 같은 작업 계약을 읽습니다. 캐릭터 호출 예외는 이번 사용자 요청에만 적용하며, 다른 세션으로 옮길 때 이전 요청의 호출·안내 상태를 넘기지 않습니다. 같은 세션을 다시 불러올 때는 진행 중인 상태를 유지합니다.
 - 완료된 위임 작업은 검수 판정과 기록을 함께 마감하고, 최종 답변 전에 판정 기록 누락을 확인합니다. 근거가 부족한 결과를 자동 합격으로 처리하지 않습니다. 보류로 남긴 발주를 새 발주로 다시 맡기면 그 보류를 알려 주고, Main이 옛 시도를 닫아 끝난 일이 「Main 보류」로 남지 않게 합니다.
 - 긴 완료 보고도 검수 근거와 해당 작업의 원래 요청을 함께 확인하도록 전달합니다. 정체된 작업은 알림 전달, Main의 상태 확인, 후속 지시 전달을 구분하며, 조회나 지시만으로 문제가 해결됐다고 표시하지 않습니다.
 - 메이커의 기본 추론 강도와 허용 범위는 별개입니다. 작업별 허용 범위 안에서도 선택한 모델이 실제로 지원하는 강도만 사용하며, 상한을 높여도 기본 강도를 자동으로 최대로 바꾸지 않습니다.
@@ -226,7 +225,7 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 - 응답을 기다리며 보낸 Steer를 실시간으로 반영할 수 없을 때, 아직 답변이나 도구 호출이 나오지 않았다면 현재 추론 요청만 끊고 새 지시로 이어갑니다. 이미 보인 답변이나 도구 호출은 보존하며, 거절된 지시는 다음 요청에 전달합니다. 대화 전체를 중단하지 않습니다.
 - 에이전트가 일반 구현 방식을 고르는 질문에 추천안을 붙여 물으면, 2분 동안 답이 없을 때 추천안으로 진행합니다. 질문 창에 그 안내가 표시되고, 옵션을 고르거나 답을 입력하면 대기 시간이 다시 시작됩니다. 자동 선택은 사용자 승인으로 치지 않으며, 배포·삭제·비용·계정·권한 확인 질문은 답할 때까지 기다립니다.
 - Main이 OpenAI 모델에서 Fast를 켜면 새로 만드는 OpenAI 계열 SubAgent도 Fast로 요청합니다. Anthropic SubAgent에는 Fast를 자동으로 넘기지 않고, Fast가 꺼져 있으면 SubAgent도 표준 처리로 요청합니다. 다만 Maker가 OpenAI 모델로 실행될 때는 Main의 Fast 설정과 무관하게 Fast로 요청합니다.
-- 네이티브 창을 다루는 `computer.run`에서는 조작할 창과 원하는 결과를 먼저 구분합니다. 버튼을 한 번 누른 뒤 원하는 행·문구·값이 나타날 때까지 읽기로만 확인하며, 입력이 전달됐거나 버튼 상태가 바뀌었다는 사실만으로 완료를 판단하지 않도록 안내합니다. 원격 화면에서는 붙여넣은 대상과 내용을 확인한 뒤 실행하며, 로컬 클립보드 기록을 원격 전달로 간주하지 않습니다. 제한 시간 초과·취소·읽기 오류를 구분하고, 저장·전송처럼 결과가 남는 클릭의 승인 절차는 유지합니다([사용법](./docs/harness.md#typed-judgment-routing-jev)).
+- 네이티브 창을 다루는 `computer.run`에서는 조작할 창과 원하는 결과를 먼저 구분합니다. 버튼을 한 번 누른 뒤 원하는 행·문구·값이 나타날 때까지 읽기로만 확인하며, 입력이 전달됐거나 버튼 상태가 바뀌었다는 사실만으로 완료를 판단하지 않도록 안내합니다. 원격 화면에서는 붙여넣은 대상과 내용을 확인한 뒤 실행하며, 로컬 클립보드 기록을 원격 전달로 간주하지 않습니다. 제한 시간 초과·취소·읽기 오류를 구분하고, 저장·전송처럼 결과가 남는 클릭의 승인 절차는 유지합니다([사용법](./docs/harness.md#jev와-런타임-안내)).
 - provider 로그인·API 키, `models.yml`, 플러그인, 스킬을 웹에서 관리합니다. 플러그인 비활성화 설정을 저장해도 이미 불러온 플러그인은 CUELO 런타임을 재시작해야 멈춥니다. 「세션 다시 불러오기」는 플러그인을 해제하지 않습니다.
 - 스킬 검색은 검색 서비스 오류와 정상적인 검색 결과 없음을 구분해 안내합니다. 보조 검색 경로에서도 설치 수가 0회·1회인 스킬을 빠뜨리지 않습니다.
 - 프로젝트 파일 탐색과 소스·문서·이미지·오디오·PDF 미리보기, Git worktree 전환. 파일·서브에이전트·작업 로그 패널은 같은 한 줄 머리줄을 쓰고, 오른쪽에 고정한 보조 패널은 넓게 봤다가 Escape로 원래 크기로 돌아옵니다. 이때 파일 보기 방식과 스크롤 위치가 유지됩니다.
