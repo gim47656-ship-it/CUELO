@@ -19,7 +19,7 @@ For agent-assisted setup and operation, see [docs/agent-guide.md](https://github
 ## Why CUELO
 
 - **One agent home, two surfaces**: the terminal `omp` CLI and the browser share the same `~/.omp/agent` sessions, credentials and model settings. Start in one, continue in the other.
-- **Multi-agent work you can inspect**: Main delegates to Makers; each task gets a card with live status, Main's review verdict, a flow graph and the files it changed.
+- **Multi-agent work you can inspect**: Main delegates to Makers; each task gets a card with live status, Main's review verdict, a flow graph and the files it changed. Async reports keep the original accessible without repeating a summary already present in a structured summary field.
 - **Maker routing by task shape**: Work with settled direction and acceptance goes to the cheapest configured candidate, difficult UI design goes to the Anthropic side, bounded design and failed rework go to the OpenAI side, and large redesigns or repeated failures return to Main.
 - **Accounts and models at a glance**: per-account usage cards with limit windows and reset guidance, plus model roles you switch from the composer.
 - **Voice call and face-to-face interpreter**: a live voice call with the agent, and an interpreter for Korean with English, Chinese, Vietnamese, Japanese or Thai, using your ChatGPT account.
@@ -29,7 +29,7 @@ For agent-assisted setup and operation, see [docs/agent-guide.md](https://github
 ### 한국어 요약
 
 - **한 곳의 에이전트, 두 개의 화면**: 터미널 `omp` CLI와 브라우저가 같은 `~/.omp/agent`의 세션·계정·모델 설정을 씁니다. 터미널에서 하던 세션을 브라우저에서 이어 가고 다시 돌아갈 수 있습니다.
-- **들여다볼 수 있는 여러 에이전트 작업**: Main이 Maker에게 일을 맡기면 작업마다 카드가 붙어 실행 상태, Main의 검수 판정, 흐름 그래프, 바뀐 파일을 보여 줍니다.
+- **들여다볼 수 있는 여러 에이전트 작업**: Main이 Maker에게 일을 맡기면 작업마다 카드가 붙어 실행 상태, Main의 검수 판정, 흐름 그래프, 바뀐 파일을 보여 줍니다. 비동기 결과는 구조화 필드에 이미 있는 요약을 되풀이하지 않으며 원문도 열어 볼 수 있습니다.
 - **작업 성격별 Maker 배정**: 방향과 완료 조건이 정해진 작업은 가장 저렴한 설정 후보에게, 열린 시각 및 상호작용 설계가 있는 어려운 UI 작업은 Anthropic 쪽 후보에게, 범위가 제한된 설계와 실패 후 재작업은 OpenAI 쪽 후보에게 맡기며, 경계를 넘는 큰 재설계와 반복 실패는 Main으로 돌아옵니다.
 - **계정과 모델 한눈에**: 계정별 사용량 카드에서 한도 창과 리셋 권장을 보고, 입력창에서 모델 역할을 바꿉니다.
 - **실시간 통화와 대면 통역**: 에이전트와 음성으로 통화하고, 한국어와 영어·중국어·베트남어·일본어·태국어 사이를 ChatGPT 계정으로 통역합니다.

@@ -113,6 +113,14 @@ try {
  const incomplete = result(JSON.stringify({ summary: "Done", verification: "not run", completion: "two of three", tests: "not executed", narrative: prose }));
  const incompleteText = delivery(incomplete, { totalDurationMs: 1 });
  assert.ok(incompleteText.includes("not run") && incompleteText.includes("two of three") && incompleteText.includes("not executed"));
+ const duplicatedSummary = "Stopped at test/consumer.test.ts: database unavailable.";
+ const duplicate = result(JSON.stringify({ behavior_change: duplicatedSummary, status: "partial", narrative: prose }));
+ const deduplicated = delivery(duplicate, { totalDurationMs: 1 });
+ assert.equal(deduplicated.split(duplicatedSummary).length - 1, 1, "retained structured summary must be delivered only once");
+ assert.ok(deduplicated.includes(JSON.stringify({ behavior_change: duplicatedSummary, status: "partial" })));
+ assert.equal(readFileSync(duplicate.outputPath, "utf8"), JSON.stringify({ behavior_change: duplicatedSummary, status: "partial", narrative: prose }));
+ const distinct = result(JSON.stringify({ summary: "Keep this lead", evidence: "Other result", narrative: prose }));
+ assert.ok(delivery(distinct, { totalDurationMs: 1 }).includes("Keep this lead"), "do not remove prose absent from the retained fields");
  const negativeEvidence = "Suite aborted by a timeout in test/consumer.test.ts after 30s";
  const partialEvidence = result(JSON.stringify({ status: "partial", summary: "Stopped", evidence: negativeEvidence, narrative: prose }));
  assert.ok(delivery(partialEvidence, { totalDurationMs: 1 }).includes(negativeEvidence));

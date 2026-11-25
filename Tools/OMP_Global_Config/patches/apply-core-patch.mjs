@@ -16855,6 +16855,20 @@ export function formatTaskDeliverySummary(
 		patched: "const text = formatTaskDeliverySummary(result, { totalDurationMs: result.durationMs });",
 	},
 ];
+// Upgrade installed summary-first cores as well as pristine copies. Keep the
+// retained field (including its name); omit only the duplicate leading prose.
+{
+	const entry = EDITS.find(e => e.file === "src/task/result-summary.ts" && e.marker.startsWith("// CUELO: summary-first"));
+	const insertion = '\t\tvisit(payload, "");';
+	entry.legacyPatched = entry.patched;
+	entry.marker = "if (selected[name] === summary && /summary|behavior|behaviour/i.test(name))";
+	entry.patched = entry.patched.replace(insertion, insertion + `
+		if (summary) {
+			for (const name of Object.keys(selected)) {
+				if (selected[name] === summary && /summary|behavior|behaviour/i.test(name)) return JSON.stringify(selected);
+			}
+		}`);
+}
 // EDITS 문자열의 줄 끝을 LF로 통일한다. 이 파일의 작업 사본이 CRLF여도 core 파일(LF)과
 // 비교·치환이 어긋나지 않는다. core 파일 자체의 줄 끝은 건드리지 않는다.
 for (const entry of EDITS) {
