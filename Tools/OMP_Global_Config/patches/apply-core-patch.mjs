@@ -12282,6 +12282,24 @@ function summarizeAutoLearnUsage(messages: readonly AgentMessage[], from: number
 		anchor: "remember with `learn` when memory enabled. If nothing worth keeping, do nothing.",
 		patched: "remember with `learn` when memory enabled. Begin each `learn` memory with one short headline sentence (under 80 characters) that states the lesson, then give the details. If nothing worth keeping, do nothing.",
 	},
+	// HIKARI(antigravity-cli) 무응답(2026-11-26 사용자 보고). Google 백엔드가 ACP systemPrompt append 에 omp 정체성 첫 줄
+	// 「You are omp's trusted coding assistant.」이 있으면 모든 턴을 RESOURCE_EXHAUSTED(429)로 거절하고, agy 는 그 429 를
+	// 수 분 동안 재시도해 화면에 아무것도 오지 않았다. 같은 계정·바이너리·gemini-dir 에서 그 한 줄만 빼면 56KB 전체 프롬프트와
+	// 도구 22개 그대로 5~8초에 답했다(문장 하나만 넣어도 매번 429, 단어 하나만 바꿔도 통과). agy 는 자기 정체성을 쓰므로
+	// agy 로 넘기는 append 에서만 그 줄을 뺀다. 다른 provider 와 세션 요청 머리(system-prompt.md)는 그대로다.
+	{
+		file: "../pi-ai/src/providers/antigravity-cli/host.ts",
+		marker: "AGY_REJECTED_IDENTITY_LINE",
+		anchor: `function systemMeta(system: string): Record<string, unknown> {
+	return { antigravity: { systemPrompt: { append: system } } };
+}`,
+		patched: `/** Google rejects every agy turn with 429 RESOURCE_EXHAUSTED while the appended system prompt carries omp's identity line. */
+const AGY_REJECTED_IDENTITY_LINE = /^You are omp's trusted coding assistant\\.\\n*/;
+
+function systemMeta(system: string): Record<string, unknown> {
+	return { antigravity: { systemPrompt: { append: system.replace(AGY_REJECTED_IDENTITY_LINE, "") } } };
+}`,
+	},
 	// Codex native turn lane 는 실행 중 `response.steer`를 `response.steer.failed`가 아니라 일반
 	// error 프레임(code=unsupported_native_inflight_message)으로 거절한다(2026-09-30 사용자 보고).
 	// 그 프레임은 steer 제출자가 아니라 응답 스트림으로 들어가 진행 중 턴이 죽었다. steer 대기자가
