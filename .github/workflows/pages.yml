@@ -21,12 +21,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Upload and deploy run as separate jobs. In one job, deploy-pages listed the run's
+  # artifacts about 0.4 s after the upload finalized and the listing did not include it
+  # yet, so 11 releases between 11-20 and 11-26 left the introduction undeployed
+  # ("No artifacts named github-pages", actions/deploy-pages#451).
+  build:
     if: github.repository == 'gim47656-ship-it/CUELO' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,6 +37,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy introduction
         id: deployment
         uses: actions/deploy-pages@v5

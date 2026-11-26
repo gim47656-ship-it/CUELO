@@ -205,6 +205,31 @@ describe("scan-nudge", () => {
     expect(h.sent).toHaveLength(1);
   });
 
+  test("editing a file the nudge counted is recorded once per input; failed edits and other files are not", () => {
+    const h = harness();
+    h.input();
+    for (const path of ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]) h.call("read", { path });
+    expect(h.sent).toHaveLength(1);
+    h.call("write", { path: "src/other.ts" });
+    h.callError("edit", { path: "src/a.ts", input: "[src/a.ts#1A2B]\nPUT 1.=1:\n+x" });
+    expect(h.logs.map((r) => r.type)).toEqual(["nudge"]);
+    h.call("edit", { path: "src/b.ts", input: "[src/b.ts#1A2B]\nPUT 1.=1:\n+x" });
+    h.call("write", { path: "src/c.ts" });
+    expect(h.logs.map((r) => r.type)).toEqual(["nudge", "edited-after-nudge"]);
+    h.input();
+    h.call("write", { path: "src/d.ts" });
+    expect(h.logs.map((r) => r.type)).toEqual(["nudge", "edited-after-nudge"]);
+  });
+
+  test("an extension follow-up input between the nudge and the edit does not lose the edit", () => {
+    const h = harness();
+    h.input();
+    for (const path of ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]) h.call("read", { path });
+    h.input("extension");
+    h.call("write", { path: "src/b.ts" });
+    expect(h.logs.map((r) => r.type)).toEqual(["nudge", "edited-after-nudge"]);
+  });
+
   test("path normalization strips selectors and queries", () => {
     expect(normalizeReadPath("a/b.ts:50-80", "/r")).toBe("/r/a/b.ts");
     expect(normalizeReadPath("a/b.ts:raw:2-4", "/r")).toBe("/r/a/b.ts");

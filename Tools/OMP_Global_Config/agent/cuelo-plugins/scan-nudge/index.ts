@@ -58,6 +58,11 @@ export function createScanNudge(log: Log = defaultLog) {
     let followed = false;
     let explored = new Set<string>();
     let edited = new Set<string>();
+    // 안내가 센 파일과, 그중 하나를 안내 뒤에 실제로 고쳤는지. 고쳤다면 그 읽기는 탐색이 아니라 편집 준비였고 안내가
+    // 불필요했다는 뜻이다. 건수만 야간 묶음의 플러그인 이벤트 집계로 PC별로 실린다(11-27 HANDOFF 「넓은 읽기 넘김 안내」).
+    let nudgedFiles = new Set<string>();
+    let editedNudged = false;
+    let loggedEditedNudged = false;
 
     const reset = () => {
       armed = true;
@@ -66,6 +71,9 @@ export function createScanNudge(log: Log = defaultLog) {
       followed = false;
       explored = new Set();
       edited = new Set();
+      nudgedFiles = new Set();
+      editedNudged = false;
+      loggedEditedNudged = false;
     };
 
     pi.on("input", (event) => {
@@ -82,6 +90,13 @@ export function createScanNudge(log: Log = defaultLog) {
     const markEdited = (path: string) => {
       edited.add(path);
       explored.delete(path);
+      if (nudgedFiles.has(path)) editedNudged = true;
+    };
+
+    const logEditedNudged = (sessionId: string | undefined) => {
+      if (!editedNudged || loggedEditedNudged) return;
+      loggedEditedNudged = true;
+      log({ type: "edited-after-nudge", sessionId });
     };
 
     // 편집 대상은 확장 이벤트의 정규화된 `path`/`paths`가 정본이다. 그 필드가 있을 때 payload의
@@ -114,17 +129,22 @@ export function createScanNudge(log: Log = defaultLog) {
     // 없는 파일 읽기가 탐색 자리를 차지하고, 실패한 skim이나 task가 조사를 넘긴 것으로 남고,
     // 실패한 edit이나 write가 편집된 것으로 기록된다. 실패한 호출은 isError로, 차단된 호출은 결과 없이 끝난다.
     pi.on("tool_result", (event, ctx) => {
-      if (!armed || event.isError) return;
+      if (event.isError) return;
       const input = (event.input ?? {}) as Record<string, unknown>;
+      // 편집은 무장 여부보다 먼저 본다. 확장이 넣은 후속 입력이 끼어도 안내 뒤 편집은 같은 작업의 결과다.
+      // 무장이 풀린 동안 표시한 편집은 다음 사용자 입력의 reset이 지우므로 다음 탐색 집계에 남지 않는다.
       if (event.toolName === "write") {
         const path = normalizeReadPath(input.path, ctx.cwd);
         if (path) markEdited(path);
+        logEditedNudged(ctx.sessionManager?.getSessionId?.());
         return;
       }
       if (event.toolName === "edit") {
         markEditTargets(input, ctx.cwd);
+        logEditedNudged(ctx.sessionManager?.getSessionId?.());
         return;
       }
+      if (!armed) return;
       if (event.toolName === "skim" || event.toolName === "task") {
         delegated = true;
         if (nudged && !followed) {
@@ -139,6 +159,7 @@ export function createScanNudge(log: Log = defaultLog) {
       explored.add(path);
       if (explored.size < EXPLORATION_READS_BEFORE_NUDGE) return;
       nudged = true;
+      nudgedFiles = new Set(explored);
       log({ type: "nudge", files: explored.size, sessionId: ctx.sessionManager?.getSessionId?.() });
       pi.sendMessage(
         { customType: "scan-nudge", content: reminder(explored.size, ctx.agent?.kind === "sub"), display: false, attribution: "agent" },
