@@ -19,7 +19,7 @@ function call(pair = { mine, theirs }) {
   return { engine, turns, audio, packets };
 }
 
-test("output-first text may appear, but late same-language input retracts it without playing audio", () => {
+test("output-first text appears live, then disappears when no input claims it, without playing audio", () => {
   const { engine, turns, audio } = call();
   engine.output(theirs, "明日お会いしましょう", 0);
   engine.audio(theirs, pcm, 100);
@@ -27,11 +27,33 @@ test("output-first text may appear, but late same-language input retracts it wit
   expect(turns.size).toBe(1);
   expect(audio).toEqual([]);
   engine.tick(2900);
-  expect([...turns.values()][0].final).toBe(true);
+  expect(turns.size).toBe(0);
   engine.input(theirs, "明日お会いしましょう", 3100);
   engine.tick(4000);
   expect(turns.size).toBe(0);
   expect(audio).toEqual([]);
+});
+
+test("translated text arriving seconds after its input joins that input", () => {
+  const { engine, turns } = call();
+  engine.input(theirs, " 안녕하세요", 0);
+  engine.tick(3000);
+  engine.output(theirs, "こんにちは", 4700);
+  engine.tick(8000);
+  expect([...turns.values()]).toMatchObject([{ input: " 안녕하세요", output: "こんにちは", final: true }]);
+});
+
+test("a tail after a translated turn shows live and is dropped when it settles", () => {
+  // 2026-11-26 ko→ja log: 「안녕하세요」 became やあ, then みなさん and こんにちは without input.
+  const { engine, turns } = call();
+  engine.input(theirs, " 안녕하세요", 0);
+  engine.output(theirs, "やあ", 300);
+  engine.tick(4000);
+  engine.output(theirs, "みなさん", 10_000);
+  engine.tick(11_000);
+  expect(turns.size).toBe(2);
+  engine.tick(14_000);
+  expect([...turns.values()].map((turn) => turn.output)).toEqual(["やあ"]);
 });
 
 test("an unattributed result settles as text only; a later turn cannot release its PCM", () => {

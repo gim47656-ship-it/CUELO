@@ -29,6 +29,11 @@ export const DRAFT_TTL_MS = 20_000;
 /** A translation that starts before any input transcript waits this long for the input that may prove it an echo. */
 export const OUTPUT_FIRST_HOLD_MS = 800;
 /**
+ * Translated text can come seconds after its input transcript stopped (4.7 s in ko-ja-ko.wav). Until
+ * then it belongs to the latest input that has no translation yet, not to a bubble of its own.
+ */
+const LATE_OUTPUT_MS = 8000;
+/**
  * Codex's first translated text came 8 to 11 s after a turn started in every measured run. A draft this
  * old with a newer draft of its language behind it was skipped by Codex (it can merge quick turns into
  * one translation), and keeping it would pair every later final with the wrong draft.
@@ -404,6 +409,8 @@ interface FastStream {
   /** An input not consumed by a previous PCM run. Never reuse a finished run's source. */
   nextAudioInput?: StreamingFastTurn;
   unattributed?: StreamingFastTurn;
+  /** The latest settled input with no translation yet: late text joins it (`LATE_OUTPUT_MS`). */
+  awaiting?: StreamingFastTurn;
   turns: Set<StreamingFastTurn>;
 }
 
@@ -454,6 +461,7 @@ export class FastTranslationTurns {
         && switchesLanguage(this.pair, turn.input, delta))))) {
       if (!delta.trim()) return;
       turn = this.newTurn(stream, target, now);
+      stream.awaiting = undefined;
     }
     stream.input = turn;
     turn.input += delta;
@@ -498,7 +506,14 @@ export class FastTranslationTurns {
     if (!turn || now - turn.outputAt > OUTPUT_RUN_GAP_MS) {
       // A short gap between translated clauses should not split a still-speaking person's bubble.
       if (input && now - input.inputAt <= FAST_SETTLE_MS) turn = input;
-      else if (!turn || now - turn.outputAt > FAST_SETTLE_MS) turn = this.newTurn(stream, target, now);
+      else if (turn && now - turn.outputAt <= FAST_SETTLE_MS) {
+        // The same translation resumed after a pause.
+      } else if (stream.awaiting && now - stream.awaiting.inputAt <= LATE_OUTPUT_MS) {
+        turn = stream.awaiting;
+        stream.awaiting = undefined;
+        turn.final = false;
+        stream.turns.add(turn);
+      } else turn = this.newTurn(stream, target, now);
     }
     turn.output += delta;
     turn.outputAt = now;
@@ -553,6 +568,7 @@ export class FastTranslationTurns {
     for (const stream of this.streams.values()) {
       if (stream.audio && now - stream.audio.at > OUTPUT_RUN_GAP_MS) stream.audio = undefined;
       if (stream.unattributed && now - stream.unattributed.outputAt > FAST_SETTLE_MS * 2) stream.unattributed = undefined;
+      if (stream.awaiting && now - stream.awaiting.inputAt > LATE_OUTPUT_MS) stream.awaiting = undefined;
       for (const turn of stream.turns) {
         if (now - Math.max(turn.inputAt, turn.outputAt) > FAST_SETTLE_MS) this.finalize(stream, turn, now);
         else if (!turn.shown && turn.output.trim() && now - turn.startedAt >= OUTPUT_FIRST_HOLD_MS) this.update(turn, now);
@@ -567,7 +583,14 @@ export class FastTranslationTurns {
     }
     turn.final = true;
     this.update(turn, now);
-    if (!turn.source && turn.shown && !turn.echo) stream.unattributed = turn;
+    if (!turn.input.trim()) {
+      // Nothing was heard for it: the model spoke over silence or added a tail to an earlier turn
+      // (2026-11-26 ko→ja: 「안녕하세요」 grew みなさん and こんにちは bubbles). It showed live; drop it now.
+      if (turn.shown && !turn.echo) this.events.remove(turn.id);
+    } else if (!turn.echo) {
+      if (!turn.output.trim()) stream.awaiting = turn;
+      else if (!turn.source && turn.shown) stream.unattributed = turn;
+    }
     if (stream.nextAudioInput === turn) stream.nextAudioInput = undefined;
     if (stream.input === turn) stream.input = undefined;
     if (stream.output === turn) stream.output = undefined;
