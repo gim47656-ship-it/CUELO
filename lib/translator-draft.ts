@@ -542,7 +542,10 @@ export class FastTranslationTurns {
       if (turn.shown) this.events.remove(turn.id);
     }
     if (turn.echo) return;
-    if (turn.source || (turn.output.trim() && (turn.final || now - turn.startedAt >= OUTPUT_FIRST_HOLD_MS))) {
+    // Output with no input transcript at all is the model talking over silence or a late tail of an
+    // earlier turn (observed 2026-11-26: one Korean phrase became three Japanese bubbles). Show it only
+    // once an input arrives; input whose language is unknown (digits) still shows as text.
+    if (turn.source || (turn.input.trim() && turn.output.trim() && (turn.final || now - turn.startedAt >= OUTPUT_FIRST_HOLD_MS))) {
       turn.shown = true;
       this.events.update({ id: turn.id, startedAt: turn.startedAt, target: turn.target, source: turn.source,
         input: turn.input, output: turn.output, final: turn.final });
