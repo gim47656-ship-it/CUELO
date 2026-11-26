@@ -2,7 +2,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { setMaxListeners } from "node:events";
 import { constants, closeSync, cpSync, globSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { constants as osConstants, homedir, tmpdir } from "node:os";
+import { availableParallelism, constants as osConstants, homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -14,6 +14,9 @@ const coreVersionPattern = "\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za
 const coreVersion = new RegExp(`^${coreVersionPattern}$`);
 const suites = ["harness-extensions", "harness-core", "app"];
 const usage = `Usage: node bin/ci-local.mjs <${suites.join(" | ")}> [...]`;
+// bun test --parallel cut extensions from 137s to 46s and app tests from 45s to 14s on a 12-core PC, but on the
+// 4-core GitHub runner heavy tests passed their 5s limit (2026-11-27). Fewer cores keep the serial run.
+const parallelTests = availableParallelism() >= 8 ? ["--parallel"] : [];
 
 export function parseSuites(args) {
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) return [];
@@ -177,7 +180,7 @@ async function prepareHarness(env, signal) {
 
 async function runExtensions(env, signal) {
   await run([process.execPath, "patches/check-extension-duplicates.mjs"], harness, env, signal);
-  await run(["bun", "test", "--parallel", "./agent/extensions/tests", "./agent/extensions/command-guard",
+  await run(["bun", "test", ...parallelTests, "./agent/extensions/tests", "./agent/extensions/command-guard",
     "./agent/tools/git-finalizer", "./agent/tools/windows-control", "./agent/tools/artifact-search",
     "./agent/tools/vm-build", "./agent/tools/ego-browser", "./agent/tools/deploy-verify",
     "./agent/tools/windows-build", "./agent/cuelo-plugins/scratch-dependency-hint", "./skill-cost"], harness, env, signal);
@@ -230,7 +233,8 @@ async function runCore(env, signal) {
 }
 
 async function runApp(env, signal) {
-  for (const script of ["typecheck", "lint", "test"]) await run(["bun", "run", script], root, env, signal);
+  for (const script of ["typecheck", "lint"]) await run(["bun", "run", script], root, env, signal);
+  await run(["bun", "run", "test", ...parallelTests], root, env, signal);
   await run(["bun", "test", "./Tools/CUELO_Setup/files/btw-server.test.mjs",
     "./Tools/CUELO_Setup/files/subagent-server.test.mjs", "./Tools/CUELO_Setup/files/usage-server.test.js"], root, env, signal);
 }
