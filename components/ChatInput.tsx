@@ -11,7 +11,6 @@ import { SavedPromptMenu, type SavedPromptMenuHandle } from "./SavedPromptMenu";
 import { findSavedPromptToken, type SavedPromptToken } from "@/lib/saved-prompts";
 import { SoundToggle } from "./SoundToggle";
 import { LiveVoiceButton } from "./LiveVoiceButton";
-import { Gpt6HandleBadge } from "./Gpt6HandleBadge";
 import type { ModelRoleAssignment, SkillsResponse } from "@/lib/api-types";
 import type { SlashCommandInfo } from "@/lib/omp-types";
 import type { TextContent, UserMessage } from "@/lib/types";
@@ -257,8 +256,6 @@ interface Props {
   onLiveTranscriptPersisted?: (sessionId: string) => void | Promise<void>;
   /** Shown above the input on the empty new-session screen: where the first message starts. */
   startPlace?: React.ReactNode;
-  /** External chat uses the same editor and attachments without omp commands or run controls. */
-  external?: { controls: React.ReactNode; sendDisabled: boolean };
 }
 
 export interface ChatInputHandle {
@@ -679,7 +676,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onEnsureSession,
   onLiveTranscriptPersisted,
   startPlace,
-  external,
 }: Props, ref) {
   const { t } = useI18n();
   // 사무실 모드에서는 openai-codex 자리의 이름과 얼굴이 바뀐다.
@@ -736,8 +732,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     && (document.transcription !== undefined || !document.text.includes(TRANSCRIPT_SECTION))
   ));
   const commandValue = value.trimStart();
-  const bashMode = !external && attachedImages.length === 0 && attachedDocuments.length === 0 && commandValue.startsWith("!");
-  const externalComposer = Boolean(external);
+  const bashMode = attachedImages.length === 0 && attachedDocuments.length === 0 && commandValue.startsWith("!");
   const bashExcluded = bashMode && commandValue.startsWith("!!");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -1399,10 +1394,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await Promise.all([
       processImageFiles(images),
       processDocumentFiles(documents.filter((file) => file.size <= MAX_ATTACHED_DOCUMENT_BYTES)),
-      externalComposer ? Promise.resolve() : processFileAttachments(audio, "audio"),
-      processFileAttachments(externalComposer ? [...others, ...oversizedDocuments, ...audio] : [...others, ...oversizedDocuments], "file"),
+      processFileAttachments(audio, "audio"),
+      processFileAttachments([...others, ...oversizedDocuments], "file"),
     ]);
-  }, [externalComposer, processDocumentFiles, processFileAttachments, processImageFiles]);
+  }, [processDocumentFiles, processFileAttachments, processImageFiles]);
 
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
@@ -1525,25 +1520,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     );
   }, []);
 
-  const externalSending = useRef(false);
-  const handleSend = useCallback(async (trusted = false) => {
-    if (external) {
-      if (!trusted || external.sendDisabled || externalSending.current || isExtractingDocument) return;
-      if (!value.trim() && !attachedImages.length && !readyDocuments.length) return;
-      externalSending.current = true;
-      const documents = readyDocuments.length ? readyDocuments : undefined;
-      const release = holdSubmittedAttachments(draftKeyRef.current ?? UNKEYED_DRAFT_KEY, documents);
-      try {
-        const outcome = await onSend(value, attachedImages.length ? attachedImages : undefined, documents);
-        if (outcome === "accepted" && valueRef.current === value
-          && attachedImagesRef.current === attachedImages
-          && attachedDocumentsRef.current === attachedDocuments) clearInput();
-        release(outcome === "accepted" || outcome === "returned" ? outcome : undefined);
-      } finally {
-        externalSending.current = false;
-      }
-      return;
-    }
+  const handleSend = useCallback(async () => {
     const rawMessage = value.trim();
     const commandMessage = commandValue.trim();
     const msg = commandMessage.startsWith("/") || commandMessage.startsWith("!")
@@ -1571,8 +1548,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     sendHoldingAttachments(documents, () => onSend(msg, images, documents));
   }, [
     value,
-    external,
-    attachedDocuments,
     commandValue,
     attachedImages,
     readyDocuments,
@@ -1587,7 +1562,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     sendHoldingAttachments,
   ]);
 
-  const slashQuery = !external && commandValue.startsWith("/") && !commandValue.startsWith("//") && !/\s/.test(commandValue.slice(1))
+  const slashQuery = commandValue.startsWith("/") && !commandValue.startsWith("//") && !/\s/.test(commandValue.slice(1))
     ? commandValue.slice(1).toLowerCase()
     : null;
 
@@ -1624,7 +1599,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canSend = !external?.sendDisabled && !isExtractingDocument
+  const canSend = !isExtractingDocument
     && (hasInputText || attachedImages.length > 0 || readyDocuments.length > 0);
   const canQueueStreamingMessage = canSend;
 
@@ -2051,9 +2026,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (external) {
-          void handleSend(nativeEvent.isTrusted);
-        } else if (isStreaming && (onSteer || onFollowUp)) {
+        if (isStreaming && (onSteer || onFollowUp)) {
           // Default Enter sends as steer if available, else followup
           sendQueued(onSteer ? "steer" : "followup");
         } else {
@@ -2061,7 +2034,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       }
     },
-    [external, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, savedPromptOpen, savedPromptToken]
+    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, savedPromptOpen, savedPromptToken]
   );
 
   const handleInput = useCallback(() => {
@@ -2713,14 +2686,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   return (
     <div
       className="chat-composer"
-      onDragOver={externalComposer ? (event) => {
-        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
-      } : undefined}
-      onDrop={externalComposer ? (event) => {
-        if (!event.dataTransfer.files.length) return;
-        event.preventDefault();
-        void processAttachmentFiles(Array.from(event.dataTransfer.files));
-      } : undefined}
       style={{
         flexShrink: 0,
         background: "transparent",
@@ -3486,17 +3451,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           />
 
-          {isStreaming && !external ? (isMobile ? null : (
+          {isStreaming ? (isMobile ? null : (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, alignSelf: "flex-end" }}>
               {streamActions}
             </div>
           )) : (
             <button
               className="chat-composer-send"
-              onClick={(event) => void handleSend(event.nativeEvent.isTrusted)}
+              onClick={handleSend}
               disabled={!canSend}
               aria-busy={isExtractingDocument || undefined}
-              aria-label={isMobile ? t(isStreaming && external ? "chat.steer" : "chat.send") : undefined}
+              aria-label={isMobile ? t("chat.send") : undefined}
               title={isExtractingDocument ? t("chat.attachExtractingWait") : undefined}
               style={{
                 flexShrink: 0,
@@ -3519,7 +3484,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <line x1="2" y1="7" x2="11" y2="7" />
                 <polyline points="7.5 3 12 7 7.5 11" />
               </svg>
-              {isMobile ? null : t(isStreaming && external ? "chat.steer" : "chat.send")}
+              {isMobile ? null : t("chat.send")}
             </button>
           )}
           </div>
@@ -3550,9 +3515,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               최대 폭으로 줄바꿈을 결정해 버려, 들어갈 수 있는데도 두 줄이 된다. 대신 최소 폭을
               min-content로 둬 줄바꿈 판정이 실제 최소 내용 폭을 본다. 0이면 오른쪽 묶음이 같은
               줄에 남고 왼쪽 버튼들이 서로 겹쳐 그려졌다(통화 중 라벨이 붙으면 거의 0까지 눌렸다). */}
-          <div style={{ flex: external ? "1 1 0%" : isMobile ? "1 1 0%" : "0 0 auto", minWidth: external ? 0 : isMobile ? "min-content" : 0, display: "flex", alignItems: "center", gap: 2 }}>
-            {(external || !isMobile || !isStreaming) && attachButton}
-            {external?.controls}
+          <div style={{ flex: isMobile ? "1 1 0%" : "0 0 auto", minWidth: isMobile ? "min-content" : 0, display: "flex", alignItems: "center", gap: 2 }}>
+            {(!isMobile || !isStreaming) && attachButton}
             {/* Main 프리셋 — [프리셋][모델][추론] 묶음의 첫 칩. roster의 Main 후보를 한 번에 적용한다.
                 라벨을 접은 모바일에서는 첨부·음성과 같은 정사각 아이콘 버튼이 된다. */}
             {!isMobile && presetControl}
@@ -3836,8 +3800,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {t(outputSpeedLive ? "chat.outputSpeedLive" : "chat.outputSpeed", { rate: outputTokensPerSecond >= 10 ? Math.round(outputTokensPerSecond) : outputTokensPerSecond.toFixed(1) })}
               </span>
             )}
-            {/* 이 세션이 6 Pro 연결번호에 묶였을 때만 보이는 표시(모델 칩과 같은 줄). */}
-            <Gpt6HandleBadge sessionId={sessionId} />
           </div>
 
           {/* RIGHT: one collapsed run-options group, then the always-reachable
@@ -3856,7 +3818,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {/* 좁은 폭에서는 아이콘 버튼으로 바꾼다. 이 버튼이 글자 폭을 계속 차지하면
                 액션 줄이 한 줄에 들어가지 못해 모델 이름 쪽이 먼저 잘려 나간다.
                 이름은 title/aria-label에 그대로 남고 동작도 같다. */}
-            {!external && (isMobile ? (
+            {isMobile ? (
               <button
                 type="button"
                 className={`composer-icon-button${controlsMenuOpen ? " is-active" : ""}`}
@@ -3891,8 +3853,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               >
                 {t("chat.moreControls")}
               </ActionButton>
-            ))}
-            {!external && (
+            )}
             <div
               className="composer-run-options"
               role="group"
@@ -4096,12 +4057,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </button>
             )}
             </div>
-            )}
 
             {isStreaming && (
               <button
                 className="composer-chip is-danger is-active"
-                onClick={(event) => { if (!external || event.nativeEvent.isTrusted) onAbort(); }}
+                onClick={onAbort}
                 title={t("chat.stopAgent")}
                 aria-label={isMobile ? t("chat.stopAgent") : undefined}
                 style={{
@@ -4128,13 +4088,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </button>
             )}
 
-            {!external && (
             <LiveVoiceButton
               sessionId={sessionId}
               onEnsureSession={onEnsureSession}
               onTranscriptPersisted={onLiveTranscriptPersisted}
             />
-            )}
 
             {!isMobile && soundControl}
           </div>

@@ -116,7 +116,7 @@ description: Before mistake correction or rule changes.
 | A26 | todo는 짧은 한국어, 번호 단계는 작업 기록에서 추적 | 차단(부분) | `cuelo-plugins/todo-language/index.ts`, `cuelo-plugins/todo-language/todo-language.ts`(플러그인), `extensions/tests/todo-language-guard.test.ts` | Main의 새 가나 산문만 도구 변경 전에 거부. 코드, 경로, 원본 오류, 인용과 기존 선택자는 보존하며 사용자 직접 요청은 예외. 한자만 있는 문장과 번호 단계 추적은 문서. 플러그인을 끄면 차단도 꺼진다 |
 | A27 | 절차 Skill은 원인 모를 버그·두 번째 실패에만 | 문서 | — | |
 | A28 | 독립 읽기 묶기, 거절된 edit은 그대로 재전송 | 구조(부분) | `patches/core-edit-batch-test.ts`(거절 파일 전부 표시·재전송 성공) | 묶기는 문서 |
-| A29 | 별칭 호출·교체, SHION은 상담만 | 차단 | `extensions/command-guard/index.ts` CharacterSummonGuard, `extensions/character-voice.ts`, `patches/validate-harness-policy.mjs`(`mainLane.characterRouting`) | |
+| A29 | 별칭 호출과 세션 교체 | 차단 | `extensions/command-guard/index.ts` CharacterSummonGuard, `extensions/character-voice.ts`, `patches/validate-harness-policy.mjs`(`mainLane.characterRouting`) | |
 | A30 | 레거시 인코딩 판별·보존 | eval | `evals/cases/industrial/cp949-preservation*.json` | `rule://legacy-encoding`은 glob으로 목록에 뜬다 |
 | A31 | 문서 지도·기록 소유권·검색 순서 | 안내 | `extensions/docmap-route.ts`, `extensions/lib/turn-documents.ts`, `tools/git-finalizer/index.ts` `missingHandoffNote` | |
 | A32 | child·다른 모델을 쓴 턴은 역할·개수·이유 고지 | 안내(부분) | `extensions/helper-model-report-guard.ts`, `extensions/tests/helper-model-report-guard.test.ts` | 2026-11-14 「GPT 쪽 검토자」 오보(실제 아스트라) 지적과 「장치로만들자」 뒤 승격. 완료 보고의 교차 검토·문구 점검·Maker 명단만 원장과 도구 결과의 실제 응답 모델과 대 본다. 개수·이유 고지는 문서 |

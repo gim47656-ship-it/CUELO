@@ -5395,26 +5395,6 @@ export function revivedTaskDepth(ref: { parentId?: string }, registry: AgentRegi
 	}`,
 		}],
 	},
-	// --- WEB6 요청의 현재 OMP 세션 귀속 ---
-	// OpenAI 호환 transport까지 내려온 StreamOptions.sessionId가 유일한 현재 세션 정본이다.
-	// prompt marker나 전역 시작 시각으로 복원하지 않고, WEB6 provider의 loopback 요청에만
-	// 별도 헤더로 실어 shim이 handle을 그 세션에 묶게 한다.
-	{
-		file: "../pi-ai/src/providers/openai-completions.ts",
-		marker: `headers["X-OMP-Session-Id"] = web6SessionId;`,
-		anchor: `			);
-			const premiumRequestsTotal = copilotPremiumRequests;`,
-		patched: `			);
-			if (model.provider === "web6") {
-				const web6SessionId = options?.sessionId?.trim();
-				if (!web6SessionId) {
-					throw new AIError.ConfigurationError("WEB6 requests require the current OMP sessionId");
-				}
-				headers["X-OMP-Session-Id"] = web6SessionId;
-				requestHeaders["X-OMP-Session-Id"] = web6SessionId;
-			}
-			const premiumRequestsTotal = copilotPremiumRequests;`,
-	},
 	// 18.3.0 RETIRE: 대화 기록의 계정 귀속(credentialId 스탬프, 옛 #119~#122). upstream이 흡수했다:
 	// `AssistantMessage.credentialId` 필드가 생겼고(pi-ai/src/types.ts:1070-1071), 세션 요청은
 	// `modelRegistry.resolver` 경로를 타며(sdk.ts:1779-1780) 그 resolver 가 실제로 요청을 처리한
@@ -6752,137 +6732,6 @@ import { $env, $envExact, getAgentDir, logger } from "@oh-my-pi/pi-utils";
 	): boolean;`,
 	},
 	{
-		// eval completion의 공개 tier 계약은 default|smol|slow 그대로 두되 SHION 상담만
-		// provider/model exact selector로 연다. schema에서 다른 임의 selector는 계속 거부한다.
-		file: "src/eval/completion-bridge.ts",
-		marker: `const EXACT_WEB6_MODEL = "web6/gpt-6-pro" as const;`,
-		anchor: `type CompletionTier = "smol" | "default" | "slow";
-
-const TIER_TO_PATTERN: Record<CompletionTier, string> = {
-	smol: "@smol",
-	default: "@default",
-	slow: "@slow",
-};
-
-const completionArgsSchema = type({
-	prompt: "string>0",
-	"model?": "'smol'|'default'|'slow'",
-	"system?": "string",
-	"schema?": { "[string]": "unknown" },
-});`,
-		patched: `type CompletionTier = "smol" | "default" | "slow";
-const EXACT_WEB6_MODEL = "web6/gpt-6-pro" as const;
-type CompletionModel = CompletionTier | typeof EXACT_WEB6_MODEL;
-
-const TIER_TO_PATTERN: Record<CompletionTier, string> = {
-	smol: "@smol",
-	default: "@default",
-	slow: "@slow",
-};
-
-const completionArgsSchema = type({
-	prompt: "string>0",
-	"model?": "'smol'|'default'|'slow'|'web6/gpt-6-pro'",
-	"system?": "string",
-	"schema?": { "[string]": "unknown" },
-});`,
-	},
-	{
-		// exact WEB6는 role alias나 retry.fallbackChains를 거치지 않는다. available catalog의
-		// provider/id가 둘 다 맞는 한 모델만 후보로 만들므로 실패 시 일반 모델로 새지 않는다.
-		file: "src/eval/completion-bridge.ts",
-		marker: `function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[]`,
-		anchor: `		new Set(),
-		candidates,
-	);
-	return candidates;
-}`,
-		patched: `		new Set(),
-		candidates,
-	);
-	return candidates;
-}
-
-function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] {
-	const model = session.modelRegistry
-		?.getAvailable()
-		.find(candidate => candidate.provider === "web6" && candidate.id === "gpt-6-pro");
-	return model
-		? [
-				{
-					selector: EXACT_WEB6_MODEL,
-					model,
-					reasoning: undefined,
-					disableReasoning: false,
-				},
-			]
-		: [];
-}`,
-	},
-	{
-		file: "src/eval/completion-bridge.ts",
-		marker: `	finalTier: CompletionTier | undefined,`,
-		anchor: `	finalTier: CompletionTier,`,
-		patched: `	finalTier: CompletionTier | undefined,`,
-	},
-	{
-		// registry resolver에 쓰던 같은 현재 세션 값을 provider options에도 싣는다. WEB6
-		// openai-completions patch가 이 정본을 X-OMP-Session-Id로 운반하며 여기서 헤더를 만들지 않는다.
-		file: "src/eval/completion-bridge.ts",
-		marker: `					sessionId: session.getSessionId?.() ?? undefined,`,
-		anchor: `					apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
-					signal,`,
-		patched: `					apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
-					sessionId: session.getSessionId?.() ?? undefined,
-					signal,`,
-	},
-	{
-		file: "src/eval/completion-bridge.ts",
-		marker: `...(finalTier === undefined ? {} : { tier: finalTier })`,
-		anchor: `		details: { model: formatModelString(model), tier: finalTier, structured: Boolean(schema) },`,
-		patched: `		details: {
-			model: formatModelString(model),
-			...(finalTier === undefined ? {} : { tier: finalTier }),
-			structured: Boolean(schema),
-		},`,
-	},
-	{
-		file: "src/eval/completion-bridge.ts",
-		marker: `const requestedModel: CompletionModel = model ?? "default";`,
-		anchor: `	const { prompt, model: modelTier, system, schema } = parsed;
-	const finalTier: CompletionTier = modelTier ?? "default";
-	const candidates = resolveTierCandidates(finalTier, options.session);
-	if (candidates.length === 0) {
-		throw new ToolError(
-			\`completion() could not resolve a model for the "\${finalTier}" tier. Configure modelRoles.\${finalTier === "default" ? "default" : finalTier} or ensure a provider is available.\`,
-		);
-	}
-
-	return retainCompletionHandle("cmp", options, signal =>
-		executeCompletion(prompt, finalTier, system, schema, candidates, options.session, signal),
-	);`,
-		patched: `	const { prompt, model, system, schema } = parsed;
-	const requestedModel: CompletionModel = model ?? "default";
-	const finalTier: CompletionTier | undefined =
-		requestedModel === EXACT_WEB6_MODEL ? undefined : requestedModel;
-	const candidates =
-		requestedModel === EXACT_WEB6_MODEL
-			? resolveExactWeb6Candidate(options.session)
-			: resolveTierCandidates(requestedModel, options.session);
-	if (candidates.length === 0) {
-		if (requestedModel === EXACT_WEB6_MODEL) {
-			throw new ToolError(\`completion() could not resolve exact model "\${EXACT_WEB6_MODEL}".\`);
-		}
-		throw new ToolError(
-			\`completion() could not resolve a model for the "\${finalTier}" tier. Configure modelRoles.\${finalTier === "default" ? "default" : finalTier} or ensure a provider is available.\`,
-		);
-	}
-
-	return retainCompletionHandle("cmp", options, signal =>
-		executeCompletion(prompt, finalTier, system, schema, candidates, options.session, signal),
-	);`,
-	},
-	{
 		// completion() 호출자가 명시 effort를 넘길 수 있게 공개 schema에 선택 인자를 연다.
 		// enum은 concrete ThinkingLevel만 허용한다 — auto는 session 전용 sentinel이고
 		// inherit은 호출마다 결정권자가 정하는 이 계약의 의미를 흐린다.
@@ -6897,22 +6746,17 @@ function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] 
 });`,
 	},
 	{
-		// exact WEB6 경로는 tier가 없어 finalTier가 undefined다. 명시 effort가 있으면
-		// tier 기본값을 계산하지 않으므로 tier 인자를 선택으로 넓혀 그 상태를 표현한다.
+		// Tagged completion models do not have a tier, even with explicit effort.
 		file: "src/eval/completion-bridge.ts",
-		marker: `function reasoningForCandidate(
-	tier: CompletionTier | undefined,`,
-		anchor: `function reasoningForCandidate(
-	tier: CompletionTier,`,
-		patched: `function reasoningForCandidate(
-	tier: CompletionTier | undefined,`,
+		marker: "function reasoningForCandidate(\n\ttier: CompletionTier | undefined,",
+		anchor: "function reasoningForCandidate(\n\ttier: CompletionTier,",
+		patched: "function reasoningForCandidate(\n\ttier: CompletionTier | undefined,",
 	},
 	{
-		// tier 없는 호출(exact WEB6)이 명시 effort 없이 내려오면 기존 default tier 의미를 쓴다.
 		file: "src/eval/completion-bridge.ts",
-		marker: `const requested = reasoningForTier(tier ?? "default", model);`,
-		anchor: `	const requested = reasoningForTier(tier, model);`,
-		patched: `	const requested = reasoningForTier(tier ?? "default", model);`,
+		marker: 'const requested = reasoningForTier(tier ?? "default", model);',
+		anchor: "\tconst requested = reasoningForTier(tier, model);",
+		patched: '\tconst requested = reasoningForTier(tier ?? "default", model);',
 	},
 	{
 		// 명시 effort는 primary와 retry fallback 모두에 같은 요청값으로 적용한다.
@@ -20916,8 +20760,6 @@ export function cueloIsFallbackKeyBillingRejection(
 	];
 	const [oldPlain, newPlain] = handle("candidates");
 	const [oldEffort, newEffort] = handle("effectiveCandidates");
-	const web6 = byMarker(`const requestedModel: CompletionModel = model ?? "default";`);
-	alternate(web6, { marker: web6.marker, anchor: swap(web6.anchor, oldPlain, newPlain), patched: swap(web6.patched, oldPlain, newPlain) }, ATTEMPTS);
 	const effort = byMarker("const effectiveCandidates =");
 	alternate(effort, { marker: effort.marker, anchor: swap(effort.anchor, oldPlain, newPlain), patched: swap(effort.patched, oldEffort, newEffort) }, ATTEMPTS);
 
@@ -25730,30 +25572,63 @@ export type FromNativeHost =
 
 	const completion = "src/eval/completion-bridge.ts";
 	const tagged = "function resolveTaggedAgentCandidates(";
-	const exact = 'const EXACT_WEB6_MODEL = "web6/gpt-6-pro" as const;';
+	// A staged update can reuse already-patched 19.x packages. Retire the exact deployed
+	// fragments through legacyPatched, so both --check and in-place apply see stale code.
+	const retire = (file, anchor, legacyPatched) => {
+		EDITS.push({ file, anchor, legacyPatched, marker: anchor, patched: anchor });
+	};
+	const transportTail = "\t\t\tconst premiumRequestsTotal = copilotPremiumRequests;";
+	retire("../pi-ai/src/providers/openai-completions.ts", transportTail, `			if (model.provider === "web6") {
+				const web6SessionId = options?.sessionId?.trim();
+				if (!web6SessionId) {
+					throw new AIError.ConfigurationError("WEB6 requests require the current OMP sessionId");
+				}
+				headers["X-OMP-Session-Id"] = web6SessionId;
+				requestHeaders["X-OMP-Session-Id"] = web6SessionId;
+			}
+${transportTail}`);
 	const tierType = 'type CompletionTier = "smol" | "default" | "slow";';
-	alternate(one(completion, exact), tagged, tierType, `${tierType}\n${exact}`, exact);
-	const executeTier = "\ttier: CompletionTier | undefined,";
-	alternate(one(completion, "\tfinalTier: CompletionTier | undefined,"), tagged, executeTier);
-	const resultDetails = "\t\tdetails: { model: formatModelString(model), tier, structured: Boolean(schema) },";
-	alternate(one(completion, "...(finalTier === undefined ? {} : { tier: finalTier })"), tagged, resultDetails,
-		'\t\tdetails: { model: formatModelString(model), ...(tier === undefined ? {} : { tier }), structured: Boolean(schema) },');
-	const candidateAnchor = [
-		"\tconst candidates = tier",
-		"\t\t? resolveTierCandidates(tier, options.session)",
-		"\t\t: resolveTaggedAgentCandidates(requested, options.session);",
-		"\tif (candidates.length === 0) {",
+	const deprecatedSelector = "web6/gpt-6-pro";
+	retire(completion, tierType, `${tierType}\nconst EXACT_WEB6_MODEL = "${deprecatedSelector}" as const;`);
+	retire(completion, "\treturn candidates;\n}", `	return candidates;
+}
+
+function resolveExactWeb6Candidate(session: ToolSession): CompletionCandidate[] {
+	const model = session.modelRegistry
+		?.getAvailable()
+		.find(candidate => candidate.provider === "web6" && candidate.id === "gpt-6-pro");
+	return model
+		? [
+				{
+					selector: EXACT_WEB6_MODEL,
+					model,
+					reasoning: undefined,
+					disableReasoning: false,
+				},
+			]
+		: [];
+}`);
+	const resolveKey = "\t\t\t\t\tapiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),";
+	const signalOption = "\t\t\t\t\tsignal,";
+	const oldKeyOptions = `${resolveKey}\n\t\t\t\t\tsessionId: session.getSessionId?.() ?? undefined,\n${signalOption}`;
+	const currentKeyOptions = `${resolveKey}\n${signalOption}`;
+	EDITS.push({ file: completion, anchor: currentKeyOptions, marker: resolveKey, patched: currentKeyOptions, legacyPatched: oldKeyOptions });
+	const taggedSelection = "\t\t: resolveTaggedAgentCandidates(requested, options.session);\n\tif (candidates.length === 0) {";
+	const deprecatedSelection = [
+		"\t\t: requested === EXACT_WEB6_MODEL",
+		"\t\t\t? resolveExactWeb6Candidate(options.session)",
+		"\t" + taggedSelection,
+		'\t\tif (requested === EXACT_WEB6_MODEL) throw new ToolError(`completion() could not resolve exact model "${EXACT_WEB6_MODEL}".`);',
 	].join("\n");
-	alternate(one(completion, 'const requestedModel: CompletionModel = model ?? "default";'), tagged,
-		candidateAnchor, [
-			"\tconst candidates = tier",
-			"\t\t? resolveTierCandidates(tier, options.session)",
-			"\t\t: requested === EXACT_WEB6_MODEL",
-			"\t\t\t? resolveExactWeb6Candidate(options.session)",
-			"\t\t\t: resolveTaggedAgentCandidates(requested, options.session);",
-			"\tif (candidates.length === 0) {",
-			'\t\tif (requested === EXACT_WEB6_MODEL) throw new ToolError(`completion() could not resolve exact model "${EXACT_WEB6_MODEL}".`);',
-		].join("\n"), "\t\t\t? resolveExactWeb6Candidate(options.session)");
+	EDITS.push({ file: completion, requires: tagged, anchor: taggedSelection, marker: taggedSelection, patched: taggedSelection,
+		legacyPatched: deprecatedSelection, alternates: [
+			{ file: completion, excludes: tagged, anchor: tierType, marker: tierType, patched: tierType },
+		] });
+	const resultDetails = "\t\tdetails: { model: formatModelString(model), tier, structured: Boolean(schema) },";
+	EDITS.push({ file: completion, requires: tagged, anchor: resultDetails, marker: resultDetails, patched: resultDetails,
+		legacyPatched: '\t\tdetails: { model: formatModelString(model), ...(tier === undefined ? {} : { tier }), structured: Boolean(schema) },',
+		alternates: [{ file: completion, excludes: tagged, anchor: tierType, marker: tierType, patched: tierType }],
+	});
 	const retain = '\treturn retainCompletionHandle("cmp", options, async (signal, attempts) => {';
 	const execute = "\t\t\treturn await executeCompletion(\n\t\t\t\tprompt,\n\t\t\t\ttier,\n\t\t\t\tsystem,\n\t\t\t\tschema,\n\t\t\t\tcandidates,";
 	alternate(one(completion, "const effectiveCandidates ="), tagged, `${retain}\n\t\tconst rawBuffer = new RawSseDebugBuffer();\n\t\ttry {\n${execute}`,
@@ -25767,17 +25642,18 @@ export type FromNativeHost =
 			"\t\ttry {",
 			execute.replace("\n\t\t\t\tcandidates,", "\n\t\t\t\teffectiveCandidates,"),
 		].join("\n"), "const effectiveCandidates =");
-	const exactDoc = '"web6/gpt-6-pro"';
 	const taggedDoc = '"m<N>"';
 	const judgeDoc = one("src/prompts/tools/eval-judge.md", "effort?=None");
 	const tagModels = text => text.replaceAll('"slow"', `"slow"|${taggedDoc}`);
-	alternate(judgeDoc, "or a user-tagged model agent name", tagModels(prior(judgeDoc).anchor),
-		tagModels(prior(judgeDoc).patched).replaceAll(taggedDoc, `${taggedDoc}|${exactDoc}`), judgeDoc.marker);
+	const taggedJudgePatched = tagModels(prior(judgeDoc).patched);
+	alternate(judgeDoc, "or a user-tagged model agent name", tagModels(prior(judgeDoc).anchor), taggedJudgePatched, judgeDoc.marker);
+	judgeDoc.alternates.at(-1).legacyPatched = taggedJudgePatched.replaceAll(taggedDoc, `${taggedDoc}|"${deprecatedSelector}"`);
 	const workflow = one("src/prompts/system/workflow-notice.md", "effort=None)");
 	const beforeEffort = 'Tiers: `"smol"`, `"default"`, `"slow"`.';
 	const upstreamModels = 'Tiers: `"smol"`, `"default"`, `"slow"`; or a user-tagged model agent (`"m<N>"`).';
-	alternate(workflow, upstreamModels, swap(prior(workflow).anchor, beforeEffort, upstreamModels),
-		swap(prior(workflow).patched, beforeEffort, `${upstreamModels} Exact selector: \`${exactDoc}\`.`), prior(workflow).marker);
+	const taggedWorkflowPatched = swap(prior(workflow).patched, beforeEffort, upstreamModels);
+	alternate(workflow, upstreamModels, swap(prior(workflow).anchor, beforeEffort, upstreamModels), taggedWorkflowPatched, prior(workflow).marker);
+	workflow.alternates.at(-1).legacyPatched = swap(taggedWorkflowPatched, upstreamModels, `${upstreamModels} Exact selector: \`"${deprecatedSelector}"\`.`);
 
 	const backend = "src/mnemopi/backend.ts";
 	const memDoc = "src/prompts/system/mnemopi-instructions.md";

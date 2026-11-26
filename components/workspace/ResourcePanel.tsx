@@ -1797,9 +1797,7 @@ export function CharacterRosterView({ reports, providerConnections }: {
             }
           }
           // 사용량 report가 사라진 로그아웃도 인증 API의 명시적인 미연결 상태로 구분한다.
-          // web6는 `auth: none`이라 credential 연결 여부를 적용하지 않는다.
-          const unavailable = character.provider !== "web6"
-            && (providerConnections?.get(character.provider) === false || (providerObserved && !providerEnabled));
+          const unavailable = providerConnections?.get(character.provider) === false || (providerObserved && !providerEnabled);
           return (
             <article
               key={character.alias}
@@ -1835,14 +1833,14 @@ export function CharacterRosterView({ reports, providerConnections }: {
                   <dt>호출</dt>
                   <dd>
                     <code>{character.summonExample}</code>
-                    <span>{character.summonNote ?? "SubAgent로 이 대화에 부릅니다."}</span>
+                    <span>SubAgent로 이 대화에 부릅니다.</span>
                   </dd>
                 </div>
                 <div>
                   <dt>Main 교체</dt>
                   <dd>
-                    {character.switchExample ? <code>{character.switchExample}</code> : <strong>교체 불가</strong>}
-                    <span>{character.switchNote ?? "이 대화의 Main을 바꿉니다."}</span>
+                    <code>{character.switchExample}</code>
+                    <span>이 대화의 Main을 바꿉니다.</span>
                   </dd>
                 </div>
               </dl>

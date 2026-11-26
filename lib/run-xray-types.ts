@@ -88,7 +88,7 @@ export interface RunHelperUsage {
 
 /** 한 역할(부모 본인 또는 자식 하나)이 이 run 안에서 남긴 기록. */
 export interface RunRoleSegment {
-  /** 부모는 `"main"`, 자식은 transcript 파일 이름(예: `"Web6Shim"`). */
+  /** 부모는 `"main"`, 자식은 transcript 파일 이름(예: `"Helper"`). */
   id: string;
   kind: RunRoleKind;
   purpose: RunRolePurpose | null;

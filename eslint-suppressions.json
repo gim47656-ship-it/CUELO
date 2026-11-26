@@ -22,11 +22,6 @@
       "count": 3
     }
   },
-  "components/Gpt6HandleBadge.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
   "components/MessageView.tsx": {
     "react-hooks/refs": {
       "count": 6
@@ -157,11 +152,6 @@
     }
   },
   "hooks/useSubagentUtterances.ts": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "hooks/useWeb6Utterances.ts": {
     "react-hooks/set-state-in-effect": {
       "count": 1
     }

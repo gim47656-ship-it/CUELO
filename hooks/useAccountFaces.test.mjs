@@ -86,8 +86,9 @@ test("a session that switches provider re-asks instead of answering from the sta
     // pin 보다 먼저다.
     assert.equal(resolveAccountFace("switch", "anthropic", 11)?.alias, "MIO(미오)");
     assert.equal(resolveAccountFace("switch", "openai-codex", 8)?.alias, "YUKI(유키)");
-    // 자식 발화와 WEB6 상담이 지나는 길도 그대로다 — 예약 얼굴은 provider 만으로 나온다.
-    assert.equal(resolveAccountFace("switch", "web6", undefined)?.alias, "SHION(시온)");
+    // 자식 발화가 지나는 길도 그대로다 — 예약 얼굴은 provider 만으로 나온다.
+    assert.equal(resolveAccountFace("switch", "web6", undefined), null, "WEB6 상담 얼굴(SHION)은 없어졌다");
+    assert.equal(resolveAccountFace("switch", "antigravity-cli", undefined, "gemini-4-neon")?.alias, "HIKARI(히카리)");
     assert.equal(resolveAccountFace("switch", "hive", undefined)?.alias, "ISANA(이사나)");
     assert.equal(resolveAccountFace("switch", "hive", undefined, "deepseek-ai/deepseek-v4.1-flash-1017")?.alias, "ISANA(이사나)");
     // 같은 hive 계정이라도 GLM 모델은 MITSU다. 기록된 credential 의 계정 얼굴(ISANA)보다 모델 얼굴이 먼저다.
@@ -95,6 +96,9 @@ test("a session that switches provider re-asks instead of answering from the sta
     syncAccountFaces([{ provider: "hive", credentialId: 31, metadata: { email: "hive@example.com" } }]);
     assert.equal(resolveAccountFace("switch", "hive", 31)?.alias, "ISANA(이사나)");
     assert.equal(resolveAccountFace("switch", "hive", 31, "zai-org/glm-5.3-flash")?.alias, "MITSU(미츠)");
+    // 세 번째 Anthropic 계정(OAuth 자리 2)은 SHIORI다.
+    syncAccountFaces([...REPORTS, { provider: "anthropic", credentialId: 13, oauthPosition: 2, metadata: { email: "third@example.com" } }]);
+    assert.equal(resolveAccountFace("switch", "anthropic", 13)?.alias, "SHIORI(시오리)");
   } finally {
     route.restore();
   }

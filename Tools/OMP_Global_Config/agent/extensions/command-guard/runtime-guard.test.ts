@@ -793,43 +793,6 @@ describe("command guard runtime gates", () => {
     expect(task.match(/^TASK_GUARD:$/gm)).toHaveLength(1);
   });
 
-  test("a mixed summon keeps SHION pending while tool-capable tasks dispatch", async () => {
-    const harness = createGuardHarness();
-    await harness.emit("input", { type: "input", text: "유키와 시온 불러와", source: "rpc" });
-
-    const allowed = await harness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "task",
-      toolCallId: "task-yuki",
-      input: {
-        tasks: [{
-          agent: "maker",
-          task: '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]\nTASK_GUARD:\nWORK_CLASS: diagnostic\nPRIMARY_DELIVERABLE: 인사\nOWNED_PATHS: .\n\n인사한다.',
-        }],
-      },
-    }) as { input?: unknown } | undefined;
-    expect(allowed?.input).toBeDefined();
-
-    const readBlocked = await harness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "read",
-      toolCallId: "read-mixed",
-      input: { path: "file.ts", i: "Reading file" },
-    });
-    expect(readBlocked).toMatchObject({ block: true });
-
-    expect(await harness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-shion",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt, { model: 'web6/gpt-6-pro' });",
-        i: "Calling WEB6 consultation",
-      },
-    })).toBeUndefined();
-  });
-
   test("ordinary eval keeps stateless completion available for final-verdict consult", async () => {
     const harness = createGuardHarness();
     await harness.emit("input", { type: "input", text: "최종 판정 상담해", source: "rpc" });
@@ -857,160 +820,7 @@ describe("command guard runtime gates", () => {
     expect(JSON.stringify(blocked)).toContain("첫 관련 행동은 task child");
   });
 
-  test("SHION summon rejects task and accepts only voiced exact-WEB6 completion calls", async () => {
-    async function readyShion() {
-      const harness = createGuardHarness();
-      await harness.emit("input", { type: "input", text: "시온 호출해", source: "rpc" });
-      return harness;
-    }
-
-    const taskHarness = await readyShion();
-    const taskBlocked = await taskHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "task",
-      toolCallId: "task-1",
-      input: { agent: "maker", task: "상담" },
-    });
-    expect(JSON.stringify(taskBlocked)).toContain("task child가 아닙니다");
-
-    const wrongHarness = await readyShion();
-    const evalBlocked = await wrongHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-wrong",
-      input: { language: "js", code: "print('wrong')", i: "Calling consultation" },
-    });
-    expect(JSON.stringify(evalBlocked)).toContain("character-voice");
-
-    const jsSlowHarness = await readyShion();
-    const jsSlowBlocked = await jsSlowHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-slow",
-      input: {
-        language: "js",
-        code: "const marker='web6/gpt-6-pro'; const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt, { model: 'slow' });",
-        i: "Calling WEB6 consultation",
-      },
-    });
-    expect(JSON.stringify(jsSlowBlocked)).toContain("bare completion()");
-
-    const pySlowHarness = await readyShion();
-    const pySlowBlocked = await pySlowHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-py-slow",
-      input: {
-        language: "py",
-        code: "marker = 'web6/gpt-6-pro'\nprompt = '<character-voice alias=\"SHION(시온)\">'\ncompletion(prompt, model='slow')",
-        i: "Calling WEB6 consultation",
-      },
-    });
-    expect(JSON.stringify(pySlowBlocked)).toContain("bare completion()");
-
-    const aliasHarness = await readyShion();
-    const aliasBlocked = await aliasHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-alias",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; const c=completion; c(prompt,{model:'slow'}); completion('dummy',{model:'web6/gpt-6-pro'});",
-        i: "Calling WEB6 consultation",
-      },
-    });
-    expect(JSON.stringify(aliasBlocked)).toContain("bare completion()");
-
-    const propertyHarness = await readyShion();
-    const propertyBlocked = await propertyHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-property",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; client.completion(prompt,{model:'web6/gpt-6-pro'});",
-        i: "Calling WEB6 consultation",
-      },
-    });
-    expect(JSON.stringify(propertyBlocked)).toContain("bare completion()");
-
-    const multipleHarness = await readyShion();
-    const multipleBlocked = await multipleHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-multiple",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt,{model:'web6/gpt-6-pro'}); completion(prompt,{model:'web6/gpt-6-pro'});",
-        i: "Calling WEB6 consultation",
-      },
-    });
-    expect(JSON.stringify(multipleBlocked)).toContain("bare completion()");
-
-    const jsObjectHarness = await readyShion();
-    expect(await jsObjectHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-object",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt, { model: 'web6/gpt-6-pro' });",
-        i: "Calling WEB6 consultation",
-      },
-    })).toBeUndefined();
-
-    const jsPositionalHarness = await readyShion();
-    expect(await jsPositionalHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-js-positional",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt, 'web6/gpt-6-pro');",
-        i: "Calling WEB6 consultation",
-      },
-    })).toBeUndefined();
-
-    const pyHarness = await readyShion();
-    expect(await pyHarness.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-py",
-      input: {
-        language: "py",
-        code: "prompt = '<character-voice alias=\"SHION(시온)\">'\ncompletion(prompt, model='web6/gpt-6-pro')",
-        i: "Calling WEB6 consultation",
-      },
-    })).toBeUndefined();
-  });
-  test("failed WEB6 consultation releases SHION while failed tool-capable spawn stays pending", async () => {
-    const shion = createGuardHarness();
-    await shion.emit("input", { type: "input", text: "시온 호출해", source: "rpc" });
-    expect(await shion.emit("tool_call", {
-      type: "tool_call",
-      toolName: "eval",
-      toolCallId: "eval-shion-failed",
-      input: {
-        language: "js",
-        code: "const prompt='<character-voice alias=\"SHION(시온)\">'; completion(prompt, { model: 'web6/gpt-6-pro' });",
-        i: "Calling WEB6 consultation",
-      },
-    })).toBeUndefined();
-    await shion.emit("tool_result", {
-      type: "tool_result",
-      toolName: "eval",
-      toolCallId: "eval-shion-failed",
-      input: {},
-      content: [{ type: "text", text: "completion() could not resolve exact model" }],
-      isError: true,
-    });
-    expect(await shion.emit("tool_call", {
-      type: "tool_call",
-      toolName: "read",
-      toolCallId: "read-after-failed-shion",
-      input: { path: "diagnostics.log", i: "Reading consultation failure" },
-    })).toBeUndefined();
-
+  test("a failed summon spawn keeps its character pending", async () => {
     const yuki = createGuardHarness();
     await yuki.emit("input", { type: "input", text: "유키 불러와", source: "rpc" });
     expect(await yuki.emit("tool_call", {
@@ -1079,17 +889,17 @@ describe("command guard runtime gates", () => {
     }
   });
 
-  test("office mode: several seats keep their own model, account position and consult-only limit", async () => {
+  test("office mode: several Anthropic seats keep their own exact account position", async () => {
     const dir = await mkdtemp(join(tmpdir(), "office-guard-multi-"));
     const previous = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = dir;
     try {
-      await writeFile(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n', "utf8");
+      await writeFile(join(dir, "config.yml"), 'characterSeats:\n  "RIN(린)": 0\n  "MIO(미오)": 1\n  "SHIORI(시오리)": 2\n', "utf8");
       await writeFile(join(dir, "cuelo-character-mode.json"), JSON.stringify({ mode: "office" }));
       await mkdir(join(dir, "characters-office"));
       const voice = { temperament: "느긋한 선배형", expression: "낮은 반말" };
       const seats: Record<string, unknown> = {};
-      for (const [seat, id, alias, name] of [["MIO(미오)", "alder", "ALDER(앨더)", "앨더"], ["SHION(시온)", "cedar", "CEDAR(시더)", "시더"]]) {
+      for (const [seat, id, alias, name] of [["MIO(미오)", "alder", "ALDER(앨더)", "앨더"], ["SHIORI(시오리)", "cedar", "CEDAR(시더)", "시더"]]) {
         await writeFile(join(dir, "characters-office", `${id}.png`), "png");
         seats[seat] = { id, face: `${id}.png`, alias, names: [id, name], voice };
       }
@@ -1114,9 +924,10 @@ describe("command guard runtime gates", () => {
       await wrongPosition.emit("input", { type: "input", text: "앨더 불러와", source: "rpc" });
       expect(await call(wrongPosition, alderMarker(0), "alder-bad")).toMatchObject({ block: true });
 
-      const consultOnly = createGuardHarness();
-      await consultOnly.emit("input", { type: "input", text: "시더 불러와", source: "rpc" });
-      expect(await call(consultOnly, '[character-summon alias="CEDAR(시더)" model="web6/gpt-6-pro"]', "cedar-task")).toMatchObject({ block: true });
+      const cedar = createGuardHarness();
+      await cedar.emit("input", { type: "input", text: "시더 불러와", source: "rpc" });
+      const cedarMarker = '[character-summon alias="CEDAR(시더)" model="anthropic/claude-opus-5-5" oauth-position="2"]';
+      expect((await call(cedar, cedarMarker, "cedar-task"))?.input?.task).toContain(cedarMarker);
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;

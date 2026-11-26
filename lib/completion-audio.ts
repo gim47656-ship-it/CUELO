@@ -15,7 +15,8 @@ export const COMPLETION_AUDIO_ALIASES = [
   "MIO(미오)",
   "RIN(린)",
   "MITSU(미츠)",
-  "SHION(시온)",
+  "HIKARI(히카리)",
+  "SHIORI(시오리)",
 ] as const;
 
 export type CompletionAudioAlias = (typeof COMPLETION_AUDIO_ALIASES)[number];
@@ -27,7 +28,8 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "MIO(미오)": "mio",
   "RIN(린)": "rin",
   "MITSU(미츠)": "mitsu",
-  "SHION(시온)": "shion",
+  "HIKARI(히카리)": "hikari",
+  "SHIORI(시오리)": "shiori",
 };
 
 /** 캐릭터 별칭의 자산 id. 모르는 별칭은 `null`. 통화 음성 매니페스트도 같은 id를 쓴다. */
@@ -390,7 +392,6 @@ export interface CueSpeaker {
  * 메시지가 기록한 provider·모델·계정이다. 이 턴에 아직 답이 없을 때만 세션 모델(`fallbackProvider`·`fallbackModel`)로
  * 물러난다. 세션 모델은 세션이 고른 모델이지 지금 말한 쪽이 아니고, 지난 재시도 폴백이 남아
  * 낡을 수 있다 — Opus 턴의 선택지 큐에 Codex 계정 얼굴이 뜬 적이 있다(2026-10-18).
- * 6PRO 상담 답변은 에이전트 턴의 화자가 아니므로 건너뛴다.
  */
 export function cueSpeaker(
   messages: readonly AgentMessage[],
@@ -398,45 +399,14 @@ export function cueSpeaker(
   fallbackProvider: string | undefined,
   fallbackModel?: string,
 ): CueSpeaker {
-  if (streaming && !(streaming.provider === "web6" && streaming.model === CONSULT_REPLY_MODEL)) {
+  if (streaming) {
     return { provider: streaming.provider, model: streaming.model, credentialId: streaming.credentialId };
   }
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role === "user") break;
-    if (message.role !== "assistant" || (message.provider === "web6" && message.model === CONSULT_REPLY_MODEL)) continue;
+    if (message.role !== "assistant") continue;
     return { provider: message.provider, model: message.model, credentialId: message.credentialId };
   }
   return { provider: fallbackProvider, model: fallbackModel, credentialId: undefined };
-}
-
-/**
- * 6PRO 상담 답변이 대화창에 투영될 때의 모델 표기. `lib/gpt6-bridge.ts`의 `GPT6_REPLY_SOURCE`와
- * 같은 값이다 — 그쪽은 서버 전용 모듈이라 브라우저 코드가 값을 가져올 수 없다.
- */
-export const CONSULT_REPLY_MODEL = "ChatGPT 6PRO";
-
-/**
- * 같은 기록이 뒤로 자라며 새로 붙은 6PRO 상담 답변의 id. 상담 답변은 에이전트 턴이 아니라
- * 턴 종료 알림이 없다. 앞부분이 그대로 이어질 때만 「새로 도착했다」고 본다 — 처음 불러온
- * 기록·브랜치 이동·다른 세션은 성장이 아니므로 지난 답변을 다시 알리지 않는다.
- */
-export function newConsultReplyEntryIds(
-  previous: readonly string[],
-  next: readonly string[],
-  messages: readonly AgentMessage[],
-): string[] {
-  if (previous.length === 0 || next.length <= previous.length) return [];
-  for (let i = 0; i < previous.length; i++) {
-    if (previous[i] !== next[i]) return [];
-  }
-  const fresh: string[] = [];
-  const tracked = Math.min(messages.length, next.length);
-  for (let i = previous.length; i < tracked; i++) {
-    const message = messages[i];
-    if (message.role === "assistant" && message.provider === "web6" && message.model === CONSULT_REPLY_MODEL) {
-      fresh.push(next[i]);
-    }
-  }
-  return fresh;
 }

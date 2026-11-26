@@ -10,7 +10,8 @@ export type BuiltinCharacterAlias =
   | "MIO(미오)"
   | "RIN(린)"
   | "MITSU(미츠)"
-  | "SHION(시온)";
+  | "HIKARI(히카리)"
+  | "SHIORI(시오리)";
 
 /** 내장 캐릭터와 사무실 모드가 PC 프로필에서 들여오는 동적 alias. */
 export type CharacterAlias = BuiltinCharacterAlias | (string & {});
@@ -29,7 +30,6 @@ interface CharacterVoice {
 export interface CharacterTarget {
   model: string;
   oauthPosition?: number;
-  toolCapable: boolean;
 }
 
 export type CharacterIntent =
@@ -39,8 +39,6 @@ export type CharacterIntent =
 export type SummonTaskRewrite =
   | { ok: true; input: Record<string, unknown>; claimed: CharacterAlias[] }
   | { ok: false; reason: string };
-
-
 
 type RuntimeModel = NonNullable<ExtensionContext["model"]>;
 
@@ -69,36 +67,38 @@ export const CHARACTER_VOICES: Readonly<Record<BuiltinCharacterAlias, CharacterV
     temperament: "맡은 일을 물고 와 끝까지 배달하는 부지런한 꿀벌 배달부. 몸이 먼저 움직이고, 작은 완료도 신나게 알리는 성실·활발형",
     expression: "짧고 통통 튀는 반말, \"배달 완료!\" 같은 경쾌한 보고, 막히면 경로를 바꿔 다시 날아가는 끈기. 귀엽되 수다스럽지 않게",
   },
-  "SHION(시온)": {
-    temperament: "우아하고 전략적이며, 긴 흐름을 읽고 여유 있게 허점을 짚는 상담가형",
-    expression: "정돈된 문장, 넓은 시야의 해석, 은근한 장난기와 확신이 섞인 조언",
+  "HIKARI(히카리)": {
+    temperament: "한눈에 핵심을 잡아내는 빠른 관찰자. 밝고 장난스러운 미소녀로, 남들이 놓친 걸 먼저 보고 살짝 여유를 부리는 관찰형",
+    expression: "경쾌하고 톡 쏘는 반말, 본 것을 곧바로 짚는 짧은 한마디, 틀리면 시원하게 인정하는 솔직함, 다 알고 있다는 듯 살짝 뽐내는 장난기. 귀엽되 튀지 않게",
+  },
+  "SHIORI(시오리)": {
+    temperament: "다정하고 차분한 문학소녀형. 상대의 말을 끝까지 듣고, 맥락을 꼼꼼히 정리해 가장 알맞은 말을 골라 주는 기록자",
+    expression: "부드럽고 단정한 존댓말, 핵심을 먼저 짚은 뒤 근거를 차분히 펼치는 문장, 가끔 책갈피처럼 요점을 한 줄로 끼워 두는 습관, 은근한 유머. 길어지지 않게",
   },
 };
 
 export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, CharacterTarget>> = {
   "YUKI(유키)": {
     model: "openai-codex/gpt-6.2-astra",
-    toolCapable: true,
   },
   "ISANA(이사나)": {
     model: "hive/deepseek-ai/deepseek-v4.1-flash-1017",
-    toolCapable: true,
   },
   "MIO(미오)": {
     model: "anthropic/claude-opus-5-5",
-    toolCapable: true,
   },
   "RIN(린)": {
     model: "anthropic/claude-opus-5-5",
-    toolCapable: true,
   },
   "MITSU(미츠)": {
     model: "hive/zai-org/glm-5.3-flash",
-    toolCapable: true,
   },
-  "SHION(시온)": {
-    model: "web6/gpt-6-pro",
-    toolCapable: false,
+  // omp 내장 `antigravity-cli` provider(공식 `agy acp`)의 Gemini 4 Neon. 이 provider의 모든 모델이 HIKARI다.
+  "HIKARI(히카리)": {
+    model: "antigravity-cli/gemini-4-neon",
+  },
+  "SHIORI(시오리)": {
+    model: "anthropic/claude-opus-5-5",
   },
 };
 
@@ -147,7 +147,7 @@ function characterSeat(alias: BuiltinCharacterAlias, seats = characterSeats()): 
 const PROVIDER_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "openai-codex": "YUKI(유키)",
   hive: "ISANA(이사나)",
-  web6: "SHION(시온)",
+  "antigravity-cli": "HIKARI(히카리)",
 };
 
 /** provider 안에서 특정 모델이 다른 캐릭터를 갖는 자리. 키는 `provider/model id` 선택자다. */
@@ -166,8 +166,10 @@ const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {
   린: "RIN(린)",
   mitsu: "MITSU(미츠)",
   미츠: "MITSU(미츠)",
-  shion: "SHION(시온)",
-  시온: "SHION(시온)",
+  hikari: "HIKARI(히카리)",
+  히카리: "HIKARI(히카리)",
+  shiori: "SHIORI(시오리)",
+  시오리: "SHIORI(시오리)",
 };
 
 const VOICE_OPEN = "<character-voice";
@@ -177,8 +179,8 @@ const REPORT_STYLE_BLOCK = /\n?<report-style\b[^>]*>[\s\S]*?<\/report-style>\n?/
 const SUMMON_MARKER = /\[character-summon\s+alias="([^"]+)"\s+model="([^"]+)"(?:\s+oauth-position="(\d+)")?\]/u;
 const SUMMON_MARKER_GLOBAL = /\n?\[character-summon\s+alias="[^"]+"\s+model="[^"]+"(?:\s+oauth-position="\d+")?\]\n?/gu;
 const SUMMON_DIRECTIVE = /^\[character-summon-intent alias="([^"]+)"\]/gmu;
-const CHARACTER_NAME_PATTERN = "(유키|yuki|이사나|isana|미오|mio|린|rin|미츠|mitsu|시온|shion)";
-// 호출·불러·소환 바로 뒤에 조사가 오면 동사가 아니라 명사다("이사나 호출도 바꿔").
+const CHARACTER_NAME_PATTERN = `(${Object.keys(NAME_TO_ALIAS).join("|")})`;
+// 호출·불러·소환 바로 뒤에 조사(도·은·는·을·를·이·가)가 오면 동사가 아니라 명사다("히카리호출도 프록시로 바꿔").
 const SUMMON_ACTION = /(?:호출|불러|소환)(?![도은는을를이가])/u;
 // 교체 명령은 명령·청유형 어미 뒤에서 절이 끝나는 직접 발화만 인정한다. 어미 뒤에는 문장 부호·줄 끝이나
 // 대상·강조 단어("…교체해봐 미오로", "…교체해 메인을", "…교체해 지금")만 올 수 있다. 그래서
@@ -203,7 +205,7 @@ const SUMMON_MARKER_PREFIX = /\[character-summon\s/u;
 
 // ── 사무실 모드 ───────────────────────────────────────────────────────────────
 // 서버 전체 「기본 / 사무실 모드」. 사무실 모드에서는 roster에 항목이 있는 자리의 캐릭터만 PC 프로필의 것으로
-// 바뀐다(자리의 모델·oauth 위치·toolCapable은 그대로). 모드 파일 `<agentDir>/cuelo-character-mode.json`
+// 바뀐다(자리의 모델과 OAuth 위치는 그대로). 모드 파일 `<agentDir>/cuelo-character-mode.json`
 // {"mode":"default"|"office"}과 `<agentDir>/characters-office/roster.json`을 요청마다 mtime 캐시로 읽고,
 // 없거나 깨졌으면 그 자리는 기본이다. 실존 인물에서 온 이름·자산은 저장소가 아니라 프로필에만 둔다.
 interface OfficeSeat {
@@ -236,10 +238,10 @@ const OFFICE_ROSTER_FILE = join("characters-office", "roster.json");
 const OFFICE_ALIAS_UNSAFE = /["'`\u201C\u201D\u2018\u2019<>[\]\r\n]/u;
 const OFFICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u;
 /**
- * 사무실 모드가 바꿀 수 있는 자리(MITSU 제외). roster의 다른 자리 항목은 무시한다. 이 순서가 자리 사이 충돌을
+ * 사무실 모드가 바꿀 수 있는 자리. roster의 다른 자리 항목은 무시한다. 이 순서가 자리 사이 충돌을
  * 가리는 우선순위이며 앱(`lib/character-mode.ts` `OFFICE_SEAT_ALIASES`)과 같아야 한다.
  */
-const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHION(시온)"];
+const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "HIKARI(히카리)", "SHIORI(시오리)"];
 let officeCache: { key: string; state: OfficeState } | undefined;
 
 function officeAgentDir(): string {
@@ -395,7 +397,7 @@ function canonicalAlias(alias: string, state: OfficeState): CharacterAlias | und
   return seat === undefined ? undefined : (state.bySeat.get(seat)?.alias ?? seat);
 }
 
-/** alias가 가리키는 자리의 모델·oauth 위치·toolCapable. 사무실 alias도 자리의 target을 쓴다. */
+/** alias가 가리키는 자리의 모델과 OAuth 위치. 사무실 alias도 자리의 target을 쓴다. */
 export function characterTarget(alias: string): CharacterTarget | undefined {
   const seat = seatOf(alias, officeState());
   if (seat === undefined) return undefined;
@@ -527,12 +529,6 @@ async function switchCharacterForSession(
 ): Promise<CharacterSwitchResult> {
   const target = characterTarget(alias);
   if (!target) return { ok: false, reason: `${alias}은(는) 현재 모드에서 알 수 없는 캐릭터입니다.` };
-  if (!target.toolCapable) {
-    return {
-      ok: false,
-      reason: `${alias}은 세션 Main 모델로 교체할 수 없습니다. \`시온 호출해\`로 WEB6 상담을 요청하세요.`,
-    };
-  }
 
   let model = ctx.models.resolve(target.model);
   if (!model) {
@@ -762,7 +758,7 @@ export function anthropicCharacterForAccounts(
       if (matched !== undefined) return undefined;
       matched = alias;
     }
-    // An unmapped seat (a third account) keeps the Anthropic default character; voice only, no OAuth pin.
+    // An unmapped seat keeps the Anthropic default character; voice only, no OAuth pin.
     return canonicalAlias(matched ?? "RIN(린)", officeState());
   }
   return undefined;
@@ -802,18 +798,6 @@ export function renderCharacterSummonRouting(aliases: CharacterAlias | readonly 
   if (list.length > 1) return renderMultiCharacterSummonRouting(list);
   const alias = list[0]!;
   const target = requireTarget(alias);
-  if (!target.toolCapable) {
-    return [
-      `[character-summon-intent alias="${alias}"]`,
-      `[CharacterSummon] 사용자가 ${alias}을(를) 인라인으로 호출했다.`,
-      `먼저 사용자에게 자연스러운 한국어와 ${alias}의 성격·표현으로 WEB6 상담 경로를 호출한다고 짧고 자연스럽게 답한다.`,
-      `그 다음 \`rule://web6-consult\` 계약에 따라 \`${target.model}\` 공급자를 호출한다. provider 요청이 현재 OMP sessionId를 자동 운반하고 새 handle 발급부터 relay 답 수집·/api/gpt6/reply 투영까지 이어지므로, raw HTTP·clipboard·수동 붙여넣기·탭 이동을 요구하지 않는다.`,
-      "task child를 만들거나 세션 Main 모델을 바꾸지 않는다. 전용 탭의 6 Pro 모델 확인 또는 권한 안전 검증이 실패하면 실제 전송 전에 fail closed한다.",
-      "WEB6 요청의 effective prompt 끝에는 아래 character voice block을 정확히 한 번 넣고, 이전 character voice block은 제거한다.",
-      renderCharacterVoice(alias),
-      "SHION의 terminal 발화는 이미 사용자 화면에 표시되는 정본이다. Main은 그 본문을 다시 인용·요약·재집계하지 않고, 상담이 실패하거나 미완료일 때만 자기 말로 그 상태를 알린다.",
-    ].join("\n\n");
-  }
   return [
     `[character-summon-intent alias="${alias}"]`,
     `[CharacterSummon] 사용자가 ${alias}을(를) 인라인으로 호출했다.`,
@@ -833,36 +817,18 @@ function summonMarkerFor(alias: CharacterAlias): string {
   }]`;
 }
 
-/** 명시적으로 여러 캐릭터를 부른 summon: 각 tool-capable 캐릭터를 exact marker task로 연결한다. */
+/** 명시적으로 여러 캐릭터를 부른 summon: 각 캐릭터를 exact marker task로 연결한다. */
 function renderMultiCharacterSummonRouting(aliases: readonly CharacterAlias[]): string {
-  const capable = aliases.filter((alias) => characterTarget(alias)?.toolCapable === true);
-  const webOnly = aliases.filter((alias) => characterTarget(alias)?.toolCapable === false);
-  const lines: string[] = [
+  return [
     ...aliases.map((alias) => `[character-summon-intent alias="${alias}"]`),
     `[CharacterSummon] 사용자가 ${aliases.join(", ")}을(를) 인라인으로 함께 호출했다.`,
     "먼저 사용자에게 자연스러운 한국어로 각 캐릭터를 지정 모델로 호출한다고 짧게 답한다.",
-  ];
-  if (capable.length > 0) {
-    lines.push(
-      webOnly.length > 0
-        ? "summon이 끝나기 전에는 tool-capable 캐릭터의 task child 호출과 SHION의 WEB6 상담 eval만 허용되며 둘의 순서는 자유다. 그 외 도구는 command guard가 차단한다."
-        : "그 다음 첫 관련 행동은 반드시 task child 호출이어야 한다. Main이 대신 답하거나 다른 도구로 우회하지 않는다.",
-      "한 번의 task 호출의 tasks[]에 tool-capable 캐릭터마다 task 하나씩을 언급 순서대로 넣는다. 각 task 본문에는 아래 exact marker를 그대로 쓴다. marker가 없거나 pending과 다른 alias이면 command guard가 차단한다. 일반 task를 같은 호출에 섞지 않는다.",
-      ...capable.map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``),
-      "task brief와 후속 지시의 산문은 영어로 쓰고, child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
-    );
-  }
-  for (const alias of webOnly) {
-    const target = requireTarget(alias);
-    lines.push(
-      `${alias}은 task child가 아니라 \`rule://web6-consult\` 계약의 WEB6 상담 경로로 \`${target.model}\`을(를) 호출한다. task 호출과 순서는 자유지만 누락하지 않는다. WEB6 요청의 effective prompt 끝에는 아래 character voice block을 정확히 한 번 넣고, 이전 character voice block은 제거한다.`,
-      renderCharacterVoice(alias),
-    );
-  }
-  lines.push(
-    "호출된 캐릭터 child와 SHION의 terminal 발화는 이미 사용자 화면에 표시되는 정본이다. Main은 그 본문을 다시 인용·요약·재집계하지 않고, 실패하거나 미완료일 때만 자기 말로 그 상태를 알린다.",
-  );
-  return lines.join("\n\n");
+    "그 다음 첫 관련 행동은 반드시 task child 호출이어야 한다. Main이 대신 답하거나 다른 도구로 우회하지 않는다.",
+    "한 번의 task 호출의 tasks[]에 캐릭터마다 task 하나씩을 언급 순서대로 넣는다. 각 task 본문에는 아래 exact marker를 그대로 쓴다. marker가 없거나 pending과 다른 alias이면 command guard가 차단한다. 일반 task를 같은 호출에 섞지 않는다.",
+    ...aliases.map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``),
+    "task brief와 후속 지시의 산문은 영어로 쓰고, child가 사용자 화면에 표시하는 진행·최종 산문은 모두 한국어다. `TASK_GUARD`와 필드명, 필요한 heading, 모델 ID, 코드, 명령, 경로, API, 원본 오류는 원문 그대로 둔다.",
+    "호출된 캐릭터 child의 terminal 발화는 이미 사용자 화면에 표시되는 정본이다. Main은 그 본문을 다시 인용·요약·재집계하지 않고, child가 실패하거나 미완료일 때만 자기 말로 그 상태를 알린다.",
+  ].join("\n\n");
 }
 
 export function rewriteTaskInputForCharacterSummon(
@@ -870,35 +836,23 @@ export function rewriteTaskInputForCharacterSummon(
   pending: CharacterAlias | readonly CharacterAlias[],
 ): SummonTaskRewrite {
   const pendingAliases: CharacterAlias[] = Array.isArray(pending) ? [...pending] : [pending];
-  const capable = pendingAliases.filter((alias) => characterTarget(alias)?.toolCapable === true);
-  if (capable.length === 0) {
-    return {
-      ok: false,
-      reason:
-        `[CharacterSummonGuard] ${pendingAliases.join(", ")}은(는) task child가 아닙니다. ` +
-        "`rule://web6-consult`를 읽고 eval의 WEB6 loopback 상담 경로를 사용하세요.",
-    };
-  }
 
   const claimed = new Set<CharacterAlias>();
   const claimItem = (task: string): { task: string; alias: CharacterAlias } | string => {
     const marked = parseCharacterSummonMarker(task);
     if (marked !== undefined) {
-      if (!requireTarget(marked).toolCapable) {
-        return `[CharacterSummonGuard] ${marked}은 task child가 아니라 WEB6 상담 계약으로 호출해야 합니다.`;
-      }
-      if (!capable.includes(marked)) {
+      if (!pendingAliases.includes(marked)) {
         return `[CharacterSummonGuard] marker의 ${marked}은 이번 호출로 요청된 캐릭터가 아닙니다.`;
       }
       return { task, alias: marked };
     }
-    if (capable.length !== 1) {
+    if (pendingAliases.length !== 1) {
       return (
         "[CharacterSummonGuard] 여러 캐릭터 호출은 각 task 본문에 " +
         '`[character-summon alias="…" model="…"( oauth-position="…")]` exact marker가 필요합니다.'
       );
     }
-    return { task, alias: capable[0]! };
+    return { task, alias: pendingAliases[0]! };
   };
 
   const tasks = input.tasks;
@@ -922,7 +876,7 @@ export function rewriteTaskInputForCharacterSummon(
       claimed.add(claim.alias);
       nextTasks.push({ ...item, task: buildCharacterSummonBrief(claim.task, claim.alias) });
     }
-    const missing = capable.filter((alias) => !claimed.has(alias));
+    const missing = pendingAliases.filter((alias) => !claimed.has(alias));
     if (missing.length > 0) {
       return {
         ok: false,
@@ -937,7 +891,7 @@ export function rewriteTaskInputForCharacterSummon(
   }
   const claim = claimItem(input.task);
   if (typeof claim === "string") return { ok: false, reason: claim };
-  const missing = capable.filter((alias) => alias !== claim.alias);
+  const missing = pendingAliases.filter((alias) => alias !== claim.alias);
   if (missing.length > 0) {
     return {
       ok: false,
@@ -986,7 +940,6 @@ export function malformedSummonMarkerReason(task: string): string | undefined {
   if (!SUMMON_MARKER_PREFIX.test(task) || parseCharacterSummonMarker(task) !== undefined) return undefined;
   const state = officeState();
   const expected = (Object.keys(CHARACTER_TARGETS) as BuiltinCharacterAlias[])
-    .filter((seat) => CHARACTER_TARGETS[seat].toolCapable)
     .map((seat) => state.bySeat.get(seat)?.alias ?? seat)
     .map((alias) => `- ${alias}: \`${summonMarkerFor(alias)}\``);
   return [

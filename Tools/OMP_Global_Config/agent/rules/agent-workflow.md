@@ -58,12 +58,13 @@ Skill은 필요하거나 요청했을 때만, 절차 Skill(`systematic-debugging
 |---|---|---|---|
 | **YUKI(유키)** | `openai-codex/gpt-6.2-astra` | 이 모델의 task child | 현재 세션만 전환 |
 | **ISANA(이사나)** | `hive/deepseek-ai/deepseek-v4.1-flash-1017` | 이 모델의 task child | 현재 세션만 전환 |
-| **RIN(린)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
-| **MIO(미오)** | `anthropic/claude-opus-5-5`, 지정 계정 | 지정 계정 고정 task child | 지정 계정 pin 후 현재 세션 전환 |
+| **MIO(미오)** | `anthropic/claude-opus-5-5` | `characterSeats`의 MIO 계정 pin | 같은 계정에 현재 세션 pin |
+| **RIN(린)** | `anthropic/claude-opus-5-5` | `characterSeats`의 RIN 계정 pin | 같은 계정에 현재 세션 pin |
 | **MITSU(미츠)** | `hive/zai-org/glm-5.3-flash` | 이 모델의 task child | 현재 세션만 전환 |
-| **SHION(시온)** | `web6/gpt-6-pro` | `rule://web6-consult` 상담(child 아님) | 금지 |
+| **HIKARI(히카리)** | `antigravity-cli/gemini-4-neon` | 이 모델의 task child | 현재 세션만 전환 |
+| **SHIORI(시오리)** | `anthropic/claude-opus-5-5` | `characterSeats`의 SHIORI 계정 pin | 같은 계정에 현재 세션 pin |
 
-RIN과 MIO의 OAuth 계정은 세션 단위 정확한 pin이며 쓸 수 없으면 다른 계정이나 모델로 조용히 대체하지 않는다. `교체`가 실패하면 이전 세션 모델을 유지한다. SHION은 사용자가 명시했을 때만 쓰는 선택적 상담이다. 정본은 `harness-policy.json` `characterRouting`과 `extensions/character-voice.ts`다.
+Anthropic 캐릭터의 OAuth 계정은 세션 단위 정확한 pin이며 쓸 수 없으면 다른 계정이나 모델로 조용히 대체하지 않는다. `교체`가 실패하면 이전 세션 모델을 유지한다. 정본은 `harness-policy.json` `characterRouting`과 `extensions/character-voice.ts`다.
 
 ## 문서와 인코딩
 

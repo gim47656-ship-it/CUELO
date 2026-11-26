@@ -20,9 +20,9 @@ test("applies a session snapshot once, preserves optimistic input, and isolates 
   const persistedUser = { role: "user", content: "질문", timestamp: 1 };
   const reply = {
     role: "assistant",
-    content: [{ type: "text", text: "시온 답변" }],
-    provider: "web6",
-    model: "web6",
+    content: [{ type: "text", text: "다른 답변" }],
+    provider: "anthropic",
+    model: "claude-opus-5-5",
     stopReason: "stop",
     timestamp: 2,
   };
@@ -275,11 +275,11 @@ export const useLayoutEffect = () => {};
     stopReason: "stop",
     timestamp: 10,
   };
-  const shionReply = {
+  const laterReply = {
     role: "assistant",
-    content: [{ type: "text", text: "연이어 도착한 시온 답" }],
-    provider: "web6",
-    model: "web6",
+    content: [{ type: "text", text: "연이어 도착한 다른 답" }],
+    provider: "anthropic",
+    model: "claude-opus-5-5",
     stopReason: "stop",
     timestamp: 11,
   };
@@ -288,16 +288,16 @@ export const useLayoutEffect = () => {};
   hook.handleAgentEventRef.current({
     type: "session_snapshot",
     sessionId: "session-id",
-    entryId: "shion-1",
+    entryId: "later-1",
     context: {
-      messages: [completed, shionReply],
-      entryIds: ["assistant-1", "shion-1"],
+      messages: [completed, laterReply],
+      entryIds: ["assistant-1", "later-1"],
     },
   });
   hook = useRenderedSession();
   assert.deepEqual(
     hook.messages,
-    [completed, shionReply],
+    [completed, laterReply],
     "같은 render 사이의 message_end를 snapshot이 stale closure로 잃지 않는다",
   );
 
@@ -313,10 +313,10 @@ export const useLayoutEffect = () => {};
   hook.handleAgentEventRef.current({
     type: "session_snapshot",
     sessionId: "session-id",
-    entryId: "shion-2",
+    entryId: "later-2",
     context: {
-      messages: [completed, shionReply],
-      entryIds: ["assistant-1", "shion-2"],
+      messages: [completed, laterReply],
+      entryIds: ["assistant-1", "later-2"],
     },
   });
   hook = useRenderedSession();

@@ -481,7 +481,6 @@ const requiredPolicyShapes = [
   ["mainLane.characterRouting.intentForms", "string"],
   ["mainLane.characterRouting.selectorSource", "string"],
   ["mainLane.characterRouting.toolCapableSummon", "string"],
-  ["mainLane.characterRouting.webOnlySummon", "string"],
   ["mainLane.characterRouting.sessionSwitch", "string"],
   ["mainLane.characterRouting.anthropicAccountMapping", "string"],
   ["mainLane.characterRouting.failure", "string"],
@@ -659,7 +658,6 @@ const characterRoutingKeys = [
   "intentForms",
   "selectorSource",
   "toolCapableSummon",
-  "webOnlySummon",
   "sessionSwitch",
   "anthropicAccountMapping",
   "failure",
@@ -701,24 +699,6 @@ const typedJudgmentRoutingKeys = [
 ];
 const typedJudgmentPlacementKeys = ["pre-retry", "pre-review", "turn-end-confirmation", "turn-end-unanswered-question", "turn-end-solo-stop", "steering-reply-answered", "pre-turn-memory-application", "character-summon-intent", "report-chart-applicability"];
 const typedJudgmentPlacementContractKeys = ["owner", "when", "questions", "decisionMapping"];
-
-// 6 Pro 상담 자리 계약. 이 모델은 도구가 없고 왕복이 분 단위라 "어디에 두는가"가 곧 비용이다.
-// 자리(placements)·트리거·상한·fail-open 중 하나라도 빠지면 상담이 전 세션으로 번지거나
-// 응답 없는 탭 앞에서 세션이 멈춘다. 그래서 키 집합을 통째로 고정한다.
-const web6ConsultKeys = [
-  "what",
-  "shape",
-  "channel",
-  "placements",
-  "neverPlacedAt",
-  "trigger",
-  "input",
-  "prohibited",
-  "cap",
-  "failOpen",
-  "authority",
-  "disclosure",
-];
 
 // 작성자 검증 계약의 자식 키 집합. 이 자리는 "검증을 어디까지 agent가 하고 무엇을 사람에게 넘기는가"를
 // 담으므로, 키가 빠지면 그 조항 하나가 조용히 사라지고 낯선 키는 다른 계약을 몰래 들여온다.
@@ -1471,7 +1451,6 @@ if (policy !== null) {
     ["implementationOwnership.writerValidation.deviceVerificationHandoff", deviceVerificationHandoffKeys, "실장비 확인 인계 계약"],
     ["implementationOwnership.writerValidation.userAbsentAcceptance", userAbsentAcceptanceKeys, "사용자 미참여 인수 실행 계약"],
     ["mainLane.workerReview.finalVerdictConsult", finalVerdictConsultKeys, "최종 판정 직전 상담 계약"],
-    ["mainLane.web6Consult", web6ConsultKeys, "6 Pro 상담 자리 계약"],
     ["mainLane.characterRouting", characterRoutingKeys, "캐릭터 summon·session switch runtime 계약"],
   ]) {
     const node = valueAt(policy, path);
@@ -1580,45 +1559,6 @@ if (policy !== null) {
       `mainLane.workerReview.finalVerdictConsult.prohibited에 "${member}"가 없다(Main 컨텍스트 비용 원칙과 판정 권한이 함께 무너진다).`,
     );
   }
-
-  // 6 Pro는 도구가 없고 왕복이 분 단위다. 그래서 이 계약이 지켜야 하는 것은 "어디에 두는가"와
-  // "언제 저절로 켜지는가" 둘이다. 자리 목록이 흐려지면 상담이 maker 내부와 diff 검수까지 번져
-  // 세션이 대기로 멈추고, 일반 세션 트리거가 느슨해지면 사용자가 부르지도 않았는데 모든 세션이
-  // 분 단위로 느려진다. fail-open과 상한이 그 둘의 마지막 방벽이다.
-  const web6Placements = valueAt(policy, "mainLane.web6Consult.placements");
-  for (const slot of ["dispatch-design", "final-verdict", "competing-hypotheses", "irreversible-design-choice"]) {
-    check(
-      isPlainObject(web6Placements) && isNonEmptyString(web6Placements[slot]),
-      `mainLane.web6Consult.placements.${slot}이 없다(6 Pro를 둘 자리가 흐려진다).`,
-    );
-  }
-  const web6NeverPlaced = valueAt(policy, "mainLane.web6Consult.neverPlacedAt");
-  for (const member of ["maker-internal-implementation-consult", "diff-review", "validation-execution"]) {
-    check(
-      Array.isArray(web6NeverPlaced) && web6NeverPlaced.includes(member),
-      `mainLane.web6Consult.neverPlacedAt에 "${member}"가 없다(도구가 필요한 자리에 도구 없는 모델이 들어가 세션이 멈춘다).`,
-    );
-  }
-  const web6Ordinary = valueAt(policy, "mainLane.web6Consult.trigger.ordinarySession");
-  check(
-    isNonEmptyString(web6Ordinary) && web6Ordinary.includes("explicit"),
-    "mainLane.web6Consult.trigger.ordinarySession이 명시 지시(explicit)로 제한되지 않는다(일반 세션까지 분 단위 왕복을 떠안는다).",
-  );
-  const web6Bound = valueAt(policy, "mainLane.web6Consult.trigger.boundSession");
-  check(
-    isNonEmptyString(web6Bound),
-    "mainLane.web6Consult.trigger.boundSession이 없다(6PRO로 연 세션에서 자동 개입 근거가 사라진다).",
-  );
-  const web6FailOpen = valueAt(policy, "mainLane.web6Consult.failOpen");
-  check(
-    isNonEmptyString(web6FailOpen) && web6FailOpen.includes("never-blocks"),
-    "mainLane.web6Consult.failOpen이 차단 금지를 담지 않는다(응답 없는 탭 앞에서 작업이 멈춘다).",
-  );
-  const web6Authority = valueAt(policy, "mainLane.web6Consult.authority");
-  check(
-    isNonEmptyString(web6Authority) && web6Authority.includes("advice-only"),
-    "mainLane.web6Consult.authority가 조언 전용으로 제한되지 않는다(상담이 판정 위임으로 번진다).",
-  );
 
   // 트리거는 특정 도메인의 어휘가 아니라 결과의 성질이다. 전역 정본이 산업 설비 목록만 들고 있으면
   // 웹·데이터·인프라 프로젝트에서 이 계약이 "우리 얘기가 아니다"로 읽히고 감시가 통째로 빠진다.

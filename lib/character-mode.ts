@@ -20,7 +20,7 @@ export const OFFICE_ROSTER_FILE_NAME = "roster.json";
  * 사무실 캐릭터가 대신 앉을 수 있는 자리(MITSU 제외). 나머지 자리는 두 모드 모두 기본이다.
  * 이 순서가 자리 사이 충돌을 가리는 우선순위다 — harness(`character-voice.ts` `OFFICE_SEATS`)와 같아야 한다.
  */
-export const OFFICE_SEAT_ALIASES = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHION(시온)"] as const;
+export const OFFICE_SEAT_ALIASES = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "HIKARI(히카리)", "SHIORI(시오리)"] as const;
 
 /** 사무실 자산으로 내보낼 수 있는 확장자와 content type. */
 const ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -281,17 +281,4 @@ export async function readCharacterModePayload(agentDir: string): Promise<Charac
   const mode = readCharacterMode(agentDir);
   const seats = await readOfficeSeats(agentDir);
   return { mode, rosterAvailable: seats.length > 0, seats: mode === "office" ? seats : [] };
-}
-
-/** This seat has no voice, cue manifest, harness alias or model binding. */
-export async function readAntigravityCharacter(agentDir: string) {
-  const seats = asRecord(asRecord(await readOfficeJson(agentDir, OFFICE_ROSTER_FILE_NAME))?.seats);
-  const entry = asRecord(seats?.antigravity);
-  const id = text(entry?.id);
-  const alias = text(entry?.alias);
-  if (!id || !ID_PATTERN.test(id) || !alias || alias.length > MAX_ALIAS_LENGTH || UNSAFE_ALIAS.test(alias)) return null;
-  const names = Array.isArray(entry?.names) ? entry.names.map(text).filter((name): name is string => name !== null) : [];
-  const face = text(entry?.face);
-  const asset = face ? await resolveOfficeAsset(agentDir, face) : null;
-  return { id, alias, names, faceUrl: asset && face && asset.contentType.startsWith("image/") ? assetUrl(face) : null };
 }

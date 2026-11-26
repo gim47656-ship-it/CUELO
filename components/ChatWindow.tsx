@@ -92,7 +92,6 @@ import {
   cueForOutcome,
   cueSpeaker,
   cueTagForDialog,
-  newConsultReplyEntryIds,
   resolveCueAnchor,
   type CueAnchorCapture,
   type CueAnchorIntent,
@@ -763,23 +762,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
       return next;
     });
   }, [messages, entryIds, sessionIdRef]);
-  // 6PRO 상담 답변은 에이전트 턴이 아니라 턴 종료 알림이 없다. 같은 기록이 뒤로 자라며 새 답변이
-  // 붙은 순간에만 SHION이 알린다 — 처음 불러온 기록·브랜치 이동의 지난 답변은 다시 알리지 않는다.
-  const consultBaselineRef = useRef<{ sessionId: string; entryIds: readonly string[] } | null>(null);
-  useEffect(() => {
-    const sessionId = sessionIdRef.current;
-    const previous = consultBaselineRef.current;
-    consultBaselineRef.current = sessionId ? { sessionId, entryIds } : null;
-    if (!sessionId || !previous || previous.sessionId !== sessionId) return;
-    const fresh = newConsultReplyEntryIds(previous.entryIds, entryIds, messages);
-    const trigger = currentCueTrigger();
-    if (fresh.length === 0 || !trigger) return;
-    const alias = resolveAccountFace(sessionId, "web6", undefined)?.alias ?? null;
-    for (const entryId of fresh) {
-      if (cuesRef.current.some((cue) => cue.anchorEntryId === entryId)) continue;
-      playCue(alias, "done", trigger, { kind: "entry", entryId });
-    }
-  }, [entryIds, messages, sessionIdRef, currentCueTrigger, playCue]);
   const dependencyWaiting = agentRunning
     && agentPhase?.kind === "running_tools"
     && agentPhase.tools.length > 0

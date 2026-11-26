@@ -219,7 +219,7 @@ export interface AccountIdentity extends AccountFace {
  * 하나가 붙고, 순서도 자산 순서 그대로다. `public/avatars/` 아래 정적 자산이라 외부
  * 아바타 서비스로 계정 식별자가 나가는 일이 없고 새 의존성도 없다.
  *
- * `provider` 없는 RIN·MIO는 계정이 여럿인 provider가 **계정 자리**로 나눠 쓰는 자리다 —
+ * `provider` 없는 RIN·MIO·SHIORI는 계정이 여럿인 provider가 **계정 자리**로 나눠 쓰는 자리다 —
  * 보고서의 `oauthPosition`(core의 OAuth 계정 자리)이 곧 자리다.
  * `provider` 가 붙은 항목은 그 provider 전용 얼굴이라 순서 배정에서 빠진다. 예약 얼굴은
  * 반드시 목록 뒤에 모아 둔다 — 자리를 앞에서부터 세기 때문이고, 그래야 얼굴을 더 늘려도
@@ -228,14 +228,16 @@ export interface AccountIdentity extends AccountFace {
 export const ACCOUNT_FACES = [
   { alias: "RIN(린)", file: "rin.webp" },
   { alias: "MIO(미오)", file: "mio.webp" },
+  // 자리 순서 얼굴(RIN·MIO·SHIORI)은 provider 예약이 없다 — Anthropic OAuth 계정 자리 0·1·2가 그대로 쓴다. 예약 얼굴은 반드시 그 뒤에 모은다.
+  { alias: "SHIORI(시오리)", file: "shiori.webp" },
   // Codex 모델은 계정·모델과 무관하게 YUKI로 표시한다. hive는 API 키 하나를 읽는 custom provider이고
   // (2026-10-18 ISANA가 b-ai에서 옮겨 왔다) 모델마다 얼굴이 다르다 — `model` 이 붙은 MITSU는 그 모델만, provider
-  // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다. web6는 `auth: none`이라 credential
-  // 개념이 없다. Anthropic은 provider 예약 없이 RIN/MIO 순서 자리를 쓴다.
+  // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다.
+  // HIKARI는 omp 내장 `antigravity-cli` provider 전체의 얼굴이다(그 provider의 모든 모델).
   { alias: "MITSU(미츠)", file: "mitsu.webp", provider: "hive", model: "zai-org/glm-5.3-flash" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
-  { alias: "SHION(시온)", file: "shion.webp", provider: "web6" },
+  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "antigravity-cli" },
 ] as const;
 
 export interface CharacterRosterEntry {
@@ -243,12 +245,10 @@ export interface CharacterRosterEntry {
   alias: string;
   provider: string;
   model: string;
-  oauthPosition?: 0 | 1;
+  oauthPosition?: 0 | 1 | 2;
   voice: string;
   summonExample: string;
-  switchExample: string | null;
-  summonNote?: string;
-  switchNote?: string;
+  switchExample: string;
 }
 
 /**
@@ -257,8 +257,8 @@ export interface CharacterRosterEntry {
  */
 export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
   {
-    seed: 3,
-    alias: ACCOUNT_FACES[3].alias,
+    seed: 4,
+    alias: ACCOUNT_FACES[4].alias,
     provider: "openai-codex",
     model: "gpt-6.2-astra",
     voice: "빠른 판단·선명한 결론·영리한 장난기",
@@ -266,8 +266,8 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     switchExample: "유키로 교체해",
   },
   {
-    seed: 4,
-    alias: ACCOUNT_FACES[4].alias,
+    seed: 5,
+    alias: ACCOUNT_FACES[5].alias,
     provider: "hive",
     model: "deepseek-ai/deepseek-v4.1-flash-1017",
     voice: "호기심과 실행력·생기 있는 관찰·솔직함",
@@ -295,8 +295,8 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     switchExample: "미오로 교체해",
   },
   {
-    seed: 2,
-    alias: ACCOUNT_FACES[2].alias,
+    seed: 3,
+    alias: ACCOUNT_FACES[3].alias,
     provider: "hive",
     model: "zai-org/glm-5.3-flash",
     voice: "부지런한 배달·통통 튀는 보고·끈질긴 재도전",
@@ -304,26 +304,31 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     switchExample: "미츠로 교체해",
   },
   {
-    seed: 5,
-    alias: ACCOUNT_FACES[5].alias,
-    provider: "web6",
-    model: "gpt-6-pro",
-    voice: "우아한 전략·넓은 시야·은근한 장난기",
-    summonExample: "시온 불러와",
-    switchExample: null,
-    summonNote: "WEB6 상담으로 호출합니다.",
-    switchNote: "SHION은 WEB6 상담 전용이라 Main으로 교체할 수 없습니다.",
+    seed: 6,
+    alias: ACCOUNT_FACES[6].alias,
+    provider: "antigravity-cli",
+    model: "gemini-4-neon",
+    voice: "빠른 관찰·톡 쏘는 한마디·장난스러운 여유",
+    summonExample: "히카리 불러와",
+    switchExample: "히카리로 교체해",
+  },
+  {
+    seed: 2,
+    alias: ACCOUNT_FACES[2].alias,
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    oauthPosition: 2,
+    voice: "다정하고 차분함·맥락을 꼼꼼히 정리하는 기록자",
+    summonExample: "시오리 불러와",
+    switchExample: "시오리로 교체해",
   },
 ];
 
 /**
- * Main 프리셋 후보. 이 대화의 Main을 바꿀 수 있는 자리 중에서 상담 전용 얼굴(SHION,
- * `switchExample` 없음)을 뺀다. 같은 모델·다른 계정 자리(RIN·MIO)는 계정까지 지정해야
- * 구분되므로 그대로 남긴다.
+ * Main 프리셋 후보. 호출 가능한 캐릭터는 모두 이 대화의 Main이 될 수 있다. 같은 모델·다른 계정 자리
+ * (RIN·MIO·SHIORI)는 계정까지 지정해야 구분되므로 그대로 남긴다.
  */
-export const MAIN_PRESETS: readonly CharacterRosterEntry[] = CHARACTER_ROSTER.filter(
-  (entry) => entry.switchExample !== null,
-);
+export const MAIN_PRESETS: readonly CharacterRosterEntry[] = CHARACTER_ROSTER;
 
 /**
  * 프리셋 하나를 이 대화의 Main에 적용할 때 넘기는 값. 자리(roster entry)에서 그대로 나오고,
@@ -333,7 +338,7 @@ export interface MainPresetSelection {
   alias: string;
   provider: string;
   modelId: string;
-  oauthPosition?: 0 | 1;
+  oauthPosition?: 0 | 1 | 2;
 }
 
 /** roster 자리에서 프리셋 선택 값을 만든다. */
@@ -612,11 +617,11 @@ export function providerDisplayName(provider: string): string {
     "openai-codex": "OpenAI Codex",
     anthropic: "Anthropic",
     "github-copilot": "GitHub Copilot",
+    "antigravity-cli": "Antigravity CLI",
     "opencode-go": "OpenCode Go",
     devin: "Devin",
-    // 일반 규칙이라면 「B Ai」·「Web6」이 된다. 사용량·설정에서 이미 부르는 이름으로 맞춘다.
+    // 일반 규칙이라면 「B Ai」가 된다. 사용량·설정에서 이미 부르는 이름으로 맞춘다.
     "b-ai": "B.AI",
-    web6: "WEB6",
   };
   return known[provider] ?? provider.replace(/(^|-)(\w)/g, (_match, separator: string, character: string) => (
     `${separator ? " " : ""}${character.toUpperCase()}`

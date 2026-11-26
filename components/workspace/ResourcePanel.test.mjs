@@ -37,23 +37,26 @@ function render(props = {}) {
   })));
 }
 
-test("캐릭터가 기본 선택되고 여섯 얼굴과 호출 안내가 보인다", () => {
+test("캐릭터가 기본 선택되고 일곱 얼굴과 호출 안내가 보인다", () => {
   const html = render();
   assert.match(html, /class="[^"]*resource-panel/);
   assert.match(html, /role="tablist"/);
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>캐릭터</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>계정 한도</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>모델 통계</);
-  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "SHION(시온)"]) {
+  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "HIKARI(히카리)", "SHIORI(시오리)"]) {
     assert.match(html, new RegExp(alias.replace(/[()]/g, "\\$&")));
   }
-  assert.equal(html.match(/class="account-avatar"/g)?.length, 6);
+  assert.equal(html.match(/class="account-avatar"/g)?.length, 7);
   assert.match(html, /호출·불러·소환/);
   assert.match(html, /SubAgent로 이 대화에 부릅니다/);
   assert.match(html, /미오 불러와/);
   assert.match(html, /미오로 교체해/);
-  assert.match(html, /WEB6 상담으로 호출합니다/);
-  assert.match(html, /SHION은 WEB6 상담 전용이라 Main으로 교체할 수 없습니다/);
+  assert.match(html, /히카리로 교체해/);
+  assert.match(html, /시오리 불러와/);
+  assert.match(html, /시오리로 교체해/);
+  assert.match(html, /\/avatars\/shiori\.webp/);
+  assert.doesNotMatch(html, /SHION|WEB6|교체 불가/);
 });
 
 test("연결 해제로 사용량 행이 없어져도 미연결 캐릭터 상태를 표시한다", () => {
@@ -61,11 +64,11 @@ test("연결 해제로 사용량 행이 없어져도 미연결 캐릭터 상태�
     reports: [{ provider: "openai-codex", credentialId: 8, disabled: false }],
     providerConnections: new Map([["hive", false], ["openai-codex", true]]),
   }));
-  // hive 하나가 ISANA(DeepSeek)와 MITSU(GLM)를 모두 돌리므로 둘 다 미연결로 표시된다.
-  const mitsu = html.match(/<article[^>]*aria-labelledby="character-roster-2"[\s\S]*?<\/article>/)?.[0];
+  // hive 하나가 ISANA(DeepSeek)와 MITSU(GLM)를 모두 돌리므로 둘 다 미연결로 표시된다. 카드 번호는 얼굴 자리(seed)다.
+  const mitsu = html.match(/<article[^>]*aria-labelledby="character-roster-3"[\s\S]*?<\/article>/)?.[0];
   assert.ok(mitsu, "MITSU 카드가 남아 있어야 한다");
   assert.match(mitsu, /is-unavailable/);
-  assert.match(mitsu, /aria-describedby="character-roster-2-status"/);
+  assert.match(mitsu, /aria-describedby="character-roster-3-status"/);
   assert.match(mitsu, /연결 안 됨/);
   assert.equal(html.match(/is-unavailable/g)?.length, 2);
 });

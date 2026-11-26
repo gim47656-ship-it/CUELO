@@ -106,13 +106,12 @@
       "intentForms": "summon-on-hochulhae-switch-current-main-session-on-gyochehae",
       "selectorSource": "agent/extensions/character-voice.ts-runtime-registry-resolution",
       "toolCapableSummon": "one-normal-task-child-with-standard-task-linkage",
-      "webOnlySummon": "web6-consultation-never-a-task-child-and-never-a-session-main-switch",
       "sessionSwitch": "current-session-only-never-a-global-default-mutation",
-      "anthropicAccountMapping": "stable-oauth-storage-position-zero-rin-position-one-mio-with-exact-session-affinity-for-a-validated-session-switch-command-or-character-summon-marker",
+      "anthropicAccountMapping": "stable-oauth-storage-position-from-characterSeats-for-rin-mio-and-shiori-with-exact-session-affinity-for-a-validated-session-switch-command-or-character-summon-marker",
       "failure": "exact-switch-or-summon-account-block-or-usage-limit-ends-with-the-selected-alias-and-never-emits-sibling-credential-or-model-text-ordinary-sessions-retain-native-fallback",
       "conversationalPrecedence": "selected-natural-korean-character-throughout-user-dialogue-including-failures-and-unknowns-evidence-contracts-govern-information-not-format-except-required-user-or-parser-formats",
       "voiceEnforcement": "wire-boundary-installs-one-selected-character-block-removing-prior-voice-and-report-style-main-never-requotes-visible-child-speech",
-      "officeMode": "profile-only-office-roster-validated-by-agent/extensions/character-voice.ts-and-app-realpath-and-alias-contracts-keeps-seat-model-oauth-and-tool-capability-shion-consult-only-first-valid-entry-wins-invalid-mode-or-roster-uses-default-pending-summon-fails-closed-on-mode-change-never-copy-profile-character-assets-to-repository"
+      "officeMode": "profile-only-office-roster-validated-by-agent/extensions/character-voice.ts-and-app-realpath-and-alias-contracts-keeps-seat-model-and-oauth-first-valid-entry-wins-invalid-mode-or-roster-uses-default-pending-summon-fails-closed-on-mode-change-never-copy-profile-character-assets-to-repository"
     },
     "workWhileWaiting": "genuinely-independent-main-owned-decisions-only",
     "busywork": [
@@ -223,29 +222,6 @@
         "prohibited": ["per-file-save-notice", "per-step-progress-chatter", "inline-diff-or-raw-output-body", "second-dm-for-an-unchanged-revision"],
         "terminalDelta": "delivered-by-the-terminal-result-never-an-extra-dm"
       }
-    },
-    "web6Consult": {
-      "what": "chatgpt-6-pro-reached-through-a-local-openai-compatible-shim-that-drives-the-user-s-own-browser-tab-so-it-has-no-tool-calls-costs-minutes-per-round-trip-and-serializes-on-one-tab",
-      "shape": "text-in-text-out-advice-only-never-an-executor-and-never-a-gate",
-      "channel": "exact-eval-completion-registered-web-consult-provider-through-loopback-dedicated-tab-request-bound-finished-reply-collection-then-authenticated-loopback-session-projection-never-manual-raw-http-or-session-main-model-or-task-child",
-      "placements": {
-        "dispatch-design": "before-the-first-child-of-a-request-on-slice-decomposition-shared-contracts-and-acceptance-conditions-because-a-wrong-decomposition-wastes-every-maker-that-follows",
-        "final-verdict": "the-existing-finalVerdictConsult-slot-whose-summary-only-input-and-objection-list-output-already-match-this-shape",
-        "competing-hypotheses": "when-two-or-more-causes-remain-and-observation-cannot-separate-them-never-as-a-substitute-for-an-observation-main-can-still-make",
-        "irreversible-design-choice": "schema-public-interface-and-migration-decisions-under-irreversible-state-change-or-compatibility-break"
-      },
-      "neverPlacedAt": ["maker-internal-implementation-consult", "diff-review", "validation-execution", "drafting-the-user-facing-answer"],
-      "trigger": {
-        "ordinarySession": "only-on-an-explicit-user-instruction-to-use-6pro-for-that-work-otherwise-the-session-behaves-exactly-as-it-does-today",
-        "boundSession": "dispatch-design-and-final-verdict-fire-by-default-and-the-other-two-fire-at-main-s-discretion-when-their-condition-holds",
-        "bindingSource": "a-gpt6-handle-in-gpt6-handles-json-whose-sessionid-matches-the-running-session-and-that-is-neither-revoked-nor-expired-the-bridge-tells-the-session-at-bind-time-because-the-agent-cannot-read-its-own-session-id-from-the-environment"
-      },
-      "input": ["requirement-text-or-acceptance-conditions", "structure-and-evidence-summaries-with-locators", "the-candidate-options-or-hypotheses-being-weighed"],
-      "prohibited": ["diff-body", "raw-build-or-test-output", "file-contents", "secrets-or-credentials", "asking-it-to-decide-acceptance"],
-      "cap": "at-most-three-calls-per-user-request-because-each-round-trip-costs-minutes-and-an-uncapped-loop-stalls-the-session",
-      "failOpen": "a-shim-error-timeout-or-unavailable-tab-never-blocks-the-work-main-proceeds-on-the-existing-path-and-records-that-it-judged-without-the-consult",
-      "authority": "advice-only-main-still-owns-the-decomposition-the-diagnosis-and-the-verdict-and-having-consulted-is-never-pass-evidence",
-      "disclosure": "using-it-is-reported-to-the-user-in-the-same-turn-like-any-other-non-main-model-use"
     }
   },
   "implementationOwnership": {

@@ -23,7 +23,6 @@ import { sessionPathKey } from "./session-path";
 import { peekSessionProject, rememberPlainSessionProject, resolveProject, type SessionProjectGrouping } from "./worktree";
 import { getDocumentPromptUserMessage } from "./document-attachments";
 import { LIVE_TRANSCRIPT_MESSAGE_TYPE, parseLiveTranscriptContent, parseLiveTranscriptSpeaker } from "./live-types";
-import { GPT6_REPLY_CUSTOM_TYPE, GPT6_REPLY_SOURCE } from "./gpt6-bridge";
 import { latestThinkingCeiling } from "./thinking-ceiling";
 import { buildTranscriptRenderPlan, partitionTranscriptPlan } from "./transcript-plan";
 
@@ -1002,29 +1001,6 @@ function entryToUiMessage(
             model: "Codex Live",
             provider: "openai-codex",
             ...(liveSpeaker ? { liveSpeaker } : {}),
-            stopReason: "stop",
-            timestamp: parseEntryTimestamp(entry.timestamp),
-          };
-        }
-      }
-      // 6PRO 답변은 사용자가 읽으러 온 답이다. custom으로 남기면 `planTurn`과
-      // `partitionTranscriptPlan`이 user/assistant가 아닌 메시지를 전부 작업 로그로
-      // 보내므로(transcript-plan.ts) 대화창이 아니라 「작업 과정」에 들어간다.
-      // 위 `live-transcript`와 같은 이유로 assistant로 투영한다. 출처는 `model`에
-      // 남아 메시지 푸터에 그대로 보인다(MessageView.tsx).
-      // provider 는 `web6` 다 — 6 Pro 는 `models.yml` 이 web6 루프백 shim 으로 몰아 주는
-      // 모델이라, 그 답을 만든 계정도 web6 다. `openai-codex` 로 적으면 대화창이 얼굴을
-      // 고를 근거를 잃고(SHION 은 web6 예약 얼굴이다) 계정 이름도 틀리게 부른다.
-      if (entry.customType === GPT6_REPLY_CUSTOM_TYPE) {
-        const text = typeof entry.content === "string"
-          ? entry.content
-          : entry.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
-        if (text.trim()) {
-          return {
-            role: "assistant",
-            content: [{ type: "text", text }],
-            model: GPT6_REPLY_SOURCE,
-            provider: "web6",
             stopReason: "stop",
             timestamp: parseEntryTimestamp(entry.timestamp),
           };

@@ -40,7 +40,6 @@ import type { AgentMessage } from "./types";
 import { getFailedUpdateForInterrupt, isUpdateInterruptClosed, markPriorGenerationConsumed, markRuntimeActivityServer, readPriorGenerationActivity, type PriorGenerationActivity, type ProcessIdentity } from "./update-maintenance";
 import { ABRUPT_RESUME_MESSAGE, INTERRUPT_RESUME_MESSAGE, UPDATE_FAILED_RESUME_MESSAGE } from "./harness-notices";
 import { notifyUpdateFailureToInitiator, SERVER_FAILURE_CLIENT_ID, wakeInitiatorWithoutReturningTab } from "./update-wake";
-import { drainAntigravity } from "./antigravity/sessions";
 
 const POLL_MS = 1000;
 // 초기 재개 지연이자 재시도 최소 간격이다. 재시도 간격을 새로 만들지 않으려고 같은 값을 쓴다.
@@ -266,7 +265,6 @@ export async function handleInterruptRequest(handled: Set<string>, inFlight: Set
           failed.push({ sessionId, error: minimalError(error) });
         }
       }));
-      if (!isUpdateInterruptClosed(id)) await drainAntigravity();
     }
     // 다른 세션의 정리를 기다리는 동안 새 턴이 시작됐다 끝났어도 job이 남을 수 있다.
     if (isUpdateDrain) {

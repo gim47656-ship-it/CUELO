@@ -1525,9 +1525,6 @@ const { dirname: csDirname, join: csJoin } = await import("node:path");
 const CS_AI = csJoin(csDirname(csDirname(CORE)), "pi-ai/src").replace(/\\/g, "/");
 const { AuthStorage: CsAuthStorage } = await import(`${CS_AI}/auth-storage.ts`);
 const { createMockModel: csCreateMockModel, registerMockApi: csRegisterMockApi } = await import(`${CS_AI}/providers/mock.ts`);
-const CS_CATALOG = csJoin(csDirname(csDirname(CORE)), "pi-catalog/src").replace(/\\/g, "/");
-const { buildModel: csBuildModel } = await import(`${CS_CATALOG}/build.ts`);
-const { streamOpenAICompletions: csStreamOpenAICompletions } = await import(`${CS_AI}/providers/openai-completions.ts`);
 const { loadSessionFile: csLoadSessionFile } = await import(`${CORE}/session/session-loader.ts`);
 const { createAgentSession: csCreateAgentSession } = await import(`${CORE}/sdk.ts`);
 csRegisterMockApi();
@@ -1637,75 +1634,7 @@ await csSession.dispose();
 await csUnknownSession.dispose();
 csAuth.close?.();
 
-console.log("\n[17] WEB6 provider 요청은 현재 OMP sessionId를 전용 헤더로 운반한다");
-const csWeb6Model = csBuildModel({
-	id: "gpt-6-pro",
-	name: "ChatGPT 6 Pro (web)",
-	api: "openai-completions",
-	provider: "web6",
-	baseUrl: "http://web6.invalid/v1",
-	reasoning: false,
-	input: ["text"],
-	supportsTools: false,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 1_000,
-	maxTokens: 100,
-});
-const csWeb6Context = {
-	messages: [{ role: "user", content: "상담", timestamp: Date.now() }],
-	tools: [],
-};
-const csSse = [
-	'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gpt-6-pro","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
-	'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gpt-6-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
-	"data: [DONE]",
-	"",
-].join("\n\n");
-let csObservedSessionHeader: string | null = null;
-const csWeb6Stream = csStreamOpenAICompletions(csWeb6Model, csWeb6Context, {
-	apiKey: "your-unused-api-key",
-	sessionId: "your-session-provider-carrier",
-	headers: { "X-OMP-Session-Id": "your-spoofed-session" },
-	fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
-		csObservedSessionHeader = new Headers(init?.headers).get("X-OMP-Session-Id");
-		return new Response(csSse, {
-			status: 200,
-			headers: { "content-type": "text/event-stream" },
-		});
-	},
-});
-await csWeb6Stream.result();
-check(
-	"WEB6 wire 요청에 현재 sessionId가 정확히 실린다",
-	csObservedSessionHeader === "your-session-provider-carrier",
-	`header=${JSON.stringify(csObservedSessionHeader)}`,
-);
-
-let csMissingSessionFetchCalled = false;
-const csMissingSessionStream = csStreamOpenAICompletions(csWeb6Model, csWeb6Context, {
-	apiKey: "your-unused-api-key",
-	fetch: async () => {
-		csMissingSessionFetchCalled = true;
-		return new Response(csSse, { status: 200, headers: { "content-type": "text/event-stream" } });
-	},
-});
-let csMissingSessionFailed = false;
-let csMissingSessionError = "";
-try {
-	const result = await csMissingSessionStream.result();
-	csMissingSessionError = typeof result.errorMessage === "string" ? result.errorMessage : "";
-	csMissingSessionFailed = result.stopReason === "error";
-} catch (error) {
-	csMissingSessionFailed = true;
-	csMissingSessionError = error instanceof Error ? error.message : String(error);
-}
-check(
-	"sessionId가 없으면 WEB6 network 호출 전에 fail closed한다",
-	csMissingSessionFailed && !csMissingSessionFetchCalled,
-	`failed=${csMissingSessionFailed} fetchCalled=${csMissingSessionFetchCalled} error=${JSON.stringify(csMissingSessionError)}`,
-);
-
-console.log("\n[18] eval completion bridge — exact WEB6 선택과 sessionId 전달");
+console.log("\n[18] eval completion bridge — tier selection and explicit effort");
 const {
 	runEvalCompletion: csRunEvalCompletion,
 	getCompletionHandle: csGetCompletionHandle,
@@ -1713,7 +1642,6 @@ const {
 } = await import(`${CORE}/eval/completion-bridge.ts`);
 
 let csSmolFails = false;
-let csWeb6Fails = false;
 const csCompletionModels = {
 	smol: csCreateMockModel({
 		id: "smol",
@@ -1740,19 +1668,6 @@ const csCompletionModels = {
 		reasoning: true,
 		handler: { content: ["smol fallback ok"], stopReason: "stop" },
 	}),
-	web6: csCreateMockModel({
-		id: "gpt-6-pro",
-		provider: "web6",
-		handler: () =>
-			csWeb6Fails
-				? { content: [], stopReason: "error", errorMessage: "web6 primary failed" }
-				: { content: ["web6 ok"], stopReason: "stop" },
-	}),
-	web6Fallback: csCreateMockModel({
-		id: "web6-fallback",
-		provider: "tier",
-		handler: { content: ["web6 fallback must not run"], stopReason: "stop" },
-	}),
 };
 const csAvailableCompletionModels = Object.values(csCompletionModels);
 // 명시 effort 검증용 지원 범위: slow는 low..high, smol-fallback은 low만 노출한다.
@@ -1765,7 +1680,6 @@ const csCompletionRoles: Record<string, string> = {
 };
 const csCompletionFallbackChains = {
 	smol: ["tier/smol-fallback"],
-	"web6/gpt-6-pro": ["tier/web6-fallback"],
 };
 const csCompletionSettings = settingsLike({
 	get(key: string) {
@@ -1798,7 +1712,7 @@ const csCompletionSession = {
 	settings: csCompletionSettings,
 	getActiveModelString: () => "tier/default",
 	getModelString: () => "tier/default",
-	getSessionId: () => "session-eval-web6",
+	getSessionId: () => "session-eval-completion",
 	getAgentId: () => "completion-bridge-test",
 };
 
@@ -1824,20 +1738,6 @@ for (const tier of ["smol", "default", "slow"] as const) {
 	);
 }
 
-const csExactWeb6 = await csComplete("web6/gpt-6-pro");
-check(
-	"exact WEB6 target은 web6/gpt-6-pro를 정확히 선택한다",
-	csExactWeb6.error === undefined &&
-		csExactWeb6.result?.details.model === "web6/gpt-6-pro" &&
-		csExactWeb6.result.details.tier === undefined,
-	`error=${JSON.stringify(csExactWeb6.error)} details=${JSON.stringify(csExactWeb6.result?.details)}`,
-);
-check(
-	"eval completion이 현재 sessionId를 provider option으로 전달한다",
-	csCompletionModels.web6.calls.at(-1)?.options?.sessionId === "session-eval-web6",
-	`sessionId=${JSON.stringify(csCompletionModels.web6.calls.at(-1)?.options?.sessionId)}`,
-);
-
 let csArbitrarySelectorRejected = false;
 try {
 	await csRunEvalCompletion(
@@ -1848,19 +1748,7 @@ try {
 	csArbitrarySelectorRejected =
 		error instanceof Error && /completion\(\) (received invalid arguments|could not resolve model "tier\/not-allowed")/.test(error.message);
 }
-check("unknown selector cannot reach a model (fixed tiers, exact WEB6, or registered user tag only)", csArbitrarySelectorRejected);
-
-csWeb6Fails = true;
-csCompletionModels.web6.reset();
-csCompletionModels.web6Fallback.reset();
-const csFailedExactWeb6 = await csComplete("web6/gpt-6-pro");
-check(
-	"exact WEB6 실패는 일반 fallback 후보를 실행하지 않는다",
-	typeof csFailedExactWeb6.error === "string" &&
-		csCompletionModels.web6.calls.length === 1 &&
-		csCompletionModels.web6Fallback.calls.length === 0,
-	`error=${JSON.stringify(csFailedExactWeb6.error)} primary=${csCompletionModels.web6.calls.length} fallback=${csCompletionModels.web6Fallback.calls.length}`,
-);
+check("unknown selector cannot reach a model (fixed tiers or registered user tag only)", csArbitrarySelectorRejected);
 
 csSmolFails = true;
 csCompletionModels.smol.reset();

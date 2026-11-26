@@ -8,7 +8,6 @@ import {
   type InlineUtteranceContext,
 } from "@/lib/inline-utterance";
 import { subagentUtteranceSource } from "./useSubagentUtterances";
-import { web6UtteranceSource } from "./useWeb6Utterances";
 
 /**
  * 이 창의 발화를 턴별로 묶어 돌려준다.
@@ -28,9 +27,8 @@ export function useInlineUtterances(
   context: InlineUtteranceContext,
 ): ReadonlyMap<number, readonly InlineUtterance[]> {
   const subagent = subagentUtteranceSource.use(context);
-  const web6 = web6UtteranceSource.use(context);
   return useMemo(
-    () => groupInlineUtterances(normalizeInlineUtterances([...subagent, ...web6])),
-    [subagent, web6],
+    () => groupInlineUtterances(normalizeInlineUtterances(subagent)),
+    [subagent],
   );
 }

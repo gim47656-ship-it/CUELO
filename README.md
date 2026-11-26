@@ -67,7 +67,6 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 **세션과 대화**
 
 - 프로젝트별로 지난 omp 세션을 찾아 이어 가고, 실시간으로 스트리밍되는 대화에서 도구 호출·비용·컨텍스트 사용량을 봅니다.
-- 프로젝트를 고른 뒤 사이드바에서 **Antigravity**를 열면 기존 입력창으로 새 대화를 시작하거나 지난 대화를 이어갈 수 있습니다. 모델과 추론 강도를 고르고 도구 실행 요청에 한 번 허용하거나 거부할 수 있습니다. [로그인과 캐릭터 표시 설정](docs/antigravity.md)을 참고하세요.
 - 지난 세션의 대화를 원본 변경 없이 읽기 전용으로 대조할 수 있습니다. 자세한 내용은 [하네스 안내](docs/harness.md#이전-세션-원문-회수)를 참고하세요.
 - 세션의 Anthropic 답변 머리글에 실제 사용된 인증 방식(`Anthropic 구독` 또는 `Anthropic API`)을 구분하여 표시하고, 정보가 없는 기존 답변은 `Anthropic`으로 표시합니다.
 - 대화 상단에는 현재 프로젝트와 세션 이름이 함께 나옵니다. 휴대폰에서는 세션 제목을 읽기 쉽도록 상단 공간을 배분합니다. 새 세션에는 작업 폴더와 시작 안내를 표시합니다. 사이드바가 닫혀 있으면 안내에서 세션 목록을 여세요.
@@ -171,7 +170,6 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 - 필요한 MCP 서버만 요청별로 연결하는 선택 모드를 지원합니다. 설치·인증·권한 변경은 먼저 승인을 받고 에이전트가 지원합니다. 설정과 적용 범위는 [요청별 MCP 선택 연결](./docs/harness.md#요청별-mcp-선택-연결)을 확인하세요.
 - 사이드 챗(`/btw`): 본 대화를 끊지 않고 옆 패널에서 따로 묻습니다. 답변은 본 대화와 같은 캐릭터 얼굴·스티커·마크다운으로 보이고, 세션마다 초안이 따로 보관됩니다. 사이드 챗 문답은 본 대화에 남지 않으며, 답변의 「메인에 보내기」를 누를 때만 문답과 추가 지시가 본 대화로 전달됩니다(본 대화가 실행 중이면 steer, 아니면 새 요청).
 - 답변 카드(A2UI): 웹 채팅에서 에이전트가 작성한 `a2ui` 코드 블록을 입력과 버튼을 지원하는 카드로 표시합니다. 버튼 동작은 에이전트에게 전달하며, 후속 답변으로 기존 카드를 갱신합니다.
-- ChatGPT 상담(SHION): 로컬 shim이 전용 ChatGPT 탭에서 받은 답을 현재 omp 세션에 투영하고, 상담 기록과 실패 기록이 대화창에 표시됩니다.
 - 실시간 음성: 브라우저 마이크로 Codex live 음성 세션을 엽니다. “끊어”, “알았어, 끊어봐”, “아니 통화 종료하라고”처럼 단독 종료 요청을 말하면 최종 전사를 받은 뒤 마이크와 통화를 종료합니다. **설정 → 통화 음성**에서 에이전트 통화와 Codex Live 통역이 쓰는 목소리를 고를 수 있습니다(한국어 햇살·하늘 포함). 통화 답변은 통화를 시작할 때의 Main 캐릭터 얼굴과 이름으로 표시되고 「기본 음성」이라고 함께 보입니다. 입력창에는 통화 시작·종료 버튼만 남으며, 좁은 화면에서는 모델 선택 등 다른 조작부와 겹치지 않게 줄바꿈합니다. 자세한 내용은 [라이브 통화](./docs/live-voice.md)를 확인하세요.
 
 **통역**
@@ -208,7 +206,7 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 
 **알림과 표현**
 
-- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · MITSU · SHION).
+- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · MITSU · HIKARI). SHIORI는 아직 스티커·음성 자산이 없어 얼굴만 표시합니다.
 - Anthropic 캐릭터를 아직 알 수 없으면 기본 모드에서는 RIN을, 사무실 모드에서는 PC 캐릭터 설정에서 RIN에 연결한 캐릭터를 표시합니다.
 - 브라우저 알림과 PWA 설치를 지원합니다.
 - 직접 저장한 교훈·스킬은 저장한 답변이나 과정 바로 뒤의 카드에서 확인합니다. 교훈 자동 기록을 켠 경우 자동 저장 알림도 작업 과정을 접어도 대화에 남습니다. 요청에 이름이 없고 필요성도 확인되지 않은 MCP 후보는 보류 안내로 나열하지 않습니다.
@@ -431,7 +429,7 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
-캐릭터(RIN · MIO · YUKI · ISANA · MITSU · SHION)의 그림·음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
+캐릭터(RIN · MIO · SHIORI · YUKI · ISANA · MITSU · HIKARI)의 그림, SHIORI를 뺀 캐릭터의 음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
 
 함께 싣는 글꼴은 모두 SIL Open Font License 1.1입니다. 본문은 [Wanted Sans](https://github.com/wanteddev/wanted-sans), 코드는 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)이고, 제목은 [G마켓 산스](https://corp.gmarket.com/fonts/)를 웹용으로 나누고 변환한 것입니다. 원래 이름은 수정본에 쓸 수 없어서 "CUELO Display"라는 이름으로 싣습니다. 라이선스 전문은 [`public/fonts/`](./public/fonts/) 아래 각 글꼴 폴더에 있습니다.
 

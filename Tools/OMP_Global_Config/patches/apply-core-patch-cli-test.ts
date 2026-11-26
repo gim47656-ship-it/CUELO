@@ -124,12 +124,8 @@ check("적용은 실제로 파일을 바꾼다", !fixtureUnchanged());
 check("적용은 백업을 임시 홈에 남긴다", existsSync(join(fakeHome, ".omp/core-patch-backup")));
 const completionBridgeAfterApply = readFileSync(join(fixture, "src/eval/completion-bridge.ts"), "utf8");
 check(
-	"eval completion exact WEB6 anchor는 정확히 한 번 적용된다",
-	completionBridgeAfterApply.split('const EXACT_WEB6_MODEL = "web6/gpt-6-pro" as const;').length - 1 === 1,
-);
-check(
-	"eval completion sessionId provider option은 정확히 한 번 적용된다",
-	completionBridgeAfterApply.split("sessionId: session.getSessionId?.() ?? undefined,").length - 1 === 1,
+	"eval completion retains the explicit effort integration on the normal tier path",
+	completionBridgeAfterApply.split("const effectiveCandidates =").length - 1 === 1,
 );
 
 const checkAfter = run(["--check"]);
