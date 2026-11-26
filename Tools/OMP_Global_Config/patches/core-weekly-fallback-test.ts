@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { scheduler } from "node:timers/promises";
 
 // HOME·TEMP 를 격리한 자식 프로세스에서 돈다. 실제 키가 env 나 ~/.env 로 새어 들어오지 않게 Anthropic 키 변수를 지운다.
 if (!process.env.OMP_WEEKLY_FALLBACK_ROOT) {
@@ -718,24 +719,33 @@ for (const [name, failure] of Object.entries(BILLING)) {
 	check(`${tag}: A and B were each served once, then A stays parked`, served[0] === keyA && served[1] === keyB && isOAuth(served[2], tag), `served=${show(served)}`);
 	s.auth.close();
 }
-for (const [name, failure] of Object.entries(NOT_BILLING)) {
-	// (e) a transient rate limit or a server error on the key neither retries onto OAuth nor parks the key.
-	const tag = `no-park-${name}`;
-	const key = `fake-fallback-key-${tag}`;
-	const s = await overPace(tag);
-	useKey(key);
-	reject.set(key, failure);
-	const warned = warnings.length;
-	beginTurn(s);
-	const result = await request(registryResolver(s));
-	const error = Object.assign(new Error(`${failure.status} ${JSON.stringify(failure.body)}`), { status: failure.status });
-	const retried = (await s.auth.keys.resolver("anthropic", { sessionId: s.sessionId, modelId: MODEL })({ lastChance: true, error, previousKey: key })) as { apiKey?: string } | string | undefined;
-	beginTurn(s);
-	const next = await s.get();
-	check(`${tag}: the request fails on the key without an OAuth retry`, result.stopReason === "error" && result.sent.every(sent => sent === key), `stop=${result.stopReason} sent=${show(result.sent)}`);
-	check(`${tag}: the key is not parked and nothing is logged`, next === key && warnings.length === warned, `next=${show(next)} retried=${show(retried)} warnings=${warnings.length - warned}`);
-	reject.delete(key);
-	s.auth.close();
+// A 429/500 on the key goes through the provider's full backoff on the same key (about 48s per case with real waits).
+// The cases check which bearers were sent, not the delays, so the waits resolve at once here. streamSimple does not
+// forward providerRetryWait, so the shared wait is replaced for this loop only.
+const realWait = scheduler.wait;
+scheduler.wait = async () => {};
+try {
+	for (const [name, failure] of Object.entries(NOT_BILLING)) {
+		// (e) a transient rate limit or a server error on the key neither retries onto OAuth nor parks the key.
+		const tag = `no-park-${name}`;
+		const key = `fake-fallback-key-${tag}`;
+		const s = await overPace(tag);
+		useKey(key);
+		reject.set(key, failure);
+		const warned = warnings.length;
+		beginTurn(s);
+		const result = await request(registryResolver(s));
+		const error = Object.assign(new Error(`${failure.status} ${JSON.stringify(failure.body)}`), { status: failure.status });
+		const retried = (await s.auth.keys.resolver("anthropic", { sessionId: s.sessionId, modelId: MODEL })({ lastChance: true, error, previousKey: key })) as { apiKey?: string } | string | undefined;
+		beginTurn(s);
+		const next = await s.get();
+		check(`${tag}: the request fails on the key without an OAuth retry`, result.stopReason === "error" && result.sent.every(sent => sent === key), `stop=${result.stopReason} sent=${show(result.sent)}`);
+		check(`${tag}: the key is not parked and nothing is logged`, next === key && warnings.length === warned, `next=${show(next)} retried=${show(retried)} warnings=${warnings.length - warned}`);
+		reject.delete(key);
+		s.auth.close();
+	}
+} finally {
+	scheduler.wait = realWait;
 }
 {
 	// Any bearer other than the fallback key file's key keeps the upstream classification: no retry for a credit 400.

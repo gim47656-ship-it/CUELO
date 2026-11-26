@@ -97,7 +97,7 @@
     "start:lan": "bun bin/cuelo.js --no-open -H 0.0.0.0 -p 30141",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit -p tsconfig.typecheck.json",
-    "test": "bun test ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs",
+    "test": "bun test --parallel ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs",
     "test:coverage": "bun test --coverage ./app ./components ./hooks ./lib ./public ./bin ./install.test.mjs"
   },
   "dependencies": {

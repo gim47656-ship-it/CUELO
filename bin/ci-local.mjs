@@ -177,7 +177,7 @@ async function prepareHarness(env, signal) {
 
 async function runExtensions(env, signal) {
   await run([process.execPath, "patches/check-extension-duplicates.mjs"], harness, env, signal);
-  await run(["bun", "test", "./agent/extensions/tests", "./agent/extensions/command-guard",
+  await run(["bun", "test", "--parallel", "./agent/extensions/tests", "./agent/extensions/command-guard",
     "./agent/tools/git-finalizer", "./agent/tools/windows-control", "./agent/tools/artifact-search",
     "./agent/tools/vm-build", "./agent/tools/ego-browser", "./agent/tools/deploy-verify",
     "./agent/tools/windows-build", "./agent/cuelo-plugins/scratch-dependency-hint", "./skill-cost"], harness, env, signal);
@@ -205,7 +205,9 @@ async function runCore(env, signal) {
     await Promise.all(Array.from({ length: Math.min(parallel, runs.length) }, async () => {
       while (!signal.aborted && next < runs.length) {
         const test = runs[next++];
+        const started = performance.now();
         test.failure = await coreTest(test.file, test.log, env, signal);
+        test.seconds = ((performance.now() - started) / 1000).toFixed(1);
       }
     }));
     signal.throwIfAborted();
@@ -213,7 +215,7 @@ async function runCore(env, signal) {
     let ptyPassed = false;
     for (const test of runs) {
       if (env.GITHUB_ACTIONS === "true") console.log(`::group::${test.name}`);
-      else console.log(`--- ${test.name} ---`);
+      else console.log(`--- ${test.name} (${test.seconds}s) ---`);
       const log = readFileSync(test.log, "utf8");
       process.stdout.write(log.endsWith("\n") ? log : `${log}\n`);
       if (env.GITHUB_ACTIONS === "true") console.log("::endgroup::");
