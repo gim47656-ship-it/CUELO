@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { listWorktrees } from "../worktree";
+import { lastReflogAt, listWorktrees } from "../worktree";
 import { nightlyBranchRetained, STALE_WORKTREE_MS } from "./criteria";
 
 const exec = promisify(execFile);
@@ -69,15 +69,15 @@ export async function inspectWorkspace(repo: string | null, agentDir: string, cw
   return { worktrees, branches, banks, warnings };
 }
 
-/** worktree 전용 HEAD와 reflog 중 더 늦은 수정 시각. 둘 다 못 읽으면 null(남은 것으로 센다). */
+/** worktree 전용 HEAD 수정 시각과 reflog 마지막 항목 시각 중 더 늦은 것. reflog는 gc가 파일을 다시 써서 수정 시각을 쓰지 않는다. 둘 다 못 읽으면 null(남은 것으로 센다). */
 async function gitActivity(path: string): Promise<number | null> {
+  const gitPath = async (name: string) =>
+    (await exec("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-path", name], { timeout: 10000 })).stdout.trim();
   let latest: number | null = null;
-  for (const name of ["HEAD", "logs/HEAD"]) {
-    try {
-      const { stdout } = await exec("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-path", name], { timeout: 10000 });
-      const at = (await stat(stdout.trim())).mtimeMs;
-      if (latest === null || at > latest) latest = at;
-    } catch { /* 없는 파일은 건너뛴다 */ }
-  }
+  try { latest = (await stat(await gitPath("HEAD"))).mtimeMs; } catch { /* 없는 파일은 건너뛴다 */ }
+  try {
+    const at = await lastReflogAt(await gitPath("logs/HEAD"));
+    if (at !== null && (latest === null || at > latest)) latest = at;
+  } catch { /* 경로를 못 읽으면 건너뛴다 */ }
   return latest;
 }

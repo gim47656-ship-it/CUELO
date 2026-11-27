@@ -115,6 +115,21 @@ test("R2-ANT-1: replacing a tracked directory with a file remains readable", asy
   expect(result.worktrees.map((entry) => entry.path)).toEqual([tree]);
 });
 
+test("a gc-rewritten reflog does not count as activity: its last entry time does", async () => {
+  const f = fixture(); const tree = await f.create(); const recent = await f.create();
+  writeFileSync(join(tree, "left.txt"), "keep");
+  const now = Date.now() + 4 * 86_400_000;
+  utimesSync(git(tree, "rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"), new Date(now), new Date(now));
+  // The last entry is recent while every file timestamp is old: the entry keeps the tree active.
+  const out = Bun.spawnSync(["git", "commit", "-q", "--allow-empty", "-m", "recent"], { cwd: recent, stderr: "pipe",
+    env: { ...process.env, GIT_COMMITTER_DATE: `@${Math.floor(now / 1000)} +0000` } });
+  if (out.exitCode) throw new Error(out.stderr.toString());
+  const old = new Date(now - 4 * 86_400_000);
+  for (const name of ["HEAD", "index", "logs/HEAD"]) utimesSync(git(recent, "rev-parse", "--path-format=absolute", "--git-path", name), old, old);
+  const result = await findStaleAutoWorktrees([f.main], f.host, f.sessions, now);
+  expect(result.worktrees.map((entry) => entry.path)).toEqual([tree]);
+});
+
 test("pending-resume reader uses existing queue and fails closed on an unreadable protection snapshot", async () => {
   const f = fixture(); const previous = process.env.CUELO_EXTERNAL_UPDATE_ROOT;
   process.env.CUELO_EXTERNAL_UPDATE_ROOT = f.root;

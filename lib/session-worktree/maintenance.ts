@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { checkoutIsBusy, retiredAutoBranch, sweepSessionWorktrees, type LiveUse, type WorktreeHost } from "./index";
-import { listWorktrees } from "../worktree";
+import { lastReflogAt, listWorktrees } from "../worktree";
 
 const exec = promisify(execFile);
 export const STALE_AUTO_WORKTREE_MS = 3 * 86_400_000;
@@ -168,7 +168,9 @@ export async function findStaleAutoWorktrees(roots: readonly string[], host: Pic
           if (!base || !target) continue;
           const gitPath = async (name: string) => (await git(tree.path, ["rev-parse", "--path-format=absolute", "--git-path", name])).trim();
           // Read mtimes before status; optional locks are disabled so polling cannot refresh the index.
-          let lastActive = Math.max(await mtime(await gitPath("HEAD")), await mtime(await gitPath("index")), await mtime(await gitPath("logs/HEAD")));
+          // The reflog counts by its last entry, since gc rewrites the file without new activity.
+          let lastActive = Math.max(await mtime(await gitPath("HEAD")), await mtime(await gitPath("index")),
+            await lastReflogAt(await gitPath("logs/HEAD")) ?? 0);
           const records = (await git(tree.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0");
           const changed: string[] = [];
           for (let i = 0; i < records.length; i++) {

@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import { existsSync, mkdirSync, realpathSync } from "fs";
+import { open } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { promisify } from "util";
 import { allowFileRoot } from "./allowed-roots";
@@ -321,4 +322,26 @@ function extractGitError(error: unknown): string {
   const stderr = (error as { stderr?: string }).stderr;
   if (typeof stderr === "string" && stderr.trim()) return stderr.trim() + killed;
   return (error instanceof Error ? error.message : String(error)) + killed;
+}
+
+/**
+ * Time (ms) of the last entry in a reflog file, or null when it is missing or empty.
+ * Not the file mtime: `git gc` rewrites reflogs while expiring entries (2026-11-24: a worktree idle
+ * since 11-18 read as active at the gc time). Reads only the file tail.
+ */
+export async function lastReflogAt(path: string): Promise<number | null> {
+  let tail: string;
+  try {
+    const file = await open(path, "r");
+    try {
+      const { size } = await file.stat();
+      const length = Math.min(size, 64 * 1024);
+      const buffer = Buffer.alloc(length);
+      await file.read(buffer, 0, length, size - length);
+      tail = buffer.toString("utf8");
+    } finally { await file.close(); }
+  } catch { return null; }
+  // `<old> <new> <name> <<email>> <unix> <tz>\t<message>`; the name may itself contain a tab.
+  const match = tail.trimEnd().split("\n").at(-1)?.match(/> (\d+) [+-]\d{4}(?:\t|$)/);
+  return match ? Number(match[1]) * 1000 : null;
 }
