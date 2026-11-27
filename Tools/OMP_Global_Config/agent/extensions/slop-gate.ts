@@ -3,7 +3,8 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { completeReviewer } from "./cross-review";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf, pendingArtifacts, pendingGitArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
-import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
+import { toolNonSuccess } from "./lib/tool-outcome";
+import { reviewFiles, resolveFindings, SlopCheckRefusal, type Lang, type SlopDeps } from "./slop-gate/review";
 
 /**
  * 밖에 보이는 산출물 AI 슬롭 게이트의 세션 쪽. (1) `slop_check` 도구: 보이는 산출물만 모델로 심사하고 sha256 통과를 원장에 남긴다.
@@ -31,18 +32,35 @@ export interface SlopCheckParams {
   resolutions?: { id: string; status: string; evidence: string }[];
 }
 
-/** 도구 본체. 테스트가 가짜 reviewer를 넣을 수 있게 deps를 받는다. */
-export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<ExtensionContext, "agent" | "cwd">, deps: SlopDeps, signal: AbortSignal): Promise<{ text: string; isError: boolean }> {
+type SlopCheckResult = { text: string; isError: boolean; details?: { refused: { by: "slop-gate" } } };
+
+function slopRefusal(text: string): SlopCheckResult {
+  return { text: `[refused by slop-gate] Not executed.\n${text}`, isError: false, details: { refused: { by: "slop-gate" } } };
+}
+
+/** Tool body with injectable reviewer dependencies. */
+export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<ExtensionContext, "agent" | "cwd">, deps: SlopDeps, signal: AbortSignal): Promise<SlopCheckResult> {
+  try {
+    signal.throwIfAborted();
+    return await checkSlop(params, ctx, deps, signal);
+  } catch (error) {
+    if (!(error instanceof SlopCheckRefusal) || signal.aborted) throw error;
+    return slopRefusal(error.message);
+  }
+}
+
+async function checkSlop(params: SlopCheckParams, ctx: Pick<ExtensionContext, "agent" | "cwd">, deps: SlopDeps, signal: AbortSignal): Promise<SlopCheckResult> {
   const action = params.action ?? "review";
   if (action === "resolve") {
-    if (ctx.agent?.kind === "sub") throw new Error("slop_check resolve is Main-only: a pass by refutation is recorded only by Main. Report the reviewId and your proposed refutation with evidence per finding; Main checks it and resolves.");
+    if (ctx.agent?.kind === "sub") throw new SlopCheckRefusal("slop_check resolve is Main-only: a pass by refutation is recorded only by Main. Report the reviewId and your proposed refutation with evidence per finding; Main checks it and resolves.");
     if (!params.reviewId) throw new Error("resolve requires reviewId.");
     const result = resolveFindings(params.reviewId, params.resolutions ?? [], deps);
     const done = result.open.length === 0 && result.stale.length === 0 && result.rejected.length === 0;
     const next = result.stale.length > 0 ? "Some files changed after the review; run slop_check on them again (a changed file needs a new review)."
       : result.open.length > 0 ? "Findings without an accepted refutation remain open: fix the file and run slop_check again, or refute them with evidence."
         : result.rejected.length > 0 ? "Some resolutions were rejected (see rejected[])." : "All findings are closed; the passes are recorded for the exact reviewed bytes.";
-    return { text: JSON.stringify({ ...result, next }, null, 2), isError: !done };
+    const text = JSON.stringify({ ...result, next }, null, 2);
+    return !done && !signal.aborted ? slopRefusal(text) : { text, isError: signal.aborted };
   }
   if (action !== "review") throw new Error(`Unknown action ${JSON.stringify(action)}; use "review" or "resolve".`);
   if (!params.files || params.files.length === 0) throw new Error("review requires files.");
@@ -55,7 +73,11 @@ export async function executeSlopCheck(params: SlopCheckParams, ctx: Pick<Extens
     : open.length > 0 ? "Fix each finding in the file (then run slop_check again on the new content), or, for a false positive, have Main close it with slop_check {action:\"resolve\", reviewId, resolutions:[{id, status:\"refuted\", evidence}]}. A changed file needs a new review."
       : reviewed > 0 ? "Every visible artifact reviewed has a pass for its exact content." : "No visible artifact was reviewed.";
   const note = skipped.length === 0 ? "" : ` ${skipped.length} file(s) are not visible artifacts or are raw data (markdown not declared in .slop-gate.json visible, internal record, code, test, generated, not a visible format, or a csv over 400000 bytes; see reason): they were not read, not sent to a reviewer and have no pass; the slop gate does not apply to them.`;
-  return { text: JSON.stringify({ ...outcome, next: next + note }, null, 2), isError: errors.length > 0 };
+  const text = JSON.stringify({ ...outcome, next: next + note }, null, 2);
+  if (!signal.aborted && errors.length > 0 && outcome.files.every((file) => file.refused || file.status === "internal" || file.status === "already-passed")) {
+    return slopRefusal(text);
+  }
+  return { text, isError: signal.aborted || errors.length > 0 };
 }
 
 const list = (pending: readonly PendingArtifact[]) => pending.map((item) => `- ${item.path} (${item.reason})`).join("\n");
@@ -95,7 +117,7 @@ export default function slopGate(pi: ExtensionAPI): void {
         cwd: ctx.cwd, ledgerPath: slopLedgerPath(), mainModel: currentModel(ctx),
         complete: (lane, system, prompt, attempt) => completeReviewer(lane, prompt, ctx, attempt, { system, purpose: "slop-gate" }),
       }, abort);
-      return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true as const } : {}) };
+      return { content: [{ type: "text", text: result.text }], isError: result.isError, ...(result.details ? { details: result.details } : {}) };
     },
   });
 
@@ -105,6 +127,8 @@ export default function slopGate(pi: ExtensionAPI): void {
     if (event.source === "interactive" || event.source === "rpc") reset();
   });
   pi.on("tool_result", async (event, ctx) => {
+    const outcome = toolNonSuccess(event);
+    if (outcome === "refused" || outcome === "scriptError") return;
     const found = candidatesOf(event.toolName, event.input, ctx.cwd);
     for (const file of found.files) files.add(file);
     for (const dir of found.dirs) dirs.add(dir);

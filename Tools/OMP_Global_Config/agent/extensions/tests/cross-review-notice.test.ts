@@ -104,6 +104,16 @@ describe("편집 직후 조기 알림", () => {
     expect(env.sent).toEqual([]);
   });
 
+  test("non-error refusal and script exception do not trigger edit notices", async () => {
+    const env = setup();
+    writeFileSync(join(env.work, "pending.ts"), MARKER_CODE);
+    await env.emit("tool_result", { toolName: "edit", input: { path: "pending.ts" }, isError: false, details: { refused: { by: "edit-snapshot" } } });
+    await env.emit("tool_result", { toolName: "eval", input: { code: "raise ValueError()" }, isError: false, details: { scriptError: true } });
+    expect(env.sent).toHaveLength(0);
+    await env.edited("edit", "pending.ts");
+    expect(noticedPaths(env)).toContain("pending.ts");
+  });
+
   test("처음에 marker가 없던 파일이 나중에 걸리면 그때 한 번 알린다", async () => {
     const env = setup();
     writeFileSync(join(env.work, "b.ts"), "export const x = 1;\n");

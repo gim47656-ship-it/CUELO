@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { onSessionLifecycle } from "../../extensions/lib/session-identity";
 import { LiveServices, UnreapedJobs } from "../../extensions/lib/turn-jobs";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 import type { TurnEndNotices } from "../../extensions/turn-end-guard";
 
 export default function unreapedJobs(pi: ExtensionAPI): void {
@@ -26,7 +27,7 @@ export default function unreapedJobs(pi: ExtensionAPI): void {
     if (shuttingDown || ctx.agent?.kind === "sub") return;
     services.observe(event);
     const input = event.input as { action?: unknown; service?: unknown } | undefined;
-    if (event.toolName === "test_session" && !event.isError && input?.action === "track" && typeof input.service === "string") {
+    if (event.toolName === "test_session" && !didNotSucceed(event) && input?.action === "track" && typeof input.service === "string") {
       services.forget(input.service);
       retainedServices.add(input.service);
     }

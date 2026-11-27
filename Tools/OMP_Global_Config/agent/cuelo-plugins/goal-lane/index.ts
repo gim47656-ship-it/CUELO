@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { SECRET_PATTERN } from "../../extensions/lib/interpreter";
 import { defaultLoadCore, JUDGE_STOPPED, type NativeJudge, resolveNativeJudge, stoppedBy } from "../../extensions/lib/native-judge";
 import { parseAutoEffortConfig } from "../../extensions/lib/auto-effort-policy";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 
 /** CUELO's own restart and update notices arrive as rpc prompts; they are not the user's words. */
 const { noticePrefixes } = parseAutoEffortConfig(undefined);
@@ -374,15 +375,15 @@ export default function goalLane(pi: ExtensionAPI, options: { resolveJudge?: Res
         // An eval cell has no exit code; "ran without error" is the only status the tool reports. The latest status is
         // kept per exact code (same rule as bash), and evidence cites one line of a cell whose latest run succeeded.
         const code = String(event.input.code ?? "").trim();
-        if (code) evalCells.set(code, !event.isError);
+        if (code) evalCells.set(code, !didNotSucceed(event));
       } else if (event.toolName === "read") {
         const path = String(event.input.path ?? "");
         const match = /^(.*?)\?(?:q|ocr)=/.exec(path);
-        if (match && !event.isError) {
+        if (match && !didNotSucceed(event)) {
           const text = event.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
           visionReads.set(resolve(ctx.cwd, match[1]!), excerpt(text));
         }
-      } else if (event.toolName === "cross_review" && event.input.action === "resolve" && !event.isError) {
+      } else if (event.toolName === "cross_review" && event.input.action === "resolve" && !didNotSucceed(event)) {
         // 2026-11-22 short-prompt pilot: a Sol run spent ~55s hunting the review ledger with bash because a passed
         // review could only be cited as a file. The resolve result itself reports reviewId and pass.
         const text = event.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");

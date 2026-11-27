@@ -1,4 +1,5 @@
 import { isImagePath } from "./file-types";
+import { toolNonSuccess } from "./tool-outcome";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ImageContent, ThinkingContent, ToolCallContent, ToolResultMessage } from "./types";
 
 export interface DisplayOptions {
@@ -222,8 +223,11 @@ function endsWithDeferredToolImages(result: ToolResultMessage): boolean {
  * 개수는 라우트가 센다(0 이면 아무것도 그리지 않는다).
  */
 export function mayCarryToolImages(call: ToolCallContent, result: ToolResultMessage | undefined): boolean {
-  if (!result || result.isError) return false;
+  if (!result) return false;
+  const outcome = toolNonSuccess(result);
+  if (outcome === "failed" || outcome === "refused") return false;
   if (endsWithDeferredToolImages(result) || result.content?.some((block) => block.type === "image")) return true;
+  if (outcome === "scriptError") return false;
   const input = call.input ?? {};
   if (call.toolName === "generate_image") return true;
   if (call.toolName === "write") return input.path === "xd://generate_image";

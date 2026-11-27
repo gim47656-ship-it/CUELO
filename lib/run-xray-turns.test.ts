@@ -72,6 +72,8 @@ test("an advisory recorded between a tool call and its result lands on the next 
     bySource: { "jev-runtime-advisory": 1, "edit-lessons": 1, "korean-reply-guard": 1 },
     toolCalls: 1,
     toolFailures: 1,
+    refused: 0,
+    scriptError: 0,
   });
   expect(built.turns[0].durationMs).toBe(490);
   expect(built.turns[1].before[0].hiddenFromChat).toBe(true);
@@ -85,6 +87,8 @@ test("tool timing comes from the start record and errors split into failed, no m
       { id: "skip", name: "read", arguments: { path: "x" } },
       { id: "lost", name: "edit", arguments: { path: "y" } },
       { id: "fine", name: "read", arguments: { path: "z" } },
+      { id: "blocked", name: "edit", arguments: {} },
+      { id: "exception", name: "eval", arguments: {} },
     ]),
     start("s1", "fail", T0 + 200),
     result("r1", "fail", "bash", T0 + 1450, "error: boom\nCommand exited with code 2", true),
@@ -93,6 +97,8 @@ test("tool timing comes from the start record and errors split into failed, no m
     result("r3", "skip", "read", T0 + 270, "skipped", true, { __synthetic: true }),
     start("s4", "lost", T0 + 280),
     result("r5", "fine", "read", T0 + 300, "12345"),
+    result("r6", "blocked", "edit", T0 + 310, "not executed", false, { refused: { by: "edit-snapshot" } }),
+    result("r7", "exception", "eval", T0 + 320, "ValueError", false, { scriptError: true }),
   ]);
   const calls = Object.fromEntries(built.turns[0].toolCalls.map((call) => [call.toolCallId, call]));
   expect(calls.fail).toMatchObject({ status: "failed", durationMs: 1250, startedAt: T0 + 200, resultEntryId: "r1" });
@@ -100,7 +106,9 @@ test("tool timing comes from the start record and errors split into failed, no m
   expect(calls.skip).toMatchObject({ status: "cancelled", durationMs: null });
   expect(calls.lost).toMatchObject({ status: "missing", durationMs: null, resultChars: null, startedAt: T0 + 280 });
   expect(calls.fine).toMatchObject({ status: "ok", durationMs: null, resultChars: 5 });
-  expect(built.counts.toolFailures).toBe(1);
+  expect(calls.blocked.status).toBe("refused");
+  expect(calls.exception.status).toBe("scriptError");
+  expect(built.counts).toMatchObject({ toolFailures: 1, refused: 1, scriptError: 1 });
 });
 
 test("secrets in tool arguments and injected text are masked in previews and full text", () => {

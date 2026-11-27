@@ -1,5 +1,6 @@
 import type { ConversationRenderItem, ProcessTurnGroup } from "./transcript-plan";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultMessage } from "./types";
+import { toolNonSuccess } from "./tool-outcome";
 
 export type SavedLesson =
   | { kind: "lesson"; memory: string; skill?: { action: string; name: string } }
@@ -28,7 +29,7 @@ function visitSaves(
     if (block.type !== "toolCall") continue;
     if (block.toolName !== "learn" && block.toolName !== "manage_skill") continue;
     const result = toolResults?.get(block.toolCallId);
-    if (!result || result.isError) continue;
+    if (!result || toolNonSuccess(result)) continue;
     const input = block.input ?? {};
     if (block.toolName === "manage_skill") {
       const action = text(input.action);

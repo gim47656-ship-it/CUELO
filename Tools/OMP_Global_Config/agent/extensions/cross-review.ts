@@ -2,11 +2,13 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { didNotSucceed } from "./lib/tool-outcome";
 // 런타임 패키지는 legacy-pi 확장 loader가 host SDK 경로로 재작성하므로 아래에서 지연 import한다.
 import {
   authorFamily,
   REVIEW_SYSTEM,
   REVIEW_TIMEOUT_MS,
+  CrossReviewRefusal,
   ReviewerCallError,
   earlyReviewNotice,
   earlyReviewNoticeText,
@@ -23,6 +25,8 @@ import {
   type ReviewInput,
   type ReviewProgress,
   type ResolveInput,
+  type ResolveResult,
+  type ReviewResult,
   type SessionRun,
 } from "./lib/cross-review";
 import { helperAttemptRecorder } from "./lib/helper-usage";
@@ -197,22 +201,22 @@ export async function executeCrossReview(
   params: CrossReviewParams, ctx: ExtensionContext, signal: AbortSignal,
   makeDeps: (ctx: ExtensionContext, signal: AbortSignal) => ReviewDeps | Promise<ReviewDeps> = reviewDeps,
   onUpdate?: CrossReviewUpdate,
-): Promise<unknown> {
+): Promise<ReviewResult | ResolveResult> {
   const sub = ctx.agent?.kind === "sub";
-  if (sub && params.action === "resolve") throw new Error("cross_review resolve is Main-only: the pass git_finalize trusts is recorded only by Main. Report the reviewId chain with a proposed status (fixed|refuted|limit) and evidence for every finding; Main checks it and resolves the chain.");
+  if (sub && params.action === "resolve") throw new CrossReviewRefusal("cross_review resolve is Main-only: the pass git_finalize trusts is recorded only by Main. Report the reviewId chain with a proposed status (fixed|refuted|limit) and evidence for every finding; Main checks it and resolves the chain.");
   // subagent 세션에서 "main"은 Main이 아니라 이 child의 현재 모델로 풀리므로 뜻이 모호하다. 저자 selector를 직접 받는다.
   if (sub && params.action === "review" && (params.authors ?? []).some((author) => author.trim().toLowerCase() === "main")) {
-    throw new Error("authors \"main\" is ambiguous in a subagent session; pass your own model selector (the provider/model you run as, e.g. anthropic/claude-sonnet-...) instead.");
+    throw new CrossReviewRefusal("authors \"main\" is ambiguous in a subagent session; pass your own model selector (the provider/model you run as, e.g. anthropic/claude-sonnet-...) instead.");
   }
   // subagent 세션의 1회차는 선언한 저자를 그대로 믿지 않는다: 자기 계열 저자를 빼고 다른 계열만 적으면 같은 계열
   // reviewer가 붙어 교차검증이 무너진다. 후속 라운드의 reviewer 계열은 1회차에서 정해지므로 1회차만 본다.
   if (sub && params.action === "review" && !params.previousReviewId) {
     const current = ctx.models?.current?.() ?? ctx.model;
-    if (!current) throw new Error("This subagent session's own model could not be resolved, so the declared authors cannot be checked against it; refusing rather than guessing.");
+    if (!current) throw new CrossReviewRefusal("This subagent session's own model could not be resolved, so the declared authors cannot be checked against it; refusing rather than guessing.");
     const own = `${current.provider}/${current.id}`;
     const family = authorFamily(own);
     if (!(params.authors ?? []).some((author) => author.trim() !== "" && authorFamily(author.trim()) === family)) {
-      throw new Error(`authors must include this session's own model: it runs ${own} (${family} family), but authors ${JSON.stringify(params.authors ?? [])} list no ${family} model. List your own model selector so the reviewer is the other family.`);
+      throw new CrossReviewRefusal(`authors must include this session's own model: it runs ${own} (${family} family), but authors ${JSON.stringify(params.authors ?? [])} list no ${family} model. List your own model selector so the reviewer is the other family.`);
     }
   }
   const made = await makeDeps(ctx, signal);
@@ -271,8 +275,22 @@ export default function crossReview(pi: ExtensionAPI): void {
       unreviewedAcknowledgements: z.array(z.object({ path: z.string(), evidence: z.string() })).optional(),
     }) as never,
     async execute(_id, params, signal, onUpdate, ctx) {
-      const result = await executeCrossReview(params as CrossReviewParams, ctx, signal ?? new AbortController().signal, reviewDeps, onUpdate as CrossReviewUpdate | undefined);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], details: result };
+      const abort = signal ?? new AbortController().signal;
+      try {
+        abort.throwIfAborted();
+        const result = await executeCrossReview(params as CrossReviewParams, ctx, abort, reviewDeps, onUpdate as CrossReviewUpdate | undefined);
+        const text = JSON.stringify(result, null, 2);
+        if ("passable" in result ? !result.passable : !!result.unusable) {
+          return { content: [{ type: "text", text }], details: result, isError: true as const };
+        }
+        if ("pass" in result && !result.pass && (result.rejected.length || result.rejectedAcknowledgements?.length || result.unreviewedBlocking?.length)) {
+          return { content: [{ type: "text", text: `[refused by cross-review] Not executed.\n${text}` }], details: { ...result, refused: { by: "cross-review" } }, isError: false as const };
+        }
+        return { content: [{ type: "text", text }], details: result };
+      } catch (error) {
+        if (!(error instanceof CrossReviewRefusal) || abort.aborted) throw error;
+        return { content: [{ type: "text", text: `[refused by cross-review] Not executed.\n${error.message}` }], details: { refused: { by: "cross-review" } }, isError: false as const };
+      }
     },
   });
 
@@ -403,7 +421,7 @@ export default function crossReview(pi: ExtensionAPI): void {
     }
   });
   pi.on("tool_result", async (event, ctx) => {
-    if (event.isError) return;
+    if (didNotSucceed(event)) return;
     if (event.toolName === "bash" && event.details && typeof event.details === "object"
       && "exitCode" in event.details && typeof event.details.exitCode === "number" && event.details.exitCode !== 0) return;
     const startedEpoch = epoch;

@@ -48,6 +48,29 @@ test("a command row offers the process-log button in its expanded body only when
   assert.doesNotMatch(renderRows(null), /flow-reveal/);
 });
 
+test("work-flow rows render refusals separately from command and publication failures", () => {
+  const finalize = { type: "toolCall", toolCallId: "final", toolName: "git_finalize", input: {} };
+  const failed = { ...check, toolCallId: "real-error" };
+  const flow = deriveWorkFlow([check, finalize, failed], new Map([
+    [check.toolCallId, { ...checkResult, details: { refused: { by: "guard" } } }],
+    [finalize.toolCallId, { ...checkResult, toolName: "git_finalize", details: { ok: false, refused: { by: "lock" } } }],
+    [failed.toolCallId, { ...checkResult, isError: true, details: {} }],
+  ]));
+  const html = renderToStaticMarkup(createElement(I18nProvider, null, createElement(StepRows, { steps: flow.steps, st })));
+  assert.equal(html.match(/class="flow-tone" data-tone="unverified">Refused</g)?.length, 2);
+  assert.match(html, /class="flow-tone" data-tone="failed">flow\.state\.failed</);
+  assert.doesNotMatch(html, /flow\.why\.exitZero/);
+});
+
+test("work-flow renders a script exception without implying publication ran", () => {
+  const evalCall = { type: "toolCall", toolCallId: "script", toolName: "eval", input: { code: "throw Error('stop'); await tool.git_finalize({})" } };
+  const evalResult = { ...checkResult, toolCallId: evalCall.toolCallId, toolName: "eval", details: { scriptError: true } };
+  const flow = deriveWorkFlow([evalCall], new Map([[evalCall.toolCallId, evalResult]]));
+  const html = renderToStaticMarkup(createElement(I18nProvider, null, createElement(StepRows, { steps: flow.steps, st })));
+  assert.match(html, /class="flow-tone" data-tone="unobserved">Script error</);
+  assert.equal(flow.reached, null);
+});
+
 test("the toolCallId a work-flow row carries opens the same card in the process log", () => {
   const [step] = deriveWorkFlow([check], toolResults).steps.filter((entry) => entry.stage === "check");
   assert.equal(step.toolCallId, check.toolCallId);

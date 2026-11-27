@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isApiRequestAllowed } from "@/lib/request-security";
+import { toolNonSuccess } from "@/lib/tool-outcome";
 import { findToolResult, readToolImage, toolImageSources } from "./tool-image-source";
 
 /**
@@ -31,7 +32,8 @@ export async function GET(req: Request) {
   try {
     const result = await findToolResult(sessionId, toolCallId);
     if (result === null) return NextResponse.json({ error: "Session not found" }, { status: 404 });
-    if (!result || result.isError) return NextResponse.json({ error: "Tool result not found" }, { status: 404 });
+    const outcome = toolNonSuccess(result);
+    if (!result || outcome === "failed" || outcome === "refused") return NextResponse.json({ error: "Tool result not found" }, { status: 404 });
 
     const sources = toolImageSources(result);
     if (index === null) {

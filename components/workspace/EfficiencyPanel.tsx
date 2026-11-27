@@ -353,6 +353,8 @@ export function GovernorDetail({ detail, t }: {
                   t("efficiency.toolFailedValue").replace("{value}", String(tool.failed)),
                   ...(tool.noMatch > 0 ? [t("efficiency.toolNoMatchValue").replace("{value}", String(tool.noMatch))] : []),
                   ...(tool.cancelled > 0 ? [t("efficiency.toolCancelledValue").replace("{value}", String(tool.cancelled))] : []),
+                  ...(tool.refused > 0 ? [`${t("toolRun.refused")} ${tool.refused}`] : []),
+                  ...(tool.scriptError > 0 ? [`${t("toolRun.scriptError")} ${tool.scriptError}`] : []),
                 ].join(" · ")}
                 value={formatNumber(tool.calls)}
               />

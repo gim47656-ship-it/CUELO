@@ -19,6 +19,7 @@ import {
   type SessionDumpToolInfo,
 } from "@oh-my-pi/pi-coding-agent/session/session-dump-format";
 import { RunXrayError, classifyToolError, type RunTranscriptLocation } from "./run-xray";
+import { toolNonSuccess, type ToolNonSuccess } from "./tool-outcome";
 import {
   RUN_PRELUDE_MAX_CHARS,
   RUN_TURN_ARGS_PREVIEW_CHARS,
@@ -152,7 +153,7 @@ function newEvent(
 interface ToolResultRecord {
   entryId: string;
   at: number | null;
-  isError: boolean;
+  nonSuccess: ToolNonSuccess | null;
   synthetic: boolean;
   text: string;
 }
@@ -257,7 +258,7 @@ export function buildRunTurns(records: readonly StoredRecord[]): BuiltRunTurns {
         results.set(message.toolCallId, {
           entryId: typeof record.id === "string" ? record.id : "",
           at: finiteNumber(message.timestamp) ?? isoTime(record.timestamp),
-          isError: message.isError === true,
+          nonSuccess: toolNonSuccess(message),
           synthetic: isRecord(message.details) && message.details.__synthetic === true,
           text: contentText(message.content),
         });
@@ -311,6 +312,8 @@ export function buildRunTurns(records: readonly StoredRecord[]): BuiltRunTurns {
   }
 
   let toolFailures = 0;
+  let refused = 0;
+  let scriptError = 0;
   for (const [id, { call, command }] of callsById) {
     const start = starts.get(id);
     if (start !== undefined) call.startedAt = start;
@@ -319,12 +322,13 @@ export function buildRunTurns(records: readonly StoredRecord[]): BuiltRunTurns {
     call.resultEntryId = result.entryId;
     call.resultChars = result.text.length;
     if (start !== undefined && result.at !== null && result.at >= start) call.durationMs = result.at - start;
-    let status: RunTurnToolStatus = "ok";
-    if (result.isError) {
-      status = result.synthetic ? "cancelled" : classifyToolError(call.name, command, result.text);
-    }
+    const status: RunTurnToolStatus = result.nonSuccess === "failed"
+      ? result.synthetic ? "cancelled" : classifyToolError(call.name, command, result.text)
+      : result.nonSuccess ?? "ok";
     call.status = status;
     if (status === "failed") toolFailures += 1;
+    if (status === "refused") refused++;
+    if (status === "scriptError") scriptError++;
   }
 
   const bySource: Record<string, number> = {};
@@ -346,7 +350,7 @@ export function buildRunTurns(records: readonly StoredRecord[]): BuiltRunTurns {
   return {
     turns,
     trailing: pending,
-    counts: { turns: turns.length, injections, bySource, toolCalls: toolCallCount, toolFailures },
+    counts: { turns: turns.length, injections, bySource, toolCalls: toolCallCount, toolFailures, refused, scriptError },
     digests,
     lastActiveTools: previousActive,
     memoryRecall,

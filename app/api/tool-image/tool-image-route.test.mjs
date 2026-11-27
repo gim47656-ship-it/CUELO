@@ -38,6 +38,22 @@ async function withSession(t, entries) {
   });
 }
 
+test("serves eval images emitted before a script exception without serving refusal or tool-error images", async (t) => {
+  const image = { type: "image", data: PNG.toString("base64"), mimeType: "image/png" };
+  await withSession(t, [
+    toolResult("script", { toolName: "eval", isError: false, details: { scriptError: true }, content: [image] }),
+    toolResult("refused", { toolName: "eval", isError: false, details: { refused: { by: "guard" } }, content: [image] }),
+    toolResult("failed", { toolName: "eval", isError: true, details: { scriptError: true }, content: [image] }),
+  ]);
+  const get = (toolCallId, options) => GET(request({ sessionId: SESSION_ID, toolCallId, ...options }));
+  assert.deepEqual(await (await get("script")).json(), { count: 1 });
+  const body = await get("script", { index: "0" });
+  assert.equal(body.status, 200);
+  assert.deepEqual(Buffer.from(await body.arrayBuffer()), PNG);
+  assert.equal((await get("refused")).status, 404);
+  assert.equal((await get("failed")).status, 404);
+});
+
 test("serves only the images that session's tool result actually carries", async (t) => {
   const tempFiles = [];
   const tempFile = async (name, bytes) => {

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 
 // 2026-11-09 점검(최근 7일 오류 1339건): 다음 실패들이 원래 오류 문구만으로는 다음 호출을 고칠 단서가 없었다.
 // - `proc://<id>`가 끝난 뒤 정리된 job·재시작으로 사라진 Maker를 가리켜 `Background job or service not found` 5건
@@ -30,7 +31,7 @@ export function recoveryHint(toolName: string, text: string): string | undefined
 
 export default function toolRecoveryHint(pi: ExtensionAPI): void {
   pi.on("tool_result", (event) => {
-    if (!event.isError) return;
+    if (!didNotSucceed(event)) return;
     const textPart = event.content.find((part) => part.type === "text");
     if (!textPart || textPart.type !== "text") return;
     const hint = recoveryHint(event.toolName, textPart.text);

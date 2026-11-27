@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findDocRoot } from "./docmap-search";
+import { didNotSucceed } from "./tool-outcome";
 
 // Only explicit filesystem tool contracts are observed; never inspect shell/eval code or result prose.
 export type Result = { toolName: string; input?: unknown; details?: unknown; isError?: boolean };
@@ -88,7 +89,7 @@ export function createTurnDocuments() {
     observe(event: Result, cwd: string | undefined) {
       if (event.toolName === "draft") {
         const savedPath = record(event.details).savedPath;
-        if (event.isError || !cwd || typeof savedPath !== "string" || !isAbsolute(savedPath)) return;
+        if (didNotSucceed(event) || !cwd || typeof savedPath !== "string" || !isAbsolute(savedPath)) return;
         let base: string;
         try { base = realpathSync(cwd); } catch { return; }
         const path = localPath(savedPath, base, false);
@@ -96,7 +97,7 @@ export function createTurnDocuments() {
           && RECORD_PATH.test(path.split(sep).join("/"))) written.add(path);
         return;
       }
-      if (!cwd || event.isError || !["read", "write", "edit"].includes(event.toolName)) return;
+      if (!cwd || didNotSucceed(event) || !["read", "write", "edit"].includes(event.toolName)) return;
       let base: string;
       try { base = realpathSync(cwd); } catch { return; }
       for (const target of targets(event)) {

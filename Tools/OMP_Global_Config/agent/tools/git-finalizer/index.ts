@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CrossReviewRefusal, currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
-import { finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
-import { mergeGateBlobs, missingSlopPasses, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
+import { FinalizeChecksRefusal, finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
+import { SlopGateRefusal, mergeGateBlobs, missingSlopPasses, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import { vmCopyHint } from "../vm-build/hint";
 import { integrateTool, reattachRetiredBranch } from "./integrate";
+import { PublicationRefusal, publicationRefusalResult } from "./refusal";
 import { syncBehindUpstream } from "./sync-upstream";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo, windowsPathToPosix } from "./wsl-git";
 
@@ -21,13 +22,14 @@ type StartBackgroundJob = (label: string, run: (signal: AbortSignal, protect: Pr
 const runningFinalizes = new Map<string, string>();
 function refuseRunningFinalize(root: string, tool = "git_finalize") {
   const id = runningFinalizes.get(pathKey(resolve(root)));
-  if (id) throw new Error(`${tool} failed at lock: ${root} already has a running git_finalize job (${id}). Wait for its result.`);
+  if (id) throw new PublicationRefusal("lock", `${tool} failed at lock: ${root} already has a running git_finalize job (${id}). Wait for its result.`);
 }
 
 interface FinalizerResult {
   ok: boolean;
   stage: string;
   error?: string;
+  refusedBy?: string;
   commitSha?: string;
   remote?: string;
   upstreamRef?: string;
@@ -41,7 +43,7 @@ interface FinalizerResult {
   target?: { branch: string; remote: string; upstreamRef: string; commonDir: string };
 }
 
-class FinalizerPathRefusal extends Error {}
+class ManifestRefusal extends Error {}
 
 const scriptPath = fileURLToPath(new URL("./finalizer.ps1", import.meta.url));
 const syncCheckoutPath = fileURLToPath(new URL("./sync-checkout.ts", import.meta.url));
@@ -212,13 +214,17 @@ function isSourcePath(path: string, packagedTools: string[]): boolean {
   return true;
 }
 
-class StaleManifestError extends Error {
+class StaleManifestError extends ManifestRefusal {
   constructor(message: string, readonly root: string) {
     super(message);
   }
 }
 
 type ManifestExec = (command: string, args: string[], options: { cwd: string }) => Promise<{ code: number; stdout: string; stderr?: string }>;
+interface RegeneratedManifest {
+  file: string;
+  restoreIfUnchanged(): { restored: boolean; note: string };
+}
 
 /**
  * 매니페스트가 낡았으면 안내 문구의 두 명령을 같은 cwd·인자로 직접 실행해 다시 만들고, 매니페스트를 이번 커밋에 넣을 cwd 기준 경로를 돌려준다
@@ -227,7 +233,7 @@ type ManifestExec = (command: string, args: string[], options: { cwd: string }) 
  * 낡음이 아닌 오류(목록 누락 등)는 그대로 던진다. 요청 파일 일부가 cwd 밖인데 outsideCwdReason이 없으면 finalizer가 거절할 요청이므로
  * 저장소를 건드리지 않고 기존 오류를 그대로 던진다.
  */
-async function checkSourceManifest(cwd: string, files: string[], exec: ManifestExec, outsideAuthorized: boolean): Promise<{ file: string; restoreIfUnchanged: () => string } | undefined> {
+async function checkSourceManifest(cwd: string, files: string[], exec: ManifestExec, outsideAuthorized: boolean): Promise<RegeneratedManifest | undefined> {
   try {
     await verifySourceManifest(cwd, files, exec);
     return undefined;
@@ -286,19 +292,28 @@ async function checkSourceManifest(cwd: string, files: string[], exec: ManifestE
       await verifySourceManifest(cwd, files, exec);
     } catch (recheckError) {
       const restored = await restore();
-      throw new Error(`${error.message}\nThe manifest was regenerated but still does not match (${restored}): ${recheckError instanceof Error ? recheckError.message : String(recheckError)}${earlierOutputs.length ? `\nHelper output: ${earlierOutputs.join(" | ")}` : ""}`);
+      const detail = `${error.message}\nThe manifest was regenerated but still does not match (${restored}): ${recheckError instanceof Error ? recheckError.message : String(recheckError)}${earlierOutputs.length ? `\nHelper output: ${earlierOutputs.join(" | ")}` : ""}`;
+      if (recheckError instanceof ManifestRefusal && restored === "the previous manifest was restored") throw new ManifestRefusal(detail);
+      throw new Error(detail);
     }
     const generated = await readFile(manifestFile);
     return {
       file: relative(cwd, manifestFile).split(sep).join("/"),
       restoreIfUnchanged: () => {
         try {
-          if (!readFileSync(manifestFile).equals(generated)) return `The generated ${manifestPath} changed again and was left alone; include it in the retry.`;
+          const current = readFileSync(manifestFile);
+          if (previous?.equals(current)) return { restored: true, note: "The previous source manifest was restored." };
+          if (!current.equals(generated)) {
+            return { restored: false, note: `The generated ${manifestPath} changed again and was left alone; include it in the retry.` };
+          }
           if (previous) writeFileSync(manifestFile, previous);
           else rmSync(manifestFile);
-          return "The previous source manifest was restored.";
+          return { restored: true, note: "The previous source manifest was restored." };
         } catch (error) {
-          return `Could not restore ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`;
+          if (!previous && (error as NodeJS.ErrnoException).code === "ENOENT") {
+            return { restored: true, note: "The generated source manifest no longer exists." };
+          }
+          return { restored: false, note: `Could not restore ${manifestPath}: ${error instanceof Error ? error.message : String(error)}` };
         }
       },
     };
@@ -354,14 +369,14 @@ async function verifySourceManifest(
     // 지운 파일은 매니페스트에서도 빠져 있어야 한다.
     if (!bytes) {
       if (recorded === undefined) continue;
-      throw new Error(`git_finalize: source manifest still lists deleted ${path}. ${manifestInstructions}`);
+      throw new ManifestRefusal(`git_finalize: source manifest still lists deleted ${path}. ${manifestInstructions}`);
     }
     const content = !bytes.includes(0) && bytes.includes("\r\n")
       ? Buffer.from(bytes.toString("latin1").replace(/\r\n/g, "\n"), "latin1")
       : bytes;
     const hash = createHash("sha256").update(content).digest("hex");
     if (recorded === undefined) {
-      throw new Error(`git_finalize: source manifest is missing ${path}. create-manifest reads only tracked files, so run \`git add -N ${path}\` first. ${manifestInstructions}`);
+      throw new ManifestRefusal(`git_finalize: source manifest is missing ${path}. create-manifest reads only tracked files, so run \`git add -N ${path}\` first. ${manifestInstructions}`);
     }
     if (recorded !== hash) {
       throw new StaleManifestError(`git_finalize: source manifest is stale for ${path}. ${manifestInstructions}`, root);
@@ -421,13 +436,20 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     outsideCwdReason: pi.zod.string().optional(),
   }),
 
-  async execute(_toolCallId, params, onUpdate, ctx, signal) {
+  execute: (...args) => executeFinalize(pi, ...args).catch((error: unknown) => {
+    if (args[4]?.aborted && error instanceof PublicationRefusal) args[4].throwIfAborted();
+    return publicationRefusalResult(error);
+  }),
+});
+
+async function executeFinalize(pi: ToolApi, ...[_toolCallId, params, onUpdate, ctx, signal]: Parameters<CustomTool<any, any>["execute"]>) {
+    signal?.throwIfAborted();
     let requested: string[] = params.files.map((value: string) => value.trim()).filter(Boolean);
     const message = params.message.trim();
     if (requested.length === 0) {
-      throw new Error("git_finalize requires at least one exact file path." + (message ? "" : "\ngit_finalize requires a non-empty commit message."));
+      throw new PublicationRefusal("repository", "git_finalize requires at least one exact file path." + (message ? "" : "\ngit_finalize requires a non-empty commit message."));
     }
-    if (!message) throw new Error("git_finalize requires a non-empty commit message.");
+    if (!message) throw new PublicationRefusal("repository", "git_finalize requires a non-empty commit message.");
 
     const exec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal });
     const prepareFinalizer = async (tempDir: string, files: string[], generatedManifest: boolean) => {
@@ -446,7 +468,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
           const parsed = parseResult(result.stdout);
           if (result.code !== 0 || !parsed?.ok || !parsed.repositoryRoot || !parsed.repositoryFiles?.length) {
             const detail = `git_finalize failed at ${parsed?.stage ?? "preflight"}: ${parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`;
-            if (parsed?.ok === false && parsed.stage === "repository") throw new FinalizerPathRefusal(detail);
+            if (result.code === 1 && parsed?.ok === false && parsed.refusedBy) throw new PublicationRefusal(parsed.refusedBy, detail, parsed.stage);
             throw new Error(detail);
           }
           const root = windows ? windowsPathToPosix(parsed.repositoryRoot) : parsed.repositoryRoot;
@@ -458,6 +480,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     const preconditionError = async (error: unknown, stage?: "cross-review" | "slop-gate", generatedManifest = false) => {
       const primary = (stage ? `git_finalize failed at ${stage}: ` : "") + (error instanceof Error ? error.message : String(error));
       let pathNote = "";
+      let failedDiagnostic = false;
       let slopNote = "";
       let slopUnknown = !params.slopGateWaiver?.trim() && stage !== "slop-gate";
       let dir: string | undefined;
@@ -470,12 +493,14 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         }
       } catch (pathError) {
         const detail = pathError instanceof Error ? pathError.message : String(pathError);
-        pathNote = pathError instanceof FinalizerPathRefusal
+        pathNote = pathError instanceof PublicationRefusal && pathError.by === "repository"
           ? `\nExact file-list preflight: ${detail}\nCorrect the reported path or repository issue before retrying.`
           : `\nCould not verify the exact file list: ${detail}\nResolve the preflight error before retrying.`;
+        failedDiagnostic = !(pathError instanceof PublicationRefusal);
       } finally {
         if (dir) {
           await rm(dir, { recursive: true, force: true }).catch((cleanupError: Error) => {
+            failedDiagnostic = true;
             pathNote += `\nCould not remove the temporary preflight request: ${cleanupError.message}`;
           });
         }
@@ -494,19 +519,38 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         slopUnknown && "a current slop_check pass for gated visible files",
         "passing matching .finalize-checks.json checks (git_finalize runs them after preflight)",
       ].filter(Boolean).join("; ");
-      return new Error(`${primary}${pathNote}${slopNote}\nAfter fixing the above, this call also requires, where applicable: ${next}.`);
+      const detail = `${primary}${pathNote}${slopNote}\nAfter fixing the above, this call also requires, where applicable: ${next}.`;
+      if (failedDiagnostic || signal?.aborted) return new Error(detail);
+      if (error instanceof CrossReviewRefusal) return new PublicationRefusal("cross-review", detail);
+      if (error instanceof SlopGateRefusal) return new PublicationRefusal("slop-gate", detail);
+      if (error instanceof ManifestRefusal) return new PublicationRefusal("manifest", detail);
+      return new Error(detail);
     };
     // 뒤처지기만 한 작업 사본은 원격 커밋을 먼저 받는다(사용자 결정 2026-11-05). 게이트가 받은 뒤의 내용(합친 파일 포함)을 보도록 맨 앞에서 한다.
-    let upstreamNote = "";
+  let upstreamNote = "";
+  let checkoutChange: string | undefined;
+  let regeneratedManifest: RegeneratedManifest | undefined;
+  let canRestoreManifest = true;
+  const failedPublication = (error: unknown) => {
+    const recovery = canRestoreManifest ? regeneratedManifest?.restoreIfUnchanged() : undefined;
+    if (!recovery && !checkoutChange) return error;
+    const detail = [error instanceof Error ? error.message : String(error), checkoutChange, recovery?.note].filter(Boolean).join("\n");
+    if (error instanceof PublicationRefusal && !checkoutChange && recovery?.restored) return new PublicationRefusal(error.by, detail, error.stage);
+    return new Error(detail, { cause: error });
+  };
+  try {
     const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
     if (repo && !("failure" in repo)) {
       refuseRunningFinalize(repo.root);
       // git_integrate가 게시 뒤 로컬 세션 브랜치를 지운 worktree(분리된 HEAD)에서 다시 커밋하면 같은 이름의 브랜치를 먼저 다시 붙인다.
       const reattached = isWindowsDrivePath(repo.root) ? { status: "none" as const } : await reattachRetiredBranch(repo.root, { signal });
+      if (reattached.status === "attached") checkoutChange = reattached.note;
       if (reattached.note) onUpdate?.({ content: [{ type: "text", text: reattached.note }], details: { phase: "branch-reattach" } });
       try {
         // 작업 사본을 바꾸는 단계는 취소 신호 없이 끝까지 돌려 반쯤 바뀐 채 남지 않게 한다(조회·fetch만 취소된다).
-        upstreamNote = (await syncBehindUpstream(spawnExec(signal), (await selectGitExecutor(repo.root)).command, repo.root, spawnExec())).note ?? "";
+        const synced = await syncBehindUpstream(spawnExec(signal), (await selectGitExecutor(repo.root)).command, repo.root, spawnExec());
+        upstreamNote = synced.note ?? "";
+        if (synced.pulled > 0) checkoutChange = [checkoutChange, upstreamNote || `The checkout fast-forwarded by ${synced.pulled} commit(s).`].filter(Boolean).join(" ");
       } catch (error) {
         throw new Error(`git_finalize failed at upstream-sync: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -514,10 +558,11 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       if (reattached.note) upstreamNote = [reattached.note, upstreamNote].filter(Boolean).join(" ");
     }
     // 낡은 매니페스트는 여기서 다시 만들어 요청 파일에 더한다. 게이트 blob 수집(runGate)보다 앞이라 finalizer의 blob 대조와 어긋나지 않는다.
-    const regeneratedManifest = await checkSourceManifest(pi.cwd, requested, exec, Boolean(params.outsideCwdReason?.trim()))
+    regeneratedManifest = await checkSourceManifest(pi.cwd, requested, exec, Boolean(params.outsideCwdReason?.trim()))
       .catch(async (error: unknown) => { throw await preconditionError(error); });
-    if (regeneratedManifest && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, regeneratedManifest.file))) {
-      requested = [...requested, regeneratedManifest.file];
+    const generatedFile = regeneratedManifest?.file;
+    if (generatedFile && !requested.some((file) => resolve(pi.cwd, file) === resolve(pi.cwd, generatedFile))) {
+      requested = [...requested, generatedFile];
     }
     // 계열 교차검증 게이트는 바뀐 줄에 marker가 있거나, crossReviewHighRisk로 선언했거나, 커밋의 게이트 대상 코드가
     // 크기 기준(3파일 또는 50줄 이상, 2026-11-23 사용자 결정)을 넘는 코드에 통과 기록을 요구한다(판정 정본: lib/cross-review.ts).
@@ -547,6 +592,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       throw await preconditionError(error, "slop-gate", Boolean(regeneratedManifest));
     }
     const memory = await exportMemories(pi.cwd, requested, exec);
+    if (memory.file) checkoutChange = [checkoutChange, `Generated memory transport: ${memory.file}.`].filter(Boolean).join(" ");
     const files = memory.file ? [...requested, memory.file] : requested;
     // 성공 문구 끝에 붙는 안내(HANDOFF 누락, 원자료 csv). 성공 문구 조립부는 그대로 두고 이 값에 합친다.
     const handoffNote = [await missingHandoffNote(pi.cwd, requested), rawDataNote].filter(Boolean).join(" ");
@@ -581,7 +627,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         if (pathKey(resolve(authoritative.root)) !== pathKey(resolve(root)) ||
           authoritative.paths.length !== paths.length ||
           authoritative.paths.some((path, index) => pathKey(path) !== pathKey(paths[index]))) {
-          throw new Error("The publication paths changed during path preflight.");
+          throw new PublicationRefusal("repository", "The publication paths changed during path preflight.");
         }
         const missing = paths.filter((path) => !gateBlobs || !Object.hasOwn(gateBlobs, path));
         if (missing.length) gateBlobs = { ...Object.fromEntries(await currentBlobs(run, git, root, missing)), ...gateBlobs };
@@ -598,8 +644,12 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
           },
         });
       } catch (error) {
-        const manifestNote = regeneratedManifest?.restoreIfUnchanged();
-        throw new Error(`git_finalize failed at finalize-checks: ${error instanceof Error ? error.message : String(error)}${manifestNote ? `\n${manifestNote}` : ""}`);
+        const detail = `git_finalize failed at finalize-checks: ${error instanceof Error ? error.message : String(error)}`;
+        if (!tailSignal?.aborted) {
+          if (error instanceof FinalizeChecksRefusal) throw new PublicationRefusal("finalize-checks", detail);
+          if (error instanceof PublicationRefusal) throw new PublicationRefusal(error.by, detail, error.stage);
+        }
+        throw new Error(detail, { cause: error });
       }
       update?.({
         content: [{ type: "text", text: "Repository finalizer lock을 획득하고 변경 경계를 확인하는 중입니다." }],
@@ -612,11 +662,19 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       }), "utf8");
       await protect?.("git_finalize is committing/pushing; cannot cancel. The result will be delivered.");
       tailSignal?.throwIfAborted();
+      canRestoreManifest = false;
       const result = await pi.exec(shell, args, { ...options, signal: protect ? undefined : tailSignal });
       const parsed = parseResult(result.stdout);
       if (result.code !== 0 || !parsed?.ok) {
+        tailSignal?.throwIfAborted();
         const detail = parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
-        throw new Error(`git_finalize failed${parsed?.stage ? ` at ${parsed.stage}` : ""}: ${detail}${upstreamNote ? ` (${upstreamNote})` : ""}${parsed?.stage === "push" ? " The local commit remains; after fixing the push failure, call git_finalize again with the same files to push it without a new commit." : ""}`);
+        const text = `git_finalize failed${parsed?.stage ? ` at ${parsed.stage}` : ""}: ${detail}${upstreamNote ? ` (${upstreamNote})` : ""}${parsed?.stage === "push" ? " The local commit remains; after fixing the push failure, call git_finalize again with the same files to push it without a new commit." : ""}`;
+        if (result.code === 1 && parsed?.ok === false && !parsed.commitSha && parsed.refusedBy) {
+          // The script reports a refused transaction only after its staging was restored.
+          canRestoreManifest = true;
+          throw new PublicationRefusal(parsed.refusedBy, text, parsed.stage);
+        }
+        throw new Error(text);
       }
       // 게시 뒤 Windows 대응 사본 반영(deploy-ops)에 붙여 넣을 명령: 손으로 40자 리비전을 옮기던 일을 덜어 준다(10-25~27 54회).
       // 대응 사본은 PC·저장소마다 달라 정본이 없으므로 대상만 자리표시로 두고, 짝이 있는지는 Main이 운영 문서로 정한다.
@@ -667,33 +725,33 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       };
       if (!startJob) return await finish(signal, onUpdate);
       // Capture even ungated files before releasing the exclusive call to later edits.
-      try {
-        await authorize();
-        signal?.throwIfAborted();
-        refuseRunningFinalize(root);
-        const key = pathKey(resolve(root));
-        const id = startJob(`git_finalize ${root}: ${message.split(/\r?\n/, 1)[0]}`, async (jobSignal, protect) => {
-          try {
-            const result = await finish(jobSignal, undefined, protect);
-            return { text: result.content[0].text, details: result.details };
-          } finally {
-            runningFinalizes.delete(key);
-            await rm(tempDir, { recursive: true, force: true });
-          }
-        });
-        runningFinalizes.set(key, id);
-        transferred = true;
-        return { content: [{ type: "text", text: `git_finalize job ${id} started; the commit/push result will be delivered here.` }], details: { stage: "pending", jobId: id } };
-      } catch (error) {
-        const note = regeneratedManifest?.restoreIfUnchanged();
-        if (note) throw new Error(`${error instanceof Error ? error.message : String(error)}\n${note}`);
-        throw error;
-      }
+      await authorize();
+      signal?.throwIfAborted();
+      refuseRunningFinalize(root);
+      const key = pathKey(resolve(root));
+      const id = startJob(`git_finalize ${root}: ${message.split(/\r?\n/, 1)[0]}`, async (jobSignal, protect) => {
+        try {
+          const result = await finish(jobSignal, undefined, protect).catch((error: unknown) => {
+            const failure = failedPublication(error);
+            if (jobSignal.aborted) throw failure;
+            return publicationRefusalResult(failure);
+          });
+          return { text: result.content[0].text, details: result.details };
+        } finally {
+          runningFinalizes.delete(key);
+          await rm(tempDir, { recursive: true, force: true });
+        }
+      });
+      runningFinalizes.set(key, id);
+      transferred = true;
+      return { content: [{ type: "text" as const, text: `git_finalize job ${id} started; the commit/push result will be delivered here.` }], details: { stage: "pending", jobId: id } };
     } finally {
       if (!transferred) await rm(tempDir, { recursive: true, force: true });
     }
-  },
-});
+  } catch (error) {
+    throw failedPublication(error);
+  }
+}
 
 /**
  * 두 도구는 커밋·rebase·push를 한다. agent loop는 `concurrency`를 선언하지 않은 도구를 "shared"로 보고 같은 응답의
@@ -707,9 +765,13 @@ const factory: CustomToolFactory = (pi) => {
   const integrate = integrateTool(pi);
   const execute = integrate.execute;
   integrate.execute = async (...args) => {
+    args[4]?.throwIfAborted();
     if (runningFinalizes.size) {
       const top = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: pi.cwd, signal: args[4] });
-      if (top.code === 0) refuseRunningFinalize(top.stdout.trim(), "git_integrate");
+      if (top.code === 0) {
+        args[4]?.throwIfAborted();
+        try { refuseRunningFinalize(top.stdout.trim(), "git_integrate"); } catch (error) { return publicationRefusalResult(error); }
+      }
     }
     return execute(...args);
   };

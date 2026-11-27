@@ -11,6 +11,7 @@ import { setImmediate as yieldEventLoop } from "node:timers/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { classifyToolError } from "../run-xray";
+import { toolNonSuccess } from "../tool-outcome";
 import { maskSecrets as sharedMaskSecrets } from "../session-recall";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_SHORT_MS, isComplaint, RECENT_WINDOW_MS, REWRITE_MIN_WRITE, REWRITE_READ_SHARE, SLOW_GAP_MS } from "./criteria";
 import { DREAMING_WINDOW_MS, DreamingCollector, hasCredentialContext, type DreamingEvidence } from "./dreaming";
@@ -37,6 +38,9 @@ type Usage = {
   cttl?: { ephemeral1h?: number };
 };
 type ContentBlock = { type?: string; id?: string; name?: string; text?: string; arguments?: { command?: string; path?: string; [key: string]: unknown } };
+type FinalizeDetails = { stage?: unknown; jobId?: unknown; ok?: unknown; commitSha?: unknown };
+type FinalizeDelivery = { id?: unknown; jobId?: unknown; status?: unknown; toolResultDetails?: FinalizeDetails };
+
 type Entry = {
   type?: string;
   id?: string;
@@ -48,6 +52,7 @@ type Entry = {
   content?: unknown;
   usage?: Usage;
   data?: { ids?: unknown[]; dense?: number; gate?: number };
+  details?: { jobs?: FinalizeDelivery[] };
   cwd?: string;
   message?: {
     role?: string;
@@ -62,7 +67,7 @@ type Entry = {
     credentialId?: unknown;
     toolName?: string;
     isError?: boolean;
-    details?: { toolCommands?: unknown; exitCode?: number };
+    details?: FinalizeDetails & { toolCommands?: unknown; exitCode?: number; jobs?: FinalizeDelivery[] };
     /** 네이티브 리더가 성공한 read 결과에만 싣는 저장 JSON 값의 UTF-8 바이트 수와 지문(본문 대신) */
     contentBytes?: number;
     contentHash?: string;
@@ -114,6 +119,8 @@ export type WindowCounts = {
   exportFailures: number;
   /** Completed git_finalize results are the opportunities for memory export. */
   finalizeResults: number;
+  refused: number;
+  scriptError: number;
   complaints: number;
   cost: number;
   missingCost: boolean;
@@ -225,7 +232,7 @@ function emptyWindow(): WindowCounts {
   return {
     turns: 0, calls: 0, errors: 0, rejects: 0, compactions: 0, requests: 0, nudges: 0, recalls: 0, emptyRecalls: 0,
     gated: 0, nearGate: 0, recallCalls: 0, exportFailures: 0, complaints: 0, cost: 0, missingCost: false,
-    finalizeResults: 0,
+    finalizeResults: 0, refused: 0, scriptError: 0,
     apiKeyCalls: 0, apiKeyCost: 0, cacheWriteCost: 0, missingRewriteCost: false,
     rewrites: Object.fromEntries(REWRITE_CAUSES.map((cause) => [cause, { count: 0, cost: 0 }])) as WindowCounts["rewrites"],
     deployRewrites: { count: 0, cost: 0 },
@@ -799,6 +806,23 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
     const injectedSeen = new Set<string>();
     const readSeen = new Map<string, Set<string>>();
     const readPaths = new Map<string, string>();
+    const pendingFinalizes = new Set<string>();
+    const rememberPendingFinalize = (details: FinalizeDetails | undefined): void => {
+      if (details?.stage === "pending" && typeof details.jobId === "string") pendingFinalizes.add(details.jobId);
+    };
+    const countFinalizeDeliveries = (jobs: FinalizeDelivery[] | undefined, idKey: "id" | "jobId"): number => {
+      if (!pendingFinalizes.size || !Array.isArray(jobs)) return 0;
+      let completed = 0;
+      for (const job of jobs) {
+        const id = job?.[idKey];
+        if (typeof id !== "string" || job.status !== "completed" || !pendingFinalizes.has(id)) continue;
+        const details = job.toolResultDetails;
+        if (!details) continue;
+        pendingFinalizes.delete(id);
+        if (details.ok === true && typeof details.commitSha === "string" && !toolNonSuccess({ details })) completed++;
+      }
+      return completed;
+    };
     // 이 세션 파일의 shake 원문 파일(경로 → 내용, 못 읽으면 null). 오류 결과가 자리표시일 때만 연다.
     const shakeLogs = new Map<string, string | null>();
     // 캐시 다시 쓰기 판단용 상태. 창 밖·fork 사본 entry도 직전 요청으로는 쓰므로 세기 전에 갱신한다.
@@ -880,6 +904,16 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
         }
         // read 결과는 결과 쪽 `toolName`으로 알아보고 결과 시각으로 기간을 정한다. 경로는 반복 판정에만 쓴다.
         const lm = entry.type === "message" ? entry.message : undefined;
+        if (lm?.role === "toolResult") {
+          if (lm.toolName === "git_finalize" && !toolNonSuccess(lm)) rememberPendingFinalize(lm.details);
+          if (lm.toolName === "bash" && Array.isArray(lm.details?.toolCommands)) {
+            for (const command of lm.details.toolCommands) {
+              if (command?.tool === "git_finalize" && command.mode === "execute" && command.exitCode === 0 && !toolNonSuccess({ details: command.inner })) {
+                rememberPendingFinalize(command.inner);
+              }
+            }
+          }
+        }
         if (lm?.role === "assistant" && Array.isArray(lm.content)) {
           for (const block of lm.content as ContentBlock[]) {
             if (block?.type === "toolCall" && block.name === "read" && block.id && typeof block.arguments?.path === "string") readPaths.set(block.id, block.arguments.path);
@@ -889,7 +923,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
         const resultId = lm?.role === "toolResult" ? lm.toolCallId : undefined;
         const resultPath = resultId ? readPaths.get(resultId) : undefined;
         if (resultId) readPaths.delete(resultId);
-        if (lm?.role === "toolResult" && lm.toolName === "read" && !lm.isError) {
+        if (lm?.role === "toolResult" && lm.toolName === "read" && !toolNonSuccess(lm)) {
           // 네이티브 리더는 본문 대신 저장 JSON 값의 바이트 수와 지문을 준다. 줄을 통째로 넘긴 경우(투영 실패)만 본문이 있어
           // 다시 직렬화한 값으로 잰다(이 경우 바이트 수는 근삿값이고 네이티브 지문과는 맞대지 못한다). 둘 다 없으면 세지 않는다.
           const raw = typeof lm.contentHash === "string" || lm.content === undefined ? null : JSON.stringify(lm.content);
@@ -955,8 +989,12 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
               note("near-gate", `게이트 근처 제외 (유사도 ${dense.toFixed(2)} / 기준 ${gate.toFixed(2)})`);
             }
           }
-          if (kind === "async-result" && typeof entry.content === "string") {
-            for (const r of taskResults(entry.content)) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
+          if (kind === "async-result") {
+            if (typeof entry.content === "string") {
+              for (const r of taskResults(entry.content)) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
+            }
+            const completed = countFinalizeDeliveries(entry.details?.jobs, "jobId");
+            if (completed) each((w) => { w.finalizeResults += completed; });
           }
         }
 
@@ -1056,15 +1094,20 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
 
         if (m.role === "toolResult") {
           lastResultAt = time;
+          const nonSuccess = toolNonSuccess(m);
           // 자동 알림 대신 wait·hub가 회수한 결과는 작업 블록마다 `Delivery:` 줄과 함께 온다. 이미 받은 결과를 다시 읽은
           // 출력(read, 또는 wait·hub의 `already delivered or recovered` 블록)은 세지 않는다.
           if (m.toolName === "wait" || m.toolName === "hub") {
             for (const r of snapshotDeliveries(textOf(m.content))) makerResults.push({ sessionId, timestamp: entry.timestamp, ...r });
+            if (!nonSuccess) {
+              const completed = countFinalizeDeliveries(m.details?.jobs, "id");
+              if (completed) each((w) => { w.finalizeResults += completed; });
+            }
           }
-          if (m.toolName === "git_finalize") {
+          if (m.toolName === "git_finalize" && nonSuccess !== "refused" && nonSuccess !== "scriptError" && m.details?.stage !== "pending") {
             const text = textOf(m.content);
             const at = text.indexOf(EXPORT_FAILURE);
-            if (!m.isError || at >= 0) each((w) => w.finalizeResults++);
+            if (!nonSuccess || at >= 0) each((w) => w.finalizeResults++);
             if (at >= 0) {
               each((w) => w.exportFailures++);
               note("memory-export-failures", text.slice(at).split("\n")[0].slice(0, 160));
@@ -1073,11 +1116,15 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             for (const command of m.details.toolCommands) {
               if (command?.mode !== "execute" || typeof command.exitCode !== "number") continue;
               if (command.tool === "recall") each((w) => w.recallCalls++);
-              else if (command.tool === "git_finalize" && command.exitCode === 0) each((w) => w.finalizeResults++);
+              else if (command.tool === "git_finalize" && command.exitCode === 0 && command.inner?.stage !== "pending"
+                  && !toolNonSuccess({ details: command.inner })) each((w) => w.finalizeResults++);
             }
           }
           const call = m.toolCallId ? calls.get(m.toolCallId) : undefined;
           if (!call || !m.toolCallId) continue;
+          if (nonSuccess === "refused" || nonSuccess === "scriptError") {
+            for (const target of call.targets) target[nonSuccess]++;
+          }
           let resultText = m.isError ? textOf(m.content) : "";
           const shaken = SHAKEN_RESULT.exec(resultText.trim());
           if (shaken && process.platform === "linux") {
@@ -1114,7 +1161,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
             row.afterCalls++;
             if (failed) row.afterFailures++;
           }
-          if (!m.isError) for (const skill of call.opens) {
+          if (!nonSuccess) for (const skill of call.opens) {
             const agg = skillAt(call.index, skill);
             const row = skillSessionAt(call.index, skill, call);
             agg.usage.opens++;
@@ -1128,7 +1175,7 @@ export async function scanSessions(dir: string, now: number, splitAt: readonly n
           }
 
           // 같은 턴에서 실패를 기다리던 같은 도구의 성공: 넘긴 방법으로 남긴다.
-          if (!m.isError && call.turn === turn && awaiting.some((a) => a.tool === call.name)) {
+          if (!nonSuccess && call.turn === turn && awaiting.some((a) => a.tool === call.name)) {
             const shape = argumentShape(call.name, args);
             const summary = summarizeArgs(args);
             for (const a of awaiting.filter((x) => x.tool === call.name)) {

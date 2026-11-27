@@ -12,6 +12,7 @@ import type { ReviewOutcome } from "../slop-gate/review";
 import slopGate, { CONTINUATION_TYPE, executeSlopCheck, WARNING_TYPE } from "../slop-gate";
 import { appendSlopRecord, candidatesOf, classify, loadSlopConfig, mergeGateBlobs, passFor, readSlopRecords, runSlopGate, sha256, SlopGateRefusal, trackable } from "../lib/slop-gate";
 import { htmlText, jsonStrings, literalStrings, pythonPath, extractVisible } from "../slop-gate/extract";
+import { headExtracted } from "../slop-gate/delta";
 import { buildReviewRequest, MAX_BATCH_CHARS, MAX_FILE_CHARS, MAX_PARALLEL_BATCHES, parseAnswer, resolveFiles, reviewFiles, resolveFindings, segmentText, SPLIT_CHARS, type Complete, type SlopDeps } from "../slop-gate/review";
 import { ReviewerCallError } from "../lib/cross-review";
 
@@ -417,8 +418,88 @@ describe("resolve: 반박으로만 닫고, 심사한 바이트에서만 통과",
   test("slop_check resolve는 subagent 세션에서 거절된다", async () => {
     const cwd = scratch();
     const { reviewId, id } = await reviewed(cwd);
-    const call = executeSlopCheck({ action: "resolve", reviewId, resolutions: [{ id, status: "refuted", evidence: "근거를 적은 긴 문장입니다" }] }, { agent: { kind: "sub" }, cwd } as never, deps(cwd, fakeReviewer(clean).complete), signal);
-    await expect(call).rejects.toThrow("Main-only");
+    const result = await executeSlopCheck({ action: "resolve", reviewId, resolutions: [{ id, status: "refuted", evidence: "근거를 적은 긴 문장입니다" }] }, { agent: { kind: "sub" }, cwd } as never, deps(cwd, fakeReviewer(clean).complete), signal);
+    expect(result).toMatchObject({ isError: false, details: { refused: { by: "slop-gate" } } });
+    expect(result.text).toStartWith("[refused by slop-gate] Not executed.\nslop_check resolve is Main-only");
+    expect(readSlopRecords(join(cwd, "ledger.jsonl")).map((record) => record.type)).toEqual(["slop-review"]);
+  });
+
+  test("slop_check refuses a missing file without calling the reviewer or recording a pass", async () => {
+    const cwd = scratch();
+    const ai = fakeReviewer(clean);
+    const result = await executeSlopCheck({ files: ["missing.md"] }, { cwd }, deps(cwd, ai.complete), signal);
+    expect(result).toMatchObject({ isError: false, details: { refused: { by: "slop-gate" } } });
+    expect(result.text).toStartWith("[refused by slop-gate] Not executed.\n");
+    expect(result.text).toContain("file not found");
+    expect(ai.calls).toEqual([]);
+    expect(readSlopRecords(join(cwd, "ledger.jsonl"))).toEqual([]);
+  });
+
+  test("an entirely refused/cached slop batch does not rerun work or report a tool error", async () => {
+    const cwd = scratch();
+    const file = join(cwd, "page.html");
+    writeFileSync(file, KO_PLAIN);
+    const ai = fakeReviewer(clean);
+    const options = deps(cwd, ai.complete);
+    appendSlopRecord(options.ledgerPath, { type: "slop-pass", path: file, sha256: sha256(KO_PLAIN), reviewedAt: new Date().toISOString(), model: AUTHOR, reviewId: "fixture", findings: [] });
+    const result = await executeSlopCheck({ files: ["missing.html", "page.html"] }, { cwd }, options, signal);
+    expect(result).toMatchObject({ isError: false, details: { refused: { by: "slop-gate" } } });
+    expect(result.text).toContain('"status": "already-passed"');
+    expect(result.text).toContain("file not found");
+    expect(ai.calls).toEqual([]);
+    expect(readSlopRecords(options.ledgerPath)).toHaveLength(1);
+  });
+
+  test("a partially executed slop batch is an error without labelling the whole call unexecuted", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "page.html"), `<p>${KO_PLAIN}</p>`);
+    const ai = fakeReviewer(clean);
+    const result = await executeSlopCheck({ files: ["missing.html", "page.html"] }, { cwd }, deps(cwd, ai.complete), signal);
+    expect(result.isError).toBe(true);
+    expect(result.details?.refused).toBeUndefined();
+    expect(JSON.parse(result.text).files).toMatchObject([
+      { file: "missing.html", refused: true, error: expect.stringContaining("file not found") },
+      { file: "page.html", status: "pass" },
+    ]);
+    expect(ai.calls).toHaveLength(1);
+  });
+
+  test("a Git baseline read error cannot become a whole-file review or pass", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "page.html"), `<p>${KO_PLAIN}</p>`);
+    const ai = fakeReviewer(clean);
+    const options = deps(cwd, ai.complete, { head: async () => { throw new Error("fixture: Git I/O failure"); } });
+    const result = await executeSlopCheck({ files: ["page.html"] }, { cwd }, options, signal);
+    expect(result.isError).toBe(true);
+    expect(result.details?.refused).toBeUndefined();
+    expect(result.text).toContain("fixture: Git I/O failure");
+    expect(ai.calls).toHaveLength(0);
+    expect(readSlopRecords(options.ledgerPath)).toEqual([]);
+  });
+
+  test("an untracked replacement of a staged deletion gets a whole-file review", async () => {
+    const cwd = scratch();
+    writeFileSync(join(cwd, "page.html"), `<p>${KO_PLAIN}</p>`);
+    for (const args of [
+      ["init", "-q"], ["add", "page.html"],
+      ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+      ["rm", "--cached", "--", "page.html"],
+    ]) expect(spawnSync("git", args, { cwd }).status).toBe(0);
+    const reviewer = fakeReviewer(clean);
+    const result = await executeSlopCheck({ files: ["page.html"] }, { cwd }, deps(cwd, reviewer.complete, { head: undefined }), signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text).files).toMatchObject([{ file: "page.html", status: "pass", scope: "whole" }]);
+    expect(reviewer.calls).toHaveLength(1);
+  });
+
+  test.skipIf(process.platform !== "linux" || !existsSync("/dev/shm"))("Git discovery at a mount boundary has no HEAD baseline", async () => {
+    const cwd = mkdtempSync("/dev/shm/slop-mount-");
+    roots.push(cwd);
+    const path = join(cwd, "page.html");
+    writeFileSync(path, "<p>Not in Git</p>");
+    const probe = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, env: { ...process.env, LC_ALL: "C", GIT_DISCOVERY_ACROSS_FILESYSTEM: "0" }, encoding: "utf8" });
+    expect(probe.stderr).toContain("not a git repository (or any parent up to mount point");
+    expect(await headExtracted(path)).toBeUndefined();
   });
 });
 
@@ -1020,11 +1101,47 @@ describe("턴 끝 게이트: 저장소 밖 보이는 산출물(공개 선언 불
     return {
       sent,
       input: () => emit("input", { source: "interactive", text: "보고서 만들어줘" }),
-      tool: (toolName: string, input: Record<string, unknown>) => emit("tool_result", { toolName, input, isError: false, content: [] }),
+      tool: (toolName: string, input: Record<string, unknown>, details?: unknown) => emit("tool_result", { toolName, input, details, isError: false, content: [] }),
       end: () => emit("agent_end", { messages: [{ role: "assistant", stopReason: "stop" }] }),
     };
   }
   const home = () => { const dir = mkdtempSync(join(homedir(), ".slop-gate-test-")); roots.push(dir); return dir; };
+
+  test("a refused write does not add its existing target to the turn-end gate", async () => {
+    const cwd = scratch();
+    const artifact = join(home(), "page.html");
+    process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
+    writeFileSync(artifact, "<p>Existing draft</p>");
+    const s = session(cwd);
+    await s.input();
+    await s.tool("write", { path: artifact }, { refused: { by: "fixture" } });
+    await s.end();
+    expect(s.sent).toEqual([]);
+  });
+
+  test.each([{}, { by: 7 }])("malformed refusal metadata %j does not suppress a real write", async (refused) => {
+    const cwd = scratch();
+    const artifact = join(home(), "page.html");
+    process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
+    const s = session(cwd);
+    await s.input();
+    writeFileSync(artifact, "<p>New draft</p>");
+    await s.tool("write", { path: artifact }, { refused });
+    await s.end();
+    expect(s.sent).toEqual([expect.objectContaining({ customType: CONTINUATION_TYPE, content: expect.stringContaining(artifact) })]);
+  });
+
+  test("an eval script error does not add the artifact named in unreachable code", async () => {
+    const cwd = scratch();
+    const artifact = join(home(), "page.html");
+    process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
+    writeFileSync(artifact, "<p>Existing draft</p>");
+    const s = session(cwd);
+    await s.input();
+    await s.tool("eval", { code: `throw new Error("fixture"); await Bun.write(${JSON.stringify(artifact)}, "unreachable");` }, { scriptError: true });
+    await s.end();
+    expect(s.sent).toEqual([]);
+  });
 
   test("a Git artifact without a pass is named after the write without extending the turn", async () => {
     const cwd = scratch();

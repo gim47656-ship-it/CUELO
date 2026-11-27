@@ -120,6 +120,17 @@ test("the eval tool origin blocks publication and review tools without blocking 
   })).toBeUndefined();
 });
 
+test("bash refusal never claims that the check or its output pipe ran", async () => {
+  const harness = createGuardHarness();
+  const event = { type: "tool_result", toolName: "bash", toolCallId: "check", isError: false,
+    input: { command: "bun test 2>&1 | tail -3" }, content: [{ type: "text", text: "[refused by fixture] Not executed.\nfixture policy" }],
+  };
+  expect(await harness.emit("tool_result", { ...event, details: { refused: { by: "fixture" } } })).toBeUndefined();
+  expect(await harness.emit("tool_result", { ...event, isError: true, details: { exitCode: 1 } })).toMatchObject({
+    content: [event.content[0], { text: expect.stringContaining("[검사 종료 코드]") }],
+  });
+});
+
 test("bash entry refuses low-memory builds, but permits a single build and non-build commands", async () => {
   let bytes = MIN_BUILD_AVAILABLE_BYTES - 1024;
   const buildResourceReaders: BuildResourceReaders = {

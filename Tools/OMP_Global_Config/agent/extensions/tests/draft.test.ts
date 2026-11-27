@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
@@ -140,16 +141,158 @@ describe("draft", () => {
   test("only real saves expose canonical savedPath; non-error no-save and failures do not", async () => {
     const cwd = fixture();
     const output = "doc/history/2026/11/03-save/maker-A.md";
-    const complete: DraftCompletion = async (_prompt, _ctx, _signal, model) => reply("# Saved\n\nProducer evidence.", model);
+    const complete: DraftCompletion = async () => reply("# Saved\n\nProducer evidence.");
     const saved = await draftDocument({ instruction: "record", output }, context(cwd), signal, complete);
     expect(saved.savedPath).toBe(join(cwd, output));
     expect(readFileSync(saved.savedPath!, "utf8")).toBe("# Saved\n\nProducer evidence.\n");
-    const noSave = await draftDocument({ instruction: "", output, overwrite: true }, context(cwd), signal, complete);
-    expect(noSave.isError).toBe(false);
-    expect(noSave.savedPath).toBeUndefined();
+    for (const blank of [{ instruction: " ", output }, { instruction: "record", output: " " }]) {
+      const noSave = await draftDocument({ ...blank, overwrite: true }, context(cwd), signal, complete);
+      expect(noSave).toMatchObject({ isError: false, details: { refused: { by: "draft-path" } } });
+      expect(noSave.text.split("\n")[0]).toBe("[refused by draft-path] Not executed.");
+      expect(noSave.savedPath).toBeUndefined();
+    }
+    expect(readFileSync(join(cwd, output), "utf8")).toBe("# Saved\n\nProducer evidence.\n");
     const refused = await draftDocument({ instruction: "record", output }, context(cwd), signal, complete);
-    expect(refused.isError).toBe(true);
+    expect(refused).toMatchObject({ isError: false, details: { refused: { by: "draft-path" } } });
+    expect(refused.text.split("\n")[0]).toBe("[refused by draft-path] Not executed.");
     expect(refused.savedPath).toBeUndefined();
+  });
+
+  test("cancellation at the save directory operation is an error without an output file", async () => {
+    const cwd = fixture();
+    const controller = new AbortController();
+    const directory = join(cwd, "docs");
+    const mkdir = fsPromises.mkdir;
+    const intercept = spyOn(fsPromises, "mkdir").mockImplementation((async (path, options) => {
+      if (path === directory) controller.abort(new Error("save cancelled"));
+      return mkdir(path, options);
+    }) as typeof mkdir);
+    try {
+      const result = await draftDocument({ instruction: "record", output: "docs/report.md" }, context(cwd), controller.signal, async () => reply("# Draft"));
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.isError).toBe(true);
+      expect(result.details).toBeUndefined();
+      expect(result.text).toContain("save cancelled");
+      expect(existsSync(join(directory, "report.md"))).toBe(false);
+    } finally { intercept.mockRestore(); }
+  });
+
+  test("reports the saved path when an overwrite completes before cancellation", async () => {
+    const cwd = fixture(), output = join(cwd, "report.md");
+    writeFileSync(output, "old");
+    const controller = new AbortController();
+    const rename = fsPromises.rename;
+    const intercept = spyOn(fsPromises, "rename").mockImplementation(async (...args) => {
+      await rename(...args);
+      controller.abort();
+    });
+    try {
+      const result = await draftDocument({ instruction: "record", output: "report.md", overwrite: true }, context(cwd), controller.signal, async () => reply("# Draft"));
+      expect(controller.signal.aborted).toBe(true);
+      expect(result).toMatchObject({ isError: false, savedPath: output });
+      expect(readFileSync(output, "utf8")).toBe("# Draft\n");
+    } finally { intercept.mockRestore(); }
+  });
+
+  test("failed no-overwrite writes never expose partial final bytes", async () => {
+    const cwd = fixture(), output = join(cwd, "report.md");
+    const open = fsPromises.open, write = fsPromises.writeFile;
+    const direct = spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (args[0] === output) handle.writeFile = async () => {
+        await handle.write("partial");
+        throw new Error("fixture: failed draft write");
+      };
+      return handle;
+    });
+    const temporary = spyOn(fsPromises, "writeFile").mockImplementation(async (path) => {
+      await write(path, "partial");
+      throw new Error("fixture: failed draft write");
+    });
+    const input = { instruction: "record", output: "report.md" }, complete = async () => reply("# Draft");
+    try {
+      const failed = await draftDocument(input, context(cwd), signal, complete);
+      expect(failed.isError).toBe(true);
+      expect(failed.text).toContain("fixture: failed draft write");
+      expect(readdirSync(cwd)).toEqual([]);
+    } finally { temporary.mockRestore(); direct.mockRestore(); }
+    expect(await draftDocument(input, context(cwd), signal, complete)).toMatchObject({ isError: false, savedPath: output });
+    expect(readFileSync(output, "utf8")).toBe("# Draft\n");
+  });
+
+  test("exclusive publication preserves a concurrent destination", async () => {
+    const cwd = fixture(), output = join(cwd, "report.md");
+    const result = await draftDocument({ instruction: "record", output: "report.md" }, context(cwd), signal, async () => {
+      writeFileSync(output, "other writer");
+      return reply("# Draft");
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("EEXIST");
+    expect(readdirSync(cwd)).toEqual(["report.md"]);
+    expect(readFileSync(output, "utf8")).toBe("other writer");
+  });
+
+  test("a filesystem without hard links fails closed without a partial destination", async () => {
+    const cwd = fixture();
+    const intercept = spyOn(fsPromises, "link").mockRejectedValue(Object.assign(new Error("fixture: links unsupported"), { code: "ENOTSUP" }));
+    try {
+      const result = await draftDocument({ instruction: "record", output: "report.md" }, context(cwd), signal, async () => reply("# Draft"));
+      expect(result.isError).toBe(true);
+      expect(result.savedPath).toBeUndefined();
+      expect(result.text).toContain("fixture: links unsupported");
+      expect(readdirSync(cwd)).toEqual([]);
+    } finally { intercept.mockRestore(); }
+  });
+
+  test("temp cleanup failure after rename keeps the save receipt and warning", async () => {
+    const cwd = fixture(), output = join(cwd, "report.md");
+    writeFileSync(output, "old");
+    const rm = fsPromises.rm;
+    const intercept = spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+      if (String(path).startsWith(join(cwd, ".draft-"))) throw Object.assign(new Error("fixture: cleanup denied"), { code: "EACCES" });
+      return rm(path, options);
+    });
+    try {
+      const result = await draftDocument({ instruction: "record", output: "report.md", overwrite: true }, context(cwd), signal, async () => reply("# Draft"));
+      expect(result).toMatchObject({ isError: false, savedPath: output });
+      expect(result.text).toContain("fixture: cleanup denied");
+      expect(readFileSync(output, "utf8")).toBe("# Draft\n");
+    } finally { intercept.mockRestore(); }
+  });
+
+  test("policy-excluded references refuse, but unreadable references stay errors", async () => {
+    const cwd = fixture(), broken = join(cwd, "unreadable.md");
+    writeFileSync(join(cwd, "api-key.md"), "fixture text");
+    writeFileSync(broken, "fixture text");
+    let calls = 0;
+    const complete: DraftCompletion = async () => { calls++; return reply("# Draft"); };
+    const instruction = "record", output = "report.md";
+    const refused = await draftDocument({ instruction, output, paths: ["api-key.md"] }, context(cwd), signal, complete);
+    expect(refused).toMatchObject({ isError: false, details: { refused: { by: "draft-path" } } });
+    const stat = fsPromises.stat;
+    const intercept = spyOn(fsPromises, "stat").mockImplementation((async (path) => {
+      if (path === broken) throw Object.assign(new Error("fixture: unreadable reference"), { code: "EACCES" });
+      return stat(path);
+    }) as typeof stat);
+    try {
+      const failed = await draftDocument({ instruction, output, paths: ["unreadable.md"] }, context(cwd), signal, complete);
+      expect(failed.isError).toBe(true);
+      expect(failed.details).toBeUndefined();
+      expect(failed.text).toContain("fixture: unreadable reference");
+      expect(existsSync(join(cwd, output))).toBe(false);
+      expect(calls).toBe(0);
+    } finally { intercept.mockRestore(); }
+  });
+
+  test("a parent redirected during completion cannot create directories outside the draft cwd", async () => {
+    const cwd = fixture(), outside = fixture();
+    const result = await draftDocument({ instruction: "record", output: "docs/new/report.md" }, context(cwd), signal, async () => {
+      symlinkSync(outside, join(cwd, "docs"), "junction");
+      return reply("# Draft");
+    });
+    expect(result.isError).toBe(true);
+    expect(result.savedPath).toBeUndefined();
+    expect(existsSync(join(outside, "new"))).toBe(false);
   });
   test("cwd 밖·절대·비밀·링크 경로와 기존 파일은 모델 호출 전에 거부하고 overwrite일 때만 덮어쓴다", async () => {
     const cwd = fixture();
@@ -170,11 +313,14 @@ describe("draft", () => {
       ["report.md", "overwrite: true"],
     ];
     for (const [output, reason] of refused) {
-      const result = await draftText({ instruction: "보고서", output }, context(cwd), signal, complete);
-      expect(result.startsWith("model: none")).toBe(true);
-      expect(result).toContain(reason);
+      const result = await draftDocument({ instruction: "보고서", output }, context(cwd), signal, complete);
+      expect(result).toMatchObject({ isError: false, details: { refused: { by: "draft-path" } } });
+      expect(result.text.startsWith("[refused by draft-path] Not executed.\nmodel: none")).toBe(true);
+      expect(result.text).toContain(reason);
+      expect(result.savedPath).toBeUndefined();
     }
     expect(calls).toBe(0);
+    expect(existsSync(join(outside, "abs.md"))).toBe(false);
     expect(existsSync(join(outside, "inner.md"))).toBe(false);
     expect(readFileSync(join(cwd, "report.md"), "utf8")).toBe("OLD");
 
@@ -216,7 +362,7 @@ describe("draft", () => {
     ];
     for (const [output, reason] of refused) {
       const result = await draftText({ instruction: "기록", output }, context(cwd), signal, complete);
-      expect(result.startsWith("model: none")).toBe(true);
+      expect(result.startsWith("[refused by draft-path] Not executed.\nmodel: none")).toBe(true);
       expect(result).toContain(reason);
     }
     expect(calls).toBe(2);
@@ -229,7 +375,8 @@ describe("draft", () => {
     const unexpected: DraftCompletion = async () => { throw new Error("must not call provider"); };
     const output = join(outside, "report.md");
     const refused = await draftDocument({ instruction: "write", output }, context(cwd), signal, unexpected);
-    expect(refused.isError).toBe(true);
+    expect(refused).toMatchObject({ isError: false, details: { refused: { by: "draft-path" } } });
+    expect(refused.text.split("\n")[0]).toBe("[refused by draft-path] Not executed.");
     expect(refused.text).toContain('output: "report.md"');
     expect(refused.text).toContain(cwd);
     expect(existsSync(output)).toBe(false);

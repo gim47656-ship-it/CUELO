@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { createQuietDelivery } from "./lib/quiet-delivery";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
+import { didNotSucceed } from "./lib/tool-outcome";
 
 // 2026-11-22 사용자 결정(절차 턴 줄이기): "3단계 이상"은 작업 단계이지 도구 호출 수가 아니다. 관측 신호는 이번 요청에서 읽기 전용이 아닌
 // 호출의 서로 다른 작업 종류 수다. 변경과 검사만 오가는 두 단계 작업은 호출이 아무리 많아도 안내하지 않고, 위임·초안·게시·검토 등
@@ -105,7 +106,7 @@ export function createTodoNudge(now: () => number = Date.now) {
     decided = false;
   });
   pi.on("tool_result", (event) => {
-    if (event.toolName !== "todo" || event.isError) return;
+    if (event.toolName !== "todo" || didNotSucceed(event)) return;
     const snapshot = readTodoSnapshot(event.details);
     if (snapshot) todos = snapshot;
   });

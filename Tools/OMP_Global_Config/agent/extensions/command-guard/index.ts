@@ -17,6 +17,7 @@ import {
   type CharacterAlias,
 } from "../character-voice";
 import { onSessionLifecycle } from "../lib/session-identity";
+import { didNotSucceed, toolNonSuccess } from "../lib/tool-outcome";
 import { selectGitExecutor, type GitExecutor } from "../../tools/git-finalizer/wsl-git";
 import { defaultExec as egoBrowserExec, isNativeLinux, linuxHostPath } from "../../tools/ego-browser/index";
 
@@ -1170,19 +1171,21 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
   // 유지한다. `write proc://<id>/kill`로 발주를 되돌린 경우에도 런타임이 취소를 확인한 child만 canonical
   // agent id로 찾아 상한 안에서 환불하며, 취소된 child도 트리가 바뀌었으면 보고한다.
   pi.on("tool_result", async (event, ctx) => {
+    const outcome = toolNonSuccess(event);
+    const unsuccessful = outcome !== null;
     const claimedAliases = summonCalls.get(event.toolCallId);
     if (claimedAliases) {
       summonCalls.delete(event.toolCallId);
-      if (event.isError) restoreRetryableSummons(claimedAliases);
+      if (unsuccessful) restoreRetryableSummons(claimedAliases);
     }
     if (event.toolName === "task") {
       const progress = readSpawnProgress(event.details);
       settleTaskOutcome(
         event.toolCallId,
-        { executed: true, isError: event.isError, details: event.details, registry: readTaskJobRegistry(ctx) },
+        { executed: true, isError: unsuccessful, details: event.details, registry: readTaskJobRegistry(ctx) },
         progress,
       );
-      if (event.isError) return;
+      if (unsuccessful) return;
       const makers = reservedMakers(taskGuard, event.toolCallId);
       if (!makers || makers.length === 0) return;
       const settled = progress
@@ -1195,6 +1198,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
     }
 
     if (event.toolName === "bash") {
+      if (outcome === "refused" || outcome === "scriptError") return;
       const command = typeof event.input.command === "string" ? event.input.command : "";
       const output = event.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
       const hints = [interopHint(command, output, { managedPython: managedPythonPath() }), hostSystemChangeHint(command), checkOutputHint(command)].filter(
@@ -1202,7 +1206,7 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
       );
       return hints.length > 0 ? { content: [...event.content, { type: "text", text: hints.join("\n") }] } : undefined;
     }
-    if (event.isError) return;
+    if (unsuccessful) return;
     const path = typeof event.input.path === "string" ? event.input.path.trim() : "";
     // 18.3.0 write/read 결과의 proc:// details는 선언 타입에 없으므로 unknown으로 좁힌다.
     const details: unknown = event.details;
@@ -1236,17 +1240,18 @@ function commandGuardWith(pi: ExtensionAPI, deps: CommandGuardDeps): void {
   // tool_execution_end를 낸다. 이때 claim한 summon도 실행되지 않았다. tool_result를 이미 본 호출은
   // summon 기록이 지워졌고 settleTaskCall도 결과를 바꾸지 않는다.
   pi.on("tool_execution_end", (event, ctx) => {
+    const result: unknown = event.result;
+    const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
+    const unsuccessful = didNotSucceed({ isError: event.isError, details });
     const claimedAliases = summonCalls.get(event.toolCallId);
     if (claimedAliases) {
       summonCalls.delete(event.toolCallId);
-      if (event.isError) restoreRetryableSummons(claimedAliases);
+      if (unsuccessful) restoreRetryableSummons(claimedAliases);
     }
     if (event.toolName !== "task") return;
-    const result: unknown = event.result;
-    const details = result && typeof result === "object" && "details" in result ? result.details : undefined;
     settleTaskOutcome(
       event.toolCallId,
-      { executed: false, isError: event.isError, details, registry: readTaskJobRegistry(ctx) },
+      { executed: false, isError: unsuccessful, details, registry: readTaskJobRegistry(ctx) },
       readSpawnProgress(details),
     );
   });

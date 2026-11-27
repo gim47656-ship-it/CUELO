@@ -152,12 +152,14 @@ export interface RunBottleneck {
 export interface RunToolTotal {
   toolName: string;
   calls: number;
-  /** `isError`이고 아래 두 분류에 들지 않는 결과(진짜 실패). */
+  /** Tool errors other than no-match results or cancellations. */
   failed: number;
   /** `grep`·`test`류가 일치 없이 exit 1로 끝난 결과. 실패가 아니다. */
   noMatch: number;
   /** 사용자 메시지로 건너뛰었거나 중단·취소된 호출. */
   cancelled: number;
+  refused: number;
+  scriptError: number;
 }
 
 /** 목록 한 줄. 상세를 열지 않아도 결론이 보이는 값만 담는다. */
@@ -369,7 +371,7 @@ export interface RunTurnEvent {
 }
 
 /** `failed`·`noMatch`·`cancelled`는 `RunToolTotal`과 같은 분류다. `missing`은 결과 기록이 없다. */
-export const RUN_TURN_TOOL_STATUSES = ["ok", "failed", "noMatch", "cancelled", "missing"] as const;
+export const RUN_TURN_TOOL_STATUSES = ["ok", "failed", "refused", "scriptError", "noMatch", "cancelled", "missing"] as const;
 export type RunTurnToolStatus = (typeof RUN_TURN_TOOL_STATUSES)[number];
 
 export interface RunTurnToolCall {
@@ -432,6 +434,8 @@ export interface RunTurnCounts {
   toolCalls: number;
   /** `failed` 상태 도구 수. */
   toolFailures: number;
+  refused: number;
+  scriptError: number;
 }
 
 /** `GET /api/runs/<runId>/turns` 한 쪽. */

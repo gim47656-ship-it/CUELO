@@ -235,6 +235,8 @@ struct Entry<'a> {
     #[serde(default, borrow)]
     data: Raw<'a>,
     #[serde(default, borrow)]
+    details: Raw<'a>,
+    #[serde(default, borrow)]
     cwd: Raw<'a>,
     /// null and absent read the same in sessions.ts (`!entry.message`, `?.`), so both are dropped below.
     #[serde(default, borrow)]
@@ -270,9 +272,27 @@ struct Message<'a> {
 }
 
 #[derive(Deserialize)]
-struct CommandDetails<'a> {
+struct ResultDetails<'a> {
     #[serde(default, borrow, rename = "toolCommands")]
     tool_commands: Raw<'a>,
+    #[serde(default, borrow, rename = "exitCode")]
+    exit_code: Raw<'a>,
+    #[serde(default, borrow)]
+    refused: Option<Obj<Refused<'a>>>,
+    #[serde(default, borrow, rename = "scriptError")]
+    script_error: Raw<'a>,
+    #[serde(default, borrow)]
+    stage: Raw<'a>,
+    #[serde(default, borrow, rename = "jobId")]
+    job_id: Raw<'a>,
+    #[serde(default, borrow)]
+    jobs: Raw<'a>,
+}
+
+#[derive(Deserialize)]
+struct Refused<'a> {
+    #[serde(default, borrow)]
+    by: Raw<'a>,
 }
 
 #[derive(Deserialize)]
@@ -283,6 +303,30 @@ struct ToolCommand<'a> {
     mode: Raw<'a>,
     #[serde(default, borrow, rename = "exitCode")]
     exit_code: Raw<'a>,
+    #[serde(default, borrow)]
+    inner: Option<Obj<PendingFinalize<'a>>>,
+}
+
+#[derive(Deserialize)]
+struct PendingFinalize<'a> {
+    #[serde(default, borrow)]
+    stage: Raw<'a>,
+    #[serde(default, borrow, rename = "jobId")]
+    job_id: Raw<'a>,
+    #[serde(default, borrow)]
+    refused: Option<Obj<Refused<'a>>>,
+    #[serde(default, borrow, rename = "scriptError")]
+    script_error: Raw<'a>,
+}
+
+#[derive(Deserialize)]
+struct RecoveredJob<'a> {
+    #[serde(default, borrow)]
+    id: Raw<'a>,
+    #[serde(default, borrow)]
+    status: Raw<'a>,
+    #[serde(default, borrow, rename = "toolResultDetails")]
+    result: Raw<'a>,
 }
 
 #[derive(Deserialize)]
@@ -397,22 +441,83 @@ impl<'de> Visitor<'de> for WriteToolCommands<'_, '_> {
             {
                 continue;
             }
+            let pending = if command.tool.is("git_finalize") {
+                match command.inner {
+                    Some(Obj::Object(inner)) => {
+                        let refused = matches!(&inner.refused, Some(Obj::Object(refusal)) if refusal.by.0.is_some_and(|by| by.get().starts_with('"')));
+                        if refused || inner.script_error.0.is_some_and(|value| value.get() == "true") {
+                            continue;
+                        }
+                        inner.stage.is("pending").then_some(inner)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             if wrote_command {
                 w.out.push(',');
             } else {
-                w.key("details");
-                w.out.push_str("{\"toolCommands\":[");
+                w.key("toolCommands");
+                w.out.push('[');
                 wrote_command = true;
             }
+
             w.out.push('{');
             let mut cw = W { out: w.out, first: true };
             cw.field("tool", command.tool);
             cw.field("mode", command.mode);
             cw.field("exitCode", command.exit_code);
+            if let Some(pending) = pending {
+                cw.key("inner");
+                cw.out.push('{');
+                let mut iw = W { out: cw.out, first: true };
+                iw.field("stage", pending.stage);
+                iw.field("jobId", pending.job_id);
+                cw.out.push('}');
+            }
             w.out.push('}');
         }
         if wrote_command {
-            w.out.push_str("]}");
+            w.out.push(']');
+        }
+        Ok(())
+    }
+}
+
+struct WriteRecoveredJobs<'a, 'b>(&'a mut W<'b>);
+
+impl<'de> Visitor<'de> for WriteRecoveredJobs<'_, '_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a recovered job array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+        let w = self.0;
+        let mut wrote_job = false;
+        while let Some(job) = seq.next_element::<Obj<RecoveredJob>>()? {
+            let Obj::Object(job) = job else { continue };
+            if !job.status.is("completed") || job.result.0.is_none() {
+                continue;
+            }
+            if wrote_job {
+                w.out.push(',');
+            } else {
+                w.key("jobs");
+                w.out.push('[');
+                wrote_job = true;
+            }
+            w.out.push('{');
+            let mut jw = W { out: w.out, first: true };
+            jw.field("id", job.id);
+            jw.field("status", job.status);
+            jw.field("toolResultDetails", job.result);
+            w.out.push('}');
+        }
+        if wrote_job {
+            w.out.push(']');
         }
         Ok(())
     }
@@ -454,6 +559,9 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
     if e.kind.is("custom_message") || (custom && e.custom_type.is("async-result")) {
         w.field("content", e.content);
     }
+    if custom && e.custom_type.is("async-result") {
+        w.field("details", e.details);
+    }
     if custom && ["mnemopi-recall", "mnemopi-recall-gated", "system-prompt-digest"].iter().any(|k| e.custom_type.is(k)) {
         w.field("data", e.data);
     }
@@ -477,14 +585,42 @@ fn write_projection(text: &str, out: &mut String) -> Option<()> {
         mw.field("credentialId", m.credential_id);
         mw.field("toolName", m.tool_name);
         mw.field("isError", m.is_error);
-        if let Some(details) = m.details.0.filter(|v| v.get().starts_with('{')) {
-            if m.role.is("toolResult") && m.tool_name.is("bash") {
-                let details: CommandDetails = serde_json::from_str(details.get()).ok()?;
-                if let Some(commands) = details.tool_commands.0.filter(|v| v.get().starts_with('[')) {
-                    serde_json::Deserializer::from_str(commands.get())
-                        .deserialize_seq(WriteToolCommands(&mut mw))
-                        .ok()?;
+        if let Some(raw) = m.details.0.filter(|v| m.role.is("toolResult") && v.get().starts_with('{')) {
+            let details: ResultDetails = serde_json::from_str(raw.get()).ok()?;
+            let start = mw.out.len();
+            let first = mw.first;
+            mw.key("details");
+            mw.out.push('{');
+            let mut dw = W { out: mw.out, first: true };
+            dw.field("exitCode", details.exit_code);
+            dw.field("scriptError", details.script_error);
+            if details.stage.is("pending") {
+                dw.field("stage", details.stage);
+                dw.field("jobId", details.job_id);
+            }
+            if let Some(Obj::Object(refusal)) = details.refused {
+                if refusal.by.0.is_some_and(|by| by.get().starts_with('"')) {
+                    dw.key("refused");
+                    dw.out.push('{');
+                    W { out: dw.out, first: true }.field("by", refusal.by);
+                    dw.out.push('}');
                 }
+            }
+            if let Some(commands) = details.tool_commands.0.filter(|v| m.tool_name.is("bash") && v.get().starts_with('[')) {
+                serde_json::Deserializer::from_str(commands.get())
+                    .deserialize_seq(WriteToolCommands(&mut dw))
+                    .ok()?;
+            }
+            if let Some(jobs) = details.jobs.0.filter(|v| (m.tool_name.is("wait") || m.tool_name.is("hub")) && v.get().starts_with('[')) {
+                serde_json::Deserializer::from_str(jobs.get())
+                    .deserialize_seq(WriteRecoveredJobs(&mut dw))
+                    .ok()?;
+            }
+            if dw.first {
+                mw.out.truncate(start);
+                mw.first = first;
+            } else {
+                mw.out.push('}');
             }
         }
         if let Some(content) = m.content.0 {
@@ -580,18 +716,36 @@ mod tests {
                 {"tool":"git_finalize","mode":"execute","exitCode":"0"},
                 ["git_finalize","execute",0],
                 {"tool":"read","mode":"execute","exitCode":0},
-                {"tool":"git\u005ffinalize","mode":"execute","exitCode":0,"inner":{"stage":"complete"}}
+                {"tool":"git\u005ffinalize","mode":"execute","exitCode":0,"inner":{"stage":"complete"}},
+                {"tool":"git_finalize","mode":"execute","exitCode":0,"inner":{"stage":"pending","jobId":"bg_nested","extra":true}}
             ]}}}"#;
 
         assert_eq!(write_projection(input, &mut output), Some(()));
         assert_eq!(
             serde_json::from_str::<Value>(&output).unwrap(),
             json!({"type":"message","message":{"role":"toolResult","toolName":"bash",
-                "details":{"toolCommands":[
+                "details":{"exitCode":1,"toolCommands":[
                     {"tool":"recall","mode":"execute","exitCode":1},
-                    {"tool":"git_finalize","mode":"execute","exitCode":0}
+                    {"tool":"git_finalize","mode":"execute","exitCode":0},
+                    {"tool":"git_finalize","mode":"execute","exitCode":0,"inner":{"stage":"pending","jobId":"bg_nested"}}
                 ]}
             }})
         );
+    }
+
+    #[test]
+    fn projects_refusal_and_script_error_without_other_details() {
+        for (source, expected) in [
+            (json!({"refused":{"by":"command-guard","unused":true},"unused":true}), json!({"refused":{"by":"command-guard"}})),
+            (json!({"refused":{"by":7,"unused":true}}), Value::Null),
+            (json!({"refused":{}}), Value::Null),
+            (json!({"stage":"pending","jobId":"bg_fixture","unused":true}), json!({"stage":"pending","jobId":"bg_fixture"})),
+            (json!({"scriptError":true,"cells":[{"code":"fixture"}]}), json!({"scriptError":true})),
+        ] {
+            let input = json!({"type":"message","message":{"role":"toolResult","toolName":"eval","isError":false,"details":source}});
+            let mut output = String::new();
+            assert_eq!(write_projection(&input.to_string(), &mut output), Some(()));
+            assert_eq!(serde_json::from_str::<Value>(&output).unwrap()["message"]["details"], expected);
+        }
     }
 }

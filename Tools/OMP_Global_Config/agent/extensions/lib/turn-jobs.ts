@@ -2,6 +2,7 @@
 // unreaped-jobs 플러그인(턴 끝 미회수 안내)이 같은 관측을 쓴다. 이름 붙은 서비스는 AsyncJobManager 행이 아니어서 bash·proc 결과로만 보인다.
 // 전역 AGENTS.md 「`yield` 직전 띄운 job 회수·취소」를 글 대신 지키는 안내이며 막지 않는다(2026-11-11 사용자 결정: 안내).
 import { eligible } from "./job-observation";
+import { didNotSucceed } from "./tool-outcome";
 
 const STARTED = /^(?:running|ready|starting|restarting)$/u;
 const LISTED_ACTIVE = /^(?:running|ready|starting|restarting|stopping)$/u;
@@ -25,7 +26,7 @@ export class LiveServices {
 
   /** bash 결과에는 그 호출의 명령을 함께 넘긴다. */
   observe(event: ServiceToolResult, command = ""): void {
-    if (event.isError) return;
+    if (didNotSucceed(event)) return;
     if (event.toolName === "bash") {
       const service = fieldOf(event.details, "service");
       const name = fieldOf(service, "name");

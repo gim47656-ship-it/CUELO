@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { didNotSucceed } from "./tool-outcome";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
 
@@ -407,10 +408,10 @@ export function readPersistedTodoProgress(entries: unknown): PersistedTodoProgre
       !("role" in message) ||
       message.role !== "toolResult" ||
       !("toolName" in message) ||
-      message.toolName !== "todo" ||
-      ("isError" in message && message.isError === true)
+      message.toolName !== "todo"
     ) continue;
     const details = "details" in message ? message.details : undefined;
+    if (didNotSucceed({ isError: "isError" in message && message.isError === true, details })) continue;
     const snapshot = readTodoSnapshot(details) ?? pendingCustomSnapshot;
     if (snapshot) {
       state = advanceTodoProgressState(

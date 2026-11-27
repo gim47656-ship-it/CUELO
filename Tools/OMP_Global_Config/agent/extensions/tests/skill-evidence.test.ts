@@ -18,6 +18,21 @@ const expected: DispatchRequiredSkills = {
 
 
 describe("child transcript의 skill:// 읽기 관측", () => {
+  test("refusal, script exception and I/O failure are distinct and none prove a skill read", () => {
+    const stamp = "2026-11-03T00:10:00.000Z";
+    const text = [...header, ...[
+      { isError: true },
+      { isError: false, details: { refused: { by: "secret-path" } } },
+      { isError: false, details: { scriptError: true } },
+    ].flatMap((outcome, index) => [
+      call(String(index), "read", { path: "skill://hallmark" }, stamp),
+      result(String(index), "read", stamp, outcome),
+    ])].join("\n");
+    expect(observeSkillReads(text, "x.jsonl")).toMatchObject({
+      state: "observed", reads: [], failed: 1, refused: 1, scriptError: 1,
+    });
+  });
+
   test("이전 attempt 읽기는 따로 보이고 이번 필수 대조에 세지 않으며, slop_check 통과는 읽기가 아니다", () => {
     const text = [...header,
       call("1", "read", { path: "skill://hallmark" }, "2026-11-03T01:00:00.000Z"), result("1", "read", "2026-11-03T01:00:00.100Z"),

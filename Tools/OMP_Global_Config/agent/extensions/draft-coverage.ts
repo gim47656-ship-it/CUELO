@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf } from "./lib/slop-gate";
 import { coverage, COVERED_RATIO, denyText, inScope, lettersOf, MIN_UNCOVERED_LETTERS, proseChanges, reminderText, shingles, uncoveredBlocks } from "./lib/draft-coverage";
+import { didNotSucceed } from "./lib/tool-outcome";
 
 /**
  * write·edit가 글 파일을 바꾸기 전에, draft를 거치지 않은 새 글 덩어리가 문단 이상 쌓이면 그 호출을 한 번 멈추고 빠진 덩어리를 보여 준다.
@@ -135,11 +136,11 @@ export default function draftCoverage(pi: ExtensionAPI): void {
     if (event.toolName === "write" || event.toolName === "edit") {
       const apply = staged.get(event.toolCallId);
       staged.delete(event.toolCallId);
-      if (!event.isError) for (const step of apply ?? []) step();
+      if (!didNotSucceed(event)) for (const step of apply ?? []) step();
       return;
     }
     if (event.toolName === "draft") {
-      if (event.isError || !event.details || typeof event.details !== "object" || !("savedPath" in event.details) || typeof event.details.savedPath !== "string") return;
+      if (didNotSucceed(event) || !event.details || typeof event.details !== "object" || !("savedPath" in event.details) || typeof event.details.savedPath !== "string") return;
       const path = event.details.savedPath;
       if (!SNAPSHOT_FORMAT.test(path)) return;
       const text = readText(path);
@@ -149,7 +150,7 @@ export default function draftCoverage(pi: ExtensionAPI): void {
       return;
     }
     if (event.toolName === "read") {
-      if (event.isError || typeof input.path !== "string") return;
+      if (didNotSucceed(event) || typeof input.path !== "string") return;
       if (drafts.length > 0 && !/^[a-z][a-z\d+.-]*:\/\//i.test(input.path)) {
         // Compare the saved file, not the spelling through a symlinked session checkout.
         const bare = input.path.replace(/(?::(?:raw|conflicts|img|-?\d[\d+,:-]*(?::raw)?))+$/, "");

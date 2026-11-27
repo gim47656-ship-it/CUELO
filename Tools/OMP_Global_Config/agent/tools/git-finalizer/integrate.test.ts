@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
@@ -88,7 +88,7 @@ const remoteRef = (f: Fixture, ref = "refs/heads/main") => git(f.root, ["--git-d
 const remoteFile = (f: Fixture, path: string) => git(f.root, ["--git-dir", f.remote, "show", `refs/heads/main:${path}`]);
 const isAncestor = (f: Fixture, older: string, newer: string) => Bun.spawnSync({ cmd: ["git", "--git-dir", f.remote, "merge-base", "--is-ancestor", older, newer] }).exitCode === 0;
 const rebasing = (f: Fixture) => existsSync(join(git(f.tree, ["rev-parse", "--absolute-git-dir"]), "rebase-merge"));
-const stateFile = (f: Fixture) => join(f.tree, git(f.tree, ["rev-parse", "--git-path", "git-integrate.json"]));
+const stateFile = (f: Fixture) => resolve(f.tree, git(f.tree, ["rev-parse", "--git-path", "git-integrate.json"]));
 
 const schemaNode: object = new Proxy(function node() {}, { get: () => schemaNode, apply: () => schemaNode });
 interface Outcome { error?: Error; output?: { content: { text: string }[]; details: Record<string, any> } }
@@ -104,6 +104,30 @@ async function integrate(cwd: string, params: Record<string, unknown> = {}, arti
   }
 }
 
+function refusedText(outcome: Outcome, by: string) {
+  expect(outcome.error).toBeUndefined();
+  expect(outcome.output).toMatchObject({ isError: false, details: { ok: false, refused: { by } } });
+  const text = outcome.output!.content[0]!.text;
+  expect(text.split("\n")[0]).toBe(`[refused by ${by}] Not executed.`);
+  return text;
+}
+
+async function readLockReply(stdout: ReadableStream<Uint8Array>) {
+  const reader = stdout.getReader();
+  const decoder = new TextDecoder();
+  try {
+    let line = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      line += decoder.decode(value, { stream: !done });
+      const newline = line.indexOf("\n");
+      if (newline >= 0 || done) return JSON.parse(newline < 0 ? line : line.slice(0, newline));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /** integrate-lock.ps1을 직접 띄워 잠금을 쥔다. 첫 줄(잡았는지)과 놓기 함수를 돌려준다. */
 async function holdLock(repository: string, options: { wait?: number; maxHold?: number } = {}) {
   const child = Bun.spawn({
@@ -111,9 +135,7 @@ async function holdLock(repository: string, options: { wait?: number; maxHold?: 
       "-WaitSeconds", String(options.wait ?? 30), "-MaxHoldSeconds", String(options.maxHold ?? 100)],
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
-  const reader = child.stdout.getReader();
-  const { value } = await reader.read();
-  return { reply: JSON.parse(new TextDecoder().decode(value).split("\n")[0]), child, release: async () => { child.stdin.end(); return child.exited; } };
+  return { reply: await readLockReply(child.stdout), child, release: async () => { child.stdin.end(); return child.exited; } };
 }
 
 // 다른 프로세스가 OS named mutex에 막혀 "아직 끝나지 않았다"는 것은 기다릴 사건이 없어 실제 시간으로만 보인다(가짜 타이머로 대신할 수 없다).
@@ -139,8 +161,11 @@ describe("git_integrate", () => {
     try {
       const receipt = await finalize!.execute("publish", { files: ["a.txt"], message: "publish" }, undefined, {} as never);
       expect(receipt.details.jobId).toBe("publication-job");
-      await expect(integrate!.execute("integrate", { checks: [] }, undefined, {} as never)).rejects.toThrow(/git_integrate failed at lock:.*publication-job.*Wait for its result/);
+      const refused = await integrate!.execute("integrate", { checks: [] }, undefined, {} as never);
+      expect(refused).toMatchObject({ isError: false, details: { ok: false, refused: { by: "lock" } } });
+      expect(refused.content[0].text).toMatch(/^\[refused by lock\] Not executed\.\ngit_integrate failed at lock:.*publication-job.*Wait for its result/);
       expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+      expect(git(f.tree, ["diff", "--cached", "--name-only"])).toBe("");
       expect(remoteRef(f)).toBe(head);
     } finally { release.resolve(); await done; }
   }, TIMEOUT);
@@ -157,14 +182,19 @@ describe("git_integrate", () => {
     const target = await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
     const artifacts = join(f.root, "artifacts");
     const failed = await integrate(f.tree, { checks: [] }, artifacts);
-    expect(failed.error?.message).toContain("git_integrate failed at finalize-checks: rebased suite exited 6");
-    expect(failed.error?.message).toContain("target-a/session-b");
-    expect(failed.error?.message).toContain("Nothing was pushed.");
+    expect(failed.error).toBeUndefined();
+    expect(failed.output).toMatchObject({ isError: false, details: { ok: false, refused: { by: "finalize-checks" } } });
+    const text = failed.output!.content[0]!.text;
+    expect(text.split("\n")[0]).toBe("[refused by finalize-checks] Not executed.");
+    expect(text).toContain("git_integrate failed at finalize-checks: rebased suite exited 6");
+    expect(text).toContain("target-a/session-b");
+    expect(text).toContain("Nothing was pushed.");
     expect(remoteRef(f)).toBe(target);
     expect(remoteRef(f, "refs/heads/wt/x")).toBe(session);
 
     expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(session);
-    const ref = failed.error?.message.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
+    expect(git(f.tree, ["diff", "--cached", "--name-only"])).toBe("");
+    const ref = text.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
     expect(ref).toBeDefined();
     const rebased = git(f.tree, ["rev-parse", ref!]);
     expect(rebased).not.toBe(session);
@@ -196,9 +226,11 @@ describe("git_integrate", () => {
     const session = await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
     const target = await pushOther(f, { "a.txt": "target-a\n" }, "fix: target a");
     const failed = await integrate(f.tree, { checks: [] }, join(f.root, "artifacts"));
-    expect(failed.error?.message).toContain("dirty exited 8");
-    expect(failed.error?.message).toContain("tracked changes are present");
-    const ref = failed.error?.message.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
+    expect(failed.output).toBeUndefined();
+    const text = failed.error?.message ?? "";
+    expect(text).toContain("dirty exited 8");
+    expect(text).toContain("tracked changes are present");
+    const ref = text.match(/saved at (refs\/cuelo\/integrate-failed\/\S+)\./)?.[1];
     expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(git(f.tree, ["rev-parse", ref!]));
     expect(git(f.tree, ["rev-parse", "HEAD"])).not.toBe(session);
     expect(await readFile(join(f.tree, "a.txt"), "utf8")).toBe("do not overwrite");
@@ -250,12 +282,7 @@ describe("git_integrate", () => {
     // 늘 실패하는 post-checkout hook이 있어도 HEAD를 떼고 붙이는 일은 hook에 기대지 않는다.
     await writeFile(join(git(f.work, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "hooks", "post-checkout"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     expect((await integrate(f.tree, { checks: [] })).output?.details.localBranch).toContain("removed the local branch wt/x");
-    // HEAD를 붙이지 못하면(HEAD.lock) 만든 브랜치를 되돌려, 원인이 사라진 뒤 다시 부르면 이어진다.
     const headLock = join(git(f.tree, ["rev-parse", "--absolute-git-dir"]), "HEAD.lock");
-    await writeFile(headLock, "");
-    expect(await reattachRetiredBranch(f.tree)).toMatchObject({ status: "blocked", branch: "wt/x" });
-    git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
-    await rm(headLock);
     // git_finalize 경로: 커밋하기 전에 같은 이름의 브랜치를 HEAD에 다시 붙이고 커밋 안 한 수정은 그대로 둔다.
     await writeFile(join(f.tree, "a.txt"), "follow-up-a\n");
     const attached = await reattachRetiredBranch(f.tree);
@@ -270,6 +297,18 @@ describe("git_integrate", () => {
     expect(again.output?.details.localBranch).toContain("removed the local branch wt/x");
     // git_integrate 경로: 분리된 HEAD에 새 커밋이 있으면 start가 브랜치를 다시 붙여 게시한다.
     await commitIn(f.tree, { "c.txt": "detached-c\n" }, "feat: detached c");
+    // A detached commit actually needs reattachment; HEAD.lock forces that Git write to fail.
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
+    const tip = remoteRef(f);
+    await writeFile(headLock, "");
+    try {
+      const failed = await integrate(f.tree, { checks: [] });
+      expect(failed.output).toBeUndefined();
+      expect(failed.error?.message).toMatch(/could not attach HEAD to wt\/x.*HEAD\.lock/);
+      expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+      expect(remoteRef(f)).toBe(tip);
+      git(f.work, ["show-ref", "--verify", "--quiet", "refs/heads/wt/x"], 1);
+    } finally { await rm(headLock); }
     const third = await integrate(f.tree, { checks: [] });
     expect(third.output?.details).toMatchObject({ ok: true, stage: "complete", branch: "wt/x" });
     expect(remoteFile(f, "c.txt")).toBe("detached-c");
@@ -339,7 +378,7 @@ describe("git_integrate", () => {
     expect(remoteRef(f)).toBe(targetSha);
 
     const marked = await integrate(f.tree, { action: "continue" });
-    expect(marked.error?.message).toContain("conflict markers remain in: a.txt");
+    expect(refusedText(marked, "conflict")).toContain("conflict markers remain in: a.txt");
     expect(rebasing(f)).toBe(true);
 
     await writeFile(join(f.tree, "a.txt"), "target-a\nsession-a\n");
@@ -370,7 +409,7 @@ describe("git_integrate", () => {
     expect(rebasing(f)).toBe(false);
     expect(existsSync(stateFile(f))).toBe(false);
     expect(remoteRef(f)).toBe(targetSha);
-    expect((await integrate(f.tree, { action: "continue" })).error?.message).toContain("no git_integrate run is paused");
+    expect(refusedText(await integrate(f.tree, { action: "continue" }), "repository")).toContain("no git_integrate run is paused");
   }, TIMEOUT);
 
   test("a conflict resolved by deleting the file with git rm continues and publishes the deletion", async () => {
@@ -400,7 +439,10 @@ describe("git_integrate", () => {
     expect(existsSync(stateFile(f))).toBe(false);
 
     const dirtied = await integrate(f.tree, { checks: ["echo extra >> b.txt"] });
+    expect(dirtied.output).toBeUndefined();
     expect(dirtied.error?.message).toContain("git_integrate failed at checks: tracked changes are present");
+    expect(git(f.tree, ["rev-parse", "HEAD~1"])).toBe(targetSha);
+    expect(await readFile(join(f.tree, "b.txt"), "utf8")).toBe("session-b\nextra\n");
     expect(remoteRef(f)).toBe(targetSha);
   }, TIMEOUT);
 
@@ -477,9 +519,13 @@ describe("git_integrate", () => {
     await writeFile(join(f.tree, "wipe.ts"), wipe(3));
     // 세션(편집기)이 먼저 stage해 충돌 목록과 작업 트리 변경에서 사라져도 게이트를 지나지 못한다.
     git(f.tree, ["add", "wipe.ts"]);
+    const index = git(f.tree, ["ls-files", "--stage"]);
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
 
     const refused = await integrate(f.tree, { action: "continue" });
-    expect(refused.error?.message).toContain("git_integrate failed at cross-review");
+    expect(refusedText(refused, "cross-review")).toContain("git_integrate failed at cross-review");
+    expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
     expect(rebasing(f)).toBe(true);
     expect(remoteRef(f)).toBe(targetSha);
 
@@ -494,10 +540,92 @@ describe("git_integrate", () => {
     const review = await runReview({ files: ["wipe.ts"], acceptance: "keeps both wipes", authors: ["main"] }, deps, new AbortController().signal);
     expect((await runResolve({ reviewId: review.reviewId, resolutions: [] }, deps)).pass).toBe(true);
 
+    if (process.platform !== "win32") {
+      const path = process.env.PATH;
+      await writeFile(join(f.root, "git"), `#!/bin/sh\nif [ "$*" = 'rev-parse -q --verify :wipe.ts' ]; then echo 'fixture: index read failed' >&2; exit 128; fi\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
+      process.env.PATH = `${f.root}:${path}`;
+      try {
+        const unreadable = await integrate(f.tree, { action: "continue" });
+        expect(unreadable.output).toBeUndefined();
+        expect(unreadable.error?.message).toContain("fixture: index read failed");
+        expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+        expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
+        expect(rebasing(f)).toBe(true);
+        expect(remoteRef(f)).toBe(targetSha);
+      } finally { process.env.PATH = path; }
+    }
+
     const passed = await integrate(f.tree, { action: "continue" });
     expect(passed.error).toBeUndefined();
     expect(passed.output?.details.stage).toBe("complete");
     expect(remoteFile(f, "wipe.ts")).toBe(wipe(3).trim());
+  }, TIMEOUT);
+
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("an unreadable paused rebase identity is an I/O error", async () => {
+    const f = await fixture();
+    await commitIn(f.tree, { "a.txt": "session\n" }, "session change");
+    const tip = await pushOther(f, { "a.txt": "target\n" }, "target change");
+    expect((await integrate(f.tree, { checks: [] })).output?.details.stage).toBe("conflict");
+    const headName = join(git(f.tree, ["rev-parse", "--absolute-git-dir"]), "rebase-merge", "head-name");
+    await chmod(headName, 0);
+    try {
+      const failed = await integrate(f.tree, { action: "continue" });
+      expect(failed.output).toBeUndefined();
+      expect(failed.error?.message).toMatch(/EACCES.*head-name/);
+      expect(rebasing(f)).toBe(true);
+      expect(remoteRef(f)).toBe(tip);
+    } finally { await chmod(headName, 0o644); }
+  }, TIMEOUT);
+
+  test("explicit abort recovers a paused rebase even if its state file is truncated", async () => {
+    const f = await fixture();
+    const head = await commitIn(f.tree, { "a.txt": "session\n" }, "session change");
+    const tip = await pushOther(f, { "a.txt": "target\n" }, "target change");
+    expect((await integrate(f.tree, { checks: [] })).output?.details.stage).toBe("conflict");
+    await writeFile(stateFile(f), "{");
+    const result = await integrate(f.tree, { action: "abort" });
+    expect(result.error).toBeUndefined();
+    expect(result.output?.details).toMatchObject({ ok: true, stage: "aborted", head });
+    expect(result.output?.content[0].text).toContain(`Current HEAD: ${head}; original HEAD unknown`);
+    expect(result.output?.content[0].text).toContain("verification was skipped");
+    expect(rebasing(f)).toBe(false);
+    expect(existsSync(stateFile(f))).toBe(false);
+    expect(remoteRef(f)).toBe(tip);
+  }, TIMEOUT);
+
+  test("abort rejects a well-formed unsupported state without touching the paused rebase", async () => {
+    const f = await fixture();
+    await commitIn(f.tree, { "a.txt": "session\n" }, "session change");
+    const tip = await pushOther(f, { "a.txt": "target\n" }, "target change");
+    expect((await integrate(f.tree, { checks: [] })).output?.details.stage).toBe("conflict");
+    const index = git(f.tree, ["ls-files", "--stage"]);
+    const path = stateFile(f);
+    const unsupported = JSON.stringify({ ...JSON.parse(await readFile(path, "utf8")), version: 2 });
+    await writeFile(path, unsupported);
+    const result = await integrate(f.tree, { action: "abort" });
+    expect(result.output).toBeUndefined();
+    expect(result.error?.message).toContain("unsupported paused state");
+    expect(rebasing(f)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(unsupported);
+    expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
+    expect(remoteRef(f)).toBe(tip);
+  }, TIMEOUT);
+
+  test("a resolved visible artifact remains blocked without its slop pass", async () => {
+    const f = await fixture({ "report.html": "<p>base</p>\n" });
+    await commitIn(f.tree, { "report.html": "<p>session</p>\n" }, "session artifact");
+    const tip = await pushOther(f, { "report.html": "<p>target</p>\n" }, "target artifact");
+    expect((await integrate(f.tree, { checks: [] })).output?.details.stage).toBe("conflict");
+    await writeFile(join(f.tree, "report.html"), "<p>resolved</p>\n");
+    git(f.tree, ["add", "report.html"]);
+    const index = git(f.tree, ["ls-files", "--stage"]);
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
+    const result = await integrate(f.tree, { action: "continue" });
+    expect(refusedText(result, "slop-gate")).toContain("report.html");
+    expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
+    expect(remoteRef(f)).toBe(tip);
+    expect(rebasing(f)).toBe(true);
   }, TIMEOUT);
 
   test("continue refuses staged markers of the repository's marker size, also with the apply rebase backend configured", async () => {
@@ -508,7 +636,7 @@ describe("git_integrate", () => {
     expect((await integrate(f.tree, { checks: [] })).output?.details.stage).toBe("conflict");
     expect(await readFile(join(f.tree, "a.txt"), "utf8")).toContain("<<<<<<<<<< ");
     git(f.tree, ["add", "a.txt"]);
-    expect((await integrate(f.tree, { action: "continue" })).error?.message).toContain("conflict markers remain in: a.txt");
+    expect(refusedText(await integrate(f.tree, { action: "continue" }), "conflict")).toContain("conflict markers remain in: a.txt");
     await writeFile(join(f.tree, "a.txt"), "target-a\nsession-a\n");
     const done = await integrate(f.tree, { action: "continue" });
     expect(done.error).toBeUndefined();
@@ -609,20 +737,77 @@ describe("git_integrate", () => {
 
   test("refuses the main checkout, detached HEAD, the target branch, tracked changes, missing checks and guarded check commands", async () => {
     const f = await fixture();
-    expect((await integrate(f.work, { checks: [] })).error?.message).toContain("main checkout");
-    expect((await integrate(f.tree, {})).error?.message).toContain("checks is required");
-    expect((await integrate(f.tree, { checks: ["git push origin main"] })).error?.message).toContain("refused by the command guard");
+    expect(refusedText(await integrate(f.work, { checks: [] }), "repository")).toContain("main checkout");
+    expect(refusedText(await integrate(f.tree, {}), "finalize-checks")).toContain("checks is required");
+    expect(refusedText(await integrate(f.tree, { checks: ["git push origin main"] }), "command-guard")).toContain("refused by the command guard");
     await writeFile(join(f.tree, "a.txt"), "dirty\n");
-    expect((await integrate(f.tree, { checks: [] })).error?.message).toContain("tracked changes are present");
+    expect(refusedText(await integrate(f.tree, { checks: [] }), "index-preflight")).toContain("tracked changes are present");
     git(f.tree, ["checkout", "-q", "--", "a.txt"]);
-    expect((await integrate(f.tree, { checks: [], target: "wt/x" })).error?.message).toContain("is on the target branch wt/x");
+    expect(refusedText(await integrate(f.tree, { checks: [], target: "wt/x" }), "repository")).toContain("is on the target branch wt/x");
     git(f.tree, ["checkout", "-q", "--detach"]);
-    expect((await integrate(f.tree, { checks: [] })).error?.message).toContain("HEAD is detached");
+    expect(refusedText(await integrate(f.tree, { checks: [] }), "repository")).toContain("HEAD is detached");
     expect(remoteRef(f)).toBe(git(f.work, ["rev-parse", "HEAD"]));
   }, TIMEOUT);
 });
 
 describe("integrate lock", () => {
+  test("reads split UTF-8 JSON through the first newline", async () => {
+    const bytes = new TextEncoder().encode('{"locked":false,"error":"잠금"}\r\n');
+    const split = new ReadableStream<Uint8Array>({
+      start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); },
+    });
+    expect(await readLockReply(split)).toEqual({ locked: false, error: "잠금" });
+  });
+
+  test("an expired lock wait reports busy without touching the checkout or remote", async () => {
+    const f = await fixture();
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
+    const index = git(f.tree, ["ls-files", "--stage"]);
+    const held = await holdLock(f.tree);
+    try {
+      expect(held.reply.locked).toBe(true);
+      const blocked = await holdLock(f.work, { wait: 1 });
+      expect(blocked.reply).toMatchObject({ locked: false, busy: true });
+      expect(blocked.reply.error).toContain("waiting for the repository finalizer lock");
+      expect(await blocked.release()).toBe(2);
+      expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+      expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
+      expect(remoteRef(f)).toBe(head);
+    } finally { await held.release(); }
+  }, TIMEOUT);
+
+  test.skipIf(process.platform === "win32")("finalizer and integrate lock wait expiry is a tool error", async () => {
+    const f = await fixture();
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
+    const index = git(f.tree, ["ls-files", "--stage"]);
+    const held = await holdLock(f.tree);
+    const path = process.env.PATH;
+    try {
+      expect(held.reply.locked).toBe(true);
+      // Same lock/expiry paths as production, with only the fixture deadlines shortened.
+      const script = join(f.root, "finalizer.ps1");
+      await writeFile(script, (await readFile(finalizerScript, "utf8")).replace("FromSeconds(120)", "FromSeconds(1)"));
+      await writeFile(join(f.work, "a.txt"), "candidate\n");
+      const request = join(f.root, "request.json");
+      await writeFile(request, JSON.stringify({ cwd: f.work, files: ["a.txt"], message: "must not publish" }));
+      const child = Bun.spawn([powerShell, "-NoProfile", "-File", script, "-Request", request], { cwd: f.work, stdout: "pipe" });
+      const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      const finalizer = JSON.parse(text.trim().split("\n").at(-1)!);
+
+      await writeFile(join(f.root, powerShell), `#!/usr/bin/env bash\nargs=("$@")\nfor (( i=0; i<\${#args[@]}; i++ )); do\n  if [[ "\${args[i]}" == -WaitSeconds ]]; then args[i+1]=1; fi\ndone\nexec "${Bun.which(powerShell)}" "\${args[@]}"\n`, { mode: 0o755 });
+      process.env.PATH = `${f.root}:${path}`;
+      const integrated = await integrate(f.tree, { checks: [] });
+      expect(code).toBe(1);
+      expect(finalizer).toMatchObject({ ok: false, stage: "lock", error: expect.stringContaining("Timed out waiting") });
+      expect(finalizer.refusedBy).toBeUndefined();
+      expect(integrated.output).toBeUndefined();
+      expect(integrated.error?.message).toMatch(/git_integrate failed at lock:.*Timed out/);
+      expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+      expect(git(f.tree, ["ls-files", "--stage"])).toBe(index);
+      expect(remoteRef(f)).toBe(head);
+    } finally { process.env.PATH = path; await held.release(); }
+  }, TIMEOUT);
+
   test("is the git_finalize mutex: a held lock makes finalizer.ps1 and git_integrate wait until it is released", async () => {
     const f = await fixture();
     await commitIn(f.tree, { "b.txt": "session-b\n" }, "feat: session b");
@@ -659,8 +844,7 @@ describe("integrate lock", () => {
       "setInterval(() => {}, 1000);",
     ].join("\n"));
     const host = Bun.spawn({ cmd: ["bun", parent], stdout: "pipe", stderr: "pipe" });
-    const { value } = await host.stdout.getReader().read();
-    expect(JSON.parse(new TextDecoder().decode(value).split("\n")[0]).locked).toBe(true);
+    expect((await readLockReply(host.stdout)).locked).toBe(true);
     host.kill("SIGKILL");
     await host.exited;
     const started = performance.now();

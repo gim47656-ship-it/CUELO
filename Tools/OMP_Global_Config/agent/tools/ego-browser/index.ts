@@ -173,6 +173,8 @@ const page = task.page("p1");
 `;
 }
 
+const BODY_FAILURE_PREFIX = "cuelo-ego-body-failure: ";
+
 /**
  * 본문은 머리말과 다른 블록에서 돈다. 11-14~11-19 Linux 9세션이 ego 가이드 예제대로 첫 호출에
  * `const task = await taskSpace(...)`·`const page = task.page("p1")`를 써서 머리말과 겹쳐
@@ -183,28 +185,50 @@ const page = task.page("p1");
  * 머리말과 겹치지 않고, 대체 함수는 머리말 범위에 묶여 본문 선언에 흔들리지 않는다. 본문의 `return` 값은 그대로 돌려준다.
  * finish가 true면 스크립트가 던져도 공간을 정리한다.
  */
-export function buildScript(name: string, profile: EgoProfile, body: string, finish: boolean, host: EgoHost = "windows"): string {
+export function buildScript(name: string, profile: EgoProfile, body: string, finish: boolean, host: EgoHost = "windows", reportFailure = false): string {
   const prelude = `${buildPrelude(name, profile, host)}const __egoTask = task;
 const __egoTaskSpace = typeof taskSpace === "function" ? taskSpace : undefined;
 const __egoNamedTaskSpace = (nameOrId, ...rest) => typeof nameOrId === "string" && rest.every((value) => value === undefined || (typeof value === "object" && value !== null && Object.values(value).every((option) => option === undefined)))
   ? Promise.resolve(__egoTask)
   : __egoTaskSpace(nameOrId, ...rest);
 `;
-  const run = `return await (async (taskSpace) => {\n{\n${body}\n}\n})(__egoNamedTaskSpace);`;
-  if (!finish) return `${prelude}${run}\n`;
-  if (host === "windows") return `${prelude}try {\n${run}\n} finally {\n  await task.finish({ keep: [] });\n}\n`;
-  return `${prelude}let __egoBodyFailed = false;
+  const bodyCall = `const __egoUserScript = async (taskSpace) => {\n{\n${body}\n}\n};\nreturn await __egoUserScript(__egoNamedTaskSpace);`;
+  const run = reportFailure
+    ? `try {\n${bodyCall}\n} catch (error) { __egoFailure = { error }; throw error; }\n`
+    : bodyCall;
+  const finishCall = `await task.finish({ keep: [] });${reportFailure ? " __egoClosed = true;" : ""}`;
+  const scoped = !finish ? run
+    : host === "windows" ? `try {\n${run}\n} finally {\n  ${finishCall}\n}\n`
+    : `let __egoBodyFailed = false;
 try {
   ${run}
 } catch (error) {
   __egoBodyFailed = true;
   throw error;
 } finally {
-  try { await task.finish({ keep: [] }); }
+  try { ${finishCall} }
   catch (error) {
     if (!__egoBodyFailed) throw error;
+    ${reportFailure ? "__egoFailure = undefined;" : ""}
     console.error("TaskSpace cleanup failed:", error);
   }
+}
+`;
+  if (!reportFailure) return `${prelude}${scoped}\n`;
+  // Report only the terminal body exception. A startup/cleanup failure has no
+  // record; keeping the original stack in it also preserves SDK diagnostics.
+  return `${prelude}let __egoFailure, __egoClosed = false;
+try {
+  ${scoped}
+} catch (error) {
+  if (__egoFailure && Object.is(error, __egoFailure.error) && (!${finish} || __egoClosed)) {
+    const diagnostic = error?.stack || error?.message || String(error);
+    const value = error === null || (typeof error !== "object" && typeof error !== "function");
+    const code = typeof error?.error_code === "string" ? error.error_code : undefined;
+    const stack = ${JSON.stringify(BODY_FAILURE_PREFIX)} + JSON.stringify({ diagnostic, value, code, finished: __egoClosed });
+    throw Object.assign(new Error(stack), { stack });
+  }
+  throw error;
 }
 `;
 }
@@ -241,12 +265,15 @@ export function isUnavailable(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+type EgoOutcome = { scriptError: true } | { refused: { by: "ego-profile" | "ego-user-control" } };
+
 export interface EgoRun {
   text: string;
   spaceName: string;
   profile: EgoProfile;
   finished: boolean;
-  result: ExecResult;
+  result?: ExecResult;
+  outcome?: EgoOutcome;
 }
 
 function clampTimeout(value: number | undefined): number {
@@ -277,16 +304,70 @@ export function misuseHint(raw: string, host: EgoHost = "windows"): string {
   return hints.length ? `\n${hints.join("\n")}` : "";
 }
 
+const USER_CONTROL = /^The user has taken control of this task space(?:, so browser commands are paused\.| and ended the task, so it is no longer assigned to the agent and browser commands are paused\.)\r?\nThis is a hard stop,/;
+
+function prefixOutcome(outcome: EgoOutcome, reason: string): string {
+  return "refused" in outcome
+    ? `[refused by ${outcome.refused.by}] Not executed.\n${reason}`
+    : `[script error] The script threw; the tool itself worked.\n${reason}`;
+}
+
+type BodyFailure = { diagnostic: string; value: boolean; finished: boolean; code?: string };
+
+function readBodyFailure(stderr: string): { failure: BodyFailure; stderr: string } | undefined {
+  const end = stderr.trimEnd().match(/(?:^|\r?\n)cuelo-ego-body-failure: ([^\r\n]+)(?:\r?\n(?:\r?\n)?Node\.js v[^\r\n]+)?$/);
+  if (!end) return;
+  let value: BodyFailure;
+  try { value = JSON.parse(end[1]); } catch { return; }
+  if (!value || typeof value.diagnostic !== "string" || typeof value.value !== "boolean" ||
+      typeof value.finished !== "boolean" || (value.code !== undefined && typeof value.code !== "string")) return;
+  const start = end.index! + (end[0].startsWith("\r\n") ? 2 : end[0].startsWith("\n") ? 1 : 0);
+  return { failure: value, stderr: stderr.slice(0, start) + value.diagnostic + stderr.slice(start + BODY_FAILURE_PREFIX.length + end[1].length) };
+}
+
+function isUserControl(diagnostic: string): boolean {
+  return USER_CONTROL.test(diagnostic.replace(/^Error: (?:\w+(?:\.\w+)*: )?/, ""));
+}
+
+function classifyExit(result: ExecResult, failure?: BodyFailure): EgoOutcome | undefined {
+  const { code, stdout, stderr } = result;
+  const userControl = { refused: { by: "ego-user-control" } } as const;
+  // If the script caught the SDK's hard stop, the SDK flushes its owned
+  // message instead of buffered script output and can exit normally.
+  if (code === 0) return USER_CONTROL.test(stdout.trimStart()) ? userControl : undefined;
+  if (code !== 1) return;
+  if (!failure) {
+    if (isUserControl(stderr.trimStart()) ||
+        stderr.startsWith("Error: TaskSpace cleanup refused: the bound space is under user control or was not created by the agent.")) return userControl;
+    // Linux compiles the submitted string before invoking it. An SDK/host
+    // module parse failure does not have the SDK's AsyncFunction call site.
+    if (/^SyntaxError:[^\r\n]*\r?\n +at new AsyncFunction \(<anonymous>\)\r?\n +at execute \([^\r\n]*[/\\]ego-browser[/\\]/m.test(stderr)) return { scriptError: true };
+    return;
+  }
+  const { diagnostic, value, code: errorCode } = failure;
+  if (errorCode === "EGO_TASK_SPACE_USER_IN_CONTROL" || errorCode === "EGO_TASK_SPACE_INACTIVE" || isUserControl(diagnostic)) return userControl;
+  const message = diagnostic.split(/\r?\n/, 1)[0];
+  if (/^Error: (?:Object reference chain is too long$|JavaScript evaluation failed(?: at line \d+, column \d+)?:|invalid mouse target:|task\.page\(.+\): no managed Page with that label)|^ElementResolutionError: /.test(message)) return { scriptError: true };
+  if (errorCode) return;
+  const firstFrame = /^ +at (.+)$/m.exec(diagnostic)?.[1];
+  const scriptFrame = /^(?:async )?__egoUserScript \(/;
+  if (value || (firstFrame && (scriptFrame.test(firstFrame) ||
+      (firstFrame.includes("eval at execute") && /^ +at (?:async )?__egoUserScript \(/m.test(diagnostic))))) return { scriptError: true };
+}
+
 export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, signal?: AbortSignal): Promise<EgoRun> {
   if (!params.script || !params.script.trim()) throw new Error("ego_browser: script가 비어 있다.");
   const profile: EgoProfile = params.profile ?? "user";
   if (profile !== "user" && profile !== "verify") throw new Error(`ego_browser: profile은 "user" 또는 "verify"다: ${String(profile)}`);
   const host: EgoHost = deps.host ?? "windows";
-  if (host === "linux" && profile === "verify") throw new Error(LINUX_VERIFY_UNSUPPORTED);
+  const name = spaceName(deps.sessionId, profile);
+  if (host === "linux" && profile === "verify") {
+    const outcome = { refused: { by: "ego-profile" } } as const;
+    return { text: prefixOutcome(outcome, LINUX_VERIFY_UNSUPPORTED), spaceName: name, profile, finished: false, outcome };
+  }
   const unavailable = host === "linux" ? LINUX_UNAVAILABLE : UNAVAILABLE;
   const finish = params.finish === true;
-  const name = spaceName(deps.sessionId, profile);
-  const input = buildScript(name, profile, params.script, finish, host);
+  const input = buildScript(name, profile, params.script, finish, host, true);
   const timeoutMs = clampTimeout(params.timeoutMs);
   let result: ExecResult;
   try {
@@ -299,6 +380,8 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     const detail = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
     throw new Error(`${unavailable}${detail ? `\n${detail}` : ""}`);
   }
+  const reported = result.code === 1 && !result.killed ? readBodyFailure(result.stderr) : undefined;
+  if (reported) result = { ...result, stderr: reported.stderr };
   const label = `TaskSpace ${name} (${profile === "verify" ? `${VERIFY_PROFILE_NAME}, 검증 전용` : "사용자 기본 프로필"})`;
   // ego-browser nodejs는 console.log를 stderr로 보낸다. 성공 때는 두 스트림이 모두 스크립트 출력이다.
   const clean = (text: string) => clip(text.trim());
@@ -309,6 +392,7 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
   if (result.killed) {
     throw new Error(`ego_browser: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않아 중단했다(또는 취소됨). ${label}은 남아 있을 수 있다. 같은 공간에서 다시 시도하거나 finish: true로 정리한다.${body ? `\n${body}` : ""}`);
   }
+  const outcome = classifyExit(result, reported?.failure);
   if (result.code !== 0) {
     // 권한 팝업은 브라우저가 띄운 것이라 사용자만 처리할 수 있다(ego-browser skill 「User control and completion」).
     // 10-30 감사: 같은 스크립트 4회 재전송과 takeOverTaskSpace 우회 3회가 모두 실패했다.
@@ -317,10 +401,13 @@ export async function runEgoBrowser(params: EgoBrowserParams, deps: EgoDeps, sig
     const hint = /permission prompt for .+ has appeared/i.test(raw)
       ? "\n권한 팝업은 사용자가 허용·거부해야 한다. 같은 스크립트를 다시 보내거나 우회하지 않는다. `await task.handOff()`로 넘기고 사용자에게 무엇을 눌러야 하는지 알린 뒤, 사용자가 계속하라고 하면 이어 간다."
       : "";
-    throw new Error(`ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}${misuseHint(raw, host)}`);
+    const reason = `ego_browser: exit ${result.code}. ${label}${body ? `\n${body}` : ""}${hint}${misuseHint(raw, host)}`;
+    if (!outcome) throw new Error(reason);
+    return { text: prefixOutcome(outcome, reason), spaceName: name, profile, finished: reported?.failure.finished ?? false, result, outcome };
   }
-  const text = `${label}${finish ? " — 정리됨" : ""}\n${body || "(출력 없음)"}`;
-  return { text, spaceName: name, profile, finished: finish, result };
+  const finished = finish && !outcome;
+  const text = `${label}${finished ? " — 정리됨" : ""}\n${body || "(출력 없음)"}`;
+  return { text: outcome ? prefixOutcome(outcome, text) : text, spaceName: name, profile, finished, result, outcome };
 }
 
 /**
@@ -548,7 +635,8 @@ export function createFactory(exec: Exec, host: EgoHost = "windows"): CustomTool
         if (!(host === "linux" && profile === "verify")) open.add(profile);
         const run = await runEgoBrowser(p, { exec, sessionId, host }, signal);
         if (run.finished) open.delete(profile);
-        return { content: [{ type: "text", text: run.text }], details: { spaceName: run.spaceName, profile: run.profile, finished: run.finished } };
+        const details = { spaceName: run.spaceName, profile: run.profile, finished: run.finished, ...run.outcome };
+        return { content: [{ type: "text", text: run.text }], details, ...(run.outcome && { isError: false }) };
       },
 
       async onSession(event) {

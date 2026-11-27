@@ -33,6 +33,8 @@ const KIND_KEYS: Record<RunTurnEventKind, string> = {
 const STATUS_KEYS: Record<RunTurnToolStatus, string> = {
   ok: "efficiency.sawToolOk",
   failed: "efficiency.sawToolFailed",
+  refused: "toolRun.refused",
+  scriptError: "toolRun.scriptError",
   noMatch: "efficiency.sawToolNoMatch",
   cancelled: "efficiency.sawToolCancelled",
   missing: "efficiency.sawToolMissing",
@@ -41,6 +43,8 @@ const STATUS_KEYS: Record<RunTurnToolStatus, string> = {
 /** 성공은 배지를 달지 않는다. 실패만 강한 색을 쓰고 나머지는 중립이다. */
 const STATUS_TONES: Record<Exclude<RunTurnToolStatus, "ok">, "critical" | "neutral" | "warning"> = {
   failed: "critical",
+  refused: "neutral",
+  scriptError: "warning",
   noMatch: "neutral",
   cancelled: "neutral",
   missing: "warning",
@@ -412,6 +416,8 @@ export function RunTurnView({ runId, t }: { runId: string; t: Translate }) {
                   failed: page.counts.toolFailures,
                 })}
               </p>
+              {page.counts.refused > 0 && <Badge tone="neutral" variant="weak" size="medium">{t("toolRun.refused")} {page.counts.refused}</Badge>}
+              {page.counts.scriptError > 0 && <Badge tone="warning" variant="weak" size="medium">{t("toolRun.scriptError")} {page.counts.scriptError}</Badge>}
               {topSources.length > 0 ? (
                 <p className="run-saw-names">{topSources.map(([source, count]) => `${source} ${count}`).join(" · ")}</p>
               ) : null}

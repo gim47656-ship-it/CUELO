@@ -70,7 +70,7 @@ try {
         $owns = $true
     }
     if (-not $owns) {
-        Write-Line ([ordered]@{ locked = $false; name = $mutexName; error = "Timed out after $WaitSeconds s waiting for the repository finalizer lock: $mutexName" })
+        Write-Line ([ordered]@{ locked = $false; busy = $true; name = $mutexName; error = "Timed out after $WaitSeconds s waiting for the repository finalizer lock: $mutexName" })
         $exitCode = 2
     } else {
         Write-Line ([ordered]@{ locked = $true; name = $mutexName; commonDir = $commonDir; maxHoldSeconds = $MaxHoldSeconds })

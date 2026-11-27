@@ -3,9 +3,10 @@ import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage, ModelRegistry, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { AuthStorage, ModelRegistry, SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { findScopedSettings, Settings, withActiveSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createExtensionModelQuery } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/model-api";
+import * as zod from "@oh-my-pi/omptype/zod";
 
 import {
   authorFamily,
@@ -43,7 +44,7 @@ import {
   type GateOutcome,
 } from "../lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords, type CrossReviewLedgerRecord } from "../lib/routing-ledger";
-import { executeCrossReview } from "../cross-review";
+import crossReview, { executeCrossReview, type CrossReviewParams } from "../cross-review";
 
 const OPUS = "anthropic/claude-opus-5-5";
 const ASTRA = "openai-codex/gpt-6-astra";
@@ -510,6 +511,50 @@ describe("runReview", () => {
     await expect(runReview(input({ files: ["base.txt"] }), deps(env, {}), signal)).rejects.toThrow("Nothing to review");
     await expect(runReview(input({ files: ["/etc/passwd"] }), deps(env, {}), signal)).rejects.toThrow("cwd-relative");
     await expect(runReview(input({ acceptance: " " }), deps(env, {}), signal)).rejects.toThrow("acceptance");
+  });
+
+  test("registered cross_review marks request refusals and reviewer failures differently", async () => {
+    const env = repo();
+    const savedLedger = process.env.OMP_CROSS_REVIEW_LEDGER;
+    const savedSnapshots = process.env.OMP_CROSS_REVIEW_DIR;
+    process.env.OMP_CROSS_REVIEW_LEDGER = env.ledger;
+    process.env.OMP_CROSS_REVIEW_DIR = env.snapshots;
+    try {
+      let tool!: Parameters<ExtensionAPI["registerTool"]>[0];
+      crossReview({ zod, registerTool: (value: typeof tool) => { tool = value; }, on: () => {}, events: { on: () => {} } } as unknown as ExtensionAPI);
+      let attempted = 0;
+      const ctx = { cwd: env.work, models: { current: () => undefined, resolve: () => { attempted++; return undefined; } },
+        sessionManager: SessionManager.inMemory(env.work) } as unknown as ExtensionContext;
+      const call = (params: CrossReviewParams) => tool.execute("refusal-fixture", params as never, signal, undefined, ctx);
+      const review = { action: "review", authors: [OPUS], acceptance: "fixture criteria" };
+      for (const [file, reason] of [["base.txt", "Nothing to review"], [join(env.work, "base.txt"), "unsupported path"]] as const) {
+        const result = await call({ ...review, files: [file] });
+        expect(result).toMatchObject({ isError: false, details: { refused: { by: "cross-review" } } });
+        const block = result.content[0];
+        if (block?.type !== "text") throw new Error("cross_review did not return text");
+        expect(block.text.startsWith("[refused by cross-review] Not executed.\n")).toBe(true);
+        expect(block.text).toContain(reason);
+      }
+      expect(attempted).toBe(0);
+      expect(readCrossReviewRecords(env.ledger)).toEqual([]);
+
+      writeFileSync(join(env.work, "a.ts"), MARKER_BASE);
+      const first = await runReview(input(), deps(env, { openai: finding("defect", "blocker") }), signal);
+      writeFileSync(join(env.work, "a.ts"), `${MARKER_BASE}export const fix = true;\n`);
+      const refused = await call({ action: "resolve", reviewId: first.reviewId, unreviewedAcknowledgements: [{ path: "a.ts", evidence: "checked" }] });
+      expect(refused).toMatchObject({ isError: false, details: { refused: { by: "cross-review" }, pass: false, rejectedAcknowledgements: [{ path: "a.ts" }] } });
+      expect(refused.content[0]).toMatchObject({ text: expect.stringMatching(/^\[refused by cross-review\] Not executed\.\n[\s\S]*round\(s\) are left/) });
+      expect(attempted).toBe(0);
+
+      const failed = await withActiveSettings(Settings.isolated({ modelRoles: { crossReviewOpenAI: ASTRA } }), () => call({ ...review, files: ["a.ts"] }));
+      expect(attempted).toBe(1);
+      expect(failed).toMatchObject({ isError: true, details: { passable: false, reviewers: [{ status: "error", error: expect.stringContaining("Could not resolve modelRoles.crossReviewOpenAI") }] } });
+      expect(failed.details).not.toHaveProperty("refused");
+      expect(readCrossReviewRecords(env.ledger).some((record) => record.type === "cross-review-resolve" && record.pass)).toBe(false);
+    } finally {
+      if (savedLedger === undefined) delete process.env.OMP_CROSS_REVIEW_LEDGER; else process.env.OMP_CROSS_REVIEW_LEDGER = savedLedger;
+      if (savedSnapshots === undefined) delete process.env.OMP_CROSS_REVIEW_DIR; else process.env.OMP_CROSS_REVIEW_DIR = savedSnapshots;
+    }
   });
 
   test("a doubled nested cwd prefix shows the corrected spelling without reviewing a different file", async () => {
@@ -2653,7 +2698,9 @@ describe("Maker(subagent) 세션", () => {
     writeFileSync(join(env.work, "a.ts"), PLAIN_BASE);
     const maker = as(env, "maker-1");
     await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [ASTRA] }, sub, signal, maker)).rejects.toThrow("anthropic/claude-opus-5-5");
-    await expect(executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, { agent: { kind: "sub" } } as never, signal, maker)).rejects.toThrow("could not be resolved");
+    const unresolved = executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [OPUS] }, { agent: { kind: "sub" } } as never, signal, maker);
+    await expect(unresolved).rejects.toThrow("could not be resolved");
+    await expect(unresolved).rejects.toBeInstanceOf(CrossReviewRefusal);
     expect(readCrossReviewRecords(env.ledger)).toHaveLength(0);
     const review = await executeCrossReview({ action: "review", files: ["a.ts"], acceptance: "A", authors: [`${OPUS}:high`] }, sub, signal, maker) as Reviewed;
     expect(readCrossReviewRecords(env.ledger)).toMatchObject([{ reviewId: review.reviewId, reviewers: [{ family: "openai" }] }]);

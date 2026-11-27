@@ -16,10 +16,11 @@ import { dirname, join, resolve } from "node:path";
 import { vmCopyHint } from "../vm-build/hint";
 import { fileURLToPath } from "node:url";
 import { matchBlockedCommand } from "../../extensions/command-guard/matcher";
-import { DELETED_BLOB, ledgerPath, runGate, spawnExec } from "../../extensions/lib/cross-review";
-import { finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
-import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
+import { CrossReviewRefusal, DELETED_BLOB, ledgerPath, runGate, spawnExec } from "../../extensions/lib/cross-review";
+import { FinalizeChecksRefusal, finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
+import { SlopGateRefusal, mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import type { ToolApi } from "./index";
+import { PublicationRefusal, publicationRefusalResult } from "./refusal";
 import { isWindowsDrivePath } from "./wsl-git";
 import { syncBehindUpstream } from "./sync-upstream";
 
@@ -51,11 +52,18 @@ class IntegrateFailure extends Error {
   }
 }
 
+class IntegrateRefusal extends PublicationRefusal {
+  constructor(stage: string, detail: string, by = stage) {
+    super(by, `git_integrate failed at ${stage}: ${detail}`, stage);
+  }
+}
+
 const gitEnv = (): NodeJS.ProcessEnv => ({
   ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true", LC_ALL: "C",
 });
 
 function run(command: string, args: string[], cwd: string, options: { signal?: AbortSignal; timeoutMs?: number; env?: NodeJS.ProcessEnv; group?: boolean } = {}): Promise<Run> {
+  options.signal?.throwIfAborted();
   const { promise, resolve: done, reject } = Promise.withResolvers<Run>();
   const group = options.group === true && process.platform !== "win32";
   const child = spawn(command, args, { cwd, env: options.env ?? gitEnv(), stdio: ["ignore", "pipe", "pipe"], detached: group });
@@ -69,15 +77,22 @@ function run(command: string, args: string[], cwd: string, options: { signal?: A
       if (group && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL");
     } catch {} // 이미 끝난 프로세스(그룹)다(ESRCH).
   };
-  const timer = options.timeoutMs ? setTimeout(kill, options.timeoutMs) : undefined;
+  let timedOut = false;
+  const timer = options.timeoutMs ? setTimeout(() => { timedOut = true; kill(); }, options.timeoutMs) : undefined;
   options.signal?.addEventListener("abort", kill, { once: true });
   // 이미 끊긴 신호에는 abort 이벤트가 다시 오지 않는다.
   if (options.signal?.aborted) kill();
-  child.on("error", (error) => { clearTimeout(timer); reject(error); });
+  child.on("error", (error) => {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", kill);
+    reject(error);
+  });
   child.on("close", (code, signal) => {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", kill);
-    done({ code: code ?? (signal ? 128 : 1), stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+    if (options.signal?.aborted) reject(options.signal.reason);
+    else if (timedOut) reject(new Error(`${command} ${args.join(" ")} timed out after ${options.timeoutMs}ms`));
+    else done({ code: code ?? (signal ? 128 : 1), stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
   });
   return promise;
 }
@@ -102,7 +117,10 @@ async function gitOk(repo: Repo, stage: string, args: string[]): Promise<string>
 }
 
 async function exists(path: string): Promise<boolean> {
-  return stat(path).then(() => true, () => false);
+  return stat(path).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+    throw error;
+  });
 }
 
 /** git이 돌려준 두 디렉터리가 같은가(끝 구분자 무시, Windows는 대소문자 무시). */
@@ -114,17 +132,21 @@ function samePath(a: string, b: string): boolean {
 async function openRepo(cwd: string, signal?: AbortSignal): Promise<Repo> {
   const probe = (args: string[]) => run("git", args, cwd, { signal, timeoutMs: GIT_TIMEOUT_MS });
   const top = await probe(["rev-parse", "--show-toplevel"]);
-  if (top.code !== 0) throw new IntegrateFailure("preflight", `${cwd} is not inside a git work tree: ${top.stderr.trim()}`);
+  if (top.code !== 0) {
+    const detail = `${cwd} is not inside a git work tree: ${top.stderr.trim()}`;
+    if (top.stderr.includes("not a git repository")) throw new IntegrateRefusal("preflight", detail, "repository");
+    throw new IntegrateFailure("preflight", detail);
+  }
   const root = top.stdout.trim();
   const repo: Repo = { root, gitDir: "", commonDir: "", statePath: "", signal };
   repo.gitDir = await gitOk(repo, "preflight", ["rev-parse", "--absolute-git-dir"]);
   repo.commonDir = await gitOk(repo, "preflight", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   // WSL의 /mnt 저장소는 git_finalize가 Windows PowerShell(Global\ mutex)로 잠근다. Linux pwsh 잠금과 겹치지 않으므로 받지 않는다.
   if (isWindowsDrivePath(root) || isWindowsDrivePath(repo.commonDir)) {
-    throw new IntegrateFailure("preflight", "repositories on a Windows drive (/mnt/<drive>) are not supported; git_finalize locks them through Windows PowerShell, which this tool cannot share.");
+    throw new IntegrateRefusal("preflight", "repositories on a Windows drive (/mnt/<drive>) are not supported; git_finalize locks them through Windows PowerShell, which this tool cannot share.", "repository");
   }
   if (samePath(repo.gitDir, repo.commonDir)) {
-    throw new IntegrateFailure("preflight", `${root} is the repository's main checkout. git_integrate runs only in a linked worktree on the session's own branch (create one from the CUELO sidebar); the main checkout publishes with git_finalize.`);
+    throw new IntegrateRefusal("preflight", `${root} is the repository's main checkout. git_integrate runs only in a linked worktree on the session's own branch (create one from the CUELO sidebar); the main checkout publishes with git_finalize.`, "repository");
   }
   repo.statePath = resolve(root, await gitOk(repo, "preflight", ["rev-parse", "--git-path", STATE_FILE]));
   return repo;
@@ -134,14 +156,26 @@ async function rebaseInProgress(repo: Repo): Promise<boolean> {
   return (await exists(join(repo.gitDir, "rebase-merge"))) || (await exists(join(repo.gitDir, "rebase-apply")));
 }
 
+async function readRebaseHead(repo: Repo): Promise<string> {
+  let name: string;
+  try {
+    name = await readFile(join(repo.gitDir, "rebase-merge", "head-name"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !(await exists(join(repo.gitDir, "rebase-apply")))) throw error;
+    name = await readFile(join(repo.gitDir, "rebase-apply", "head-name"), "utf8");
+  }
+  if (!name.trim()) throw new IntegrateFailure("preflight", "the paused rebase has an empty head-name");
+  return name.trim();
+}
+
 async function resolveRemote(repo: Repo, branch: string): Promise<string> {
   const configured = (await git(repo, ["config", "--get", `branch.${branch}.remote`])).stdout.trim();
-  if (configured === ".") throw new IntegrateFailure("preflight", `branch ${branch} tracks the local repository and has no pushable remote.`);
+  if (configured === ".") throw new IntegrateRefusal("preflight", `branch ${branch} tracks the local repository and has no pushable remote.`, "repository");
   if (configured) return configured;
   const remotes = (await gitOk(repo, "preflight", ["remote"])).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (remotes.includes("origin")) return "origin";
   if (remotes.length === 1) return remotes[0];
-  throw new IntegrateFailure("preflight", remotes.length === 0 ? "the repository has no remote." : `branch ${branch} has no tracked remote and the repository has several: ${remotes.join(", ")}.`);
+  throw new IntegrateRefusal("preflight", remotes.length === 0 ? "the repository has no remote." : `branch ${branch} has no tracked remote and the repository has several: ${remotes.join(", ")}.`, "repository");
 }
 
 interface State {
@@ -186,19 +220,29 @@ async function pathsWithMarkers(repo: Repo, paths: string[]): Promise<string[]> 
   }
   const marked: string[] = [];
   for (const path of paths) {
-    const text = await readFile(join(repo.root, ...path.split("/")), "utf8").catch(() => undefined);
+    const text = await readFile(join(repo.root, ...path.split("/")), "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR" && error.code !== "EISDIR") throw error;
+      return undefined;
+    });
     const n = size.get(path) ?? 7;
     if (text !== undefined && new RegExp(`^(?:<{${n}}|>{${n}}|\\|{${n}})(?: |$)`, "m").test(text)) marked.push(path);
   }
   return marked;
 }
 
-async function readState(repo: Repo): Promise<State | undefined> {
-  try {
-    const state = JSON.parse(await readFile(repo.statePath, "utf8")) as State;
-    return state?.version === 1 ? state : undefined;
-  } catch {
+async function readState(repo: Repo, allowCorrupt = false): Promise<State | undefined> {
+  const raw = await readFile(repo.statePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
     return undefined;
+  });
+  if (raw === undefined) return undefined;
+  try {
+    const state = JSON.parse(raw) as State;
+    if (state?.version === 1) return state;
+    throw new IntegrateFailure("preflight", `unsupported paused state at ${repo.statePath}`);
+  } catch (error) {
+    if (allowCorrupt && error instanceof SyntaxError) return undefined;
+    throw error;
   }
 }
 
@@ -210,12 +254,14 @@ const clearState = (repo: Repo) => rm(repo.statePath, { force: true });
  * `lost`는 놓기 전에 보유자가 끝났을 때(상한 초과·외부 종료) 끊긴다.
  */
 async function acquireLock(repo: Repo, remote: string, upstreamRef: string): Promise<{ release: () => Promise<void>; lost: AbortSignal }> {
+  repo.signal?.throwIfAborted();
   const child = spawn(powerShell, [
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lockScriptPath, "-Repository", repo.root, "-Remote", remote,
     "-UpstreamRef", upstreamRef, "-WaitSeconds", String(LOCK_WAIT_SECONDS), "-MaxHoldSeconds", String(LOCK_MAX_HOLD_SECONDS),
   ], { cwd: repo.root, env: gitEnv(), stdio: ["pipe", "pipe", "pipe"] });
   const kill = () => child.kill("SIGKILL");
   repo.signal?.addEventListener("abort", kill, { once: true });
+  if (repo.signal?.aborted) kill();
   const { promise: closed, resolve: markClosed } = Promise.withResolvers<void>();
   const lost = new AbortController();
   let releasing = false;
@@ -239,9 +285,11 @@ async function acquireLock(repo: Repo, remote: string, upstreamRef: string): Pro
   const first = await firstLine;
   let reply: { locked?: boolean; error?: string } | undefined;
   try { reply = JSON.parse(first.trim()); } catch {}
-  if (reply?.locked !== true) {
+  if (reply?.locked !== true || repo.signal?.aborted) {
     kill();
     repo.signal?.removeEventListener("abort", kill);
+    await closed;
+    repo.signal?.throwIfAborted();
     throw new IntegrateFailure("lock", reply?.error || stderr.trim() || first.trim() || "the lock holder exited without a reply");
   }
   const release = async () => {
@@ -428,9 +476,9 @@ async function conflictResult(repo: Repo, state: State, conflicts: Map<string, s
 
 function screenChecks(checks: string[], root: string): void {
   for (const command of checks) {
-    if (!command.trim()) throw new IntegrateFailure("preflight", "checks must not contain an empty command.");
+    if (!command.trim()) throw new IntegrateRefusal("preflight", "checks must not contain an empty command.", "finalize-checks");
     const reason = matchBlockedCommand(command, { cwd: root, isSessionRepository: () => true });
-    if (reason) throw new IntegrateFailure("preflight", `check command refused by the command guard: ${command} (${reason})`);
+    if (reason) throw new IntegrateRefusal("preflight", `check command refused by the command guard: ${command} (${reason})`, "command-guard");
   }
 }
 
@@ -556,26 +604,42 @@ async function retireLocalBranch(repo: Repo, state: State, pushed: string): Prom
  */
 export async function reattachRetiredBranch(cwd: string, options: { signal?: AbortSignal; keepWhenUnchanged?: boolean } = {}): Promise<{ status: "none" | "attached" | "unchanged" | "blocked"; note?: string; branch?: string }> {
   const probe = (args: string[]) => run("git", args, cwd, { signal: options.signal, timeoutMs: GIT_TIMEOUT_MS });
-  if ((await probe(["symbolic-ref", "-q", "HEAD"])).code === 0) return { status: "none" };
+  const branchStatus = await probe(["symbolic-ref", "-q", "HEAD"]);
+  if (branchStatus.code === 0) return { status: "none" };
+  if (branchStatus.code !== 1) throw new IntegrateFailure("branch-reattach", branchStatus.stderr.trim() || `git symbolic-ref exited ${branchStatus.code}`);
   const marker = await retiredPath(cwd, options.signal);
-  const recorded = marker ? await readFile(marker, "utf8").then((text) => JSON.parse(text) as Retired, () => undefined) : undefined;
-  if (!marker || !recorded || typeof recorded.branch !== "string" || typeof recorded.tip !== "string") return { status: "none" };
+  if (!marker) throw new IntegrateFailure("branch-reattach", "could not resolve the retired branch record path");
+  const raw = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (raw === undefined) return { status: "none" };
+  const recorded = JSON.parse(raw) as Retired;
+  if (typeof recorded?.branch !== "string" || typeof recorded.tip !== "string") {
+    throw new IntegrateFailure("branch-reattach", `invalid retired branch record at ${marker}`);
+  }
   const { branch, tip } = recorded;
   if (!branch.startsWith("wt/") || (await probe(["check-ref-format", "--branch", branch])).code !== 0) return { status: "blocked", note: `the retired branch record names ${JSON.stringify(branch)}; HEAD was left detached` };
-  const head = (await probe(["rev-parse", "HEAD"])).stdout.trim();
+  const current = await probe(["rev-parse", "--verify", "HEAD"]);
+  if (current.code !== 0) throw new IntegrateFailure("branch-reattach", current.stderr.trim() || `git rev-parse exited ${current.code}`);
+  const head = current.stdout.trim();
   if (head === tip && options.keepWhenUnchanged) return { status: "unchanged", branch, note: `HEAD is still the retired ${branch} tip ${tip}, which is already published` };
-  if ((await probe(["merge-base", "--is-ancestor", tip, head])).code !== 0) return { status: "blocked", branch, note: `HEAD ${head} does not continue the retired ${branch} tip ${tip}; check out a branch first` };
+  const ancestry = await probe(["merge-base", "--is-ancestor", tip, head]);
+  if (ancestry.code === 1) return { status: "blocked", branch, note: `HEAD ${head} does not continue the retired ${branch} tip ${tip}; check out a branch first` };
+  if (ancestry.code !== 0) throw new IntegrateFailure("branch-reattach", ancestry.stderr.trim() || `git merge-base exited ${ancestry.code}`);
   // 작업 파일과 index는 그대로 두고 ref만 만든다. 빈 옛 값은 "아직 없을 때만 만든다"이고, HEAD 붙이기도 hook을 돌리지 않는다.
-  const created = await probe(["update-ref", "-m", "git_integrate: re-create the retired session branch", `refs/heads/${branch}`, head, ""]);
-  if (created.code !== 0) return { status: "blocked", branch, note: `could not re-create ${branch} (it may exist again elsewhere): ${(created.stderr || created.stdout).trim()}; check out a branch first` };
-  const attached = await probe(["symbolic-ref", "-m", "git_integrate: re-attach the session branch", "HEAD", `refs/heads/${branch}`]);
+  options.signal?.throwIfAborted();
+  const update = (args: string[]) => run("git", args, cwd, { timeoutMs: GIT_TIMEOUT_MS });
+  const created = await update(["update-ref", "-m", "git_integrate: re-create the retired session branch", `refs/heads/${branch}`, head, ""]);
+  if (created.code !== 0) throw new IntegrateFailure("branch-reattach", `could not re-create ${branch}: ${(created.stderr || created.stdout).trim()}`);
+  const attached = await update(["symbolic-ref", "-m", "git_integrate: re-attach the session branch", "HEAD", `refs/heads/${branch}`]);
   if (attached.code !== 0) {
-    // 만든 브랜치를 그대로 두면 다음 호출이 "이미 있다"로 막힌다. 아직 이 커밋일 때만 지워 기록만 남은 처음 상태로 돌린다.
-    const undone = await probe(["update-ref", "-d", `refs/heads/${branch}`, head]);
-    return { status: "blocked", branch, note: `could not attach HEAD to ${branch}: ${(attached.stderr || attached.stdout).trim()}`
-      + (undone.code === 0 ? "; nothing changed, call again once that is fixed" : `; ${branch} now exists at ${head}, check it out first`) };
+    const undone = await update(["update-ref", "-d", `refs/heads/${branch}`, head]);
+    throw new IntegrateFailure("branch-reattach", `could not attach HEAD to ${branch}: ${(attached.stderr || attached.stdout).trim()}`
+      + (undone.code === 0 ? "; the new branch was rolled back" : `; could not roll back ${branch} at ${head}: ${(undone.stderr || undone.stdout).trim()}`));
   }
   await rm(marker, { force: true });
+  options.signal?.throwIfAborted();
   return { status: "attached", branch, note: `re-created ${branch} at ${head} (git_integrate had removed it after publishing)` };
 }
 
@@ -600,41 +664,54 @@ async function followMainCheckout(repo: Repo, state: State): Promise<string> {
 }
 
 async function ensureCleanTracked(repo: Repo, stage: string): Promise<void> {
-  const dirty = await gitOk(repo, stage, ["status", "--porcelain=v1", "--untracked-files=no"]);
-  if (dirty) throw new IntegrateFailure(stage, `tracked changes are present:\n${dirty}`);
+  const dirty = await gitOk(repo, stage, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"]);
+  if (!dirty) return;
+  const detail = `tracked changes are present:\n${dirty}`;
+  if (stage === "preflight") throw new IntegrateRefusal(stage, detail, "index-preflight");
+  throw new IntegrateFailure(stage, detail);
 }
 
 type ConfiguredChecksOptions = { sessionManager?: CustomToolContext["sessionManager"]; waiver?: string };
 
-async function restoreAfterConfiguredFailure(repo: Repo, state: State, tested: string, untrackedBefore?: string): Promise<string> {
-  if (tested === state.origHead) return `No rebase rollback was needed; the starting commit was ${tested}.`;
-  // This is rollback of our own completed rebase, not a new rebase or remote update.
-  // Finish the rollback even when it was cancellation that stopped the checks.
+async function restoreAfterConfiguredFailure(repo: Repo, state: State, tested: string, untrackedBefore?: string): Promise<{ restored: boolean; note: string }> {
+  // Finish rollback even when cancellation stopped the checks.
   const rollback = { ...repo, signal: undefined };
   const ref = `refs/cuelo/integrate-failed/${state.branch}/${tested}`;
   const stage = "finalize-checks rollback";
-  let saved = `Rebased commit: ${tested}.`;
+  let saved = `Tested commit: ${tested}.`;
   try {
-    await gitOk(rollback, stage, ["update-ref", ref, tested]);
-    saved = `Rebased commit ${tested} is saved at ${ref}.`;
-    const branch = (await git(rollback, ["symbolic-ref", "-q", "HEAD"])).stdout.trim();
+    if (tested !== state.origHead) {
+      await gitOk(rollback, stage, ["update-ref", ref, tested]);
+      saved = `Rebased commit ${tested} is saved at ${ref}.`;
+    }
+    const branch = await gitOk(rollback, stage, ["symbolic-ref", "-q", "HEAD"]);
     const head = await gitOk(rollback, stage, ["rev-parse", "HEAD"]);
     if (branch !== `refs/heads/${state.branch}` || head !== tested || await rebaseInProgress(rollback)) {
-      return `${saved} Branch or HEAD changed during the checks; left the worktree unchanged.`;
+      return { restored: false, note: `${saved} Branch or HEAD changed during the checks; left the worktree unchanged.` };
     }
     await ensureCleanTracked(rollback, stage);
-    if (untrackedBefore !== undefined && untrackedBefore !== await gitOk(rollback, stage, ["ls-files", "--others", "--exclude-standard", "-z"])) {
-      return `${saved} The untracked file list changed during the checks; left the worktree unchanged.`;
+    const indexFlags = await gitOk(rollback, stage, ["ls-files", "-v", "-z"]);
+    if (/(?:^|\0)[Sa-z] /.test(indexFlags)) {
+      return { restored: false, note: `${saved} The index hides tracked paths; left the worktree unchanged because rollback could not be verified.` };
     }
+    if (untrackedBefore !== undefined && untrackedBefore !== await gitOk(rollback, stage, ["ls-files", "--others", "--exclude-standard", "-z"])) {
+      return { restored: false, note: `${saved} The untracked file list changed during the checks; left the worktree unchanged.` };
+    }
+    if (tested === state.origHead) return { restored: true, note: `No rebase rollback was needed; the starting commit was ${tested}.` };
     await gitOk(rollback, stage, ["reset", "--keep", state.origHead]);
-    return `${saved} Restored ${state.branch} to ${state.origHead}; fix the check and start git_integrate again.`;
+    if ((await gitOk(rollback, stage, ["rev-parse", "HEAD"])) !== state.origHead ||
+        (await gitOk(rollback, stage, ["symbolic-ref", "-q", "HEAD"])) !== `refs/heads/${state.branch}`) {
+      throw new Error(`HEAD did not return to ${state.origHead}`);
+    }
+    await ensureCleanTracked(rollback, stage);
+    return { restored: true, note: `${saved} Restored ${state.branch} to ${state.origHead}; fix the check and start git_integrate again.` };
   } catch (error) {
-    return `${saved} Could not restore ${state.branch} to ${state.origHead}; no remote refs changed. ${error instanceof Error ? error.message : String(error)}`;
+    return { restored: false, note: `${saved} Could not restore ${state.branch} to ${state.origHead}; no remote refs changed. ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
 /** rebase가 끝난 브랜치를 검사하고 잠금 안에서 게시한다. 대상이 그새 움직였으면 다시 rebase한다. */
-async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredChecksOptions) {
+async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredChecksOptions, canRefuse: boolean) {
   for (;;) {
     const tested = await gitOk(repo, "checks", ["rev-parse", "HEAD"]);
     let finalizeChecks: FinalizeChecksResult | undefined;
@@ -645,7 +722,7 @@ async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredC
         files: async () => (await gitOk(repo, "finalize-checks", ["diff", "--name-only", "-z", "--no-renames", state.onto, tested])).split("\0").filter(Boolean),
         authorize: async () => {
           await ensureCleanTracked(repo, "finalize-checks");
-          if (tested !== state.origHead) untrackedBefore = await gitOk(repo, "finalize-checks", ["ls-files", "--others", "--exclude-standard", "-z"]);
+          untrackedBefore = await gitOk(repo, "finalize-checks", ["ls-files", "--others", "--exclude-standard", "-z"]);
         },
       });
       if (finalizeChecks && !finalizeChecks.waiver) {
@@ -655,7 +732,9 @@ async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredC
     } catch (error) {
       const recovery = await restoreAfterConfiguredFailure(repo, state, tested, untrackedBefore);
       await clearState(repo);
-      throw new IntegrateFailure("finalize-checks", `${error instanceof Error ? error.message : String(error)}\nNothing was pushed. ${recovery}`);
+      const detail = `${error instanceof Error ? error.message : String(error)}\nNothing was pushed. ${recovery.note}`;
+      if (canRefuse && recovery.restored && !repo.signal?.aborted && error instanceof FinalizeChecksRefusal) throw new IntegrateRefusal("finalize-checks", detail);
+      throw new IntegrateFailure("finalize-checks", detail);
     }
     let ran: { command: string; seconds: number }[];
     try {
@@ -728,8 +807,11 @@ async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredC
 }
 
 async function start(repo: Repo, params: { target?: string; checks?: string[] }, configured: ConfiguredChecksOptions) {
-  if (await rebaseInProgress(repo)) throw new IntegrateFailure("preflight", "a rebase is already in progress in this worktree; call git_integrate with action continue or abort.");
-  let branch = (await git(repo, ["symbolic-ref", "--short", "-q", "HEAD"])).stdout.trim();
+  if (await rebaseInProgress(repo)) throw new IntegrateRefusal("preflight", "a rebase is already in progress in this worktree; call git_integrate with action continue or abort.", "repository");
+  const branchStatus = await git(repo, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  if (branchStatus.code !== 0 && branchStatus.code !== 1) throw new IntegrateFailure("preflight", branchStatus.stderr.trim() || `git symbolic-ref exited ${branchStatus.code}`);
+  let branch = branchStatus.stdout.trim();
+  let attached = false;
   if (!branch) {
     // 앞선 git_integrate가 로컬 세션 브랜치를 지운 worktree다. 새 커밋이 있으면 같은 이름으로 다시 붙이고, 없으면 올릴 것이 없다.
     const reattached = await reattachRetiredBranch(repo.root, { signal: repo.signal, keepWhenUnchanged: true });
@@ -739,47 +821,53 @@ async function start(repo: Repo, params: { target?: string; checks?: string[] },
         details: { ok: true, stage: "up-to-date", branch: reattached.branch, detached: true },
       };
     }
-    if (reattached.status !== "attached" || !reattached.branch) throw new IntegrateFailure("preflight", `HEAD is detached; ${reattached.note ?? "check out the session branch first"}.`);
+    if (reattached.status !== "attached" || !reattached.branch) throw new IntegrateRefusal("preflight", `HEAD is detached; ${reattached.note ?? "check out the session branch first"}.`, "repository");
     branch = reattached.branch;
+    attached = true;
   }
-  const target = (params.target ?? "main").trim();
-  if ((await git(repo, ["check-ref-format", "--branch", target])).code !== 0 || target.startsWith("-")) throw new IntegrateFailure("preflight", `invalid target branch ${JSON.stringify(target)}.`);
-  if (branch === target) throw new IntegrateFailure("preflight", `the worktree is on the target branch ${target}; git_integrate publishes a separate session branch. Use git_finalize on ${target}.`);
-  if (!Array.isArray(params.checks)) throw new IntegrateFailure("preflight", "checks is required: list the commands (typecheck, tests) that prove the rebased branch, or [] when the change needs none.");
-  const checks = params.checks.map((command) => command.trim());
-  screenChecks(checks, repo.root);
-  await ensureCleanTracked(repo, "preflight");
-  const remote = await resolveRemote(repo, branch);
-  const origHead = await gitOk(repo, "preflight", ["rev-parse", "HEAD"]);
-  const upstreamRef = `refs/heads/${target}`;
-  const tip = await withLock(repo, remote, upstreamRef, (locked) => fetchTarget(locked, { remote, target }));
-  const state: State = {
-    version: 1, branch, origHead, remote, target, oldBase: tip, onto: tip, previousTarget: tip, checks, moves: 0, pending: [], stagedAtStop: {}, pendingManifest: false,
-  };
-  if (await isAncestor(repo, origHead, tip)) {
-    return {
-      content: [{ type: "text" as const, text: `${branch} has no commit that ${remote} ${upstreamRef} (${tip}) lacks; nothing was pushed.` }],
-      details: { ok: true, stage: "up-to-date", remote, upstreamRef, branch, target: tip },
+  try {
+    const target = (params.target ?? "main").trim();
+    if ((await git(repo, ["check-ref-format", "--branch", target])).code !== 0 || target.startsWith("-")) throw new IntegrateRefusal("preflight", `invalid target branch ${JSON.stringify(target)}.`, "repository");
+    if (branch === target) throw new IntegrateRefusal("preflight", `the worktree is on the target branch ${target}; git_integrate publishes a separate session branch. Use git_finalize on ${target}.`, "repository");
+    if (!Array.isArray(params.checks)) throw new IntegrateRefusal("preflight", "checks is required: list the commands (typecheck, tests) that prove the rebased branch, or [] when the change needs none.", "finalize-checks");
+    const checks = params.checks.map((command) => command.trim());
+    screenChecks(checks, repo.root);
+    await ensureCleanTracked(repo, "preflight");
+    const remote = await resolveRemote(repo, branch);
+    const origHead = await gitOk(repo, "preflight", ["rev-parse", "HEAD"]);
+    const upstreamRef = `refs/heads/${target}`;
+    const tip = await withLock(repo, remote, upstreamRef, (locked) => fetchTarget(locked, { remote, target }));
+    const state: State = {
+      version: 1, branch, origHead, remote, target, oldBase: tip, onto: tip, previousTarget: tip, checks, moves: 0, pending: [], stagedAtStop: {}, pendingManifest: false,
     };
+    if (await isAncestor(repo, origHead, tip)) {
+      return {
+        content: [{ type: "text" as const, text: `${branch} has no commit that ${remote} ${upstreamRef} (${tip}) lacks; nothing was pushed.` }],
+        details: { ok: true, stage: "up-to-date", remote, upstreamRef, branch, target: tip },
+      };
+    }
+    if (!(await isAncestor(repo, tip, origHead))) {
+      const replay = await startRebase(repo, state, tip);
+      if (!replay.done) return conflictResult(repo, state, replay.conflicts);
+    } else {
+      await saveState(repo, state);
+    }
+    return await checkAndPublish(repo, state, configured, !attached);
+  } catch (error) {
+    if (attached && error instanceof IntegrateRefusal) throw new Error(`${error.message}\nThe retired branch ${branch} was reattached before the block.`, { cause: error });
+    throw error;
   }
-  if (!(await isAncestor(repo, tip, origHead))) {
-    const replay = await startRebase(repo, state, tip);
-    if (!replay.done) return conflictResult(repo, state, replay.conflicts);
-  } else {
-    await saveState(repo, state);
-  }
-  return checkAndPublish(repo, state, configured);
 }
 
 async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; crossReviewWaiver?: string; slopGateWaiver?: string }, configured: ConfiguredChecksOptions) {
   const state = await readState(repo);
-  if (!state) throw new IntegrateFailure("preflight", "no git_integrate run is paused in this worktree; call git_integrate with action start.");
+  if (!state) throw new IntegrateRefusal("preflight", "no git_integrate run is paused in this worktree; call git_integrate with action start.", "repository");
   if (!(await rebaseInProgress(repo))) {
     await clearState(repo);
-    throw new IntegrateFailure("preflight", "the paused rebase is gone (finished or aborted outside git_integrate); call git_integrate with action start again.");
+    throw new IntegrateRefusal("preflight", "the paused rebase is gone (finished or aborted outside git_integrate); call git_integrate with action start again.", "repository");
   }
-  const headName = (await readFile(join(repo.gitDir, "rebase-merge", "head-name"), "utf8").catch(() => "")).trim();
-  if (headName !== `refs/heads/${state.branch}`) throw new IntegrateFailure("preflight", `the paused rebase belongs to ${headName || "an unknown branch"}, not ${state.branch}; call git_integrate with action abort.`);
+  const headName = await readRebaseHead(repo);
+  if (headName !== `refs/heads/${state.branch}`) throw new IntegrateRefusal("preflight", `the paused rebase belongs to ${headName}, not ${state.branch}; call git_integrate with action abort.`, "repository");
   const conflicts = await unmergedPaths(repo);
   const manifestHandled = state.pendingManifest || (conflicts.has(MANIFEST_PATH) && (await exists(join(repo.root, ...HELPER_PATH.split("/")))));
   // 충돌 밖에서 함께 고친 추적 파일(호출부 맞춤 등)도 이 단계의 해결이다. stage하지 않고 두면 git이 continue를 거절한다.
@@ -790,7 +878,7 @@ async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; cros
   const restaged = Object.keys({ ...staged, ...atStop }).filter((path) => staged[path] !== atStop[path]);
   const resolved = [...new Set([...state.pending, ...conflicts.keys(), ...touched, ...restaged])].filter((path) => !(manifestHandled && path === MANIFEST_PATH));
   const marked = await pathsWithMarkers(repo, resolved);
-  if (marked.length > 0) throw new IntegrateFailure("conflict", `conflict markers remain in: ${marked.join(", ")}. Resolve them, then call continue again.`);
+  if (marked.length > 0) throw new IntegrateRefusal("conflict", `conflict markers remain in: ${marked.join(", ")}. Resolve them, then call continue again.`);
   // 지운 것으로 푼 경로(`git rm` 등)는 작업 트리에 없다. `git add`는 그런 경로를 pathspec 오류로 거절하므로 index에서 빼는 것으로 기록한다.
   const present: string[] = [];
   const absent: string[] = [];
@@ -809,29 +897,33 @@ async function resume(repo: Repo, params: { crossReviewHighRisk?: string[]; cros
         ledgerPath: ledgerPath(), exec: spawnExec(repo.signal),
       })).gateBlobs;
     } catch (error) {
+      if (error instanceof CrossReviewRefusal) throw new IntegrateRefusal("cross-review", error.message);
       throw new IntegrateFailure("cross-review", error instanceof Error ? error.message : String(error));
     }
     try {
       gateBlobs = mergeGateBlobs(gateBlobs, await runSlopGate({ cwd: repo.root, files: resolved, waiver: params.slopGateWaiver, ledgerPath: slopLedgerPath(), exec: spawnExec(repo.signal) }));
     } catch (error) {
+      if (error instanceof SlopGateRefusal) throw new IntegrateRefusal("slop-gate", error.message);
       throw new IntegrateFailure("slop-gate", error instanceof Error ? error.message : String(error));
     }
     // 게이트가 본 바이트가 stage된 바이트와 같아야 한다. 그 사이에 파일이 바뀌었으면 잇지 않는다.
     for (const [path, blob] of Object.entries(gateBlobs ?? {})) {
-      const staged = (await git(repo, ["rev-parse", "-q", "--verify", `:${path}`])).stdout.trim() || DELETED_BLOB;
-      if (staged !== blob) throw new IntegrateFailure("cross-review", `${path} changed after it was staged; call continue again.`);
+      const index = await git(repo, ["rev-parse", "-q", "--verify", `:${path}`]);
+      const staged = index.code === 0 ? index.stdout.trim() : index.code === 1 && !index.stderr.trim() ? DELETED_BLOB : undefined;
+      if (!staged) throw new IntegrateFailure("cross-review", `could not read index blob for ${path}: ${(index.stderr || index.stdout).trim() || `exit ${index.code}`}`);
+      if (staged !== blob) throw new IntegrateRefusal("cross-review", `${path} changed after it was staged; call continue again.`);
     }
   }
   if (state.pendingManifest) await regenerateManifest(repo);
   const replay = await driveRebase(repo, state, "continue");
   if (!replay.done) return conflictResult(repo, state, replay.conflicts);
-  return checkAndPublish(repo, state, configured);
+  return checkAndPublish(repo, state, configured, false);
 }
 
 async function abort(repo: Repo) {
-  const state = await readState(repo);
+  const state = await readState(repo, true);
   if (await rebaseInProgress(repo)) {
-    const headName = (await readFile(join(repo.gitDir, "rebase-merge", "head-name"), "utf8").catch(() => "")).trim();
+    const headName = await readRebaseHead(repo);
     await gitOk(repo, "abort", ["rebase", "--abort"]);
     const branch = (await git(repo, ["symbolic-ref", "-q", "HEAD"])).stdout.trim();
     let head = await gitOk(repo, "abort", ["rev-parse", "HEAD"]);
@@ -845,7 +937,9 @@ async function abort(repo: Repo) {
     }
     await clearState(repo);
     return {
-      content: [{ type: "text" as const, text: `Aborted the paused rebase; ${branch || headName} is back at ${head}. Nothing was pushed.` }],
+      content: [{ type: "text" as const, text: state
+        ? `Aborted the paused rebase; ${branch || headName} is back at ${head}. Nothing was pushed.`
+        : `Aborted the paused rebase. Current HEAD: ${head}; original HEAD unknown because the paused integrate state was unavailable, so restoration verification was skipped. Nothing was pushed.` }],
       details: { ok: true, stage: "aborted", branch: branch || headName, head },
     };
   }
@@ -873,12 +967,17 @@ export const integrateTool = (pi: ToolApi): CustomTool<any, any> => ({
   }),
 
   async execute(_toolCallId, params, onUpdate, ctx, signal) {
-    const action = params.action ?? "start";
-    const repo = await openRepo(pi.cwd, signal);
-    onUpdate?.({ content: [{ type: "text", text: `git_integrate ${action}: ${repo.root}` }], details: { phase: action } });
-    if (action === "abort") return abort(repo);
-    const configured = { sessionManager: ctx?.sessionManager, waiver: params.finalizeChecksWaiver };
-    if (action === "continue") return resume(repo, params, configured);
-    return start(repo, params, configured);
+    try {
+      signal?.throwIfAborted();
+      const action = params.action ?? "start";
+      const repo = await openRepo(pi.cwd, signal);
+      onUpdate?.({ content: [{ type: "text", text: `git_integrate ${action}: ${repo.root}` }], details: { phase: action } });
+      if (action === "abort") return await abort(repo);
+      const configured = { sessionManager: ctx?.sessionManager, waiver: params.finalizeChecksWaiver };
+      return await (action === "continue" ? resume(repo, params, configured) : start(repo, params, configured));
+    } catch (error) {
+      if (signal?.aborted && error instanceof PublicationRefusal) signal.throwIfAborted();
+      return publicationRefusalResult(error);
+    }
   },
 });

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 
 // Limit the heuristic to files directly under /tmp, not nested project checkouts.
 const BUN_SCRATCH_IMPORT = /^error: Cannot find (?:module|package) ['"][^'"\r\n]+['"] from ['"]\/tmp\/[^/'"\r\n]+\.(?:[cm]?[jt]s)['"]\r?$/m;
@@ -15,7 +16,7 @@ export default function scratchDependencyHint(pi: ExtensionAPI): void {
     const command = typeof event.input.command === "string" ? event.input.command.trim() : "";
     const launchedWatcher = /^bash[ \t]+(\/tmp\/[A-Za-z0-9_][A-Za-z0-9_.-]*)$/.exec(command)?.[1];
     const exitCode = (event.details as { exitCode?: unknown } | undefined)?.exitCode;
-    const failed = event.isError || (typeof exitCode === "number" && exitCode !== 0);
+    const failed = didNotSucceed(event) || (typeof exitCode === "number" && exitCode !== 0);
     if (!failed && !launchedWatcher) return;
     for (const part of event.content) {
       if (part.type !== "text") continue;

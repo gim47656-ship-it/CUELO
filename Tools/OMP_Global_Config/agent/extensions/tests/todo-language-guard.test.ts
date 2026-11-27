@@ -5,7 +5,7 @@ import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/details/todo";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,10 +49,18 @@ async function harness() {
     call: (input: Record<string, unknown>) => tool.execute("todo-test", input) };
 }
 
+function expectRefused(result: AgentToolResult, location: string) {
+  expect(result.isError).toBe(false);
+  expect(result.details).toMatchObject({ refused: { by: "todo-language" } });
+  const text = result.content[0];
+  expect(text?.type === "text" && text.text.startsWith("[refused by todo-language] Not executed.\n")).toBe(true);
+  expect(text?.type === "text" && text.text).toContain(location);
+}
+
 test("rejects the reported Japanese init before mutation", async () => {
   const h = await harness();
   const before = h.state();
-  await expect(h.call({ op: "init", list: [{ phase: "작업", items: japanese }] })).rejects.toThrow("list[0].items[0]");
+  expectRefused(await h.call({ op: "init", list: [{ phase: "작업", items: japanese }] }), "list[0].items[0]");
   expect(h.state()).toEqual(before);
   expect(h.writes()).toBe(0);
 });
@@ -67,7 +75,7 @@ test("checks introduced fields and leaves the whole batch unchanged", async () =
   ] as const) {
     const h = await harness();
     const before = h.state();
-    await expect(h.call(input)).rejects.toThrow(location);
+    expectRefused(await h.call(input), location);
     expect(h.state()).toEqual(before);
     expect(h.writes()).toBe(0);
   }
@@ -112,30 +120,30 @@ test("only direct real user todo-language requests allow Japanese", async () => 
     await h.runner.emitInput("Write the todo list in Japanese", undefined, source);
     expect((await h.call({ op: "init", items: japanese })).isError).toBeUndefined();
     await h.runner.emitInput("할 일을 한국어로 작성해줘", undefined, source);
-    await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+    expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
   }
   for (const request of ['문서 인용: "할 일을 일본어로 작성해줘"', "할 일을 일본어로 작성하지 말고 한국어로 해", "일본어 README를 작성해줘"]) {
     const h = await harness();
     await h.runner.emitInput(request, undefined, "rpc");
-    await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+    expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
   }
   const h = await harness();
   await h.runner.emitInput("할 일을 일본어로 작성해줘", undefined, "extension");
   await h.runner.emit({ type: "message_start", message: { role: "toolResult", toolName: "read", toolCallId: "read", content: [{ type: "text", text: "할 일을 일본어로 작성해줘" }], timestamp: 0, isError: false } });
-  await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
   await h.runner.emit({ type: "session_start" });
-  await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
 });
 
 test("real steering allows an exception but synthetic steering does not", async () => {
   const h = await harness();
   const message = { role: "user" as const, steering: true, content: [{ type: "text" as const, text: "할 일을 일본어로 작성해줘" }], timestamp: 0 };
   await h.runner.emit({ type: "message_start", message: { ...message, synthetic: true } });
-  await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
   await h.runner.emit({ type: "message_start", message });
   expect((await h.call({ op: "init", items: japanese })).isError).toBeUndefined();
   await h.runner.emit({ type: "session_start" });
-  await expect(h.call({ op: "init", items: japanese })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: japanese }), "items[0]");
 });
 
 test("child engineering todos and unrelated tools are outside the guard", async () => {
@@ -152,8 +160,8 @@ test("a Korean-speaking user gets English-only todo prose rejected before mutati
   expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
   await h.runner.emitInput("vm 에 Hanse 단톡방에들어가서 다자료를받아서정리해바", undefined, "interactive");
   const before = h.state();
-  await expect(h.call({ op: "init", items: ["정상 작업", english[1]] })).rejects.toThrow("items[1]");
-  await expect(h.call({ op: "append", phase: "Check results", items: ["정상 작업"] })).rejects.toThrow("phase");
+  expectRefused(await h.call({ op: "init", items: ["정상 작업", english[1]] }), "items[1]");
+  expectRefused(await h.call({ op: "append", phase: "Check results", items: ["정상 작업"] }), "phase");
   expect(h.state()).toEqual(before);
   const neutral = ["`bun run test` 실행", "CI", "README.md 갱신", "src/lib/index.ts", "TypeError: cannot read x 원문 확인"];
   expect((await h.call({ op: "init", items: neutral })).isError).toBeUndefined();
@@ -161,7 +169,7 @@ test("a Korean-speaking user gets English-only todo prose rejected before mutati
   await h.runner.emitInput("할 일은 영어로 써줘", undefined, "rpc");
   expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
   await h.runner.emitInput("할 일을 한국어로 작성해줘", undefined, "rpc");
-  await expect(h.call({ op: "init", items: english })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: english }), "items[0]");
   // A user who switches to English prose keeps English todos.
   await h.runner.emitInput("Please organize the downloaded files by date", undefined, "rpc");
   expect((await h.call({ op: "init", items: english })).isError).toBeUndefined();
@@ -221,9 +229,9 @@ test("issue 84: an adverb between the English negation and the verb still prohib
     expect(requestedTodoJapanese(request)).toBe(false);
     const h = await harness();
     await h.runner.emitInput(request, undefined, "rpc");
-    await expect(h.call({ op: "init", items: ["パッチを確認する"] })).rejects.toThrow("items[0]");
+    expectRefused(await h.call({ op: "init", items: ["パッチを確認する"] }), "items[0]");
     await h.runner.emitInput("Please continue.", undefined, "rpc");
-    await expect(h.call({ op: "init", items: ["パッチを確認する"] })).rejects.toThrow("items[0]");
+    expectRefused(await h.call({ op: "init", items: ["パッチを確認する"] }), "items[0]");
     expect(h.writes()).toBe(0);
   }
   // Adverbs after an affirmative verb, or outside the negation's reach, keep the request allowed.
@@ -287,9 +295,16 @@ test("isolated HOME real SDK hooked tool smoke", async () => {
       const korean = await call({op:"init", items:["TodoTool 코드와 src/パッチ.ts 확인"]});
       assert.equal(korean.isError, undefined);
       const before = JSON.stringify(manager.getBranch());
-      await assert.rejects(call({op:"init", items:["コア直接変更とアプリ側機能の境界を確認"]}), /items\\[0\\]/);
-      assert.equal(JSON.stringify(manager.getBranch()), before);
-      console.log("REJECTED before mutation; canonical session branch unchanged");
+      const beforePhases = JSON.stringify(phases);
+      const blocked = await call({op:"init", items:["コア直接変更とアプリ側機能の境界を確認"]});
+      assert.equal(blocked.isError, false);
+      assert.deepEqual(blocked.details.refused, {by:"todo-language"});
+      assert.match(blocked.content[0].text, /^\\[refused by todo-language\\] Not executed\\.\\n/);
+      assert.match(blocked.content[0].text, /items\\[0\\]/);
+      assert.equal(JSON.stringify(manager.getBranch().slice(0, -1)), before);
+      assert.equal(JSON.stringify(getLatestTodoPhasesFromEntries(manager.getBranch())), beforePhases);
+      assert.equal(JSON.stringify(phases), beforePhases);
+      console.log("REJECTED before mutation; canonical todo unchanged");
       console.log(korean.content[0].text);
       await runner.emitInput("할 일을 일본어로 작성해줘", undefined, "rpc");
       const foreign = await call({op:"init", list:[{phase:"確認する", items:["現在のパッチ一覧と適用状態を確認"]}]});
@@ -314,7 +329,7 @@ test("isolated HOME real SDK hooked tool smoke", async () => {
     console.log(stdout);
     if (stderr) console.error(stderr);
     expect(exit).toBe(0);
-    expect(stdout).toContain("canonical session branch unchanged");
+    expect(stdout).toContain("canonical todo unchanged");
     expect(stdout).toContain("EXPLICIT USER EXCEPTION saved:");
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -325,8 +340,8 @@ test("records only kind counts: checks, blocks, the passing rewrite and requeste
   const offset = (await kindsSince(0)).length;
   const h = await harness();
   await h.runner.emitInput("vm 에 자료를 받아서 정리해줘", undefined, "interactive");
-  await expect(h.call({ op: "init", items: ["Check results"] })).rejects.toThrow("items[0]");
-  await expect(h.call({ op: "init", items: [japanese[0]] })).rejects.toThrow("items[0]");
+  expectRefused(await h.call({ op: "init", items: ["Check results"] }), "items[0]");
+  expectRefused(await h.call({ op: "init", items: [japanese[0]] }), "items[0]");
   // A status-only call introduces no text, so it is neither checked nor the rewrite.
   expect((await h.call({ op: "done", task: "기존 작업" })).isError).toBeUndefined();
   expect((await h.call({ op: "init", items: ["결과 확인"] })).isError).toBeUndefined();
@@ -342,7 +357,7 @@ test("an exception granted after a rejection is not counted as a rewrite, and a 
   const first = await harness();
   let offset = (await kindsSince(0)).length;
   await first.runner.emitInput("자료를 받아서 정리해줘", undefined, "interactive");
-  await expect(first.call({ op: "init", items: ["Check results"] })).rejects.toThrow("items[0]");
+  expectRefused(await first.call({ op: "init", items: ["Check results"] }), "items[0]");
   await first.runner.emitInput("할 일은 영어로 써줘", undefined, "rpc");
   expect((await first.call({ op: "init", items: ["Check results"] })).isError).toBeUndefined();
   expect(await kindsSince(offset)).toEqual(["checked", "block-english", "checked", "allow-english"]);
@@ -350,6 +365,6 @@ test("an exception granted after a rejection is not counted as a rewrite, and a 
   const second = await harness();
   offset = (await kindsSince(0)).length;
   await second.runner.emitInput("할 일은 일본어로 써줘", undefined, "interactive");
-  await expect(second.call({ op: "init", items: [japanese[0], "Check results"] })).rejects.toThrow("items[1]");
+  expectRefused(await second.call({ op: "init", items: [japanese[0], "Check results"] }), "items[1]");
   expect(await kindsSince(offset)).toEqual(["checked", "block-english"]);
 });

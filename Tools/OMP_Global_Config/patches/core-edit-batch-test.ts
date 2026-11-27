@@ -127,12 +127,15 @@ function workspace(name: string, files: Seen, failAfterFirstOpen = false) {
 		disk: (file: string) => readFileSync(join(cwd, file), "utf8"),
 		/** Seen lines the session store holds for the file's starting snapshot. */
 		seen: (file: string): number[] | null => store.seenLines(join(cwd, file), tags[file]),
-		async edit(input: string): Promise<{ isError: boolean; text: string }> {
+		async edit(input: string): Promise<{ isError: boolean; refused: boolean; text: string }> {
 			try {
 				const result = await tool.execute("call", { input }, undefined, undefined, undefined);
-				return { isError: result.isError === true, text: result.content.map((block: { text?: string }) => block.text ?? "").join("\n") };
+				const text = result.content.map((block: { text?: string }) => block.text ?? "").join("\n");
+				const prefix = "[refused by edit-unseen-lines] Not executed.\n";
+				const refused = result.isError === false && result.details?.refused?.by === "edit-unseen-lines" && text.startsWith(prefix);
+				return { isError: result.isError === true, refused, text: refused ? text.slice(prefix.length) : text };
 			} catch (error) {
-				return { isError: true, text: `THREW ${error instanceof Error ? error.message : String(error)}` };
+				return { isError: true, refused: false, text: `THREW ${error instanceof Error ? error.message : String(error)}` };
 			}
 		},
 	};
@@ -220,7 +223,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const seenNow = Object.fromEntries(Object.keys(files).map(file => [file, ws.seen(file)]));
 	check(
 		"여러 파일 배치: 보지 않은 줄을 쓴 파일 둘을 한 응답에 모두 보인다",
-		first.isError && first.text.includes("b.txt의 30번 줄") && first.text.includes("c.txt의 40번 줄") && first.text.includes("30:b.txt line 30") && first.text.includes("40:c.txt line 40"),
+		first.refused && first.text.includes("b.txt의 30번 줄") && first.text.includes("c.txt의 40번 줄") && first.text.includes("30:b.txt line 30") && first.text.includes("40:c.txt line 40"),
 		JSON.stringify(first.text.slice(0, 600)),
 	);
 	check("여러 파일 배치: 거부되면 본 줄을 쓴 a.txt 를 포함해 아무 파일도 쓰지 않는다", ["a.txt", "b.txt", "c.txt"].every((file, i) => ws.disk(file) === before[i]), "디스크가 바뀌었다");
@@ -245,7 +248,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const result = await ws.edit(batch);
 	check(
 		"미리보기 한도 초과: 검사하지 못했을 수 있는 파일을 밝히고, 기록되지 않은 줄을 기록됐다고도 재전송이 성공한다고도 하지 않는다",
-		result.isError &&
+		result.refused &&
 			result.text.includes("big.txt:11-100") &&
 			result.text.includes("마치지 못했을 수 있는 파일: tail.txt") &&
 			!result.text.includes("본 것으로 기록") &&
@@ -262,7 +265,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const ws = workspace("single", files);
 	const expected = await nativeOutcome("single", files, input);
 	const first = await ws.edit(input(ws.tags));
-	check("한 파일 배치: 거부 문구가 이전과 같다", expected.isError && first.isError && first.text === expected.text, `${JSON.stringify(first.text)}\n    기대 ${JSON.stringify(expected.text)}`);
+	check("한 파일 배치: 거부 문구가 이전과 같다", expected.isError && first.refused && first.text === expected.text, `${JSON.stringify(first.text)}\n    기대 ${JSON.stringify(expected.text)}`);
 	const resend = await ws.edit(input(ws.tags));
 	check("한 파일 배치: 그대로 재전송하면 성공한다", !resend.isError && ws.disk("s.txt").includes("S30"), JSON.stringify(resend.text.slice(0, 200)));
 }
@@ -288,7 +291,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const result = await ws.edit(batch);
 	check(
 		"파일명·내용에 byte-identical 이 있어도 두 파일 거부를 한 응답에 모은다",
-		result.isError && result.text.includes("byte-identical.txt의 30번 줄") && result.text.includes("other.txt의 40번 줄"),
+		result.refused && result.text.includes("byte-identical.txt의 30번 줄") && result.text.includes("other.txt의 40번 줄"),
 		JSON.stringify(result.text.slice(0, 400)),
 	);
 }
@@ -300,7 +303,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const result = await ws.edit(batch);
 	check(
 		"probe 예외: 첫 거부와 오류를 돌려주고 성공을 약속하지 않는다",
-		result.isError &&
+		result.refused &&
 			!result.text.startsWith("THREW") &&
 			result.text.includes("f1.txt의 30번 줄") &&
 			result.text.includes("injected probe session failure") &&
@@ -321,7 +324,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 	const seenNow = Object.fromEntries(Object.keys(files).map(file => [file, ws.seen(file)]));
 	check(
 		"본 줄 기록 없는 대상: 두 거부를 모아 성공을 약속하고, 본 줄 기록이 0.10.26 경로와 같다(z.txt 는 null 그대로)",
-		first.isError &&
+		first.refused &&
 			first.text.includes("u1.txt의 30번 줄") &&
 			first.text.includes("u2.txt의 40번 줄") &&
 			first.text.includes("그대로 재시도해도 이제 성공한다") &&
@@ -349,7 +352,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 		const blocks = result.text.split("\n\n");
 		check(
 			"cwd 밖 파일: native 거부 둘에 정확한 파일명과 줄을 쓰고 경로는 절대 경로다",
-			result.isError && blocks.length === 2 &&
+			result.refused && blocks.length === 2 &&
 				blocks[0]!.includes(`in.txt의 30번 줄`) && blocks[0]!.includes(`[in.txt#${ws.tags["in.txt"]}]`) &&
 				blocks[0]!.includes("30:in.txt line 30") &&
 				blocks[1]!.includes(`${outside}의 40번 줄`) && blocks[1]!.includes(`[${outside}#${ws.tags["../outside-ext.txt"]}]`) &&
@@ -359,7 +362,7 @@ async function nativeOutcome(name: string, files: Seen, input: (tags: Record<str
 		);
 	} else {
 		const summary = result.text.split("\n\n")[0] ?? "";
-		check("cwd 밖 파일: 요약 줄에 절대 경로로 적는다", result.isError && summary.endsWith(`in.txt, ${outside}.`) && !summary.includes("../"), JSON.stringify(summary));
+		check("cwd 밖 파일: 요약 줄에 절대 경로로 적는다", result.refused && summary.endsWith(`in.txt, ${outside}.`) && !summary.includes("../"), JSON.stringify(summary));
 	}
 	check("cwd 밖 파일: 거부되면 안팎 파일 모두 쓰지 않는다", ["in.txt", "../outside-ext.txt"].every((file, i) => ws.disk(file) === before[i]), "디스크가 바뀌었다");
 	const resend = await ws.edit(batch);

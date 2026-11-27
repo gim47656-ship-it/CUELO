@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { toolNonSuccess } from "./tool-outcome";
 
 // Actual child skill reads; historical dispatch records may also carry expected skills.
 const SKILL_NAME = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -21,7 +22,7 @@ export interface SkillRead {
   atMs: number;
 }
 export type SkillReadObservation =
-  | { state: "observed"; locator: string; reads: SkillRead[]; failed: number; unmatched: number; unparsed: number; lastEntryMs: number }
+  | { state: "observed"; locator: string; reads: SkillRead[]; failed: number; refused: number; scriptError: number; unmatched: number; unparsed: number; lastEntryMs: number }
   | { state: "unobserved"; locator: string | null; reason: string };
 
 /** 전송 한도. 이보다 큰 transcript는 읽지 않고 미관측으로 둔다. */
@@ -44,7 +45,7 @@ function classify(path: string): { skill: string; scope: SkillRead["scope"]; tar
 }
 
 /**
- * 성공한 read tool_result만 읽기로 센다. 실패·결과 없는 호출은 세지 않고 건수만 남긴다.
+ * 성공한 read tool_result만 읽기로 센다. 실패·거절·스크립트 예외·결과 없는 호출은 건수만 남긴다.
  * session header가 없는 파일은 child transcript로 보지 않는다(읽기 0건으로 단정하지 않는다).
  */
 export function observeSkillReads(text: string, locator: string): SkillReadObservation {
@@ -54,7 +55,7 @@ export function observeSkillReads(text: string, locator: string): SkillReadObser
   }
   const calls = new Map<string, { path: string; extra: boolean }>();
   const reads: SkillRead[] = [];
-  let failed = 0;
+  const excluded = { failed: 0, refused: 0, scriptError: 0 };
   let unparsed = 0;
   let lastEntryMs = Number.NEGATIVE_INFINITY;
   for (const line of lines) {
@@ -84,7 +85,11 @@ export function observeSkillReads(text: string, locator: string): SkillReadObser
     const pending = calls.get(message.toolCallId);
     if (!pending) continue;
     calls.delete(message.toolCallId);
-    if (message.isError === true) { failed += 1; continue; }
+    const outcome = toolNonSuccess(message);
+    if (outcome) {
+      excluded[outcome]++;
+      continue;
+    }
     const kind = classify(pending.path)!;
     const at = typeof entry.timestamp === "string" ? entry.timestamp : "";
     const atMs = Date.parse(at);
@@ -93,7 +98,7 @@ export function observeSkillReads(text: string, locator: string): SkillReadObser
     const scope = kind.scope !== "full" ? kind.scope : pending.extra ? "ranged" : truncated ? "truncated" : "full";
     reads.push({ ...kind, scope, target: scope === "ranged" && !kind.target ? "인자 범위" : kind.target, at, atMs });
   }
-  return { state: "observed", locator, reads, failed, unmatched: calls.size, unparsed, lastEntryMs };
+  return { state: "observed", locator, reads, ...excluded, unmatched: calls.size, unparsed, lastEntryMs };
 }
 
 export function readChildSkillReads(parentSessionFile: string | undefined | null, agentId: string | undefined): SkillReadObservation {
@@ -157,6 +162,8 @@ export function renderSkillEvidence(input: {
   const extras = [
     earlier.length > 0 ? `${window.kind === "unknown" ? "attempt를 가르지 못한 읽기" : "이전 attempt 읽기"}(이번 attempt 근거·절차 완료 아님): ${listReads(earlier)}` : "",
     observation.failed > 0 ? `실패한 skill 읽기 ${observation.failed}건 제외` : "",
+    observation.refused > 0 ? `거절된 skill 읽기 ${observation.refused}건 제외` : "",
+    observation.scriptError > 0 ? `스크립트 예외가 난 skill 읽기 ${observation.scriptError}건 제외` : "",
     observation.unmatched > 0 ? `결과 없는 skill 읽기 호출 ${observation.unmatched}건 제외` : "",
     observation.unparsed > 0 ? `해석하지 못한 transcript 줄 ${observation.unparsed}건(그 안의 읽기는 미관측)` : "",
   ].filter(Boolean).join("; ");

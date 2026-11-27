@@ -1,6 +1,7 @@
 import type { AssistantContentBlock, ToolResultMessage } from "./types";
 import { resolveLocalFilePath } from "./file-links";
 import { isEditToolName, isWriteToolName } from "./tool-names";
+import { toolNonSuccess } from "./tool-outcome";
 
 export interface WrittenFile {
   /** Resolved absolute path of a file this turn wrote. */
@@ -148,7 +149,7 @@ export function extractTurnWrittenFiles(
 
     // No result yet (still streaming) or the call failed — nothing was written.
     const result = toolResults?.get(block.toolCallId);
-    if (!result || result.isError) continue;
+    if (!result || toolNonSuccess(result)) continue;
 
     for (const rawPath of readWrittenPaths(block.input, result)) {
       if (!isFilesystemPathLiteral(rawPath)) continue;

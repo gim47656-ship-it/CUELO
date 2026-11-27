@@ -72,8 +72,11 @@ export interface FileOutcome {
   /** Required findings from a design review that cannot pass because the reader language is unsupported. */
   diagnosticFindings?: FileFinding[];
   error?: string;
+  refused?: true;
 }
 export interface ReviewOutcome { authors?: string[]; reviewId?: string; reviewers?: ReviewerStatus[]; /** 모든 묶음의 실패한 호출, 원인·원문 발췌와 함께. */ failedAttempts?: ReviewerStatus[]; usage?: Usage; files: FileOutcome[] }
+
+export class SlopCheckRefusal extends Error {}
 
 // ── 기준(스킬 본문) ──────────────────────────────────────────────────────────
 
@@ -398,11 +401,14 @@ export function resolveFiles(files: readonly string[], cwd: string): { ok: Resol
   const internal: FileOutcome[] = [];
   const seen = new Set<string>();
   for (const input of files.map((file) => file.trim()).filter(Boolean)) {
-    const fail = (error: string) => errors.push({ file: input, status: "error", error });
+    const fail = (error: string, refused = true) => errors.push({ file: input, status: "error", error, ...(refused ? { refused: true as const } : {}) });
     const spelled = wslPath(input);
     const lexical = isAbsolute(spelled) ? resolve(spelled) : resolve(cwd, spelled);
     let abs: string;
-    try { abs = realpathSync(lexical); } catch { fail("file not found"); continue; }
+    try { abs = realpathSync(lexical); } catch (error) {
+      fail("file not found", error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR"));
+      continue;
+    }
     if (!trackable(abs, cwd) || !trackable(lexical, cwd)) { fail("outside the session cwd, the home folder and the Windows drives, or a scratch/internal location (/tmp, ~/.omp, ~/.cache, node_modules, .git)"); continue; }
     // 비밀 이름은 파일 이름에서만 본다. 절대 경로 전체를 보면 `29-token-saving/` 같은 폴더 아래 보고서가 영영 통과를 못 받는다.
     if (secretFileName(abs)) { fail("secret-looking path excluded"); continue; }
@@ -412,7 +418,7 @@ export function resolveFiles(files: readonly string[], cwd: string): { ok: Resol
       const data = rawDataReason(abs, stat.size);
       if (data) { internal.push({ file: input, status: "internal", reason: data }); continue; }
       if (stat.size > MAX_FILE_BYTES) { fail(`larger than ${MAX_FILE_BYTES} bytes`); continue; }
-    } catch { fail("file not readable"); continue; }
+    } catch { fail("file not readable", false); continue; }
     if (seen.has(abs)) continue;
     seen.add(abs);
     ok.push({ abs, rel: input });
@@ -498,7 +504,7 @@ export function judgeLane(authors: readonly string[]): Lane {
 export async function reviewFiles(files: readonly string[], lang: Lang | undefined, deps: SlopDeps, signal: AbortSignal): Promise<ReviewOutcome> {
   const now = deps.now ?? (() => new Date());
   const declared = (deps.authors ?? ["main"]).map((author) => author.trim()).filter(Boolean);
-  if (!declared.length) throw new Error('authors must list at least one model selector (or "main").');
+  if (!declared.length) throw new SlopCheckRefusal('authors must list at least one model selector (or "main").');
   const authors = declared.map((author) => {
     if (author.toLowerCase() !== "main") return author;
     if (!deps.mainModel) throw new Error('authors includes "main" but the session\'s current model could not be resolved; pass its selector explicitly.');
@@ -524,7 +530,7 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
     const bytes = readFileSync(file.abs);
     const hash = sha256(bytes);
     if (passFor(records, hash)) { outcomes.push({ file: file.rel, sha256: hash, status: "already-passed" }); continue; }
-    const fail = (error: string) => outcomes.push({ file: file.rel, sha256: hash, status: "error", error });
+    const fail = (error: string, refused = false) => outcomes.push({ file: file.rel, sha256: hash, status: "error", error, ...(refused ? { refused: true as const } : {}) });
     let extracted: Extracted;
     try { extracted = await extractSnapshot(file.abs, bytes, extract); } catch (error) { fail(error instanceof Error ? error.message : String(error)); continue; }
     if (!extracted.text.trim() && extracted.kind === "copy") {
@@ -533,12 +539,13 @@ export async function reviewFiles(files: readonly string[], lang: Lang | undefin
       outcomes.push({ file: file.rel, sha256: hash, status: "pass", scope: "whole", findings: [] });
       continue;
     }
-    if (!extracted.text.trim()) { fail("no pass: no extractable text, so nothing could be reviewed. Only the user's explicit slopGateWaiver on git_finalize can exempt it"); continue; }
-    const before = await head(file.abs).catch(() => undefined);
+    if (!extracted.text.trim()) { fail("no pass: no extractable text, so nothing could be reviewed. Only the user's explicit slopGateWaiver on git_finalize can exempt it", true); continue; }
+    let before: Extracted | undefined;
+    try { before = await head(file.abs); } catch (error) { fail(error instanceof Error ? error.message : String(error)); continue; }
     const delta = before ? deltaOf(extracted, before) : undefined;
     const shown = shownFor(extracted, delta);
     const shownChars = shown.text.length + (shown.source?.length ?? 0);
-    if (shownChars > MAX_FILE_CHARS) { fail(`no pass: ${shownChars} characters to review (text plus html source), above the ${MAX_FILE_CHARS} limit; split the document. A part is never skipped, so only the user's explicit slopGateWaiver on git_finalize can exempt it`); continue; }
+    if (shownChars > MAX_FILE_CHARS) { fail(`no pass: ${shownChars} characters to review (text plus html source), above the ${MAX_FILE_CHARS} limit; split the document. A part is never skipped, so only the user's explicit slopGateWaiver on git_finalize can exempt it`, true); continue; }
     if (delta && delta.addedLines === 0) {
       // HEAD 대비 추가·바뀐 글이 없다(삭제·이동뿐). 새로 볼 글이 없으므로 모델을 부르지 않고 그 내용에 통과를 남긴다.
       appendSlopRecord(deps.ledgerPath, { type: "slop-pass", path: file.abs, sha256: hash, reviewedAt: now().toISOString(), model: "delta:no-added-text", reviewId: "delta-empty", findings: [] });
@@ -740,7 +747,7 @@ export function resolveFindings(
 ): ResolveResult {
   const records = readSlopRecords(deps.ledgerPath);
   const review = records.find((record): record is SlopReviewRecord => record.type === "slop-review" && record.reviewId === reviewId);
-  if (!review) throw new Error(`reviewId ${reviewId} is unknown.`);
+  if (!review) throw new SlopCheckRefusal(`reviewId ${reviewId} is unknown.`);
   const known = new Set(review.files.flatMap((file) => file.findings.map((finding) => finding.id)));
   const rejected: ResolveResult["rejected"] = [];
   const accepted = new Map<string, string>();

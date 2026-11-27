@@ -9,6 +9,7 @@
 
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { toolCommandDispatches } from "@oh-my-pi/pi-coding-agent/tools/tool-commands";
+import { toolNonSuccess } from "./tool-outcome";
 import { maskDeep } from "./run-xray-turns";
 import { maskSecrets } from "./session-recall";
 import type {
@@ -367,7 +368,7 @@ export class MemoryTraceBuilder {
       const isError = message.isError === true;
       const text = contentText(message.content);
       if (call.kind === "read") {
-        if (!isError) this.unconfirmed.delete(call.step);
+        if (toolNonSuccess(message) === null) this.unconfirmed.delete(call.step);
       } else if (call.kind === "learn") {
         if (LEARN_STORED_RE.test(text.trimStart())) this.unconfirmed.delete(call.step);
       } else if (call.kind === "retain") {

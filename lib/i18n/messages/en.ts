@@ -1107,6 +1107,8 @@ export const enLocale = {
     "efficiency.sawPreludeMismatch": "The current prompt's fingerprint differs from this run's record; it may have changed since.",
     "toolRun.running": "Running",
     "toolRun.failed": "Failed",
+    "toolRun.refused": "Refused",
+    "toolRun.scriptError": "Script error",
     "toolRun.exitCode": "exit {code}",
     "toolRun.diffStats": "{added} lines added, {removed} lines removed",
     "toolRun.askTimedOut": "No answer before the timeout. The form's current values were submitted.",

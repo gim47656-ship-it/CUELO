@@ -3288,8 +3288,12 @@ console.log("\n[28] edit — 성공한 edit 뒤에도 전에 읽은 바뀌지 �
 	const textOf = (result: { content?: { text?: string }[] }) => (result.content ?? []).map(part => part.text ?? "").join("\n");
 	const tagOf = (text: string) => text.match(/#([0-9A-F]{4})\]/)?.[1];
 	const tryEdit = async (input: string) => edit.execute(`seen-${Math.random()}`, { input }).then(
-		(result: { isError?: boolean; content?: { text?: string }[] }) => ({ error: result.isError === true, text: textOf(result) }),
-		(error: Error) => ({ error: true, text: error.message }),
+		(result: { isError?: boolean; details?: { refused?: { by: string } }; content?: { text?: string }[] }) => ({
+			error: result.isError === true,
+			refused: result.isError === false && result.details?.refused?.by === "edit-unseen-lines" && textOf(result).startsWith("[refused by edit-unseen-lines] Not executed.\n"),
+			text: textOf(result),
+		}),
+		(error: Error) => ({ error: true, refused: false, text: error.message }),
 	);
 	for (const [name, eol] of [["lf.txt", "\n"], ["crlf.txt", "\r\n"]] as const) {
 		const file = csJoin(cwd, name);
@@ -3297,9 +3301,9 @@ console.log("\n[28] edit — 성공한 edit 뒤에도 전에 읽은 바뀌지 �
 		const readTag = tagOf(textOf(await read.execute("seen-read", { path: `${name}:1-40` })));
 		const first = await tryEdit(`[${name}#${readTag}]\nPUT 5.=5:\n+line 5 changed\n+inserted a\n+inserted b\n`);
 		const shifted = await tryEdit(`[${name}#${tagOf(first.text)}]\nPUT 32.=32:\n+line 30 changed\n`);
-		check(`${name}: 줄이 밀린 뒤에도 전에 읽은 줄(원래 30줄) 수정이 통과한다`, !first.error && !shifted.error, `first=${first.text.slice(0, 120)} shifted=${shifted.text.slice(0, 160)}`);
+		check(`${name}: 줄이 밀린 뒤에도 전에 읽은 줄(원래 30줄) 수정이 통과한다`, !first.error && !first.refused && !shifted.error && !shifted.refused, `first=${first.text.slice(0, 120)} shifted=${shifted.text.slice(0, 160)}`);
 		const unseen = await tryEdit(`[${name}#${tagOf(shifted.text) ?? tagOf(first.text)}]\nPUT 100.=100:\n+line 98 changed\n`);
-		check(`${name}: 한 번도 읽지 않은 줄 수정은 여전히 거절된다`, unseen.error, unseen.text.slice(0, 120));
+		check(`${name}: 한 번도 읽지 않은 줄 수정은 여전히 거절된다`, unseen.refused, unseen.text.slice(0, 120));
 		const lines = (await Bun.file(file).text()).split(eol);
 		check(`${name}: 파일에는 의도한 줄만 바뀐다`, lines[31] === "line 30 changed" && lines[99] === "line 98", JSON.stringify([lines[31], lines[99]]));
 	}
@@ -3308,7 +3312,7 @@ console.log("\n[28] edit — 성공한 edit 뒤에도 전에 읽은 바뀌지 �
 	await Bun.write(gapFile, gapText);
 	const gapTag = tagOf(textOf(await read.execute("gap-read", { path: "gap.txt:1-40" })));
 	const unseenGap = await tryEdit(`[gap.txt#${gapTag}]\n>100:\n+unseen\n`);
-	check("missing PUT does not bypass the unseen-anchor guard", unseenGap.error && /보여 준 적이 없다|never displayed/.test(unseenGap.text), unseenGap.text);
+	check("missing PUT does not bypass the unseen-anchor guard", unseenGap.refused && /보여 준 적이 없다|never displayed/.test(unseenGap.text) && await Bun.file(gapFile).text() === gapText, unseenGap.text);
 	const gap = await tryEdit(`[gap.txt#${gapTag}]\n>1:\n+inserted\n`);
 	check("a bare gap header with a + body inserts at its explicit locator", !gap.error && await Bun.file(gapFile).text() === gapText.replace("line 1\n", "line 1\ninserted\n"), gap.text);
 	const ambiguous = await tryEdit(`[gap.txt#${tagOf(gap.text)}]\n+missing locator\n`);

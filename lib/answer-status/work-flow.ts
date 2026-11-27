@@ -1,4 +1,5 @@
 import { readExitCode } from "@/lib/tool-exit-code";
+import { toolNonSuccess } from "@/lib/tool-outcome";
 import { isEditToolName, isWriteToolName } from "@/lib/tool-names";
 import { isScratchOnlyWrite, readTouchedPaths } from "@/lib/turn-written-files";
 import { resolveLocalFilePath } from "@/lib/file-links";
@@ -734,6 +735,7 @@ export interface CheckRun {
   compound?: CompoundCommand;
   /** 판정 미확인·결과 미관측일 때 그 까닭. */
   reason?: UnknownReason;
+  refused?: true;
 }
 
 function readBashCommand(block: ToolCallContent | null | undefined): string | null {
@@ -752,6 +754,7 @@ interface CommandJudgement {
   evidence?: string;
   /** 판정 미확인·결과 미관측일 때 그 까닭. */
   reason?: UnknownReason;
+  refused?: true;
 }
 
 /** 바로 앞 명령의 종료 코드만 펼쳐 찍는 echo의 틀. `first`는 `${PIPESTATUS[0]}` — 바로 앞 파이프라인 첫 명령의 종료 코드다. */
@@ -835,8 +838,16 @@ function judgeCommand(command: string, recorded: ToolResultMessage | undefined):
   if (parsed.commands.some(({ words }) => runsCi(words))) stages.push("ci");
   if (parsed.commands.some(DECISIVE_COMMAND.deploy)) stages.push("deploy");
   if (stages.length === 0) return [];
+  const nonSuccess = toolNonSuccess(result);
+  if (nonSuccess === "refused" || nonSuccess === "scriptError") {
+    return stages.map((stage) => ({
+      stage, state: "unverified", exitCode: null,
+      labels: stage === "check" ? readCheckLabels(parsed.commands.filter(({ words }) => runsCheck(words))) : [],
+      ...(nonSuccess === "refused" ? { refused: true } : {}),
+    }));
+  }
   const exitCode = result ? readExitCode(result) : null;
-  const failed = exitCode === null ? Boolean(result?.isError) : exitCode !== 0;
+  const failed = nonSuccess === "failed" || (exitCode !== null && exitCode !== 0);
   const compound = stages.length > 1 ? { stages, failed } : undefined;
   const output = result ? resultText(result) : "";
   return stages.map((stage) => {
@@ -884,6 +895,7 @@ export function readCheckRun(block: ToolCallContent | null | undefined, result: 
     labels: judged.labels,
     ...(judged.compound ? { compound: judged.compound } : {}),
     ...(judged.reason ? { reason: judged.reason } : {}),
+    ...(judged.refused ? { refused: true } : {}),
   };
 }
 
@@ -897,6 +909,8 @@ interface StepCore {
   /** 이 사건이 일어난 회차(1부터). */
   attempt: number;
   outcome: StepOutcome;
+  refused?: true;
+  scriptError?: true;
   /**
    * 통과·완료로 끝났지만 그 뒤에 성공한 직접 수정이 있었다. 결과는 사실이지만 마지막 수정본을 보증하지 않는다.
    * 문서만 고친 수정도 예외가 아니다.
@@ -1039,7 +1053,9 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
     return judgeCommand(command, recorded).map((judged): WorkStep => {
       if (judged.stage === "commit") {
         const outcome = recorded ? (judged.state === "unobserved" && showsGitWrites(command, recorded) ? "done" : COMMIT_OUTCOME[judged.state]) : pending;
-        return { ...core, stage: "commit", ...(outcome === "done" ? readGitCommit(recorded) : { commit: null }), docsOnly: false, outcome };
+        return { ...core, stage: "commit", ...(outcome === "done" ? readGitCommit(recorded) : { commit: null }), docsOnly: false, outcome,
+          ...(judged.refused ? { refused: true } : {}),
+        };
       }
       const own = judged.evidence ?? (job && judged.exitCode !== null ? `Command exited with code ${judged.exitCode}` : undefined);
       const evidence = own && job ? `${job.jobId} · ${own}` : own;
@@ -1056,6 +1072,7 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
         exitCode: judged.exitCode,
         labels: judged.labels,
         outcome,
+        ...(judged.refused ? { refused: true } : {}),
         ...(judged.compound ? { compound: judged.compound } : {}),
         ...(evidence ? { evidence: conclusion ? `${evidence} · ${conclusion}` : evidence } : {}),
         ...(conclusion ? { otherRun: { kind: "unjudged" as const, conclusion } } : {}),
@@ -1067,9 +1084,11 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
   const name = block.toolName.toLowerCase().split(/[.:/]/).pop() ?? "";
   const result = skipped ? undefined : recorded;
   const details = (result?.details && typeof result.details === "object" ? result.details : {}) as Record<string, unknown>;
+  const nonSuccess = toolNonSuccess(result);
   if (name === "cross_review") {
     const action = block.input.action === "resolve" ? "resolve" : "review";
-    if (!result || result.isError) return { ...core, stage: "review", action, findings: null, outcome: result ? "failed" : pending };
+    if (nonSuccess === "refused") return { ...core, stage: "review", action, findings: null, outcome: "unverified", refused: true };
+    if (!result || nonSuccess) return { ...core, stage: "review", action, findings: null, outcome: !result ? pending : nonSuccess === "failed" ? "failed" : "unobserved" };
     if (action === "resolve") {
       if (details.pass === true) return { ...core, stage: "review", action, findings: 0, outcome: "passed" };
       const open = Array.isArray(details.open) ? details.open.length : null;
@@ -1087,10 +1106,11 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
     const title = typeof block.input.message === "string" ? commitTitle(block.input.message) : undefined;
     const titled = title ? { title } : {};
     if (!result) return { ...core, stage: "commit", commit: null, docsOnly: false, ...titled, outcome: pending };
+    if (nonSuccess === "refused") return { ...core, stage: "commit", commit: null, docsOnly: false, ...titled, outcome: "unverified", refused: true };
     // 성공은 결과가 밝힌 것만이다: `details.ok: true`, 커밋 SHA(details나 결과 글의 `Committed and pushed <SHA>`).
     // 오류이거나 `ok: false`면 실패이고, 그 밖은 결과 미관측이다.
     const sha = publishedSha(result, details);
-    const failed = result.isError || details.ok === false;
+    const failed = Boolean(nonSuccess) || details.ok === false;
     const ok = !failed && (details.ok === true || sha !== null);
     const files: unknown = block.input.files;
     const docsOnly = ok && Array.isArray(files) && files.length > 0 && files.every((file) => typeof file === "string" && isDocFile(file));
@@ -1101,8 +1121,9 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
     // (`ok: false`, 오류 아님)와 던진 오류는 실패다. 되돌리기(abort)와 올릴 것이 없던 호출(up-to-date)은 게시 시도가 아니다.
     if (block.input.action === "abort" || details.stage === "up-to-date") return null;
     if (!result) return { ...core, stage: "commit", commit: null, docsOnly: false, outcome: pending };
+    if (nonSuccess === "refused") return { ...core, stage: "commit", commit: null, docsOnly: false, outcome: "unverified", refused: true };
     const sha = publishedSha(result, details);
-    const failed = result.isError || details.ok === false;
+    const failed = Boolean(nonSuccess) || details.ok === false;
     const ok = !failed && sha !== null;
     const files: unknown = details.files;
     const docsOnly = ok && Array.isArray(files) && files.length > 0 && files.every((file) => typeof file === "string" && isDocFile(file));
@@ -1112,7 +1133,7 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
   if (isEditCall(block, name)) {
     // 실패한 수정과 거절된 발주는 아무것도 바꾸지 않았다. 시작했지만 끊긴 수정은 썼는지 기록이 없다: 결과 미관측이고,
     // 관측된 수정이 아니라서 앞선 통과를 수정 전 통과로 돌리지 않고 회차도 늘리지 않는다.
-    if (!skipped && recorded?.isError) return null;
+    if (!skipped && nonSuccess) return null;
     if (isScratchWrite(block, result, cwd)) return { ...core, stage: "investigate", outcome: skipped ? "unobserved" : recorded || !live ? "done" : "running" };
     return {
       ...core,
@@ -1122,7 +1143,12 @@ function readStep(block: ToolCallContent, recorded: ToolResultMessage | undefine
       ...(isRecordOnlyEdit(block, result, cwd) ? { recordOnly: true as const } : {}),
     };
   }
-  if (Object.hasOwn(INVESTIGATE_TOOLS, name)) return { ...core, stage: "investigate", outcome: skipped ? "unobserved" : recorded || !live ? "done" : "running" };
+  if (Object.hasOwn(INVESTIGATE_TOOLS, name)) {
+    const refused = nonSuccess === "refused";
+    return { ...core, stage: "investigate", outcome: skipped || refused || nonSuccess === "scriptError" ? "unobserved" : recorded || !live ? "done" : "running",
+      ...(refused ? { refused: true } : {}),
+    };
+  }
   return null;
 }
 
@@ -1154,7 +1180,7 @@ function readGitCommit(result: ToolResultMessage | undefined): { commit: string 
  * `a..b  main -> main` 줄이 있어야 한다. 오류로 끝난 결과는 아니다.
  */
 function showsGitWrites(command: string, result: ToolResultMessage): boolean {
-  if (result.isError) return false;
+  if (toolNonSuccess(result)) return false;
   const { commands } = parseShell(command);
   const text = resultText(result);
   const runs = (only: "commit" | "push") => commands.some(({ words }) => runsGitCommit(words, 0, only));
@@ -1215,13 +1241,16 @@ function readEvalCommit(block: ToolCallContent, result: ToolResultMessage | unde
   const title = message === undefined ? undefined : commitTitle(message.replace(/\\n/g, "\n").replace(/\\(["'`\\])/g, "$1"));
   const base = { toolCallId: block.toolCallId, attempt: 0, stage: "commit" as const, docsOnly: false, ...(title ? { title } : {}) };
   if (!result) return { ...base, commit: null, outcome: pending };
+  const nonSuccess = toolNonSuccess(result);
+  if (nonSuccess === "refused") return { ...base, commit: null, outcome: "unverified", refused: true };
+  if (nonSuccess === "scriptError") return { ...base, commit: null, outcome: "unobserved", scriptError: true };
   const text = resultText(result);
   const pushed = FINALIZED_COMMIT.exec(text);
   const sha = pushed ? (pushed[1] ?? pushed[2]).toLowerCase() : null;
   if (!sha && INTEGRATE_UNPUBLISHED.test(text)) return null;
   const failed = FINALIZE_FAILED.test(text);
   if (sha && !failed) return { ...base, commit: sha, outcome: "done" };
-  return { ...base, commit: null, outcome: !sha && (failed || result.isError) ? "failed" : "unobserved" };
+  return { ...base, commit: null, outcome: !sha && (failed || nonSuccess === "failed") ? "failed" : "unobserved" };
 }
 
 /* ---------- 백그라운드 job ---------- */
@@ -1528,7 +1557,7 @@ function stageStatus(stage: WorkStage, steps: readonly WorkStep[]): StageStatus 
 /** 마지막 수정 뒤에 실제로 지난 단계인지: 실패·수정 전 결과·여러 단계 명령의 실패가 아닌 사건이 하나라도 있다. */
 function passedSinceEdit(view: StageView): boolean {
   if (view.status === "waiting" || view.status === "failed" || view.status === "skipped" || view.status === "notNeeded" || view.status === "stale") return false;
-  return view.steps.some((step) => !step.stale && step.outcome !== "failed" && !isCompoundFailure(step));
+  return view.steps.some((step) => !step.stale && !step.refused && !step.scriptError && step.outcome !== "failed" && !isCompoundFailure(step));
 }
 
 /* ---------- 비공개 게시와 공개 CI ---------- */
@@ -1671,7 +1700,7 @@ const SHORT_SHA_WORD = /\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/;
  * JSON 줄은 `readRunRecords`가 읽는다.
  */
 function readPublishRunLines(command: string, result: ToolResultMessage | undefined): { id: string; sha: string | null; repo: string | null }[] {
-  if (!result || result.isError || readExitCode(result) !== 0) return [];
+  if (!result || toolNonSuccess(result) || readExitCode(result) !== 0) return [];
   const lists = parseShell(command).commands.flatMap(({ words }) => ghInvocations(words)).filter((args) => args[0] === "run" && args[1] === "list");
   if (lists.length !== 1) return [];
   const workflow = optionValue(lists[0], ["-w", "--workflow"])?.toLowerCase();
@@ -1707,7 +1736,7 @@ function readPublicHeads(command: string, result: ToolResultMessage | undefined)
   const parsed = parseShell(command);
   const calls = parsed.commands.flatMap(({ words }) => ghInvocations(words)).filter((args) => args[0] === "api");
   const plain = !parsed.uncertain && parsed.commands.length === 1 && calls.length === 1;
-  const text = result && !result.isError && readExitCode(result) === 0 ? resultText(result).trim() : "";
+  const text = result && !toolNonSuccess(result) && readExitCode(result) === 0 ? resultText(result).trim() : "";
   const heads: { repo: string; ref: string; sha: string | null }[] = [];
   for (const args of calls) {
     const path = args.slice(1).find((arg) => /^\/?repos\//.test(arg));
@@ -1814,7 +1843,7 @@ function filtersRunLog(list: ShellList, name: string): boolean {
  * `grep -o`로 거른 것이며, 그 말이 명령에 한 번만 나오고 출력에 그 말 그대로인 줄이 있어야 한다. 그 말은 grep만 출력할 수 있다.
  */
 function readNothingToPublish(command: string, result: ToolResultMessage | undefined): string | null {
-  if (!result || result.isError || readExitCode(result) !== 0 || command.split(NOTHING_TO_PUBLISH).length !== 2) return null;
+  if (!result || toolNonSuccess(result) || readExitCode(result) !== 0 || command.split(NOTHING_TO_PUBLISH).length !== 2) return null;
   const { lists } = parseShell(command);
   let at = 0;
   while (at < lists.length && ["set", "cd"].includes(soleCommand(lists[at])?.words[0] ?? "")) at += 1;
@@ -1998,7 +2027,7 @@ function linkCiRuns(read: ReadStep[], trail: PublicationTrail): void {
       editedSince = false;
     }
     if (step.stage === "edit" && step.outcome === "done" && !step.dispatch && !step.recordOnly) editedSince = true;
-    if (step.stage !== "ci" || !commit) return;
+    if (step.stage !== "ci" || step.refused || !commit) return;
     const base: CommitMark = commit;
     const calls = parseShell(step.command).commands.flatMap(({ words }) => ghInvocations(words));
     const watch = calls.find((args) => args[0] === "run" && args[1] === "watch");
@@ -2155,7 +2184,7 @@ export function deriveWorkFlow(
       if (id && step.outcome === "passed") trail.watched.push({ id, order });
       // 게시 실행을 관찰한 것이지 CI를 실행한 것은 아니다. 원 도구 로그와 실패/진행 상태는 조사에 남긴다. 판정이 없어도 끝난
       // 관찰은 끝난 조사다.
-      if (!step.compound && observesPublishRunsOnly(step.command, (run) => publishSeen(run, order))) {
+      if (!step.refused && !step.compound && observesPublishRunsOnly(step.command, (run) => publishSeen(run, order))) {
         step = { toolCallId: step.toolCallId, attempt: step.attempt, stage: "investigate", outcome: step.outcome === "passed" || step.outcome === "unverified" ? "done" : step.outcome };
       }
     }

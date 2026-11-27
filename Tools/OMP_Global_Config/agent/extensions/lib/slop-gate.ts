@@ -296,7 +296,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
   const exec = options.exec ?? spawnExec();
   const resolved = await resolveRepoTargets(options.cwd, options.files, exec);
   if ("failure" in resolved) {
-    if (resolved.failure === "git") throw new SlopGateRefusal(`the repository state could not be read, so the slop-gate requirement cannot be checked: ${resolved.detail}`);
+    if (resolved.failure === "git") throw new Error(`the repository state could not be read, so the slop-gate requirement cannot be checked: ${resolved.detail}`);
     return { checked: false, artifacts: [] };
   }
   const git = (await options.gitFor?.(resolved.root)) ?? "git";
@@ -321,7 +321,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
       if (data) { rawData.push({ path: inputOf.get(change.path) ?? change.path, reason: data }); continue; }
       bytes = readFileSync(abs);
     } catch (error) {
-      throw new SlopGateRefusal(`could not read ${inputOf.get(change.path) ?? change.path} to check its slop-gate pass: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`could not read ${inputOf.get(change.path) ?? change.path} to check its slop-gate pass: ${error instanceof Error ? error.message : String(error)}`);
     }
     const hash = sha256(bytes);
     artifacts.push({ path: change.path, sha256: hash });
@@ -356,7 +356,7 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
         type: "slop-waiver", ts: (options.now?.() ?? new Date()).toISOString(), root: resolved.root, reason,
         files: artifacts.map((artifact) => ({ path: artifact.path, sha256: artifact.sha256 })),
       });
-    } catch { throw new SlopGateRefusal("slop-gate waiver could not be recorded in the slop-gate ledger; refusing to commit without a record."); }
+    } catch { throw new Error("slop-gate waiver could not be recorded in the slop-gate ledger; refusing to commit without a record."); }
     return { checked: true, waived: true, artifacts, ...dataNote, gateBlobs };
   }
   return { checked: true, artifacts, ...dataNote, gateBlobs };

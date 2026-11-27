@@ -166,9 +166,9 @@ describe("runEgoBrowser results", () => {
       ["Error: Object reference chain is too long", "plain"],
     ]) {
       const { exec, calls } = fakeExec({ code: 1, stdout: "", stderr, killed: false });
-      const error = await runEgoBrowser({ script: "1" }, { exec, sessionId: "s", host: "linux" }).catch((e: Error) => e);
-      expect(String(error)).toContain(stderr);
-      expect(String(error)).toContain(hint);
+      const result = await runEgoBrowser({ script: "1" }, { exec, sessionId: "s", host: "linux" }).then((run) => run.text, (error: Error) => error.message);
+      expect(result).toContain(stderr);
+      expect(result).toContain(hint);
       expect(calls).toHaveLength(1);
     }
   });
@@ -212,6 +212,106 @@ describe("session tool lifecycle", () => {
     return { tool: createFactory(exec)(pi) as any, calls };
   }
   const cleanups = (calls: string[]) => calls.filter((input) => input.includes("listTaskSpaces"));
+
+  function scriptTool(page = {}, finish = async () => {}) {
+    const exec: Exec = async (_args, source) => {
+      const taskSpace = async () => ({ page: () => page, finish });
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      try {
+        await new AsyncFunction("taskSpace", source)(taskSpace);
+        return ok("");
+      } catch (error) {
+        return { code: 1, stdout: "", stderr: (error as Error).stack!, killed: false };
+      }
+    };
+    return createFactory(exec)(pi);
+  }
+
+  test.each([
+    ["throw new Error('probe $&');", "Error: probe $&\n", true],
+    ["throw new Error();", "Error\n", false],
+    ["throw 'probe';", "probe", false],
+    ["throw undefined;", "undefined", false],
+  ] as const)("classifies %s and reports only observed cleanup", async (script, diagnostic, finish) => {
+    let cleaned = 0;
+    const tool = scriptTool({}, async () => { cleaned++; });
+    const result = await tool.execute("1", { script, finish }, undefined, ctx(UUID_A));
+    expect(result.isError).toBe(false);
+    expect(result.details).toMatchObject({ scriptError: true, finished: finish, profile: "user" });
+    expect(cleaned).toBe(finish ? 1 : 0);
+    const output = result.content[0];
+    if (output.type !== "text") throw new Error("expected text result");
+    expect(output.text.split("\n")[0]).toBe("[script error] The script threw; the tool itself worked.");
+    expect(output.text).toContain(diagnostic);
+    expect(output.text).not.toContain("cuelo-ego-body-failure");
+  });
+
+  test("a transport failure in cleanup is not masked by the script error", async () => {
+    const tool = scriptTool({}, async () => { throw new Error("Chromium CDP connection closed"); });
+    await expect(tool.execute("1", { script: "throw new Error('probe')", finish: true }, undefined, ctx(UUID_A)))
+      .rejects.toThrow("Chromium CDP connection closed");
+  });
+
+  test.each([
+    "Error: JavaScript evaluation failed at line 0, column 4: TypeError: Cannot read properties of null",
+    "ElementResolutionError: Element not found: #missing",
+    "ElementResolutionError: click(#hidden): element is not visible",
+    "ElementResolutionError: click(#disabled): element is disabled",
+    "ElementResolutionError: click(#save): covered by <div#overlay>",
+    "ElementResolutionError: Locator #ambiguous matched 2 elements",
+    "ElementResolutionError: Invalid selector: tr >> nth=0",
+    "Error: Object reference chain is too long",
+  ])("classifies the SDK's script diagnostic: %s", async (stderr) => {
+    const tool = scriptTool({ evaluate: async () => { throw Object.assign(new Error(), { stack: stderr }); } });
+    const result = await tool.execute("1", { script: "await page.evaluate('0')" }, undefined, ctx(UUID_A));
+    expect(result).toMatchObject({ isError: false, details: { scriptError: true } });
+    const output = result.content[0];
+    if (output.type !== "text") throw new Error("expected text result");
+    expect(output.text).toContain(stderr);
+  });
+
+  test("classifies submitted syntax errors, not an unknown SDK SyntaxError", async () => {
+    const syntax = "SyntaxError: Cannot use import statement outside a module";
+    const script = `${syntax}\n    at new AsyncFunction (<anonymous>)\n    at execute (file:///ego-browser/dist/out/index.js:8860:16)`;
+    const { tool } = setup([
+      { code: 1, stdout: "", stderr: script, killed: false },
+      { code: 1, stdout: "", stderr: "SyntaxError: Unexpected token in host module\n    at compileSourceTextModule (node:internal/modules/esm/utils:346:16)", killed: false },
+    ]);
+    const result = await tool.execute("1", { script: "import fs from 'node:fs'" }, undefined, ctx(UUID_A));
+    expect(result).toMatchObject({ isError: false, details: { scriptError: true } });
+    expect(result.content[0].text).toContain(script);
+    await expect(tool.execute("2", { script: "1" }, undefined, ctx(UUID_A))).rejects.toThrow("in host module");
+  });
+
+  test.each([0, 1])("preserves the SDK user-control hard stop at exit %d", async (code) => {
+    const reason = "The user has taken control of this task space, so browser commands are paused.\nThis is a hard stop, not an obstacle to route around — do not retry and do not take control back on your own.";
+    const { tool } = setup([{ code, stdout: code === 0 ? reason : "", stderr: code === 1 ? `Error: ${reason}` : "", killed: false }]);
+    const result = await tool.execute("1", { script: "1" }, undefined, ctx(UUID_A));
+    expect(result).toMatchObject({ isError: false, details: { refused: { by: "ego-user-control" } } });
+    expect(result.content[0].text.split("\n")[0]).toBe("[refused by ego-user-control] Not executed.");
+    expect(result.content[0].text).toContain(reason);
+  });
+
+  test.each([
+    ["CDP timeout", { code: 1, stdout: "ElementResolutionError: earlier log", stderr: "Error: CDP request timed out: Page.captureScreenshot", killed: false }, "CDP request timed out"],
+    ["abort after a misleading stderr log", { code: 1, stdout: "", stderr: "ElementResolutionError: earlier log\nDOMException [TimeoutError]: The operation was aborted due to timeout\n    at Timeout._onTimeout (file:///ego-browser/dist/out/index.js:1:1)", killed: false }, "TimeoutError"],
+    ["empty host error after a misleading stderr log", { code: 1, stdout: "", stderr: "ElementResolutionError: earlier log\nError\n    at connect (file:///ego-browser/dist/out/index.js:1:1)", killed: false }, "at connect"],
+    ["disconnect", { code: 1, stdout: "", stderr: "Error: Chromium CDP connection closed", killed: false }, "CDP connection closed"],
+    ["missing TaskSpace", { code: 1, stdout: "", stderr: "Error: task space not found: 8", killed: false }, "task space not found"],
+    ["deadline", { code: -1, stdout: "", stderr: "ElementResolutionError: earlier log", killed: true }, "중단"],
+    ["SDK bug", { code: 1, stdout: "", stderr: "TypeError: internal state is undefined\n    at checkInternal (file:///ego-browser/dist/out/index.js:10:5)\n    at async __egoUserScript (eval at execute (file:///ego-browser/dist/out/index.js:8860:16), <anonymous>:28:8)", killed: false }, "internal state is undefined"],
+  ] as const)("keeps a %s as a thrown tool error", async (_label, failure, message) => {
+    const { tool } = setup([failure]);
+    await expect(tool.execute("1", { script: "1" }, undefined, ctx(UUID_A))).rejects.toThrow(message);
+  });
+
+  test("an SDK error raised inside the body still rejects", async () => {
+    const error = Object.assign(new Error("CDP request timed out: Page.captureScreenshot"), {
+      stack: "Error: CDP request timed out: Page.captureScreenshot\n    at Timeout._onTimeout (file:///ego-browser/dist/out/index.js:1:1)",
+    });
+    const tool = scriptTool({ screenshot: async () => { throw error; } });
+    await expect(tool.execute("1", { script: "await page.screenshot()" }, undefined, ctx(UUID_A))).rejects.toThrow(error.message);
+  });
 
   test("a space left open is cleaned at shutdown, once per profile, by name", async () => {
     const { tool, calls } = setup();
@@ -484,7 +584,8 @@ describe("native Linux host", () => {
 
   test("verify is refused before launching anything; an unreachable ego browser points at browser.open", async () => {
     const { exec, calls } = fakeExec(ok(""));
-    await expect(runEgoBrowser({ script: "1", profile: "verify" }, { exec, sessionId: "s", host: "linux" })).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
+    const refused = await runEgoBrowser({ script: "1", profile: "verify" }, { exec, sessionId: "s", host: "linux" });
+    expect(refused.outcome).toEqual({ refused: { by: "ego-profile" } });
     expect(calls).toHaveLength(0);
     const down = fakeExec({ code: 127, stdout: "", stderr: "CDP 127.0.0.1:32899에 연결할 수 없다", killed: false });
     await expect(runEgoBrowser({ script: "1" }, { exec: down.exec, sessionId: "s", host: "linux" })).rejects.toThrow(/`browser.open`[\s\S]*32899에 연결할 수 없다/);
@@ -515,7 +616,9 @@ describe("native Linux host", () => {
     const tool = createFactory(exec, "linux")({ zod: { object: () => chain, string: () => chain, enum: () => chain, boolean: () => chain, number: () => chain } } as any) as any;
     const ctx = { sessionManager: { getSessionId: () => UUID_A } } as any;
     await tool.execute("1", { script: "1" }, undefined, ctx);
-    await expect(tool.execute("2", { script: "2", profile: "verify" }, undefined, ctx)).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
+    const refused = await tool.execute("2", { script: "2", profile: "verify" }, undefined, ctx);
+    expect(refused).toMatchObject({ isError: false, details: { refused: { by: "ego-profile" } } });
+    expect(refused.content[0].text).toBe(`[refused by ego-profile] Not executed.\n${LINUX_VERIFY_UNSUPPORTED}`);
     await tool.onSession({ reason: "shutdown", previousSessionFile: undefined }, ctx);
     const cleaned = calls.filter((input) => input.startsWith("const found = (await taskSpaces.list())"));
     expect(cleaned).toHaveLength(1);

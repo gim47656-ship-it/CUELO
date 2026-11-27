@@ -7,6 +7,7 @@ import {
   type SubagentModelMeta,
 } from "../hanse-subagent-client";
 import { isGroupAnchor, type ConversationRenderItem } from "../transcript-plan";
+import { toolNonSuccess } from "../tool-outcome";
 import type {
   AgentMessage,
   AssistantMessage,
@@ -169,7 +170,7 @@ function contentText(content: ToolResultMessage["content"] | CustomMessage["cont
  * 결과가 아직 없으면 입력의 tasks로 "발주 중" 항목을 만든다.
  */
 export function readDispatchMembers(call: ToolCallContent, result: ToolResultMessage | undefined): DispatchMember[] | null {
-  if (result?.isError) return null;
+  if (toolNonSuccess(result)) return null;
   const inputTasks = objectEntries<TaskEntryShape>(call.input.tasks);
   const progress = objectEntries<TaskEntryShape>((result?.details as { progress?: unknown } | undefined)?.progress);
   const count = Math.max(inputTasks.length, progress.length);
@@ -195,7 +196,7 @@ export function readDispatchMembers(call: ToolCallContent, result: ToolResultMes
 
 /** 성공한 `routing_verdict` 결과의 판정 레코드. details에 없으면 결과 본문 JSON(`ok: true`)에서 읽는다. */
 function readVerdictShape(result: ToolResultMessage): VerdictRecordShape | null {
-  if (result.isError) return null;
+  if (toolNonSuccess(result)) return null;
   let record = (result.details as { record?: VerdictRecordShape } | undefined)?.record;
   if (typeof record !== "object" || record === null) {
     try {
@@ -275,8 +276,8 @@ export function reduceDispatchRecord(message: AgentMessage): AgentMessage | null
     case "toolResult": {
       const base = { role: "toolResult" as const, toolCallId: message.toolCallId, toolName: message.toolName, content: [], timestamp: message.timestamp };
       if (message.toolName === "task") {
-        // 거절된 발주는 오류 결과 그대로 남아 띄운 Maker가 없다는 사실을 지킨다.
         if (message.isError) return { ...base, isError: true };
+        if (toolNonSuccess(message)) return { ...base, details: message.details };
         const progress = objectEntries<TaskEntryShape>((message.details as { progress?: unknown } | undefined)?.progress)
           .map((entry) => ({ index: entry.index, id: entry.id, agent: entry.agent, task: titleLine(entry.task) }));
         return { ...base, details: { progress } };

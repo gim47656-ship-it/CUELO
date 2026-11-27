@@ -1,13 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative } from "node:path";
-import { spawnExec } from "../lib/cross-review";
 import { extractVisible, type Extracted } from "./extract";
 
 /**
  * git이 추적하는 파일은 HEAD 대비 추가·바뀐 글만 모델에 보낸다(긴 CHANGELOG의 옛 항목이 매 릴리스를 막지 않게).
- * 통과 기록은 그대로 현재 파일 전체의 sha256에 묶는다. 추적하지 않는 파일·HEAD에 없는 파일·git을 읽지 못하는 경우·
- * 저장소 밖 산출물은 전체를 본다(판정하지 못하면 줄이지 않는다). office·pdf는 추출한 글끼리 비교한다.
+ * 통과 기록은 그대로 현재 파일 전체의 sha256에 묶는다. HEAD에 파일이 없거나 저장소 밖 산출물이면 전체를 본다.
+ * Git 조회·추출 실패 시에는 심사를 중단한다. office·pdf는 추출한 글끼리 비교한다.
  */
 
 const CONTEXT_LINES = 3;
@@ -61,23 +60,41 @@ export function deltaOf(current: Extracted, head: Extracted): Delta {
   return out;
 }
 
-/** 이 파일의 HEAD 버전을 같은 확장자의 임시 파일로 꺼내 추출한다. 추적하지 않거나 읽지 못하면 undefined(전체 심사). */
+/** 이 파일의 HEAD 버전을 같은 확장자의 임시 파일로 꺼내 추출한다. */
 export async function headExtracted(abs: string, extract: (path: string) => Promise<Extracted> = extractVisible): Promise<Extracted | undefined> {
-  const exec = spawnExec();
-  const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dirname(abs) });
-  if (top.code !== 0) return undefined;
-  const root = top.stdout.trim();
+  const git = async (cwd: string, args: string[]) => {
+    const child = Bun.spawn(["git", ...args], { cwd, env: { ...process.env, LC_ALL: "C" }, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const [bytes, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
+    return { bytes, stderr: stderr.trim(), code };
+  };
+  const failed = (command: string, result: { stderr: string; code: number }) =>
+    new Error(`git ${command} failed: ${result.stderr || `exit ${result.code}`}`);
+  const top = await git(dirname(abs), ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) {
+    if (/^fatal: not a git repository \(or (?:any of the parent directories\)|any parent up to mount point )/.test(top.stderr)) return undefined;
+    throw failed("rev-parse --show-toplevel", top);
+  }
+  const root = new TextDecoder().decode(top.bytes).trim();
   const rel = relative(root, abs).split("\\").join("/");
-  if (!rel || rel.startsWith("..")) return undefined;
-  const tracked = await exec("git", ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", rel], { cwd: root });
-  if (tracked.code !== 0) return undefined;
+  if (!rel || rel === ".." || rel.startsWith("../")) return undefined;
+  const tracked = await git(root, ["--literal-pathspecs", "ls-files", "-z", "--", rel]);
+  if (tracked.code !== 0) throw failed("ls-files", tracked);
+  if (!new TextDecoder().decode(tracked.bytes).split("\0").includes(rel)) return undefined;
+  const head = await git(root, ["rev-parse", "-q", "--verify", "HEAD"]);
+  if (head.code === 1 && !head.stderr) return undefined;
+  if (head.code !== 0) throw failed("rev-parse --verify HEAD", head);
+  const tree = await git(root, ["--literal-pathspecs", "ls-tree", "-z", new TextDecoder().decode(head.bytes).trim(), "--", rel]);
+  if (tree.code !== 0) throw failed("ls-tree", tree);
+  if (!tree.bytes.byteLength) return undefined;
+  const blob = /^[0-7]+ blob ([a-f0-9]+)\t/.exec(new TextDecoder().decode(tree.bytes))?.[1];
+  // HEAD can have a directory or submodule where the worktree now has a file.
+  if (!blob) return undefined;
+  const shown = await git(root, ["cat-file", "blob", blob]);
+  if (shown.code !== 0) throw failed("cat-file blob", shown);
   const dir = mkdtempSync(join(tmpdir(), "slop-head-"));
   try {
-    const shown = Bun.spawn(["git", "--literal-pathspecs", "show", `HEAD:${rel}`], { cwd: root, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-    const [bytes, code] = await Promise.all([new Response(shown.stdout).arrayBuffer(), shown.exited]);
-    if (code !== 0) return undefined;
     const copy = join(dir, `head${extname(abs)}`);
-    writeFileSync(copy, new Uint8Array(bytes));
+    writeFileSync(copy, new Uint8Array(shown.bytes));
     return await extract(copy);
-  } catch { return undefined; } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 }

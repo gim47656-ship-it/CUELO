@@ -22,11 +22,20 @@ $createdCommit = $null
 $repoRoot = $null
 $repoPaths = @()
 $stagedByFinalizer = $false
+$intentToAdd = @()
+$initialIndexEntries = $null
+$visibleIndexDiff = $null
 $mutex = $null
 $ownsMutex = $false
 $messageFile = $null
 $result = $null
 $exitCode = 0
+
+function Stop-Finalizer([string]$By, [string]$Message) {
+    $failure = [InvalidOperationException]::new($Message)
+    $failure.Data['FinalizerRefusal'] = $By
+    throw $failure
+}
 
 function Invoke-Git {
     param(
@@ -85,7 +94,7 @@ function Get-NearestExistingDirectory([string]$Path) {
     while ($candidate -and -not (Test-Path -LiteralPath $candidate -PathType Container)) {
         $candidate = [IO.Path]::GetDirectoryName($candidate)
     }
-    if (-not $candidate) { throw "No existing parent directory found for file path: $Path" }
+    if (-not $candidate) { Stop-Finalizer 'repository' "No existing parent directory found for file path: $Path" }
     return Normalize-FullPath $candidate
 }
 
@@ -137,11 +146,11 @@ try {
     $resolvedFiles = @()
     $seenFullPaths = [Collections.Generic.HashSet[string]]::new($pathComparer)
     foreach ($inputFile in $inputFiles) {
-        if ($inputFile.IndexOfAny(@([char]0, [char]10, [char]13)) -ge 0) { throw 'File paths cannot contain NUL or newlines.' }
-        if ([IO.Path]::IsPathRooted($inputFile)) { throw "Absolute file path is not allowed: $inputFile" }
+        if ($inputFile.IndexOfAny(@([char]0, [char]10, [char]13)) -ge 0) { Stop-Finalizer 'repository' 'File paths cannot contain NUL or newlines.' }
+        if ([IO.Path]::IsPathRooted($inputFile)) { Stop-Finalizer 'repository' "Absolute file path is not allowed: $inputFile" }
         $fullPath = Normalize-FullPath (Join-Path $cwd $inputFile)
-        if (Test-Path -LiteralPath $fullPath -PathType Container) { throw "Directories are not allowed; list exact files: $inputFile" }
-        if (-not $seenFullPaths.Add($fullPath)) { throw "Duplicate file path: $inputFile" }
+        if (Test-Path -LiteralPath $fullPath -PathType Container) { Stop-Finalizer 'repository' "Directories are not allowed; list exact files: $inputFile" }
+        if (-not $seenFullPaths.Add($fullPath)) { Stop-Finalizer 'repository' "Duplicate file path: $inputFile" }
         $resolvedFiles += [pscustomobject]@{ Input = $inputFile; FullPath = $fullPath }
     }
 
@@ -167,7 +176,7 @@ try {
         $targetRepoRoot = Get-RepositoryRootInPathNamespace $probeDirectory
         $targetCommonDir = Normalize-FullPath (Invoke-Git -WorkingDirectory $targetRepoRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir')).Output
         if (-not (Test-PathWithin -Path $file.FullPath -Root $targetRepoRoot)) {
-            throw "File path escapes the repository: $($file.Input)"
+            Stop-Finalizer 'repository' "File path escapes the repository: $($file.Input)"
         }
 
         if (-not $selectedRepoRoot) {
@@ -177,7 +186,7 @@ try {
             -not $selectedRepoRoot.Equals($targetRepoRoot, $pathComparison) -or
             -not $selectedCommonDir.Equals($targetCommonDir, $pathComparison)
         ) {
-            throw "Files belong to different repositories: $($file.Input)"
+            Stop-Finalizer 'repository' "Files belong to different repositories: $($file.Input)"
         }
     }
 
@@ -222,7 +231,7 @@ try {
     $outsideCwdUsed = $null
     if ($outsideCwdMessage) {
         if (-not $outsideCwdReason) {
-            throw "$outsideCwdMessage. Committing outside the session cwd requires the user's explicit instruction: pass it as outsideCwdReason."
+            Stop-Finalizer 'repository' "$outsideCwdMessage. Committing outside the session cwd requires the user's explicit instruction: pass it as outsideCwdReason."
         }
         $outsideCwdUsed = $outsideCwdReason
     }
@@ -231,9 +240,9 @@ try {
     foreach ($file in $resolvedFiles) {
         $repoPath = Convert-ToRepoPath -FullPath $file.FullPath -Root $repoRoot
         if (-not $repoPath -or $repoPath -eq '.git' -or $repoPath.StartsWith('.git/', $pathComparison)) {
-            throw "Repository metadata or broad paths are not allowed: $($file.Input)"
+            Stop-Finalizer 'repository' "Repository metadata or broad paths are not allowed: $($file.Input)"
         }
-        if (-not $seen.Add($repoPath)) { throw "Duplicate file path: $($file.Input)" }
+        if (-not $seen.Add($repoPath)) { Stop-Finalizer 'repository' "Duplicate file path: $($file.Input)" }
         $repoPaths += $repoPath
     }
 
@@ -244,27 +253,27 @@ try {
 
     $stage = 'remote'
     $branch = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')).Output
-    if (-not $branch -or $branch -eq 'HEAD') { throw 'Detached HEAD is not supported.' }
+    if (-not $branch -or $branch -eq 'HEAD') { Stop-Finalizer 'repository' 'Detached HEAD is not supported.' }
     $configuredRemote = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.remote") -AllowedExitCodes @(0, 1)).Output
     $configuredUpstreamRef = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.merge") -AllowedExitCodes @(0, 1)).Output
     $configuredRemotes = @((Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('remote')).Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ($configuredRemote) {
-        if ($configuredRemote -eq '.') { throw "Branch '$branch' tracks the local repository and has no pushable remote." }
+        if ($configuredRemote -eq '.') { Stop-Finalizer 'repository' "Branch '$branch' tracks the local repository and has no pushable remote." }
         if ($configuredRemotes -cnotcontains $configuredRemote) {
-            throw "Branch '$branch' is configured to push to '$configuredRemote', which is not a configured remote."
+            Stop-Finalizer 'repository' "Branch '$branch' is configured to push to '$configuredRemote', which is not a configured remote."
         }
         $remote = $configuredRemote
     } elseif ($configuredRemotes.Count -eq 0) {
-        throw "Branch '$branch' has no configured remote to push to."
+        Stop-Finalizer 'repository' "Branch '$branch' has no configured remote to push to."
     } elseif ($configuredRemotes -ccontains 'origin') {
         $remote = 'origin'
     } elseif ($configuredRemotes.Count -eq 1) {
         $remote = $configuredRemotes[0]
     } else {
-        throw "Branch '$branch' has no tracked remote and the repository has multiple remotes: $($configuredRemotes -join ', ')"
+        Stop-Finalizer 'repository' "Branch '$branch' has no tracked remote and the repository has multiple remotes: $($configuredRemotes -join ', ')"
     }
     if ($configuredUpstreamRef) {
-        if ($configuredUpstreamRef -notmatch '^refs/heads/.+') { throw "Unsupported upstream ref: $configuredUpstreamRef" }
+        if ($configuredUpstreamRef -notmatch '^refs/heads/.+') { Stop-Finalizer 'repository' "Unsupported upstream ref: $configuredUpstreamRef" }
         $upstreamRef = $configuredUpstreamRef
     } else {
         $upstreamRef = "refs/heads/$branch"
@@ -292,7 +301,7 @@ try {
     $lockedCommonDir = Normalize-FullPath (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--path-format=absolute', '--git-common-dir')).Output
     $lockedBranch = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')).Output
     if (-not $lockedCommonDir.Equals($commonDir, $pathComparison) -or $lockedBranch -cne $branch) {
-        throw 'Repository or branch changed while acquiring the finalizer lock.'
+        Stop-Finalizer 'repository' 'Repository or branch changed while acquiring the finalizer lock.'
     }
     if ($payload.target) {
         $target = $payload.target
@@ -300,7 +309,7 @@ try {
             -not $lockedCommonDir.Equals([string]$target.commonDir, $pathComparison) -or
             (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.remote") -AllowedExitCodes @(0, 1)).Output -cne $configuredRemote -or
             (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.merge") -AllowedExitCodes @(0, 1)).Output -cne $configuredUpstreamRef) {
-            throw 'Publication target changed after git_finalize preflight. No commit or push was made.'
+            Stop-Finalizer 'repository' 'Publication target changed after git_finalize preflight. No commit or push was made.'
         }
     }
 
@@ -312,7 +321,7 @@ try {
     $headSha = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', 'HEAD')).Output
     if ($payload.finalizeChecksHead -and $payload.finalizeChecksHead -cne $headSha) {
         $stage = 'finalize-checks'
-        throw 'HEAD changed after running the repository checks. Call git_finalize again.'
+        Stop-Finalizer 'finalize-checks' 'HEAD changed after running the repository checks. Call git_finalize again.'
     }
     $upstreamSha = $null
     if ($upstreamExists) {
@@ -320,13 +329,23 @@ try {
         $upstreamSha = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', 'FETCH_HEAD')).Output
         $ancestry = Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('merge-base', '--is-ancestor', $upstreamSha, $headSha) -AllowedExitCodes @(0, 1)
         if ($ancestry.Code -ne 0) {
-            throw "HEAD is behind or diverged from the fetched upstream. HEAD=$headSha upstream=$upstreamSha"
+            Stop-Finalizer 'fetch' "HEAD is behind or diverged from the fetched upstream. HEAD=$headSha upstream=$upstreamSha"
         }
     }
 
     $stage = 'index-preflight'
     $indexState = Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('diff', '--cached', '--quiet', '--exit-code') -AllowedExitCodes @(0, 1)
-    if ($indexState.Code -ne 0) { throw 'The shared Git index already contains staged changes.' }
+    if ($indexState.Code -ne 0) { Stop-Finalizer 'index-preflight' 'The shared Git index already contains staged changes.' }
+    $initialIndexEntries = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'ls-files', '-v', '--stage', '--') + $repoPaths)).Output
+    $visibleIndexArgs = @('diff', '--cached', '--ita-visible-in-index', '--name-only')
+    $visibleIndexDiff = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs $visibleIndexArgs).Output
+    # The normal cached diff excludes intent-to-add. Preserve marks from selected paths on rollback.
+    if ($visibleIndexDiff) {
+        foreach ($path in $repoPaths) {
+            $visible = Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('--literal-pathspecs', 'diff', '--cached', '--ita-visible-in-index', '--quiet', '--exit-code', '--', $path) -AllowedExitCodes @(0, 1)
+            if ($visible.Code -eq 1) { $intentToAdd += $path }
+        }
+    }
 
     $stage = 'stage'
     $stagedByFinalizer = $true
@@ -336,7 +355,7 @@ try {
         $stage = 'finalize-checks'
         $stagedTree = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('write-tree')).Output
         if ($stagedTree -cne $payload.finalizeChecksTree) {
-            throw 'The staged tree does not match the checked publication candidate. Call git_finalize again.'
+            Stop-Finalizer 'finalize-checks' 'The staged tree does not match the checked publication candidate. Call git_finalize again.'
         }
         $stage = 'stage'
     }
@@ -350,12 +369,12 @@ try {
         $stage = 'cross-review-verify'
         foreach ($gatePath in $repoPaths) {
             if (-not $gateMap.ContainsKey($gatePath)) {
-                throw "Cross-review gate: $gatePath was not part of the change set the gate checked. Run git_finalize again so the gate sees it."
+                Stop-Finalizer 'cross-review' "Cross-review gate: $gatePath was not part of the change set the gate checked. Run git_finalize again so the gate sees it."
             }
             $indexEntry = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('--literal-pathspecs', 'ls-files', '--stage', '--', $gatePath)).Output
             $stagedBlob = if ($indexEntry) { (($indexEntry -split '\s+')[1]) } else { 'deleted' }
             if ($stagedBlob -cne $gateMap[$gatePath]) {
-                throw "Cross-review gate: $gatePath changed after the review check (checked blob $($gateMap[$gatePath]), staged blob $stagedBlob). Run git_finalize again so the gate sees the current content."
+                Stop-Finalizer 'cross-review' "Cross-review gate: $gatePath changed after the review check (checked blob $($gateMap[$gatePath]), staged blob $stagedBlob). Run git_finalize again so the gate sees the current content."
             }
         }
         $stage = 'stage'
@@ -517,9 +536,28 @@ try {
         error = $_.Exception.Message
         commitSha = $createdCommit
     }
+    if ($_.Exception.Data['FinalizerRefusal']) {
+        $result['refusedBy'] = $_.Exception.Data['FinalizerRefusal']
+    }
 } finally {
     if ($stagedByFinalizer -and $repoRoot -and $repoPaths.Count -gt 0) {
-        try { [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'restore', '--staged', '--') + $repoPaths)) } catch {}
+        try {
+            [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'restore', '--staged', '--') + $repoPaths))
+            if ($intentToAdd.Count -gt 0) {
+                [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'add', '-N', '--') + $intentToAdd))
+            }
+            if ($result['refusedBy']) {
+                [void](Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('diff', '--cached', '--quiet', '--exit-code'))
+                $restoredEntries = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs (@('--literal-pathspecs', 'ls-files', '-v', '--stage', '--') + $repoPaths)).Output
+                $restoredDiff = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs $visibleIndexArgs).Output
+                if ($restoredEntries -cne $initialIndexEntries -or $restoredDiff -cne $visibleIndexDiff) {
+                    throw 'The restored index does not match its preflight state.'
+                }
+            }
+        } catch {
+            $result['error'] += "`nCould not verify index rollback; inspect the staged changes before retrying: $($_.Exception.Message)"
+            [void]$result.Remove('refusedBy')
+        }
     }
     if ($messageFile) { Remove-Item -LiteralPath $messageFile -Force -ErrorAction SilentlyContinue }
     if ($ownsMutex -and $mutex) {

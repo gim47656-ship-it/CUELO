@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ExtensionContext, SessionManager } from "@oh-my-pi/pi-coding-agent";
@@ -20,6 +20,24 @@ const reply = (text: string, model: string = TEST_MODEL): HelperAnswer => ({ tex
 async function skimText(...args: Parameters<typeof skimQuestion>): Promise<string> { return (await skimQuestion(...args)).text; }
 
 describe("skim", () => {
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("no readable inputs reports I/O failure but not a policy exclusion", async () => {
+    const cwd = fixture(), input = join(cwd, "unreadable.txt");
+    writeFileSync(input, "fixture");
+    writeFileSync(join(cwd, "api-key.md"), "excluded fixture");
+    let calls = 0;
+    const complete = async () => { calls++; return reply("unexpected"); };
+    const run = (path: string) => skimQuestion({ paths: [path], question: "?" }, context(cwd), signal, complete);
+    const excluded = await run("api-key.md");
+    expect(excluded).toMatchObject({ isError: false, text: expect.stringContaining("비밀 경로 제외") });
+    chmodSync(input, 0);
+    try {
+      const failed = await run("unreadable.txt");
+      expect(failed.text).toContain("읽기 실패");
+      expect(failed.isError).toBe(true);
+      expect(calls).toBe(0);
+    } finally { chmodSync(input, 0o600); }
+  });
+
   test("주 모델에 허용 파일만 보내고 secret·gitignore 대상은 명시해도 제외한다", async () => {
     const cwd = fixture();
     mkdirSync(join(cwd, "docs"));

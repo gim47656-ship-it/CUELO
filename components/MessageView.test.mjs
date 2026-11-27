@@ -76,6 +76,20 @@ function renderTool(toolName, input, result, message = {}) {
   );
 }
 
+test("tool refusals and script exceptions are visibly distinct from successful and failed calls", () => {
+  for (const [tool, state, details, label] of [
+    ["write", "refused", { refused: { by: "draft-coverage" } }, "Refused"],
+    ["eval", "scriptError", { scriptError: true }, "Script error"],
+  ]) {
+    const text = state === "scriptError" ? "ValueError\n\nCommand exited with code 1" : "guard reason";
+    const html = renderTool(tool, {}, { isError: false, details, content: [{ type: "text", text }] });
+    assert.match(html, new RegExp(`data-tool-state="${state}"`));
+    assert.match(html, new RegExp(`>${label}<`));
+    assert.doesNotMatch(html, /tool-call-card is-(?:done|error)/);
+    assert.match(html, /aria-expanded="true"/);
+  }
+});
+
 test("a call still waiting for its result is shown as running, never as a success", () => {
   // 생성이 끝난 지 몇 초 지난 호출: 지연이 지났으므로 상태 단어가 보인다.
   const html = renderTool("read", { path: "lib/main.ts" }, undefined, { completedAt: Date.now() - 3_000 });

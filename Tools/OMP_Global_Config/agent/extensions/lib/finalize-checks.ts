@@ -11,6 +11,7 @@ import { spawnExec, type Exec } from "./cross-review";
 import { windowsPathToPosix } from "../../tools/git-finalizer/wsl-git";
 
 export const FINALIZE_CHECKS_CONFIG = ".finalize-checks.json";
+export class FinalizeChecksRefusal extends Error {}
 const DEFAULT_TIMEOUT_SECONDS = 1_200;
 const MAX_TIMER_MS = 2_147_483_647;
 const TERMINATION_GRACE_MS = 10_000;
@@ -240,7 +241,7 @@ async function installedDependencies(root: string, inputs: Iterable<string>, sig
 }
 
 type ReadGit = (args: string[]) => ReturnType<Exec>;
-type Snapshot = { hash: string; sourceHash: string; receiptHash?: string };
+type Snapshot = { hash: string; sourceHash: string; sourceComplete: boolean; receiptHash?: string };
 
 /** Hash raw working bytes rather than `git diff`, which can hide changes behind clean filters and index flags. */
 async function fingerprint(
@@ -248,22 +249,29 @@ async function fingerprint(
   signal?: AbortSignal, publication = false, collectReceipt = false,
 ): Promise<Snapshot | undefined> {
   try {
-    const [head, tracked, committed, untracked] = await Promise.all([
+    const [head, branch, tracked, committed, untracked] = await Promise.all([
       git(["rev-parse", "--verify", "HEAD"]),
-      git(["ls-files", "--stage", "-z"]),
+      git(["symbolic-ref", "-q", "HEAD"]),
+      git(["ls-files", "-v", "--stage", "-z"]),
       git(["ls-tree", "--full-tree", "--name-only", "-r", "-z", "HEAD"]),
       git(["-c", "core.untrackedCache=false", "ls-files", "--others", "--exclude-standard", "-z"]),
     ]);
-    if ([head, tracked, committed, untracked].some((result) => result.code !== 0)) return undefined;
+    for (const [index, result] of [head, branch, tracked, committed, untracked].entries()) {
+      if (result.code === 0 || (index === 1 && result.code === 1 && !result.stderr?.trim())) continue;
+      if (!publication) return undefined;
+      const command = ["rev-parse HEAD", "symbolic-ref HEAD", "ls-files --stage", "ls-tree HEAD", "ls-files --others"][index];
+      throw new Error(`Could not verify publication candidate: git ${command}: ${(result.stderr || result.stdout).trim() || `exit ${result.code}`}`);
+    }
     // Include HEAD paths even when a deletion is already staged and the path is absent from the index.
     const inputs = new Set([FINALIZE_CHECKS_CONFIG, ...files]);
     let complete = true;
+    let sourceComplete = true;
     for (const path of committed.stdout.split("\0")) if (path) inputs.add(path);
     for (const entry of tracked.stdout.split("\0")) {
       if (!entry) continue;
       const tab = entry.indexOf("\t");
-      if (tab < 0) return undefined;
-      if (!entry.slice(0, tab).endsWith(" 0") || entry.startsWith("160000 ")) complete = false;
+      if (tab < 2) return undefined;
+      if (!entry.slice(0, tab).endsWith(" 0") || entry.startsWith("160000 ", 2)) complete = sourceComplete = false;
       inputs.add(entry.slice(tab + 1));
     }
     const outputs = new Set<string>();
@@ -277,7 +285,7 @@ async function fingerprint(
     }
     const dependencyState = collectReceipt ? installedDependencies(root, [...inputs, ...extraInputs], signal) : undefined;
     const extraHash = collectReceipt ? createHash("sha256") : undefined;
-    const hash = createHash("sha256").update(JSON.stringify([head.stdout.trim(), tracked.stdout, files]));
+    const hash = createHash("sha256").update(JSON.stringify([head.stdout.trim(), branch.stdout.trim(), tracked.stdout, files]));
     const sourceHash = outputs.size ? hash.copy() : undefined;
     const update = (path: string, value: string | null) => {
       const data = JSON.stringify([path, value]);
@@ -295,6 +303,7 @@ async function fingerprint(
       // that part opaque instead of dropping the evidence from all other paths.
       if (path.includes("\uFFFD")) {
         complete = false;
+        if (!extraInputs.has(path) && !outputs.has(path)) sourceComplete = false;
         update(path, null);
       } else ordered.push(path);
     }
@@ -304,27 +313,32 @@ async function fingerprint(
       const entries = await Promise.allSettled(batch.map((path) => fileFingerprint(root, path, paths, extraInputs.has(path))));
       for (let offset = 0; offset < batch.length; offset++) {
         const entry = entries[offset];
-        if (entry.status === "rejected") {
+        const path = batch[offset];
+        if (entry.status === "rejected" || entry.value.opaque) {
           complete = false;
-          update(batch[offset], null);
-        } else {
-          if (entry.value.opaque) complete = false;
-          update(batch[offset], entry.value.value);
+          if (publication && entry.status === "rejected" && !extraInputs.has(path) && !outputs.has(path)) {
+            throw new Error(`Could not verify publication candidate input ${path}: ${String(entry.reason)}`, { cause: entry.reason });
+          }
+          if (!extraInputs.has(path) && !outputs.has(path)) sourceComplete = false;
         }
+        update(path, entry.status === "rejected" ? null : entry.value.value);
       }
     }
     const digest = hash.digest("hex");
     const dependencies = await dependencyState;
     const receiptHash = complete && dependencies !== undefined ? extraHash?.update(digest).update(dependencies).digest("hex") : undefined;
-    return { hash: digest, sourceHash: sourceHash?.digest("hex") ?? digest, receiptHash };
-  } catch {
-    // Cache evidence is optional. Unknown, inaccessible or unsupported inputs require a fresh run.
+    return { hash: digest, sourceHash: sourceHash?.digest("hex") ?? digest, sourceComplete, receiptHash };
+  } catch (error) {
+    if (publication || signal?.aborted) throw error;
+    // Missing optional cache evidence prevents reuse.
     return undefined;
   }
 }
 
-async function runCommand(check: Check, cwd: string, env: NodeJS.ProcessEnv, fd: number, signal?: AbortSignal): Promise<string | undefined> {
-  if (signal?.aborted) return "was cancelled";
+type CommandFailure = { reason: string; refused: boolean };
+
+async function runCommand(check: Check, cwd: string, env: NodeJS.ProcessEnv, fd: number, signal?: AbortSignal): Promise<CommandFailure | undefined> {
+  if (signal?.aborted) return { reason: "was cancelled", refused: false };
   const win = process.platform === "win32";
   const child = spawn(check.command[0], check.command.slice(1), { cwd, env, stdio: ["ignore", fd, fd], detached: !win, windowsHide: true });
   const pid = child.pid;
@@ -332,15 +346,17 @@ async function runCommand(check: Check, cwd: string, env: NodeJS.ProcessEnv, fd:
   if (!win && pid) {
     try { native = Process.fromPid(pid); } catch { /* The live child/group remains available for direct signalling. */ }
   }
-  const { promise: closed, resolve: done } = Promise.withResolvers<string | undefined>();
-  child.once("error", (error) => done(`could not start: ${error.message}`));
-  child.once("close", (code, by) => done(code === 0 ? undefined : code === null ? `was terminated by ${by ?? "an unknown signal"}` : `exited ${code}`));
-  let stopped: string | undefined;
+  const { promise: closed, resolve: done } = Promise.withResolvers<CommandFailure | undefined>();
+  child.once("error", (error) => done({ reason: `could not start: ${error.message}`, refused: false }));
+  child.once("close", (code, by) => done(code === 0 ? undefined : code === null
+    ? { reason: `was terminated by ${by ?? "an unknown signal"}`, refused: false }
+    : { reason: `exited ${code}`, refused: true }));
+  let stopped: CommandFailure | undefined;
   let terminating: Promise<unknown> | undefined;
   let hardKill: ReturnType<typeof setTimeout> | undefined;
   const stop = (reason: string) => {
     if (stopped) return;
-    stopped = reason;
+    stopped = { reason, refused: false };
     if (!pid || child.exitCode !== null || child.signalCode !== null) return;
     if (win) {
       const { promise, resolve: killed } = Promise.withResolvers<void>();
@@ -495,6 +511,7 @@ async function withCandidate<T>(
 }
 
 export async function runFinalizeChecks(options: Options): Promise<FinalizeChecksResult | undefined> {
+  options.signal?.throwIfAborted();
   const configPath = join(options.root, FINALIZE_CHECKS_CONFIG);
   const exec = options.exec ?? spawnExec(options.signal);
   const git: ReadGit = (args) => exec(options.git ?? "git", args, { cwd: options.root });
@@ -517,7 +534,7 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
   const trust = options.sessionManager && Reflect.get(options.sessionManager, Symbol.for("cuelo.finalizeChecksProjectTrust"));
   const inCuelo = Reflect.get(globalThis, Symbol.for("cuelo.finalizeChecksBrowser")) === true;
   if ((inCuelo || trust !== undefined) && (typeof trust !== "function" || trust(options.root) !== true)) {
-    throw new Error(`The project is untrusted, so ${configPath} was not executed. Trust the project in CUELO, or use finalizeChecksWaiver only if the user explicitly requests a waiver.`);
+    throw new FinalizeChecksRefusal(`The project is untrusted, so ${configPath} was not executed. Trust the project in CUELO, or use finalizeChecksWaiver only if the user explicitly requests a waiver.`);
   }
   await options.authorize?.();
 
@@ -533,12 +550,25 @@ export async function runFinalizeChecks(options: Options): Promise<FinalizeCheck
     if ((await excludedPaths(git, paths)).length) throw new Error("Paths outside the publication changed during the checks; call the publication tool again.");
     return { ...result, publicationHead };
   }
+  // A disposable worktree is not a sandbox. Confirm checks left the real checkout unchanged before returning a refusal.
+  const original = await fingerprint(root, paths, [], git, options.signal);
   return withCandidate(options, root, publicationHead, paths, git, async (cwd, candidateGit, candidateTree, bunCache) => {
     const candidateSource = await readConfigSource(join(cwd, FINALIZE_CHECKS_CONFIG));
     if (candidateSource === undefined || candidateSource.replaceAll("\r\n", "\n") !== source.replaceAll("\r\n", "\n")) {
       throw new Error(`${configPath} differs from the materialized publication candidate. Include it in the publication or restore its committed version.`);
     }
-    const result = await runSelectedChecks(options, root, paths, candidateSource, selected, cwd, candidateGit, context, candidateTree, bunCache);
+    let result: FinalizeChecksResult;
+    try {
+      result = await runSelectedChecks(options, root, paths, candidateSource, selected, cwd, candidateGit, context, candidateTree, bunCache);
+    } catch (error) {
+      if (!(error instanceof FinalizeChecksRefusal)) throw error;
+      const after = await fingerprint(root, paths, [], git, options.signal);
+      options.signal?.throwIfAborted();
+      if (!original?.sourceComplete || !after?.sourceComplete || original.sourceHash !== after.sourceHash) {
+        throw new Error(`${error.message}\nThe source checkout changed during the checks or its original state could not be verified.`, { cause: error });
+      }
+      throw error;
+    }
     if (await readFile(configPath, "utf8").catch(() => undefined) !== source) {
       throw new Error(`${configPath} changed during the checks; call the publication tool again.`);
     }
@@ -594,10 +624,11 @@ async function runSelectedChecks(
     const log = join(logDir, `${results.length + 1}.log`);
     const handle = await open(log, "wx+", 0o600);
     const started = performance.now();
-    let failure: string | undefined;
+    let failure: CommandFailure | undefined;
     let tail = "";
     try {
-      failure = await runCommand(check, cwd, env, handle.fd, options.signal).catch((error: Error) => `could not start: ${error.message}`);
+      failure = await runCommand(check, cwd, env, handle.fd, options.signal)
+        .catch((error: Error) => ({ reason: `could not start: ${error.message}`, refused: false }));
       if (failure) {
         const size = (await handle.stat()).size;
         const buf = Buffer.allocUnsafe(Math.min(size, TAIL_BYTES));
@@ -608,14 +639,28 @@ async function runSelectedChecks(
       await handle.close();
     }
     const seconds = Math.round(performance.now() - started) / 1_000;
+    if (!failure || failure.refused) options.signal?.throwIfAborted();
+    const after = !failure || (failure.refused && !candidateTree)
+      ? await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate, !failure && Boolean(key))
+      : undefined;
+    if (!failure || failure.refused) options.signal?.throwIfAborted();
+    const changed = prior?.sourceHash !== after?.sourceHash;
+    const stable = prior?.sourceComplete && after?.sourceComplete && !changed;
+    const changedDetail = `${check.name}'s publication candidate inputs changed during the check. Call the publication tool again when the inputs are stable.`;
     if (failure) {
-      throw new Error([`${check.name} ${failure} (${seconds}s).`, candidateContext, tail && `Last output:\n${tail}`, `Full log: ${log}`, "Fix the failing check, then call the publication tool again."].filter(Boolean).join("\n"));
+      const detail = [`${check.name} ${failure.reason} (${seconds}s).`, candidateContext, tail && `Last output:\n${tail}`, `Full log: ${log}`, "Fix the failing check, then call the publication tool again."].filter(Boolean).join("\n");
+      if (failure.refused) {
+        if (candidateTree || stable) throw new FinalizeChecksRefusal(detail);
+        throw new Error(`${detail}\n${changed ? changedDetail : "Could not verify that the publication candidate was unchanged."}`);
+      }
+      throw new Error(detail);
     }
     results.push({ name: check.name, seconds, reused: false });
     ranAfterVerification = verified.length > 0;
-    const after = await fingerprint(cwd, files, check.paths, git, options.signal, options.publicationCandidate, Boolean(key));
-    if (options.publicationCandidate && prior?.sourceHash !== after?.sourceHash) {
-      throw new Error(`${check.name}'s publication candidate inputs changed during the check. Call the publication tool again when the inputs are stable.`);
+    if (options.publicationCandidate && (!prior || !after)) throw new Error("Could not verify that the publication candidate was unchanged.");
+    if (options.publicationCandidate && changed) {
+      if (candidateTree && prior?.sourceComplete && after?.sourceComplete) throw new FinalizeChecksRefusal(changedDetail);
+      throw new Error(changedDetail);
     }
     if (after) verified.push({ check, fingerprint: after.hash });
     if (key && after?.receiptHash === prior?.receiptHash) {

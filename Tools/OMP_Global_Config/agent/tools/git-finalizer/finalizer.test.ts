@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { watch } from "node:fs";
 import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +35,7 @@ interface FinalizerOutput {
   leftoverScope?: string;
   leftoverTotal?: number;
   leftoverFiles?: string[];
+  refusedBy?: string;
 }
 
 function run(command: string, args: string[], cwd?: string): CommandResult {
@@ -123,13 +125,15 @@ async function createManifestRepository() {
 
 // 도구 스키마 선언이 체인(`.optional()`)을 쓰므로 어느 호출이든 자기 자신을 돌려주는 값으로 받는다.
 const schemaNode: object = new Proxy(function node() {}, { get: () => schemaNode, apply: () => schemaNode });
+type ToolOutcome = { error?: Error; output?: { content: { text: string }[]; details: unknown; isError?: boolean } };
 
 async function startTool(
   work: string,
   files: string[],
   extra: Record<string, unknown> = {},
   artifactsDir?: string,
-): Promise<{ error?: Error; output?: unknown }> {
+  signal?: AbortSignal,
+): Promise<ToolOutcome> {
   const pi = {
     cwd: work,
     zod: { object: () => ({}), array: () => schemaNode, string: () => schemaNode, boolean: () => schemaNode },
@@ -138,7 +142,7 @@ async function startTool(
   const tool = factory(pi as never);
   try {
     const ctx = artifactsDir ? { sessionManager: { getArtifactManager: () => ({ dir: artifactsDir }) } } : {};
-    return { output: await tool.execute("fixture", { files, message: "manifest case", ...extra }, undefined, ctx as never, new AbortController().signal) };
+    return { output: await tool.execute("fixture", { files, message: "manifest case", ...extra }, undefined, ctx as never, signal) };
   } catch (error) {
     return { error: error as Error };
   }
@@ -163,12 +167,14 @@ async function startFinalizer(
   files: string[],
   message: string,
   extra: Record<string, unknown> = {},
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ result: CommandResult; output: FinalizerOutput }> {
   const request = join(root, `${name}.json`);
   await writeFile(request, JSON.stringify({ cwd: work, files, message, ...extra }), "utf8");
   const process = Bun.spawn({
     cmd: [powerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-Request", request],
     cwd: work,
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -187,6 +193,108 @@ afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
+function refusalText(outcome: ToolOutcome, by: string): string {
+  expect(outcome.error).toBeUndefined();
+  expect(outcome.output).toMatchObject({ isError: false, details: { ok: false, refused: { by } } });
+  const text = outcome.output!.content[0]!.text;
+  expect(text.split("\n")[0]).toBe(`[refused by ${by}] Not executed.`);
+  return text;
+}
+
+const runnerScenarios = process.platform === "win32"
+  ? ["caller cancels running check", "runner cannot start"]
+  : ["caller cancels running check", "runner cannot start", "runner crashes"];
+
+test.each(runnerScenarios)("%s does not publish", async (scenario) => {
+  const { root, work, remote } = await createRepository();
+  const marker = join(root, "started");
+  const command = scenario === "caller cancels running check" ? [process.execPath, "-e",
+    "const fs = require('node:fs'); fs.writeFileSync(process.argv[1], 'started'); fs.watch('.');", marker]
+    : scenario === "runner crashes" ? [process.execPath, "-e", "process.kill(process.pid, 'SIGKILL')"]
+      : [join(root, "missing-check-runner")];
+  await writeFile(join(work, ".finalize-checks.json"), JSON.stringify({ version: 1, checks: [{ name: "fixture", paths: ["a.txt"], command }] }));
+  git(work, ["add", ".finalize-checks.json"]);
+  git(work, ["commit", "-m", "configure checks"]);
+  git(work, ["push"]);
+  const head = git(work, ["rev-parse", "HEAD"]);
+  const index = git(work, ["ls-files", "--stage"]);
+  await writeFile(join(work, "a.txt"), "requested\n");
+  const controller = new AbortController();
+  const watcher = watch(root, (_event, file) => { if (file === "started") controller.abort(); });
+  try {
+    const outcome = await startTool(work, ["a.txt"], {}, join(root, "artifacts"), controller.signal);
+    expect(outcome.output).toBeUndefined();
+    expect(outcome.error?.message).toMatch(scenario === "caller cancels running check"
+      ? /git_finalize failed at finalize-checks: fixture was cancelled/
+      : scenario === "runner crashes" ? /git_finalize failed at finalize-checks: fixture was terminated by SIGKILL/
+        : /git_finalize failed at finalize-checks: fixture could not start: .*ENOENT/);
+    expect(git(work, ["ls-files", "--stage"])).toBe(index);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+  } finally { watcher.close(); }
+}, TEST_TIMEOUT_MS);
+
+test.each([[0, false], [7, false], [0, true]] as const)("candidate check rewriting tracked bytes (exit %s, isolated %s)", async (exit, isolated) => {
+  const { root, work, remote } = await createRepository();
+  await writeFile(join(work, ".finalize-checks.json"), JSON.stringify({ version: 1, checks: [{
+    name: "rewrite", paths: ["a.txt"], command: [process.execPath, "-e",
+      `require('node:fs').writeFileSync('a.txt', 'rewritten');process.exit(${exit});`],
+  }] }));
+  git(work, ["add", ".finalize-checks.json"]);
+  git(work, ["commit", "-m", "configure mutating check"]);
+  git(work, ["push"]);
+  const head = git(work, ["rev-parse", "HEAD"]);
+  const index = git(work, ["ls-files", "--stage"]);
+  const worktrees = git(work, ["worktree", "list", "--porcelain"]);
+  if (isolated) await writeFile(join(work, "b.txt"), "unrelated work\n");
+  await writeFile(join(work, "a.txt"), "candidate");
+  const outcome = await startTool(work, ["a.txt"], {}, join(root, "artifacts"));
+  if (isolated) {
+    expect(refusalText(outcome, "finalize-checks")).toContain("publication candidate inputs changed during the check");
+    expect(await readFile(join(work, "b.txt"), "utf8")).toBe("unrelated work\n");
+  } else {
+    expect(outcome.output).toBeUndefined();
+    expect(outcome.error?.message).toContain("publication candidate inputs changed during the check");
+  }
+  expect(await readFile(join(work, "a.txt"), "utf8")).toBe(isolated ? "candidate" : "rewritten");
+  expect(git(work, ["worktree", "list", "--porcelain"])).toBe(worktrees);
+  expect(git(work, ["ls-files", "--stage"])).toBe(index);
+  expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+  expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+}, TEST_TIMEOUT_MS);
+
+test.skipIf(process.platform === "win32")("failed staging rollback cannot return a normal refusal", async () => {
+  const { root, work, remote } = await createRepository();
+  const head = git(work, ["rev-parse", "HEAD"]);
+  const blob = git(work, ["rev-parse", "HEAD:a.txt"]);
+  await writeFile(join(work, "a.txt"), "changed");
+  await writeFile(join(root, "git"), `#!/bin/sh\ncase " $* " in *" restore --staged "*) echo 'fixture: restore failed' >&2; exit 1;; esac\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
+  const { result, output } = await startFinalizer(root, work, "failed-restore", ["a.txt"], "must fail",
+    { gateBlobs: { "a.txt": blob } }, { ...process.env, PATH: `${root}:${process.env.PATH}` });
+  expect(result.code).toBe(1);
+  expect(output.refusedBy).toBeUndefined();
+  expect(output.error).toContain("a.txt changed after the review check");
+  expect(output.error).toContain("fixture: restore failed");
+  expect(git(work, ["diff", "--cached", "--name-only"])).toBe("a.txt");
+  expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+  expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+}, TEST_TIMEOUT_MS);
+
+test("refused staging preserves an existing intent-to-add entry", async () => {
+  const { root, work, remote } = await createRepository();
+  const head = git(work, ["rev-parse", "HEAD"]);
+  await writeFile(join(work, "new.txt"), "candidate\n");
+  git(work, ["add", "-N", "--", "new.txt"]);
+  const index = git(work, ["ls-files", "--stage"]);
+  const result = await startFinalizer(root, work, "intent-to-add", ["new.txt"], "must fail", { gateBlobs: { "new.txt": "wrong" } });
+  expect(result.output).toMatchObject({ ok: false, refusedBy: "cross-review" });
+  expect(git(work, ["ls-files", "--stage"])).toBe(index);
+  expect(git(work, ["diff", "--cached", "--ita-visible-in-index", "--name-only"])).toBe("new.txt");
+  expect(await readFile(join(work, "new.txt"), "utf8")).toBe("candidate\n");
+  expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+  expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+}, TEST_TIMEOUT_MS);
+
 describe("git finalizer", () => {
   test("rejects an unrequested dependency before commit and publishes its self-contained control", async () => {
     const { root, remote, work } = await createRepository(homedir());
@@ -204,8 +312,9 @@ describe("git finalizer", () => {
     await writeFile(join(work, "app.mjs"), 'import "./dep.mjs";\n');
     await writeFile(join(work, "dep.mjs"), "export {};\n");
     const refused = await startTool(work, ["app.mjs"], {}, artifacts);
-    expect(refused.error?.message).toMatch(/git_finalize failed at finalize-checks: candidate smoke exited 1/);
-    expect(refused.error?.message).toContain("dep.mjs");
+    const text = refusalText(refused, "finalize-checks");
+    expect(text).toMatch(/git_finalize failed at finalize-checks: candidate smoke exited 1/);
+    expect(text).toContain("dep.mjs");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
@@ -234,10 +343,11 @@ describe("git finalizer", () => {
     await writeFile(join(work, "a.txt"), "broken\n");
     await writeFile(join(work, "b.txt"), "other session WIP\n");
     const failed = await startTool(work, ["a.txt"], {}, artifactsDir);
-    expect(failed.error?.message).toContain("git_finalize failed at finalize-checks: fixture exited 1");
-    expect(failed.error?.message).toContain("b.txt");
-    expect(failed.error?.message).toContain("isolated publication candidate");
-    const log = failed.error?.message.match(/^Full log: (.+)$/m)?.[1];
+    const text = refusalText(failed, "finalize-checks");
+    expect(text).toContain("git_finalize failed at finalize-checks: fixture exited 1");
+    expect(text).toContain("b.txt");
+    expect(text).toContain("isolated publication candidate");
+    const log = text.match(/^Full log: (.+)$/m)?.[1];
     expect(log).toBeDefined();
     expect(await readFile(log!, "utf8")).toBe("");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
@@ -483,11 +593,11 @@ describe("git finalizer", () => {
     const before = git(work, ["rev-parse", "HEAD"]);
     await writeFile(join(work, "a.txt"), "changed-a\r\n");
 
-    const { error } = await startTool(work, ["a.txt"]);
-    expect(error?.message).toContain("source-integrity.json");
-    expect(error?.message).toContain("node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json");
-    expect(error?.message).toContain("node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json");
-    expect(error?.message).toContain("Tools/CUELO_Setup");
+    const text = refusalText(await startTool(work, ["a.txt"]), "manifest");
+    expect(text).toContain("source-integrity.json");
+    expect(text).toContain("node files/source-build-helper.js create-manifest ../.. files/runtime-integrity.json --output files/source-integrity.json");
+    expect(text).toContain("node files/source-build-helper.js verify-source ../.. files/source-integrity.json files/runtime-integrity.json");
+    expect(text).toContain("Tools/CUELO_Setup");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
@@ -539,7 +649,7 @@ describe("git finalizer", () => {
     const configHead = git(work, ["rev-parse", "HEAD"]);
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-broken\n");
     const refused = await startTool(join(work, "Tools", "runtime"), ["entry.js"], {}, join(root, "artifacts"));
-    expect(refused.error?.message).toContain("git_finalize failed at finalize-checks: regenerated manifest exited 7");
+    expect(refusalText(refused, "finalize-checks")).toContain("git_finalize failed at finalize-checks: regenerated manifest exited 7");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(configHead);
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(configHead);
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
@@ -549,6 +659,31 @@ describe("git finalizer", () => {
     const nestedSha = git(work, ["rev-parse", "HEAD"]);
     expect(git(work, ["diff-tree", "--no-commit-id", "--name-only", "-r", nestedSha]).split(/\r?\n/).sort()).toEqual([manifest, "Tools/runtime/entry.js"]);
     expect(root).toBeTruthy();
+  }, TEST_TIMEOUT_MS);
+
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("failed generated manifest rollback cannot return a normal refusal", async () => {
+    const { root, work, remote, manifestPath } = await createManifestRepository();
+    await installRegeneratingHelper(work);
+    await writeFile(join(work, ".finalize-checks.json"), JSON.stringify({ version: 1, checks: [{
+      name: "block", paths: ["a.txt"], command: [process.execPath, "-e",
+        `require('node:fs').chmodSync(${JSON.stringify(manifestPath)}, 0o444);process.exit(7);`],
+    }] }));
+    git(work, ["add", ".finalize-checks.json"]);
+    git(work, ["commit", "-m", "configure rollback fault"]);
+    git(work, ["push"]);
+    const head = git(work, ["rev-parse", "HEAD"]);
+    const oldManifest = await readFile(manifestPath, "utf8");
+    await writeFile(join(work, "a.txt"), "candidate\n");
+    await writeFile(join(work, "b.txt"), "force isolated candidate\n");
+    try {
+      const result = await startTool(work, ["a.txt"], {}, join(root, "artifacts"));
+      expect(result.output).toBeUndefined();
+      expect(result.error?.message).toContain("Could not restore");
+      expect(await readFile(manifestPath, "utf8")).not.toBe(oldManifest);
+      expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+      expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+      expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+    } finally { await chmod(manifestPath, 0o644); }
   }, TEST_TIMEOUT_MS);
 
   test("keeps the stale-manifest error with the command output when regeneration fails", async () => {
@@ -598,12 +733,12 @@ describe("git finalizer", () => {
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "runtime-changed\n");
     const head = git(work, ["rev-parse", "HEAD"]);
 
-    const { error } = await startTool(session, ["../Tools/runtime/entry.js"]);
-    expect(error?.message).toContain("source manifest is stale for Tools/runtime/entry.js");
-    expect(error?.message).toContain("File path escapes the session cwd: ../Tools/runtime/entry.js");
-    expect(error?.message).toContain("pass it as outsideCwdReason");
-    expect(error?.message).toContain("cross_review");
-    expect(error?.message).toContain(".finalize-checks.json");
+    const text = refusalText(await startTool(session, ["../Tools/runtime/entry.js"]), "manifest");
+    expect(text).toContain("source manifest is stale for Tools/runtime/entry.js");
+    expect(text).toContain("File path escapes the session cwd: ../Tools/runtime/entry.js");
+    expect(text).toContain("pass it as outsideCwdReason");
+    expect(text).toContain("cross_review");
+    expect(text).toContain(".finalize-checks.json");
     expect(await readFile(manifestFile, "utf8")).toBe(before);
     expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
@@ -635,13 +770,15 @@ describe("git finalizer", () => {
     await writeFile(join(work, "new.txt"), "new source\n");
 
     const missing = await startTool(work, ["a.txt", "new.txt", manifestFile]);
-    expect(missing.error?.message).toContain("source manifest is missing new.txt");
-    expect(missing.error?.message).toContain("git add -N new.txt");
+    const text = refusalText(missing, "manifest");
+    expect(text).toContain("source manifest is missing new.txt");
+    expect(text).toContain("git add -N new.txt");
 
     await writeFile(join(work, "a.txt"), "edited-after-manifest\n");
     const stale = await startTool(work, ["a.txt", manifestFile]);
-    expect(stale.error?.message).toContain("source manifest is stale for a.txt");
+    expect(refusalText(stale, "manifest")).toContain("source manifest is stale for a.txt");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
   }, TEST_TIMEOUT_MS);
 
@@ -652,7 +789,7 @@ describe("git finalizer", () => {
     await rm(join(work, "b.txt"));
 
     const listed = await startTool(work, ["b.txt", manifestFile]);
-    expect(listed.error?.message).toContain("source manifest still lists deleted b.txt");
+    expect(refusalText(listed, "manifest")).toContain("source manifest still lists deleted b.txt");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
 
     const manifest = JSON.parse(await Bun.file(manifestPath).text()) as { files: Record<string, string> };
@@ -694,7 +831,7 @@ describe("git finalizer", () => {
     const before = git(work, ["rev-parse", "HEAD"]);
     await writeFile(join(work, "Tools", "runtime", "entry.js"), "changed-runtime\n");
     const blocked = await startTool(work, ["Tools/runtime/entry.js"]);
-    expect(blocked.error?.message).toContain("source-integrity.json");
+    expect(refusalText(blocked, "manifest")).toContain("source-integrity.json");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
 
     await writeFile(join(work, "Tools", "CUELO_Setup", "notes.txt"), "repository-only\n");
@@ -842,6 +979,8 @@ describe("git finalizer", () => {
     git(work, ["push"]);
     await writeFile(join(work, "sibling", "file.txt"), "changed-sibling\n");
     const beforeHead = git(work, ["rev-parse", "HEAD"]);
+    expect(refusalText(await startTool(project, ["../sibling/file.txt"]), "repository")).toContain("File path escapes the session cwd");
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(beforeHead);
 
     for (const [name, extra] of [["no-reason", {}], ["blank-reason", { outsideCwdReason: "   " }]] as const) {
       const rejected = await startFinalizer(root, project, name, ["../sibling/file.txt"], "must fail", extra);
@@ -1337,6 +1476,7 @@ describe("git finalizer", () => {
     const externalHead = git(external.work, ["rev-parse", "HEAD"]);
     const currentStatus = git(work, ["status", "--short"]);
     const externalStatus = git(external.work, ["status", "--short"]);
+    expect(refusalText(await startTool(nested, [join(external.work, "a.txt")]), "repository")).toContain("Absolute file path is not allowed");
 
     const { result, output } = await startFinalizer(
       root,
@@ -1478,6 +1618,7 @@ describe("git finalizer", () => {
     const localHead = git(work, ["rev-parse", "HEAD"]);
     await writeFile(join(work, "b.txt"), "pending-b\n");
 
+    expect(refusalText(await startTool(work, ["b.txt"]), "fetch")).toContain("behind or diverged");
     const { result, output } = await startFinalizer(root, work, "diverged", ["b.txt"], "must fail");
     expect(result.code).toBe(1);
     expect(output.ok).toBe(false);
@@ -1487,6 +1628,19 @@ describe("git finalizer", () => {
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(remoteHead);
     expect(git(work, ["status", "--short"])).toBe("M b.txt");
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test("reports an already staged index as a refusal without modifying it", async () => {
+    const { work, remote } = await createRepository();
+    const head = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "a.txt"), "staged\n");
+    await writeFile(join(work, "b.txt"), "requested\n");
+    git(work, ["add", "a.txt"]);
+    const index = git(work, ["ls-files", "--stage"]);
+    expect(refusalText(await startTool(work, ["b.txt"]), "index-preflight")).toContain("The shared Git index already contains staged changes.");
+    expect(git(work, ["ls-files", "--stage"])).toBe(index);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(head);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
   }, TEST_TIMEOUT_MS);
 
   test("reports an unreachable remote without touching the index or the worktree", async () => {
@@ -1502,6 +1656,19 @@ describe("git finalizer", () => {
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
     expect(git(work, ["status", "--short"])).toBe("M a.txt");
     expect(run("git", ["diff", "--cached", "--quiet", "--exit-code"], work).code).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test("a broken push transport is an error, not a publication refusal", async () => {
+    const { root, work, remote } = await createRepository();
+    const head = git(work, ["rev-parse", "HEAD"]);
+    git(work, ["remote", "set-url", "--push", "origin", join(root, "missing-push.git")]);
+    await writeFile(join(work, "a.txt"), "requested\n");
+    const { error, output } = await startTool(work, ["a.txt"]);
+    expect(output).toBeUndefined();
+    expect(error?.message).toMatch(/git_finalize failed at push:.*missing-push\.git/);
+    expect(git(work, ["rev-parse", "HEAD^"])).toBe(head);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(head);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
   test("preserves the exact name of a sole mixed-case remote on first publication", async () => {
@@ -1560,12 +1727,13 @@ describe("git finalizer", () => {
       await chmod(hook, 0o755);
       const before = git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"]);
       await writeFile(join(work, file), `changed-${file}\n`);
-      const failed = await startFinalizer(root, work, name, [file], `change ${file}`);
-      expect(failed.result.code).toBe(1);
-      expect(failed.output.stage).toBe("push");
+      const failed = await startTool(work, [file], { message: `change ${file}` });
+      expect(failed.output).toBeUndefined();
+      expect(failed.error?.message).toContain("git_finalize failed at push");
+      expect(failed.error?.message).toContain("Internal Server Error");
       expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
       await rm(hook);
-      return failed.output.commitSha!;
+      return git(work, ["rev-parse", "HEAD"]);
     };
 
     // 같은 파일로 다시 부르면 새 커밋 없이 남은 커밋을 보낸다.
@@ -1714,9 +1882,11 @@ describe("cross-family review gate", () => {
 
     await writeFile(join(work, "wipe.ts"), wipe);
     const refused = await startTool(work, ["wipe.ts"]);
-    expect(refused.error?.message).toContain("git_finalize failed at cross-review");
-    expect(refused.error?.message).toContain("marker deletion at L2");
+    const text = refusalText(refused, "cross-review");
+    expect(text).toContain("git_finalize failed at cross-review");
+    expect(text).toContain("marker deletion at L2");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
 
     const resolved = await reviewAndResolve(work, ledger, ["wipe.ts"]);
@@ -1757,7 +1927,7 @@ describe("cross-family review gate", () => {
     process.env.OMP_CROSS_REVIEW_LEDGER = join(root, "ledger.jsonl");
     await writeFile(join(work, "plain.ts"), "export const one = 1;\n");
     const declared = await startTool(work, ["plain.ts"], { crossReviewHighRisk: ["plain.ts"] });
-    expect(declared.error?.message).toContain("declared high-risk");
+    expect(refusalText(declared, "cross-review")).toContain("declared high-risk");
     const waived = await startTool(work, ["plain.ts"], { crossReviewHighRisk: ["plain.ts"], crossReviewWaiver: "user approved skipping review" });
     expect(waived.error).toBeUndefined();
     expect(readCrossReviewRecords(join(root, "ledger.jsonl"))).toMatchObject([{ type: "cross-review-waiver", reason: "user approved skipping review" }]);
@@ -1791,10 +1961,12 @@ describe("AI-slop gate", () => {
 
     await writeFile(join(work, "page.html"), readme);
     const refused = await startTool(work, ["page.html"]);
-    expect(refused.error?.message).toContain("git_finalize failed at slop-gate");
-    expect(refused.error?.message).toContain("- page.html");
-    expect(refused.error?.message).toContain("slop_check");
+    const text = refusalText(refused, "slop-gate");
+    expect(text).toContain("git_finalize failed at slop-gate");
+    expect(text).toContain("- page.html");
+    expect(text).toContain("slop_check");
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
 
     passFor(ledger, join(work, "page.html"), readme);
@@ -1804,8 +1976,9 @@ describe("AI-slop gate", () => {
 
     await writeFile(join(work, "page.html"), `${readme}한 줄을 더했다.\n`);
     const stale = await startTool(work, ["page.html"]);
-    expect(stale.error?.message).toContain("failed at slop-gate");
-    expect(stale.error?.message).toContain("older version");
+    const staleText = refusalText(stale, "slop-gate");
+    expect(staleText).toContain("failed at slop-gate");
+    expect(staleText).toContain("older version");
   }, TEST_TIMEOUT_MS);
 
   test("the cross-review refusal also names exact slop blockers unless this call has a slop waiver", async () => {
@@ -1819,11 +1992,13 @@ describe("AI-slop gate", () => {
     passFor(ledger, join(work, "passed.html"), `${readme}\nother`);
     const files = ["wipe.ts", "page.html", "passed.html"];
     const refused = await startTool(work, files);
-    expect(refused.error?.message).toContain("failed at cross-review");
-    expect(refused.error?.message).toContain('slop_check {files:["page.html"]');
+    const text = refusalText(refused, "cross-review");
+    expect(text).toContain("failed at cross-review");
+    expect(text).toContain('slop_check {files:["page.html"]');
     const waived = await startTool(work, files, { slopGateWaiver: "user's explicit instruction" });
-    expect(waived.error?.message).toContain("failed at cross-review");
-    expect(waived.error?.message).not.toContain("slop_check {");
+    const waivedText = refusalText(waived, "cross-review");
+    expect(waivedText).toContain("failed at cross-review");
+    expect(waivedText).not.toContain("slop_check {");
     expect(readSlopRecords(ledger).map((record) => record.type)).toEqual(["slop-pass"]);
     expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
     expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
@@ -1836,8 +2011,9 @@ describe("AI-slop gate", () => {
     await writeFile(join(work, "wipe.ts"), wipe);
     await writeFile(join(work, "report.docx"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0]));
     const refused = await startTool(work, ["wipe.ts", "report.docx"]);
-    expect(refused.error?.message).toContain("failed at cross-review");
-    expect(refused.error?.message).toContain('slop_check {files:["report.docx"]');
+    const text = refusalText(refused, "cross-review");
+    expect(text).toContain("failed at cross-review");
+    expect(text).toContain('slop_check {files:["report.docx"]');
     expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
   }, TEST_TIMEOUT_MS);
 
@@ -1872,7 +2048,7 @@ describe("AI-slop gate", () => {
       await writeFile(join(work, "page.html"), readme);
       passFor(slopLedger, join(work, "page.html"), readme);
       const refused = await startTool(work, ["wipe.ts", "page.html"]);
-      expect(refused.error?.message).toContain("failed at cross-review");
+      expect(refusalText(refused, "cross-review")).toContain("failed at cross-review");
 
       expect((await reviewAndResolve(work, crossLedger, ["wipe.ts"])).pass).toBe(true);
       const passed = await startTool(work, ["wipe.ts", "page.html"]);

@@ -19377,13 +19377,18 @@ for (const [owner, older] of preStatsWatchBodies) {
 	const seenLine = one(entry => entry.file === "src/edit/index.ts" && entry.marker === "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }], isError: true };", "edit seen-line return");
 	const SEEN_RETURN_HEAD = "\t\t\treturn {\n\t\t\t\tcontent: [{ type: \"text\", text: ";
 	const SEEN_RETURN_TAIL = " }],\n\t\t\t\tdetails: { diff: \"\", errorKind: outcome.errorKind },\n\t\t\t\tisError: true,\n\t\t\t};\n";
+	const seenReturn = SEEN_RETURN_HEAD + "await this.#seenLineRejection(params, argsJson, outcome.text, signal)" + SEEN_RETURN_TAIL;
 	seenLine.alternates = [
 		...(seenLine.alternates ?? []),
 		{
 			file: seenLine.file,
-			marker: "text: await this.#seenLineRejection(params, argsJson, outcome.text, signal) }],\n\t\t\t\tdetails: { diff: \"\", errorKind: outcome.errorKind },",
+			marker: "const refusedBy = editRefusalId(outcome.errorKind, outcome.text);",
 			anchor: SEEN_RETURN_HEAD + "outcome.text" + SEEN_RETURN_TAIL,
-			patched: SEEN_RETURN_HEAD + "await this.#seenLineRejection(params, argsJson, outcome.text, signal)" + SEEN_RETURN_TAIL,
+			legacyPatched: seenReturn,
+			patched: `			const text = await this.#seenLineRejection(params, argsJson, outcome.text, signal);
+			const refusedBy = editRefusalId(outcome.errorKind, outcome.text);
+			if (refusedBy) return formatToolRefusal(refusedBy, text, { diff: "", errorKind: outcome.errorKind });
+${SEEN_RETURN_HEAD}text${SEEN_RETURN_TAIL}`,
 		},
 	];
 
@@ -26562,6 +26567,308 @@ ${wrapperAnchor}`,
 			runtime.setRunScope({
 				desktop,`,
 	});
+}
+
+{
+	const loop = "../pi-agent-core/src/agent-loop.ts";
+	const runner = "src/extensibility/extensions/runner.ts";
+	const wrapper = "src/extensibility/extensions/wrapper.ts";
+	const edit = "src/edit/index.ts";
+	const add = (file, anchor, patched, marker = patched) => EDITS.push({ file, anchor, patched, marker });
+	const collector = "../pi-agent-core/src/run-collector.ts";
+	add(collector, 'export class ToolCallBlockedError extends Error {\n\toverride readonly name = "ToolCallBlockedError";\n\tconstructor(reason?: string) {',
+		'export class ToolCallBlockedError extends Error {\n\toverride readonly name = "ToolCallBlockedError";\n\tconstructor(reason?: string, readonly refusedBy?: string) {');
+	add(collector, "/** Return a new object whose own keys are listed in ascending order. */", `export function formatToolRefusal<T extends object>(by: string, reason: string, details?: T) {
+	return {
+		content: [{ type: "text" as const, text: "[refused by " + by + "] Not executed.\\n" + reason }],
+		details: { ...details, refused: { by } },
+		isError: false,
+	};
+}
+
+export function toolResultDidNotSucceed(result: { isError?: boolean; details?: unknown }): boolean {
+	const details = result.details as { refused?: { by?: unknown }; scriptError?: unknown } | undefined;
+	return result.isError === true || typeof details?.refused?.by === "string" || details?.scriptError === true;
+}
+
+/** Return a new object whose own keys are listed in ascending order. */`, "export function formatToolRefusal");
+	add("src/extensibility/shared-events.ts", "\t/** Reason for blocking (returned to LLM as error) */\n\treason?: string;",
+		"\t/** Reason for blocking, returned to the model without executing. */\n\treason?: string;\n\t/** Stable guard ID; defaults to the extension source name. */\n\trefusedBy?: string;");
+	add(runner, `					(kind, message) => ({
+						block: true,
+						reason:
+							kind === "timeout"
+								? \`Extension \${ext.path} timed out after \${timeoutMs}ms\`
+								: \`Extension \${ext.path} failed: \${message}\`,
+					}),
+					signal,
+				)) as ToolCallEventResult | undefined;
+
+				if (!handlerResult) continue;
+				if (handlerResult.block) {
+					return handlerResult;
+				}`, String.raw`					(kind, message) => ({
+						block: true,
+						hookFailed: true,
+						reason:
+							kind === "timeout"
+								? ` + "`Extension ${ext.path} timed out after ${timeoutMs}ms`" + String.raw`
+								: ` + "`Extension ${ext.path} failed: ${message}`" + String.raw`,
+					}),
+					signal,
+				)) as (ToolCallEventResult & { hookFailed?: true }) | undefined;
+
+				if (!handlerResult) continue;
+				if (handlerResult.block) {
+					if (handlerResult.hookFailed) return handlerResult;
+					const parts = ext.path.split(/[/\\]/);
+					const basename = parts.pop()?.replace(/\.[cm]?[jt]s$/, "");
+					return { ...handlerResult, refusedBy: handlerResult.refusedBy ?? ((basename === "index" ? parts.pop() : basename) || "extension") };
+				}`, "if (handlerResult.hookFailed) return handlerResult;");
+	add("../pi-agent-core/src/types.ts", "export interface BeforeToolCallResult {\n\tblock?: boolean;",
+		"export interface BeforeToolCallResult {\n\tblock?: boolean;\n\trefusedBy?: string;");
+	add("src/session/agent-session.ts",
+		'return { block: true, reason: callResult.reason || "Tool execution was blocked by an extension" };',
+		`const reason = callResult.reason || "Tool execution was blocked by an extension";
+			if (callResult.refusedBy === undefined) throw new Error(reason);
+			return { block: true, reason, refusedBy: callResult.refusedBy };`);
+	// A core already carrying wave 2's first patch can be updated in place.
+	EDITS.at(-1).legacyPatched = 'return { block: true, reason: callResult.reason || "Tool execution was blocked by an extension", refusedBy: callResult.refusedBy };';
+	add(loop, "AgentRunSummary, ToolCallBlockedError }", "AgentRunSummary, formatToolRefusal, ToolCallBlockedError }");
+	add(loop, "\tblockReason?: string;\n\tprepareError?: unknown;", "\tblockReason?: string;\n\trefusedBy?: string;\n\tprepareError?: unknown;");
+	add(loop, "entry.blockReason = beforeResult.reason;",
+		'entry.blockReason = beforeResult.reason;\n\t\t\tentry.refusedBy = beforeResult.refusedBy ?? "before-tool-call";');
+	EDITS.at(-1).legacyPatched = "entry.blockReason = beforeResult.reason;\n\t\t\tentry.refusedBy = beforeResult.refusedBy;";
+	add(loop, "blockReason: prepared.blockReason,", "blockReason: prepared.blockReason,\n\t\t\trefusedBy: prepared.refusedBy,");
+	add(loop, "throw new ToolCallBlockedError(record.blockReason);", "throw new ToolCallBlockedError(record.blockReason, record.refusedBy);");
+	add(loop, `				caughtError = e;
+				result = {
+					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+					details: {},
+				};
+				isError = true;`, `				caughtError = e;
+				if (e instanceof ToolCallBlockedError && e.refusedBy !== undefined) {
+					result = formatToolRefusal(e.refusedBy, e.message);
+				} else {
+					result = {
+						content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+						details: {},
+					};
+					isError = true;
+				}`);
+	add(loop, "record.toolResultMessage?.isError ? undefined : record.preparedContext,",
+		"record.toolResultMessage?.isError || record.result?.details?.refused || record.result?.details?.scriptError ? undefined : record.preparedContext,");
+	add(wrapper, 'export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: ExtensionRunner): AgentTool {',
+		'import { formatToolRefusal, toolResultDidNotSucceed } from "@oh-my-pi/pi-agent-core";\n\nexport function wrapRegisteredTool(registeredTool: RegisteredTool, runner: ExtensionRunner): AgentTool {', 'import { formatToolRefusal, toolResultDidNotSucceed }');
+	add(wrapper, '					const reason = callResult.reason || "Tool execution was blocked by an extension";\n\t\t\t\t\tthrow new Error(reason);',
+		'					const reason = callResult.reason || "Tool execution was blocked by an extension";\n\t\t\t\t\tif (callResult.refusedBy) {\n\t\t\t\t\t\tconst refused = formatToolRefusal(callResult.refusedBy, reason);\n\t\t\t\t\t\treturn { ...refused, details: refused.details as TDetails };\n\t\t\t\t\t}\n\t\t\t\t\tthrow new Error(reason);');
+	add(wrapper, 'throw new Error(preflight.reason || "Tool execution was blocked by a preflight rule");',
+		'const refused = formatToolRefusal("preflight", preflight.reason || "Tool execution was blocked by a preflight rule");\n\t\t\t\treturn { ...refused, details: refused.details as TDetails };');
+	add(wrapper, "if (result.isError !== true && pendingAdditionalContext !== undefined) {",
+		"if (!toolResultDidNotSucceed(result) && pendingAdditionalContext !== undefined) {");
+	add("src/tools/tool-commands.ts", '\tvalidateAgentToolArguments,\n} from "@oh-my-pi/pi-agent-core";',
+		'\ttoolResultDidNotSucceed,\n\tvalidateAgentToolArguments,\n} from "@oh-my-pi/pi-agent-core";');
+	add("src/tools/tool-commands.ts", "exitCode: result.isError ? 1 : 0, inner: result.details", "exitCode: toolResultDidNotSucceed(result) ? 1 : 0, inner: result.details");
+	add("src/eval/js/tool-bridge.ts", "return isRecord(result.details) && result.details.isError === true;",
+		'return isRecord(result.details) && (result.details.isError === true || result.details.scriptError === true || (isRecord(result.details.refused) && typeof result.details.refused.by === "string"));');
+	add(edit, 'import { ToolError } from "../tools/tool-errors";',
+		'import { formatToolRefusal } from "@oh-my-pi/pi-agent-core";\nimport { ToolError } from "../tools/tool-errors";');
+	add(edit, 'export class EditTool implements AgentTool<TInput> {', String.raw`function editRefusalId(kind: string | undefined, text: string): string | undefined {
+	switch (kind) {
+		case "unseen_lines": return "edit-unseen-lines";
+		case "unknown_tag":
+		case "other_file_tag":
+		case "missing_tag":
+		case "stale_tag": return "edit-snapshot";
+		case "out_of_range": return "edit-out-of-range";
+		case "plan_mode": return "edit-plan-mode";
+		case "apply":
+			if (text.startsWith("Edit rejected: the file parses now but would not after this edit")) return "edit-syntax";
+			if (/^` + "`(?:PUT|CUT) [^`]+` rejected: the body (?:restates|ends by restating|starts by restating)" + String.raw`/.test(text)) return "edit-overlap";
+	}
+	return undefined;
+}
+
+export class EditTool implements AgentTool<TInput> {`, "function editRefusalId(");
+	add("src/edit/magic.ts", "if (!result.isError) return result;",
+		"if (!result.isError && !(result.details as { refused?: unknown } | undefined)?.refused) return result;");
+}
+
+{
+	const add = (file, anchor, patched, marker = patched) => EDITS.push({ file, anchor, patched, marker });
+	const worker = "src/eval/js/worker-core.ts";
+	const manager = "src/eval/js/context-manager.ts";
+	const js = "src/eval/js/executor.ts";
+	add("src/eval/js/worker-protocol.ts", "export interface RunErrorPayload {\n\tname?: string;", "export interface RunErrorPayload {\n\tname?: string;\n\tscriptError?: true;");
+	add(worker, "let result: RunResult;\n\t\ttry {", "let result: RunResult;\n\t\tlet runningCell = false;\n\t\ttry {");
+	add(worker, "const value = await runtime.run(code, filename, hooks, {", "runningCell = true;\n\t\t\tconst value = await runtime.run(code, filename, hooks, {");
+	add(worker, "runtime.echo(value, hooks);", "runningCell = false;\n\t\t\truntime.echo(value, hooks);");
+	add(worker, 'result = { type: "result", runId, ok: false, error: errorPayload(error) };',
+		`const payload = errorPayload(error);
+			if (runningCell && !payload.isToolError && !payload.isAbort) payload.scriptError = true;
+			result = { type: "result", runId, ok: false, error: payload };`);
+	add(worker, "const error = errorPayload(rejections[0]);",
+		"const error = errorPayload(rejections[0]);\n\t\tif (!error.isToolError && !error.isAbort) error.scriptError = true;");
+	add(manager, "pending.reject(errorFromPayload(msg.error));", `const error = errorFromPayload(msg.error);
+	if (msg.error.scriptError) jsScriptErrors.add(error);
+	pending.reject(error);`);
+	add(manager, "function errorFromPayload(payload: RunErrorPayload): Error {", `const jsScriptErrors = new WeakSet<Error>();
+
+export function isJsScriptError(error: unknown): boolean {
+	return error instanceof Error && jsScriptErrors.has(error);
+}
+
+function errorFromPayload(payload: RunErrorPayload): Error {`, "const jsScriptErrors =");
+	add(manager, "reply: { ok: false, error: toErrorPayload(error) }", "reply: { ok: false, error: { ...toErrorPayload(error), isToolError: true } }");
+	add(js, 'import { executeInVmContext, hasLiveVmContext } from "./context-manager";',
+		'import { executeInVmContext, hasLiveVmContext, isJsScriptError } from "./context-manager";');
+	add(js, "export interface JsResult {\n\toutput: string;", "export interface JsResult {\n\toutput: string;\n\tscriptError?: true;");
+	add(js, "exitCode: 1,\n\t\t\tcancelled: false,", "exitCode: 1,\n\t\t\tscriptError: isJsScriptError(error) ? true : undefined,\n\t\t\tcancelled: false,");
+
+	const runner = "src/eval/py/runner.py";
+	const prelude = "src/eval/py/prelude.py";
+	const kernel = "src/eval/kernel-base.ts";
+	const base = "src/eval/executor-base.ts";
+	add(prelude, "    def _tool_proxy_from_env() -> tuple[str, str, str]:",
+		"    def _tool_proxy_from_env(_bridge_failure) -> tuple[str, str, str]:");
+	EDITS.at(-1).legacyPatched = `    def _bridge_failure(error: Exception) -> Exception:
+        # Preserve the exception type and traceback that the caller already sees.
+        error._omp_bridge_failure = True
+        return error
+
+    def _tool_proxy_from_env() -> tuple[str, str, str]:`;
+	add(prelude, `    def _bridge_call(name: str, args: dict):
+        """POST one request to the host tool bridge and return its \`value\`."""
+        base, token, session = _tool_proxy_from_env()`, `    @globals().pop("__omp_bind_bridge__", lambda call: lambda name, args: call(name, args, lambda exc: exc))
+    def _bridge_call(name: str, args: dict, _bridge_failure):
+        """POST one request to the host tool bridge and return its \`value\`."""
+        base, token, session = _tool_proxy_from_env(_bridge_failure)`);
+	add(prelude, 'raise RuntimeError("tool bridge is unavailable in this kernel")',
+		'raise _bridge_failure(RuntimeError("tool bridge is unavailable in this kernel"))');
+	add(prelude, "    import urllib.error, urllib.request", "    import http.client, urllib.error, urllib.request");
+	add(prelude, `        try:
+            with _BRIDGE_OPENER.open(req) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+        try:
+            data = json.loads(body)`, `        try:
+            try:
+                with _BRIDGE_OPENER.open(req) as resp:
+                    body = resp.read()
+            except urllib.error.HTTPError as exc:
+                with exc:
+                    body = exc.read()
+        except (OSError, http.client.HTTPException) as exc:
+            raise _bridge_failure(exc)
+        try:
+            data = json.loads(body)`);
+	EDITS.at(-1).legacyPatched = EDITS.at(-1).anchor.replace("            body = exc.read()\n", "            body = exc.read()\n        except OSError as exc:\n            raise _bridge_failure(exc)\n");
+	add(prelude, `            raise RuntimeError(
+                f"bridge call {name!r}: non-JSON response: {body[:200]!r}"
+            ) from None`, `            raise _bridge_failure(RuntimeError(
+                f"bridge call {name!r}: non-JSON response: {body[:200]!r}"
+            )) from None`);
+	add(prelude, 'raise RuntimeError(msg or f"bridge call {name!r} failed")', 'raise _bridge_failure(RuntimeError(msg or f"bridge call {name!r} failed"))');
+	for (const line of [
+		"        except SyntaxError as exc:\n",
+		'        except BaseException as exc:  # noqa: BLE001 - we want to surface every user error\n            status = "error"\n',
+	]) add(runner, line + "            _emit_error(rid, exc, source_filename=filename)",
+		line + "            _emit_error(rid, exc, source_filename=filename, script_error=True)");
+	// The runner catches KeyboardInterrupt and asyncio.CancelledError separately above this branch.
+	add(runner, '        except SystemExit as exc:\n            status = "error"\n            _emit_error(rid, exc)',
+		'        except SystemExit as exc:\n            status = "error"\n            _emit_error(rid, exc, source_filename=filename, script_error=True)');
+	add(runner, "def _install_builtins(ns: dict) -> None:\n", `def _bridge_failure_tracking():
+    # Context is carried into asyncio.to_thread. Keep the original object alive
+    # until cell completion so Python cannot reuse its id for a script exception.
+    failures = contextvars.ContextVar("omp_bridge_failures", default=None)
+
+    def remember(exc: BaseException) -> BaseException:
+        active = failures.get()
+        if active is not None:
+            active[id(exc)] = exc
+        return exc
+
+    def is_bridge_failure(exc: BaseException) -> bool:
+        active = failures.get()
+        return active is not None and active.get(id(exc)) is exc
+
+    def bind_bridge(bridge):
+        def call(name, args):
+            return bridge(name, args, remember)
+        return call
+
+    return bind_bridge, is_bridge_failure, failures.set, failures.reset
+
+
+def _install_builtins(ns: dict) -> None:
+`, 'def _bridge_failure_tracking():');
+	add(runner, "\n\n_install_builtins(_STATE.user_ns)\n", `
+
+# The prelude binds the bridge once; the binder does not remain in the cell namespace.
+(_STATE.user_ns["__omp_bind_bridge__"], _is_bridge_failure,
+ _begin_bridge_failure_tracking, _end_bridge_failure_tracking) = _bridge_failure_tracking()
+_install_builtins(_STATE.user_ns)
+`, '"__omp_bind_bridge__"], _is_bridge_failure');
+	add(runner, "    cancelled = False\n\n    try:\n        try:\n            _apply_request_runtime(req, rid)", `    cancelled = False
+    bridge_failures = {}
+    bridge_failures_token = _begin_bridge_failure_tracking(bridge_failures)
+
+    try:
+        try:
+            _apply_request_runtime(req, rid)`);
+	add(runner, "        _CURRENT_RID.reset(token)\n        _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)", `        bridge_failures.clear()
+        _end_bridge_failure_tracking(bridge_failures_token)
+        _CURRENT_RID.reset(token)
+        _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)`);
+	add(runner, "def _emit_error(rid: str, exc: BaseException, source_filename: str | None = None) -> None:",
+		"def _emit_error(rid: str, exc: BaseException, source_filename: str | None = None, *, script_error: bool = False) -> None:");
+	add(runner, '            "evalue": str(exc),\n            "traceback":',
+		'            "evalue": str(exc),\n            "scriptError": script_error and not _is_bridge_failure(exc),\n            "traceback":');
+	EDITS.at(-1).legacyPatched = '            "evalue": str(exc),\n            "scriptError": script_error and not getattr(exc, "_omp_bridge_failure", False),\n            "traceback":';
+	add(kernel, "error?: { name: string; value: string; traceback: string[] };",
+		"error?: { name: string; value: string; traceback: string[]; scriptError?: true };");
+	add(kernel, "\ttraceback?: string[];", "\ttraceback?: string[];\n\tscriptError?: boolean;");
+	add(kernel, 'value: String(frame.evalue ?? ""),\n\t\t\t\t\ttraceback,',
+		'value: String(frame.evalue ?? ""),\n\t\t\t\t\ttraceback,\n\t\t\t\t\tscriptError: frame.scriptError === true ? true : undefined,');
+	add(base, "export interface KernelExecutionResult {\n\toutput: string;", "export interface KernelExecutionResult {\n\toutput: string;\n\tscriptError?: true;");
+	add(base, "return {\n\t\t\texitCode,\n\t\t\tcancelled: false,", "return {\n\t\t\texitCode,\n\t\t\tscriptError: result.error?.scriptError,\n\t\t\tcancelled: false,");
+	add("src/eval/py/executor.ts", "export interface PythonResult {", "export interface PythonResult {\n\tscriptError?: true;");
+	add("src/eval/backend.ts", "export interface ExecutorBackendResult {\n\toutput: string;", "export interface ExecutorBackendResult {\n\toutput: string;\n\tscriptError?: true;");
+	add("src/eval/backend-helpers.ts", "export function toExecutorBackendResult(result: {\n\toutput: string;",
+		"export function toExecutorBackendResult(result: {\n\toutput: string;\n\tscriptError?: true;");
+	add("src/eval/backend-helpers.ts", "exitCode: result.exitCode,\n\t\tcancelled:", "exitCode: result.exitCode,\n\t\tscriptError: result.scriptError,\n\t\tcancelled:");
+
+	const evalTool = "src/tools/eval.ts";
+	add("src/tools/details/eval.ts", "export interface EvalToolDetails {", "export interface EvalToolDetails {\n\tscriptError?: true;");
+	// Update the existing observation patch in place. Its output is absent on pristine core.
+	const observation = EDITS.find(entry => entry.file === evalTool && entry.marker === 'details.executionObservation = "observed";');
+	for (const candidate of [observation, ...observation.alternates]) {
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = candidate.patched.replace("details.isError !== true &&", "details.isError !== true && !details.scriptError &&");
+		candidate.marker = candidate.patched.split("\n").find(line => line.includes("!details.scriptError"));
+	}
+	add("src/eval/preludes.ts", 'import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolApproval } from "@oh-my-pi/pi-agent-core";',
+		'import { type AgentToolContext, type AgentToolResult, type AgentToolUpdateCallback, type ToolApproval, toolResultDidNotSucceed } from "@oh-my-pi/pi-agent-core";');
+	const mcpPrelude = EDITS.find(entry => entry.file === "src/eval/preludes.ts" && entry.marker.startsWith("export function createMcpEvalPrelude("));
+	const mcpOld = "const isError = result.isError === true || details.isError === true;";
+	const mcpNew = "const isError = toolResultDidNotSucceed(result) || details.isError === true;";
+	for (const candidate of [mcpPrelude, ...(mcpPrelude.alternates ?? [])]) {
+		if (!candidate.patched.includes(mcpOld)) continue;
+		candidate.legacyPatched = candidate.patched;
+		candidate.patched = candidate.patched.replace(mcpOld, mcpNew);
+		candidate.marker = mcpNew;
+	}
+	add("src/mcp/eval-namespaces.ts", 'import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";',
+		'import { type AgentTool, type AgentToolResult, toolResultDidNotSucceed } from "@oh-my-pi/pi-agent-core";');
+	add("src/mcp/eval-namespaces.ts", "if (result.isError === true || details.isError === true) {",
+		"if (toolResultDidNotSucceed(result) || details.isError === true) {");
+	add(evalTool, "exitCode: result.isError ? 1 : 0", "exitCode: result.isError || result.details?.scriptError ? 1 : 0");
+	add(evalTool, 'cellResult.status = "error";\n\t\t\t\t\tpushUpdate();', 'cellResult.status = "error";\n\t\t\t\t\tconst scriptError = !result.cancelled && result.scriptError === true;\n\t\t\t\t\tpushUpdate();');
+	add(evalTool, "replies: replies.length > 0 ? replies : undefined,\n\t\t\t\t\t\tisError: true,", "replies: replies.length > 0 ? replies : undefined,\n\t\t\t\t\t\tisError: !scriptError,\n\t\t\t\t\t\tscriptError: scriptError ? true : undefined,");
+	add(evalTool, ".content([{ type: \"text\", text: notice ? \`\${notice}\\n\\n\${outputText}\` : outputText }, ...images])\n\t\t\t\t\t\t.truncationFromSummary(summaryForMeta, { direction: \"tail\" })\n\t\t\t\t\t\t.error()", `.content([{ type: "text", text: (scriptError ? "[script error] The script threw; the tool itself worked.\\n" : "") + (notice ? \`\${notice}\\n\\n\${outputText}\` : outputText) }, ...images])
+						.truncationFromSummary(summaryForMeta, { direction: "tail" })
+						.error(!scriptError)`);
 }
 
 /** All possible targets, including files reached only by a version alternate. */

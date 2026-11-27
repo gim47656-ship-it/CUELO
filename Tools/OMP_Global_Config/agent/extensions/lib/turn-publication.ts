@@ -171,7 +171,10 @@ export function createTurnPublication() {
     const details = record(job.toolResultDetails);
     if (job.status === "completed" && details.ok === true && details.stage === "complete" && typeof details.commitSha === "string") {
       finish(receipt.paths, details, receipt.editedLater);
-    } else failedStage = `git_finalize ${id} ${job.status}`;
+    } else {
+      const by = record(details.refused).by;
+      failedStage = `git_finalize ${id} ${job.status === "completed" && typeof by === "string" ? `refused by ${by}` : job.status}`;
+    }
     noticed = false;
   };
   return {
@@ -188,6 +191,8 @@ export function createTurnPublication() {
       let base: string;
       try { base = realpathSync(cwd); } catch { return; }
       const input = record(event.input), details = record(event.details);
+      const by = record(details.refused).by;
+      const refused = !event.isError && typeof by === "string";
       const pushed = !event.isError && details.ok === true && details.stage === "complete" && typeof details.commitSha === "string";
       if (event.toolName === "git_finalize") {
         const files = Array.isArray(input.files) ? input.files.filter((file): file is string => typeof file === "string") : [];
@@ -198,7 +203,7 @@ export function createTurnPublication() {
         } else if (pushed) {
           finish(paths, details);
         } else {
-          failedStage = `git_finalize ${typeof details.stage === "string" ? details.stage : "error"}`;
+          failedStage = `git_finalize ${refused ? `refused by ${by}` : typeof details.stage === "string" ? details.stage : "error"}`;
           noticed = false;
         }
         return;
@@ -211,7 +216,10 @@ export function createTurnPublication() {
       if (event.toolName === "git_integrate") {
         // complete만 세션 브랜치 전체를 대상에 push한 영수증이다. up-to-date·aborted·충돌 안내는 완료로 보지 않는다.
         if (pushed) { branchOnly.clear(); failedStage = undefined; }
-        else if (event.isError) { failedStage = "git_integrate error"; noticed = false; }
+        else if (refused) {
+          failedStage = `git_integrate refused by ${by}`;
+          noticed = false;
+        } else if (event.isError) { failedStage = "git_integrate error"; noticed = false; }
         return;
       }
       if (event.toolName === "task") {
@@ -234,7 +242,7 @@ export function createTurnPublication() {
         }
         return;
       }
-      if (event.isError) return;
+      if (event.isError || refused || details.scriptError === true) return;
       const paths = event.toolName === "draft"
         ? [details.savedPath].filter((path): path is string => typeof path === "string")
         : event.toolName === "write" || event.toolName === "edit" ? targets(event) : [];

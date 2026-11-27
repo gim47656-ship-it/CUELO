@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { appendFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 
 // 2026-11-09 사용자 요청: Main(Anthropic 한도)이 파일을 하나씩 read로 훑지 말고, 꼼꼼히 읽는 일은
 // skim(다른 모델이 전체를 읽고 답과 근거 경로를 돌려줌)이나 읽기 전용 조사 Maker에 넘기게 유도한다.
@@ -127,9 +128,9 @@ export function createScanNudge(log: Log = defaultLog) {
     // 세 상태(편집된 파일, 넘긴 조사, 탐색한 읽기)는 모두 호출이 아니라 끝난 결과로 판정한다.
     // tool_call은 실행 전에 오므로, 그때 세면 실패하거나 다른 가드가 막은 호출도 성공으로 굳는다:
     // 없는 파일 읽기가 탐색 자리를 차지하고, 실패한 skim이나 task가 조사를 넘긴 것으로 남고,
-    // 실패한 edit이나 write가 편집된 것으로 기록된다. 실패한 호출은 isError로, 차단된 호출은 결과 없이 끝난다.
+    // 실패하거나 거절된 편집은 작업 기록이 아니다.
     pi.on("tool_result", (event, ctx) => {
-      if (event.isError) return;
+      if (didNotSucceed(event)) return;
       const input = (event.input ?? {}) as Record<string, unknown>;
       // 편집은 무장 여부보다 먼저 본다. 확장이 넣은 후속 입력이 끼어도 안내 뒤 편집은 같은 작업의 결과다.
       // 무장이 풀린 동안 표시한 편집은 다음 사용자 입력의 reset이 지우므로 다음 탐색 집계에 남지 않는다.

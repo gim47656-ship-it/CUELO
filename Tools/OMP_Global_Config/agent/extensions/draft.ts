@@ -1,5 +1,5 @@
-import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { link, lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { outline, parseMarkdown, toHtml } from "./draft/markdown";
@@ -37,6 +37,25 @@ function slash(path: string): string { return path.replaceAll("\\", "/"); }
 function inside(rel: string): boolean { return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel); }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
+class DraftPathRefusal extends Error {}
+
+async function checkParents(root: string, rel: string, signal?: AbortSignal): Promise<void> {
+  let current = root;
+  for (const segment of slash(rel).split("/").slice(0, -1)) {
+    current = resolve(current, segment);
+    signal?.throwIfAborted();
+    let info = await lstat(current).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+    if (!info) {
+      if (!signal) return;
+      signal.throwIfAborted();
+      await mkdir(current).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+      info = await lstat(current);
+    }
+    if (info.isSymbolicLink()) throw new DraftPathRefusal(`심볼릭 링크 경로에는 쓸 수 없습니다: ${slash(relative(root, current))}`);
+    if (!info.isDirectory()) throw new DraftPathRefusal(`디렉터리가 아닌 경로입니다: ${slash(relative(root, current))}`);
+  }
+}
+
 /** 모델을 부르기 전에 저장 위치를 확정한다. cwd 밖·심볼릭 링크·비밀/관리 경로·덮어쓰기를 막는다. */
 async function resolveTarget(cwd: string, output: string, overwrite: boolean): Promise<Target> {
   const root = await realpath(resolve(cwd)).catch((error: unknown) => {
@@ -45,16 +64,16 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
     }
     throw error;
   });
-  if (slash(root).toLowerCase().includes("/.omp/agent")) throw new Error("인증 저장소 ~/.omp/agent 아래에서는 draft를 사용할 수 없습니다.");
+  if (slash(root).toLowerCase().includes("/.omp/agent")) throw new DraftPathRefusal("인증 저장소 ~/.omp/agent 아래에서는 draft를 사용할 수 없습니다.");
   const value = output.trim();
-  if (/^[A-Za-z]:/.test(value)) throw new Error(`output은 cwd 기준 상대 경로나 cwd 안의 절대 경로만 허용됩니다: ${value}`);
-  if (slash(value).split("/").includes("..")) throw new Error(`output에 '..'를 쓸 수 없습니다: ${value}`);
+  if (/^[A-Za-z]:/.test(value)) throw new DraftPathRefusal(`output은 cwd 기준 상대 경로나 cwd 안의 절대 경로만 허용됩니다: ${value}`);
+  if (slash(value).split("/").includes("..")) throw new DraftPathRefusal(`output에 '..'를 쓸 수 없습니다: ${value}`);
   // cwd 안의 절대 경로는 cwd 기준 상대 경로로 바꿔 아래 검사를 똑같이 거친다. 세션 cwd가 링크 경로여도 그 경로로 적은 값을 받는다.
   const given = isAbsolute(value) ? [relative(resolve(cwd), value), relative(root, value)].find(inside) : value;
   const absolute = given === undefined ? undefined : resolve(root, given);
   const rel = absolute === undefined ? "" : relative(root, absolute);
   if (absolute === undefined || !inside(rel)) {
-    throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}\n세션 cwd(${root}) 아래에 새 이름을 골라 상대 경로로 지정하세요(예: output: ${JSON.stringify(basename(value))}).`);
+    throw new DraftPathRefusal(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}\n세션 cwd(${root}) 아래에 새 이름을 골라 상대 경로로 지정하세요(예: output: ${JSON.stringify(basename(value))}).`);
   }
   const segments = slash(rel).split("/");
   const lower = segments.map((part) => part.toLowerCase());
@@ -62,24 +81,17 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
   // 폴더 이름까지 보면 `29-token-saving/` 같은 작업 기록 폴더가 `token`에 걸렸다(10-29 3건).
   if (lower.some((part, i) => part === ".git" || part === "node_modules" || (part === ".omp" && lower[i + 1] === "agent"))
     || secretFileName(rel)) {
-    throw new Error(`비밀·관리 경로처럼 보이는 이름에는 쓸 수 없습니다: ${slash(rel)}`);
+    throw new DraftPathRefusal(`비밀·관리 경로처럼 보이는 이름에는 쓸 수 없습니다: ${slash(rel)}`);
   }
   const format = FORMATS[extname(rel).toLowerCase()];
-  if (!format) throw new Error(`지원하지 않는 확장자입니다: ${extname(rel) || "(없음)"} (지원: ${Object.keys(FORMATS).join(" ")})`);
-  let current = root;
-  for (const segment of segments.slice(0, -1)) {
-    current = resolve(current, segment);
-    let info;
-    try { info = await lstat(current); } catch { break; } // 없는 부모는 저장할 때 cwd 안에서 만든다.
-    if (info.isSymbolicLink()) throw new Error(`심볼릭 링크 경로에는 쓸 수 없습니다: ${slash(relative(root, current))}`);
-    if (!info.isDirectory()) throw new Error(`디렉터리가 아닌 경로입니다: ${slash(relative(root, current))}`);
-  }
+  if (!format) throw new DraftPathRefusal(`지원하지 않는 확장자입니다: ${extname(rel) || "(없음)"} (지원: ${Object.keys(FORMATS).join(" ")})`);
+  await checkParents(root, rel);
   let exists = false;
   try {
     const info = await lstat(absolute);
-    if (info.isSymbolicLink()) throw new Error(`심볼릭 링크에는 쓸 수 없습니다: ${slash(rel)}`);
-    if (!info.isFile()) throw new Error(`일반 파일이 아닌 경로입니다: ${slash(rel)}`);
-    if (!overwrite) throw new Error(`${slash(rel)}이(가) 이미 있습니다. 덮어쓰려면 overwrite: true를 지정하세요.`);
+    if (info.isSymbolicLink()) throw new DraftPathRefusal(`심볼릭 링크에는 쓸 수 없습니다: ${slash(rel)}`);
+    if (!info.isFile()) throw new DraftPathRefusal(`일반 파일이 아닌 경로입니다: ${slash(rel)}`);
+    if (!overwrite) throw new DraftPathRefusal(`${slash(rel)}이(가) 이미 있습니다. 덮어쓰려면 overwrite: true를 지정하세요.`);
     exists = true;
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
@@ -87,21 +99,35 @@ async function resolveTarget(cwd: string, output: string, overwrite: boolean): P
   return { root, rel: slash(rel), absolute, format, exists };
 }
 
-async function save(target: Target, bytes: Buffer, overwrite: boolean): Promise<void> {
+async function save(target: Target, bytes: Buffer, overwrite: boolean, signal: AbortSignal): Promise<string | undefined> {
+  signal.throwIfAborted();
+  if (await realpath(target.root) !== target.root) throw new Error(`저장 위치가 cwd 밖으로 해석됩니다: ${target.rel}`);
+  await checkParents(target.root, target.rel, signal);
+  signal.throwIfAborted();
   const directory = dirname(target.absolute);
-  await mkdir(directory, { recursive: true });
-  // 확인과 쓰기 사이에 부모가 링크로 바뀌었는지 다시 본다.
-  const parent = await realpath(directory);
-  if (parent !== target.root && !inside(relative(target.root, parent))) throw new Error(`저장 위치가 cwd 밖으로 해석됩니다: ${target.rel}`);
-  if (!overwrite) {
-    const handle = await open(target.absolute, "wx");
-    try { await handle.writeFile(bytes); } finally { await handle.close(); }
-    return;
+  const actualParent = await realpath(directory);
+  const sameParent = process.platform === "win32" ? actualParent.toLowerCase() === directory.toLowerCase() : actualParent === directory;
+  if (!sameParent) throw new Error(`저장 위치가 바뀌었습니다: ${target.rel}`);
+  signal.throwIfAborted();
+  // Publish only complete bytes. An exclusive link cannot replace a concurrent writer.
+  const temporary = await mkdtemp(join(directory, ".draft-"));
+  const path = join(temporary, basename(target.absolute));
+  const cleanup = async () => {
+    try { await rm(temporary, { recursive: true, force: true }); } catch (error) {
+      return `임시 저장 폴더를 정리하지 못했습니다: ${temporary} (${message(error)})`;
+    }
+  };
+  try {
+    await writeFile(path, bytes, { flag: "wx", signal });
+    signal.throwIfAborted();
+    if (overwrite) await rename(path, target.absolute);
+    else await link(path, target.absolute);
+  } catch (error) {
+    const note = await cleanup();
+    if (note) throw new Error(`${message(error)}\n${note}`, { cause: error });
+    throw error;
   }
-  // 덮어쓰기는 같은 폴더의 임시 파일을 rename해 반쯤 쓴 문서가 남지 않게 한다.
-  const temp = resolve(directory, `.${basename(target.absolute)}.${process.pid}.${Date.now()}.draft-tmp`);
-  await writeFile(temp, bytes, { flag: "wx" });
-  try { await rename(temp, target.absolute); } catch (error) { await rm(temp, { force: true }); throw error; }
+  return cleanup();
 }
 
 /** 응답 전체를 감싼 코드펜스 한 겹만 벗긴다. 문서 안의 코드 블록은 건드리지 않는다. */
@@ -135,14 +161,15 @@ function prepare(format: Format, text: string, title: string): Prepared {
   }
 }
 
-type DraftResult = HelperResult & { savedPath?: string };
+type DraftResult = HelperResult & { savedPath?: string; details?: { refused: { by: "draft-path" } } };
 export async function draftDocument(input: DraftInput, ctx: ExtensionContext, signal: AbortSignal,
   complete?: DraftCompletion): Promise<DraftResult> {
-  if (!input.instruction?.trim() || !input.output?.trim()) return { text: "model: none\ninstruction과 output을 지정해 주세요.", isError: false };
   const overwrite = input.overwrite === true;
   let notes: string[] = [];
   const skipped = () => notes.map((note) => `건너뜀/잘림: ${note}`);
   try {
+    signal.throwIfAborted();
+    if (!input.instruction?.trim() || !input.output?.trim()) throw new DraftPathRefusal("instruction과 output을 지정해 주세요.");
     const target = await resolveTarget(ctx.cwd, input.output, overwrite);
     // PDF 인쇄 수단이 없으면 모델 할당량을 쓰기 전에 멈춘다.
     if (target.format === "pdf") await findPdfBackend(signal);
@@ -151,7 +178,12 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       const gathered = await collect({ paths: input.paths }, ctx.cwd, signal, "draft");
       notes = gathered.notes;
       chunks = gathered.chunks;
-      if (!chunks.length) return { text: ["model: none", "참고 자료로 보낼 수 있는 텍스트 파일이 없습니다. 자료 없이 쓰려면 paths를 비우세요.", ...skipped()].join("\n"), isError: false };
+      signal.throwIfAborted();
+      if (!chunks.length) {
+        const reason = "참고 자료로 보낼 수 있는 텍스트 파일이 없습니다. 자료 없이 쓰려면 paths를 비우세요.";
+        if (gathered.failed) throw new Error(reason);
+        throw new DraftPathRefusal(reason);
+      }
     }
     const title = basename(target.rel, extname(target.rel));
     const prompt = [
@@ -191,18 +223,21 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       }
     }, signal, fallback, { ctx, role: "draft", primary });
     if (outcome.status !== "done") {
-      return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: outcome.status === "failed" };
+      return { text: ["model: none", ...outcome.failures, ...skipped()].join("\n\n"), isError: true };
     }
     const { model: used, value: prepared, failures } = outcome;
     let bytes = prepared.bytes;
     let printWarnings: string[] = [];
     if (prepared.html !== undefined) {
       try { ({ pdf: bytes, warnings: printWarnings } = await renderPdf(prepared.html, signal)); } catch (error) {
-        return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
+        return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 PDF 변환에 실패해 저장하지 않았습니다: ${message(error)}`, ...skipped()].join("\n\n"), isError: true };
       }
     }
     const warned = () => printWarnings.map((warning) => `경고: ${warning}`);
-    try { await save(target, bytes!, overwrite); } catch (error) {
+    try {
+      const cleanupNote = await save(target, bytes!, overwrite, signal);
+      if (cleanupNote) printWarnings.push(cleanupNote);
+    } catch (error) {
       return { text: ["model: none", ...failures, `${used}의 초안은 받았지만 ${target.rel} 저장에 실패했습니다: ${message(error)}`, ...warned(), ...skipped()].join("\n\n"), isError: true };
     }
     return { text: [
@@ -215,7 +250,11 @@ export async function draftDocument(input: DraftInput, ctx: ExtensionContext, si
       ...skipped(),
     ].join("\n\n"), isError: false, savedPath: target.absolute };
   } catch (error) {
-    return { text: ["model: none", `draft 실패: ${message(error)}`, ...skipped()].join("\n\n"), isError: !signal.aborted };
+    const text = ["model: none", `draft 실패: ${message(error)}`, ...skipped()].join("\n\n");
+    if (error instanceof DraftPathRefusal && !signal.aborted) {
+      return { text: `[refused by draft-path] Not executed.\n${text}`, isError: false, details: { refused: { by: "draft-path" } } };
+    }
+    return { text, isError: true };
   }
 }
 
@@ -232,6 +271,7 @@ export default function draft(pi: ExtensionAPI): void {
     }) as never,
     async execute(_id, params, signal, _onUpdate, ctx) {
       const result = await draftDocument(params as DraftInput, ctx, signal ?? new AbortController().signal);
+      if (result.details) return { ...toolResult(result), details: result.details, isError: false as const };
       return { ...toolResult(result), ...(result.savedPath ? { details: { savedPath: result.savedPath } } : {}) };
     },
   });

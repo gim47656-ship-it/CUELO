@@ -169,4 +169,28 @@ describe("publication scope", () => {
     publication.observe({ toolName: "git_finalize", input: { files: ["src/a.ts"] }, isError: false, details: { ok: false, stage: "push" } }, cwd);
     expect(publication.note(cwd)).toContain("git_finalize push");
   });
+
+  test("an integrate refusal and a completed finalize refusal do not clear pending publication", () => {
+    const cwd = repo({ remote: true });
+    const publication = changed(cwd);
+    publication.observe({ toolName: "git_integrate", input: {}, isError: false, details: { ok: false, stage: "finalize-checks", refused: { by: "finalize-checks" } } }, cwd);
+    expect(publication.note(cwd)).toContain("git_integrate refused by finalize-checks");
+    publication.observe({ toolName: "git_finalize", input: { files: ["src/a.ts"] }, isError: false, details: { stage: "pending", jobId: "bg_fixture" } }, cwd);
+    publication.observe({ toolName: "wait", input: {}, isError: false, details: { jobs: [{
+      jobId: "bg_fixture", status: "completed", toolResultDetails: { ok: false, stage: "index-preflight", refused: { by: "index-preflight" } },
+    }] } }, cwd);
+    const note = publication.note(cwd);
+    expect(note).toContain("git_finalize bg_fixture refused by index-preflight");
+    expect(note).toContain("src/a.ts");
+  });
+
+  test("a refused write does not make an earlier working-tree edit part of the turn", () => {
+    const cwd = repo({ remote: true });
+    writeFileSync(join(cwd, "src/a.ts"), "already changed\n");
+    const publication = createTurnPublication();
+    publication.observe({ toolName: "write", input: { path: "src/a.ts" }, isError: false, details: { refused: { by: "fixture" } } }, cwd);
+    expect(publication.note(cwd)).toBeUndefined();
+    publication.observe({ toolName: "git_finalize", input: { files: ["src/a.ts"] }, isError: false, details: { ok: false, stage: "preflight", refused: { by: "repository" } } }, cwd);
+    expect(publication.note(cwd)).toContain("git_finalize refused by repository");
+  });
 });

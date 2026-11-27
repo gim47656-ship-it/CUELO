@@ -1571,7 +1571,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
   const exec = options.exec ?? spawnExec();
   const resolved = await resolveRepoTargets(options.cwd, options.files, exec);
   if ("failure" in resolved) {
-    if (resolved.failure === "git") throw new CrossReviewRefusal(`the repository state could not be read, so the review requirement cannot be checked: ${resolved.detail}`);
+    if (resolved.failure === "git") throw new Error(`the repository state could not be read, so the review requirement cannot be checked: ${resolved.detail}`);
     const listed = new Set(options.files.map((file) => file.trim()));
     const strays = (options.highRisk ?? []).map((path) => path.trim()).filter((path) => path && !listed.has(path));
     if (strays.length > 0) throw new CrossReviewRefusal(`crossReviewHighRisk must list only files of this commit (as written in files); not in files: ${strays.join(", ")}.`);
@@ -1608,7 +1608,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
       files: decision.uncovered.map(({ path, blob, reasons }) => ({ path, blob, reasons })),
     };
     const append = options.append ?? ((record) => { try { mkdirSync(dirname(options.ledgerPath), { recursive: true }); writeFileSync(options.ledgerPath, `${JSON.stringify(record)}\n`, { flag: "a" }); return true; } catch { return false; } });
-    if (!append(waiver)) throw new CrossReviewRefusal("cross-review waiver could not be recorded in the routing ledger; refusing to commit without a record.");
+    if (!append(waiver)) throw new Error("cross-review waiver could not be recorded in the routing ledger; refusing to commit without a record.");
     return { checked: true, decision, waived: true, gateBlobs };
   }
 
@@ -2729,14 +2729,14 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     chain = found;
     previous = chain.at(-1)!;
     const usedProbe = chain.find((record) => record.probeResults?.length);
-    if (!previous.passable) throw new Error(`${previous.reviewId} has an unusable reviewer answer and can never pass. Start a new review without previousReviewId.`);
-    if (records.some((record) => record.type === "cross-review" && record.previousReviewId === previous!.reviewId)) throw new Error(`${previous.reviewId} already has a round ${previous.round + 1}.`);
+    if (!previous.passable) throw new CrossReviewRefusal(`${previous.reviewId} has an unusable reviewer answer and can never pass. Start a new review without previousReviewId.`);
+    if (records.some((record) => record.type === "cross-review" && record.previousReviewId === previous!.reviewId)) throw new CrossReviewRefusal(`${previous.reviewId} already has a round ${previous.round + 1}.`);
     if (probeRound) {
-      if (usedProbe) throw new Error(`Round limit: this chain already used its one probe round (${usedProbe.reviewId}).`);
-      if (chain.length >= MAX_RECORDED_ROUNDS) throw new Error("Round limit: this historical chain is full; close it with cross_review resolve.");
+      if (usedProbe) throw new CrossReviewRefusal(`Round limit: this chain already used its one probe round (${usedProbe.reviewId}).`);
+      if (chain.length >= MAX_RECORDED_ROUNDS) throw new CrossReviewRefusal("Round limit: this historical chain is full; close it with cross_review resolve.");
     } else {
       const blocked = deltaBlockReason(chain);
-      if (blocked) throw new Error(`Round limit: ${blocked} Close the chain with cross_review resolve; include unreviewedAcknowledgements for tested code changes.`);
+      if (blocked) throw new CrossReviewRefusal(`Round limit: ${blocked} Close the chain with cross_review resolve; include unreviewedAcknowledgements for tested code changes.`);
     }
     round = previous.round + 1;
     families = continuedLanes(previous.reviewers);
@@ -2772,7 +2772,11 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const preparedProbes = probeRound ? prepareProbeResults(input.probeResults!, chainFindings) : [];
 
   const targets = await resolveRepoTargets(deps.cwd, files, deps.exec);
-  if ("failure" in targets) throw new Error(`files must be cwd-relative paths of existing parents inside ONE git repository (like git_finalize): ${targets.detail}\nSession cwd: ${deps.cwd}. Spell each path from that directory, not from the repository root.`);
+  if ("failure" in targets) {
+    const message = `files must be cwd-relative paths of existing parents inside ONE git repository (like git_finalize): ${targets.detail}\nSession cwd: ${deps.cwd}. Spell each path from that directory, not from the repository root.`;
+    if (targets.failure === "invalid") throw new CrossReviewRefusal(message);
+    throw new Error(message);
+  }
   const { root } = targets;
   // 문서(마크다운·HANDOFF·맨 위 doc/ 기록)는 게이트 대상이 아니고 통과가 덮지도 않는다. 심사할 코드가 실제로 실리면 문서는 심사 대상에서 빼 참고(맥락)로만 보낸다
   // (측정 7일: 기록 문서를 files에 넣은 체인이 지적 115건·추가 라운드 25회를 만들었다). 코드가 하나도 실리지 않으면(문서뿐인 요청·바뀐 코드 없음) 문서를 그대로 심사한다.
@@ -2862,13 +2866,13 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   } else if (probeRound) {
     const seen = reviewedBlobs(chain);
     const added = targets.targets.filter(({ path }) => !seen.has(path)).map(({ path }) => path);
-    if (added.length > 0) throw new Error(`A probe round cannot add review files: ${added.join(", ")}.`);
+    if (added.length > 0) throw new CrossReviewRefusal(`A probe round cannot add review files: ${added.join(", ")}.`);
     const filesNow = await currentBlobs(deps.exec, git, root, [...seen.keys()]);
     const inputs = previous.inputs ?? [];
     const inputsNow = await currentInputBlobs(deps.exec, git, root, inputs.map(({ path }) => path));
     const changed = [...seen].filter(([path, blob]) => filesNow.get(path) !== blob).map(([path]) => path);
     for (const { path } of changedInputs(inputs, inputsNow)) changed.push(path);
-    if (changed.length > 0) throw new Error(`A probe round requires unchanged reviewed files and inputs: ${changed.join(", ")}. Use the probe output as resolution evidence instead.`);
+    if (changed.length > 0) throw new CrossReviewRefusal(`A probe round requires unchanged reviewed files and inputs: ${changed.join(", ")}. Use the probe output as resolution evidence instead.`);
   } else {
     const before = readSnapshot(codePrevious!.snapshotDir);
     const take = async (path: string): Promise<void> => {
@@ -2915,7 +2919,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
       } catch { return []; }
     }) : [];
     const pathHint = suggestions.length ? ` The paths below include the session cwd's repository prefix twice. If these are the intended files, use their cwd-relative spelling: ${suggestions.join("; ")}.` : "";
-    throw new Error(`Nothing to review (${why}).${pathHint}${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
+    throw new CrossReviewRefusal(`Nothing to review (${why}).${pathHint}${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
   }
 
   // 입력(통과에 묶이는 계약)을 참고보다 먼저 맥락 예산에 싣는다. 이어받은 입력은 그중에서도 앞에 있다(planInputs).
@@ -2927,7 +2931,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   // 앞 라운드가 묶은 입력은 계속 reviewer에게 보일 수 있어야 한다. 조용히 빠지면 통과가 그 입력을 더는 묶지 않게 된다.
   const lostInputs = skippedInputs.filter((item) => inputPlan?.carried.has(item.path));
   if (lostInputs.length > 0) {
-    throw new Error(`${lostInputs.map((item) => `input ${item.path} (${item.reason})`).join("; ")}: bound by an earlier round of this chain but it cannot be shown to the reviewer now. A pass keeps every input it was reviewed against, so it cannot be dropped silently. Restore it, or start a new review without previousReviewId and without this input.`);
+    throw new CrossReviewRefusal(`${lostInputs.map((item) => `input ${item.path} (${item.reason})`).join("; ")}: bound by an earlier round of this chain but it cannot be shown to the reviewer now. A pass keeps every input it was reviewed against, so it cannot be dropped silently. Restore it, or start a new review without previousReviewId and without this input.`);
   }
   const movable = docsDeferred ? [...new Map(docTargets.map((target) => [target.path, target] as const)).values()].filter((target) => !inputPaths.has(target.path) && !referencePaths.has(target.path)) : [];
   const movedDocs = movable.slice(0, Math.max(0, MAX_REFERENCES - explicitReferences.length));
@@ -2985,13 +2989,13 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
     const why = plan.refused === "too-many-batches"
       ? `the change would need ${plan.batches} calls per reviewer, above the limit of ${MAX_REVIEW_BATCHES} (each call holds at most ${MAX_INPUT_BYTES} bytes, about 75k-100k tokens, so one model call finishes within the ${REVIEW_TIMEOUT_MS / 60000} minute timeout)`
       : `the part shared by every call (acceptance, user request, earlier findings, inputs, references, probe results) leaves less than ${MIN_BATCH_CHANGE_BYTES} of the ${MAX_INPUT_BYTES} bytes one call can hold for the change, so splitting the change cannot help`;
-    throw new Error(`Review input is about ${total} bytes and cannot be reviewed: ${why}. Nothing was sent. Split the change into separate reviews by file or topic, or trim the inputs and references. Largest pieces: ${largest}${more}.`);
+    throw new CrossReviewRefusal(`Review input is about ${total} bytes and cannot be reviewed: ${why}. Nothing was sent. Split the change into separate reviews by file or topic, or trim the inputs and references. Largest pieces: ${largest}${more}.`);
   }
   const { prompts } = plan;
   // 검토 본문을 모은 뒤 파일이 바뀌었으면 reviewer가 본 내용과 사본이 어긋나므로 쓰지 않고 다시 하게 한다.
   const settledBlobs = await currentBlobs(deps.exec, git, root, reviewedFiles.map((file) => file.path));
   const moved = reviewedFiles.filter((file) => settledBlobs.get(file.path) !== file.blob).map((file) => file.path);
-  if (moved.length > 0) throw new Error(`${moved.join(", ")} changed while the review input was being prepared; run the review again once the files are stable.`);
+  if (moved.length > 0) throw new CrossReviewRefusal(`${moved.join(", ")} changed while the review input was being prepared; run the review again once the files are stable.`);
   const reviewId = deps.newId?.() ?? `xr-${now().toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(3).toString("hex")}`;
   const snapshotDir = join(deps.snapshotRoot, reviewId);
   writeSnapshot(snapshotDir, snapshot);

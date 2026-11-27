@@ -104,12 +104,17 @@ function ResultIcon({ outcome }: { outcome: StepOutcome | "stale" }) {
 
 /** 사건 하나의 판정 말. 교차리뷰는 지적 수를, 커밋은 커밋 앞 7자리를 함께 보인다. 수정 전 통과·완료는 그렇게 적는다. */
 function StepVerdict({ step, st }: { step: WorkStep; st: AnswerStatusTranslate }) {
+  const { t } = useI18n();
   let word = st(`flow.state.${step.outcome}`);
   if (step.stale) {
     word = st(step.outcome === "passed" ? "flow.state.stale" : "flow.state.staleDone");
   } else if (step.stage === "review" && step.outcome === "failed" && step.findings !== null) {
     const findingsKey = step.findings === 1 ? "flow.state.findings.one" : "flow.state.findings";
     word = st(step.action === "resolve" ? "flow.state.open" : findingsKey, { count: step.findings });
+  } else if (step.refused) {
+    word = t("toolRun.refused");
+  } else if (step.scriptError) {
+    word = t("toolRun.scriptError");
   } else if (step.stage === "review" && step.unusable) {
     word = st("flow.state.reviewUnusable");
   } else if (step.stage === "review" && step.outcome === "done") {
@@ -205,7 +210,7 @@ function CommandDetail({ step, label, st }: { step: CommandStep; label: string; 
     : other?.kind === "unjudged" ? st("flow.why.ciUnjudged", { conclusion: other.conclusion })
     : st(`flow.why.${step.stage}`);
   const next = step.reason ? st(NEXT_BY_REASON[step.reason]) : compoundFailed ? st("flow.next.compound") : null;
-  const explained = step.outcome === "unverified" || (step.outcome === "unobserved" && step.reason !== undefined);
+  const explained = !step.refused && (step.outcome === "unverified" || (step.outcome === "unobserved" && step.reason !== undefined));
   const exit = step.exitCode !== null
     ? st("flow.exit", { code: step.exitCode })
     : st(step.outcome === "failed" ? "flow.exit.error" : step.outcome === "running" ? "flow.state.running" : "flow.exit.none");

@@ -20,6 +20,7 @@ import { ImageRegionMarker, renderRegionImages } from "./ImageRegionMarker";
 import type { Region, Size } from "@/lib/image-regions";
 import { MAX_ATTACHED_IMAGES } from "@/lib/image-attachments";
 import { readExitCode } from "@/lib/tool-exit-code";
+import { toolNonSuccess, type ToolNonSuccess } from "@/lib/tool-outcome";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { formatTokenCount } from "@/lib/format-tokens";
 import {
@@ -1271,7 +1272,7 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
 }
 
 
-type ToolRunState = "running" | "done" | "failed";
+type ToolRunState = "running" | "done" | ToolNonSuccess;
 
 /** 실행 중 단어를 늦게 띄우는 시간. 바로 끝나는 호출이 깜빡이지 않게 한다. */
 const RUNNING_WORD_DELAY_MS = 400;
@@ -1297,8 +1298,9 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
   const inputStr = JSON.stringify(block.input, null, 2);
   const isTodoTool = normalizedToolName === "todo" || normalizedToolName.endsWith(".todo") || normalizedToolName.endsWith("_todo");
   const isBashTool = normalizedToolName === "bash" || normalizedToolName.startsWith("bash ") || normalizedToolName.endsWith(".bash") || normalizedToolName.endsWith("_bash");
-  const resultDiff = result && !result.isError ? getResultDiff(result) : null;
-  const todoPhases = isTodoTool ? getTodoPhases(block, result) : null;
+  const nonSuccess = toolNonSuccess(result);
+  const resultDiff = result && !nonSuccess ? getResultDiff(result) : null;
+  const todoPhases = isTodoTool && !nonSuccess ? getTodoPhases(block, result) : null;
   const diffStats = resultDiff
     ? resultDiff.text.split(/\r?\n/).reduce(
         (stats, line) => {
@@ -1317,10 +1319,10 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
   const exitCode = result ? readExitCode(result) : null;
   const state: ToolRunState = !result
     ? "running"
-    : result.isError || (exitCode !== null && exitCode !== 0) ? "failed" : "done";
+    : nonSuccess ?? (exitCode !== null && exitCode !== 0 ? "failed" : "done");
   const isError = state === "failed";
-  // 사용자가 한 번 누르기 전까지는 실패한 호출만 펼친다. 편집 diff도 접힌 채로 시작한다.
-  const expanded = toggled ?? isError;
+  const showOutcome = isError || state === "refused" || state === "scriptError";
+  const expanded = toggled ?? showOutcome;
 
   if (isTodoTool && todoPhases) {
     return <TodoChecklistPreview phases={todoPhases} />;
@@ -1338,7 +1340,8 @@ function ToolCallBlock({ block, result, duration, runStartedAt, sessionId }: { b
 
   return (
     <div
-      className={`tool-call-card ${isError ? "is-error" : state === "running" ? "is-running" : "is-done"}${isBashTool ? " is-shell" : ""}${focusNonce !== null ? " is-reveal-target" : ""}`}
+      className={`tool-call-card ${isError ? "is-error" : state === "running" ? "is-running" : state === "done" ? "is-done" : ""}${isBashTool ? " is-shell" : ""}${focusNonce !== null ? " is-reveal-target" : ""}`}
+      data-tool-state={state}
       data-tool-call-id={block.toolCallId}
       aria-busy={state === "running" ? true : undefined}
       style={{ overflow: "hidden", fontSize: 12 }}
@@ -1478,6 +1481,8 @@ function ToolRunStateSlot({ state, duration, exitCode, startedAt }: { state: Too
           {exitCode !== null && <span className="tool-run-exit">{t("toolRun.exitCode", { code: exitCode })}</span>}
         </span>
       )}
+      {state === "refused" && <Badge tone="neutral" variant="weak" size="medium">{t("toolRun.refused")}</Badge>}
+      {state === "scriptError" && <Badge tone="warning" variant="weak" size="medium">{t("toolRun.scriptError")}</Badge>}
     </>
   );
 }

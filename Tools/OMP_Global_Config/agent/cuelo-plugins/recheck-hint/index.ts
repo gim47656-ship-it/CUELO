@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { checkOutputHint } from "../../extensions/command-guard/check-output-hint";
 import { invokedCommandLines } from "../../extensions/command-guard/matcher";
 import { onSessionLifecycle } from "../../extensions/lib/session-identity";
+import { didNotSucceed } from "../../extensions/lib/tool-outcome";
 import type { TurnEndNotices } from "../../extensions/turn-end-guard";
 
 // 2026-11-21 연구 근거(advisory only, 호출을 막거나 바꾸지 않는다):
@@ -235,7 +236,7 @@ export function createRecheckHint(options: RecheckHintOptions = {}) {
       if (shuttingDown || ctx.agent?.kind === "sub") return;
       const input = (event.input ?? {}) as Record<string, unknown>;
       if (event.toolName === "edit" || event.toolName === "write") {
-        if (!event.isError) noteChange(targets(input, ctx.cwd));
+        if (!didNotSucceed(event)) noteChange(targets(input, ctx.cwd));
         return;
       }
       // Maker(task 접수·wait 결과), 셸 명령, eval은 작업 트리를 바꿨을 수 있다. 결과 글로는 알 수 없으므로 서명 확인 대상으로만 표시한다.
@@ -252,7 +253,7 @@ export function createRecheckHint(options: RecheckHintOptions = {}) {
         const key = `${cwd}\0${squeeze(command)}`;
         const previous = checks.get(key);
         // 실패한 재실행은 더 이상 "통과한 검사"가 아니다: 모델이 실패를 직접 보았으므로 목록에서 뺀다.
-        if (exitCode !== 0 || event.isError) {
+        if (exitCode !== 0 || didNotSucceed(event)) {
           checks.delete(key);
           return;
         }
@@ -270,7 +271,7 @@ export function createRecheckHint(options: RecheckHintOptions = {}) {
       if (event.toolName === "git_finalize") {
         const snapshot = finalizeSnapshots.get(event.toolCallId);
         finalizeSnapshots.delete(event.toolCallId);
-        if (event.isError || !snapshot) return;
+        if (didNotSucceed(event) || !snapshot) return;
         // 게시는 HEAD만 옮기고 내용을 바꾸지 않는다: 낡지 않은 검사의 기준 서명을 게시 뒤 서명으로 옮겨 둔다.
         const post = await signature(ctx.cwd);
         if (post !== undefined) {

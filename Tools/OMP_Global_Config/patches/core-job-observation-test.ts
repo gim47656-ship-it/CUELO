@@ -130,7 +130,7 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
       reportSendError: (_action: string, error: Error) => { extensionErrors.push(error); },
       reportRuntimeError: (error: unknown) => { extensionErrors.push(error); },
     });
-    const results = new Map<string, { isError: boolean; text: string }>();
+    const results = new Map<string, { isError: boolean; refused: unknown; text: string }>();
     let waitStarts = 0;
     let inspectedStatus: unknown;
     active.subscribe((event: AgentSessionEvent) => {
@@ -138,7 +138,7 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
       if (event.type !== "tool_execution_end") return;
       const content = field(event.result, "content");
       const text = Array.isArray(content) ? content.map(block => String(field(block, "text") ?? "")).join("") : "";
-      results.set(event.toolCallId, { isError: event.isError ?? false, text });
+      results.set(event.toolCallId, { isError: event.isError ?? false, refused: field(field(event.result, "details"), "refused"), text });
       if (event.toolCallId === "inspect" && !event.isError) {
         inspectedStatus = field(field(field(field(event.result, "details"), "proc"), "job"), "status");
         // The genuine observation saw the job; only now let it finish.
@@ -161,7 +161,10 @@ await check("actual SDK: due observation returns the wait, re-wait is refused un
 
     assert.equal(results.get("wait-1")?.text, "Wait interrupted by message.", "the due observation returned the wait");
     assert.ok(requests[2]!.includes("[JevRuntime:wait-observation-due]"), "the next model request carries the observation notice");
-    assert.equal(results.get("wait-2")?.isError, true, "re-wait before inspection is refused");
+    assert.equal(results.get("wait-2")?.isError, false);
+    // This test registers JEV as an inline SDK extension, whose source ID is <inline-0>.
+    assert.deepEqual(results.get("wait-2")?.refused, { by: "<inline-0>" }, "re-wait before inspection is refused");
+    assert.ok(results.get("wait-2")?.text.startsWith("[refused by <inline-0>] Not executed.\n"));
     assert.ok(results.get("wait-2")!.text.includes("[JevRuntime:pre-wait-observation]"), results.get("wait-2")!.text);
     assert.equal(inspectedStatus, "running", "the proc read saw the job still running after the wake");
     assert.equal(results.get("wait-3")?.isError, false);

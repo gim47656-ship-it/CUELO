@@ -16,6 +16,7 @@ import { createQuietDelivery } from "./lib/quiet-delivery";
 import { registerStartRejectFallback } from "./lib/start-reject-fallback";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { LiveServices } from "./lib/turn-jobs";
+import { didNotSucceed } from "./lib/tool-outcome";
 import { readChildSkillReads, renderSkillEvidence, type SkillReadWindow } from "./lib/skill-evidence";
 import { assignTaskResultBlocks, createRoutingLedger, DEFAULT_LEDGER_PATH, deriveRevisionRelation, openHeldVerdicts, pickReportRevision, revisionRelationDiagnostic, scopedAttempts, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type OutcomeRecord, type RevisionRelation, type VerdictRecord } from "./lib/routing-ledger";
 import {
@@ -2190,10 +2191,11 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
 
 
     pi.on("tool_result", async (event, ctx) => {
+      const unsuccessful = didNotSucceed(event);
       if (event.toolName === "bash") {
         const command = pendingBashCommands.get(event.toolCallId);
         pendingBashCommands.delete(event.toolCallId);
-        if (!event.isError && command !== undefined) {
+        if (!unsuccessful && command !== undefined) {
           const async = fieldOf(event.details, "async");
           const jobId = fieldOf(async, "jobId");
           if (fieldOf(async, "state") === "running" && typeof jobId === "string" && jobId) {
@@ -2202,7 +2204,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
           bashServices.observe(event, command);
         }
       }
-      if ((event.toolName === "read" || event.toolName === "write") && !event.isError) {
+      if ((event.toolName === "read" || event.toolName === "write") && !unsuccessful) {
         const path = fieldOf(event.input, "path");
         if (typeof path === "string" && /^proc:\/\//u.test(path)) {
           bashServices.observe(event);
@@ -2223,7 +2225,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       // 실행 중 attempt에 대한 DM은 그 attempt의 조향이므로 새 attempt를 만들지 않는다. 두 번째 DM도 바인딩을 덮지 않는다.
       const beforeWrite = event.toolName === "write" ? preWriteJobs.get(event.toolCallId) : undefined;
       if (event.toolName === "write") preWriteJobs.delete(event.toolCallId);
-      if (event.toolName === "write" && !event.isError) {
+      if (event.toolName === "write" && !unsuccessful) {
         const input = event.input as Record<string, unknown>;
         const targetAgentId = AGENT_URL.exec(typeof input.path === "string" ? input.path.trim() : "")?.[1] ?? "";
         const message = typeof input.content === "string" ? input.content : "";
@@ -2310,7 +2312,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         const details = event.details as { progress?: unknown; async?: { jobId?: unknown }; results?: unknown } | undefined;
         // 이 호출 안에서 실행을 마친 child(SingleResult). 실행 뒤 단계에서 실패한 child는 core가 error를 채운 결과를 isError와 함께 싣는다.
         const inlineResults = readInlineResults(details?.results);
-        if (event.isError && inlineResults.size === 0) {
+        if (unsuccessful && inlineResults.size === 0) {
           // spawn하지 못한 task 실행 오류. 이 호출의 예약만 푼다.
           routing.releaseCall(event.toolCallId);
           return;
@@ -2425,7 +2427,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         return;
       }
 
-      if (event.toolName === "todo" && !event.isError) {
+      if (event.toolName === "todo" && !unsuccessful) {
         const snapshot = readTodoSnapshot(event.details);
         if (snapshot) {
           todoProgressState = advanceTodoProgressState(
@@ -2439,7 +2441,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
 
       // 실패 기록 — 탐색 도구의 실패는 일상 probing이라 재시도 판정을 세우지 않는다.
       const exitCode = event.toolName === "bash" ? fieldOf(event.details, "exitCode") : undefined;
-      if (event.isError || (typeof exitCode === "number" && exitCode !== 0)) {
+      if (unsuccessful || (typeof exitCode === "number" && exitCode !== 0)) {
         if (!EXPLORATION_TOOLS[event.toolName]) {
           pendingFailures.set(event.toolName, {
             category: classifyError(event.content, event.input, platform),
@@ -2457,7 +2459,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (inspection) pendingInspections.delete(event.toolCallId);
 
       // pre-review: `wait`·`read proc://`가 auto-delivery보다 먼저 settled 결과를 보여 준 경계.
-      if (event.isError) return;
+      if (unsuccessful) return;
       let via: "wait" | "read proc://";
       let jobDetails: unknown;
       if (event.toolName === "wait") {

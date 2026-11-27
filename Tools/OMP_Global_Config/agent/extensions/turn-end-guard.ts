@@ -4,6 +4,7 @@ import { onSessionLifecycle } from "./lib/session-identity";
 import { readPersistedTodoProgress, readTodoSnapshot, type TodoSnapshotItem } from "./lib/task-progress";
 import { createTurnDocuments } from "./lib/turn-documents";
 import { createTurnPublication } from "./lib/turn-publication";
+import { didNotSucceed } from "./lib/tool-outcome";
 
 // 성공한 todo 결과의 미완료 상태로 조기 종료를 판단한다. 문구만으로 새 작업을 추정하지 않는다.
 // 기존 agent_end 안내 위치와 입력당 1회 제한을 유지하며, 외부 대기·승인 경계는 진행을 강제하지 않는다.
@@ -382,7 +383,7 @@ export function createTurnEndGuard(
     if (ctx.agent?.kind !== "sub") {
       publication.observe(event, ctx.cwd);
     }
-    if (event.toolName !== "todo" || event.isError) return;
+    if (event.toolName !== "todo" || didNotSucceed(event)) return;
     const snapshot = readTodoSnapshot(event.details);
     if (snapshot) {
       invalidate();

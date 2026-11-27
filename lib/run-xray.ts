@@ -16,6 +16,7 @@ import { closeDb } from "@oh-my-pi/omp-stats/db";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { toolNonSuccess, type ToolNonSuccess } from "./tool-outcome";
 import {
   EXPERIMENT_DEFAULT_SESSIONS,
   EXPERIMENT_MAX_SESSIONS,
@@ -359,8 +360,8 @@ interface TranscriptScan {
    * `messages` 표에 넣고 구분 열을 남기지 않으므로 transcript의 id로만 가려낸다.
    */
   helperEntries: Map<string, { purpose: string; role: string | null }>;
-  /** `isError` 도구 결과의 toolCallId → 분류. 오류가 아닌 결과는 담지 않는다. */
-  toolErrors: Map<string, ToolErrorKind>;
+  /** Tool result ID to transcript-derived failure, refusal, or script error. */
+  toolErrors: Map<string, ToolErrorKind | ToolNonSuccess>;
 }
 
 export type ToolErrorKind = "failed" | "noMatch" | "cancelled";
@@ -542,8 +543,8 @@ function collectBashCommands(line: string, out: Map<string, string>): void {
   }
 }
 
-function classifyToolErrors(errorLines: string[], bashCommands: Map<string, string>): Map<string, ToolErrorKind> {
-  const result = new Map<string, ToolErrorKind>();
+function classifyToolErrors(errorLines: string[], bashCommands: Map<string, string>): Map<string, ToolErrorKind | ToolNonSuccess> {
+  const result = new Map<string, ToolErrorKind | ToolNonSuccess>();
   for (const line of errorLines) {
     let parsed: unknown;
     try {
@@ -551,9 +552,15 @@ function classifyToolErrors(errorLines: string[], bashCommands: Map<string, stri
     } catch {
       continue;
     }
-    const record = parsed as { message?: { toolCallId?: unknown; toolName?: unknown; isError?: unknown; content?: unknown } };
-    const message = record.message;
-    if (!message || message.isError !== true || typeof message.toolCallId !== "string") continue;
+    const record = parsed as { type?: unknown; message?: { role?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; content?: unknown } } | null;
+    const message = record?.message;
+    if (record?.type !== "message" || message?.role !== "toolResult" || typeof message.toolCallId !== "string") continue;
+    const outcome = toolNonSuccess(message);
+    if (!outcome) continue;
+    if (outcome !== "failed") {
+      result.set(message.toolCallId, outcome);
+      continue;
+    }
     const texts: string[] = [];
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
@@ -609,15 +616,19 @@ function readTranscriptFile(file: string): TranscriptScan {
         purpose: typeof record.purpose === "string" && record.purpose ? record.purpose : "?",
         role: typeof record.role === "string" && record.role ? record.role : null,
       });
-    } else if (line.startsWith('{"type":"message"')) {
-      if (line.includes('"role":"user"')) {
-        let parsed: unknown;
+    } else if (/"type"\s*:\s*"message"/.test(line)) {
+      // Look at the parsed tool-result role before the title prefilter; details
+      // can contain another message with its own role.
+      if (/"role"\s*:\s*"toolResult"/.test(line) && (/"isError"\s*:\s*true/.test(line) || line.includes('"refused"') || line.includes('"scriptError"'))) {
+        errorLines.push(line);
+      } else if (/"role"\s*:\s*"user"/.test(line)) {
+        let record: { type?: unknown; id?: unknown; message?: { role?: unknown; content?: unknown } } | null;
         try {
-          parsed = JSON.parse(line);
+          record = JSON.parse(line);
         } catch {
           continue;
         }
-        const record = parsed as { id?: unknown; message?: { content?: unknown } };
+        if (record?.type !== "message" || record.message?.role !== "user") continue;
         if (typeof record.id !== "string") continue;
         const content = record.message?.content;
         if (!Array.isArray(content)) continue;
@@ -631,10 +642,8 @@ function readTranscriptFile(file: string): TranscriptScan {
           }
         }
       } else {
-        if (line.includes('"name":"task"')) taskLines.push(line);
-        if (line.includes('"role":"toolResult"') && line.includes('"isError":true')) {
-          errorLines.push(line);
-        } else if (line.includes('"type":"toolCall"') && line.includes('"name":"bash"')) {
+        if (/"name"\s*:\s*"task"/.test(line)) taskLines.push(line);
+        if (/"type"\s*:\s*"toolCall"/.test(line) && /"name"\s*:\s*"bash"/.test(line)) {
           collectBashCommands(line, bashCommands);
         }
       }
@@ -1035,16 +1044,14 @@ function buildRoleSegment(
 }
 
 function buildToolTotals(rows: ToolCallRow[], data: SessionData): RunToolTotal[] {
-  const grouped = new Map<string, { calls: number; failed: number; noMatch: number; cancelled: number }>();
+  const grouped = new Map<string, Omit<RunToolTotal, "toolName">>();
   for (const row of rows) {
-    const entry = grouped.get(row.tool_name) ?? { calls: 0, failed: 0, noMatch: 0, cancelled: 0 };
+    const entry = grouped.get(row.tool_name) ?? { calls: 0, failed: 0, noMatch: 0, cancelled: 0, refused: 0, scriptError: 0 };
     entry.calls += 1;
-    if ((row.is_error ?? 0) !== 0) {
-      const scan = row.session_file === data.parentFile ? data.parentScan : data.childScans.get(row.session_file);
-      // transcript에서 못 찾은 오류는 조용히 빠지지 않도록 실패로 센다.
-      const kind = scan?.toolErrors.get(row.tool_call_id) ?? "failed";
-      entry[kind] += 1;
-    }
+    const scan = row.session_file === data.parentFile ? data.parentScan : data.childScans.get(row.session_file);
+    const kind = scan?.toolErrors.get(row.tool_call_id);
+    if (kind === "refused" || kind === "scriptError") entry[kind]++;
+    else if ((row.is_error ?? 0) !== 0) entry[kind ?? "failed"]++;
     grouped.set(row.tool_name, entry);
   }
   return [...grouped.entries()]
