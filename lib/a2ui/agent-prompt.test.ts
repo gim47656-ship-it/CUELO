@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
-import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { A2UI_AGENT_PROMPT, registerA2uiAgentPrompt, withA2uiAgentPrompt } from "./agent-prompt";
 import { buildActionEnvelope, formatActionMessage, parseA2uiBlock, parseActionMessage } from "./blocks";
 
-function start(prompt: string, reason: BeforeAgentStartEvent["reason"] = "prompt") {
-  let handler!: (event: BeforeAgentStartEvent) => BeforeAgentStartEventResult | undefined;
+function start(prompt: string, reason: BeforeAgentStartEvent["reason"] = "prompt", branch: readonly object[] = []) {
+  let handler!: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => BeforeAgentStartEventResult | undefined;
   registerA2uiAgentPrompt({ on: (_name: string, fn: typeof handler) => { handler = fn; } } as ExtensionAPI);
-  return handler({ type: "before_agent_start", reason, prompt, systemPrompt: [withA2uiAgentPrompt("Operator policy")] });
+  const ctx = { sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
+  return handler({ type: "before_agent_start", reason, prompt, systemPrompt: [withA2uiAgentPrompt("Operator policy")] }, ctx);
 }
 
 const guide: BeforeAgentStartEventResult = {
@@ -46,4 +47,13 @@ test("an unchanged action envelope gets hidden guidance even in a queued batch",
   expect(parseActionMessage(action)?.envelope).toEqual(envelope);
   expect(start(action)).toEqual(guide);
   expect(start(`Keep going.\n\n${action}`)).toEqual(guide);
+});
+
+test("skips the guide while the same text is still in context and resends it after compaction, /clear or a text change", () => {
+  const sent = { type: "custom_message", customType: "cuelo-a2ui-guide", content: A2UI_AGENT_PROMPT } as const;
+  const reply = { type: "message", message: { role: "assistant", content: [] } } as const;
+  expect(start("Compare A and B.", "prompt", [sent, reply])).toBeUndefined();
+  expect(start("Compare A and B.", "prompt", [sent, { type: "compaction" }, reply])).toEqual(guide);
+  expect(start("Compare A and B.", "prompt", [sent, { type: "reset_boundary" }])).toEqual(guide);
+  expect(start("Compare A and B.", "prompt", [{ ...sent, content: "older guide text" }, reply])).toEqual(guide);
 });

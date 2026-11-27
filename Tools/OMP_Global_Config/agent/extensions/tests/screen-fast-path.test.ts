@@ -69,7 +69,13 @@ function harness(options: { env?: Record<string, string | undefined>; finds?: Ru
     read: (path: string, session: unknown = ctx) => handlers.get("tool_call")!({ toolName: "read", input: { path } }, session),
     find: async (params: Record<string, unknown>, session: unknown = ctx) =>
       (await tool!.execute("c1", params, undefined, undefined, session)).content[0].text,
-    beforeStart: (reason: string, prompt: string) => handlers.get("before_agent_start")!({ reason, prompt, systemPrompt: ["base"] }),
+    // branch는 뿌리부터 잎까지의 세션 기록이다. 훅은 잎에서 parentId를 따라 올라간다.
+    beforeStart: (reason: string, prompt: string, branch: Record<string, unknown>[] = []) => {
+      const entries = branch.map((entry, i) => ({ ...entry, id: `e${i}`, parentId: i ? `e${i - 1}` : null }));
+      const byId = new Map(entries.map((entry) => [entry.id, entry]));
+      const sessionManager = { getSessionId: () => "s1", getLeafEntry: () => entries.at(-1), getEntry: (id: string) => byId.get(id) };
+      return handlers.get("before_agent_start")!({ reason, prompt, systemPrompt: ["base"] }, { sessionManager });
+    },
   };
 }
 
@@ -149,6 +155,16 @@ describe("screen-fast-path read guard", () => {
         display: false, attribution: "agent",
       },
     });
+  });
+
+  test("does not resend the guide still in context, but resends it after compaction or /clear", () => {
+    const h = harness();
+    const first = h.beforeStart("prompt", "Open the AnyDesk window.") as { message: { customType: string; content: string } };
+    const sent = { type: "custom_message", ...first.message };
+    const user = { type: "message", message: { role: "user", content: "Click the OK button in AnyDesk." } };
+    expect(h.beforeStart("prompt", "Click the OK button in AnyDesk.", [sent, user])).toBeUndefined();
+    expect(h.beforeStart("prompt", "Click the OK button in AnyDesk.", [sent, { type: "compaction" }, user])).toEqual(first);
+    expect(h.beforeStart("prompt", "Click the OK button in AnyDesk.", [sent, { type: "reset_boundary" }, user])).toEqual(first);
   });
 });
 

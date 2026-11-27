@@ -25,7 +25,7 @@ import { formatUpkeepValue, kstDate, kstDateTime } from "./prompt";
 import { OBSERVED_LIMIT, OBSERVED_MIN_SESSIONS, type SkillCandidate } from "./skill-candidates";
 import { injectionKind, maskSecrets, type ContextLoadRow, type FailureExcerpt, type ScanResult } from "./sessions";
 import { emptySkillWindow, skillAssociationStatus, type SkillUsageReport, type SkillUsageRow, type SkillWindowUsage, type UnusedSkill } from "./skill-usage";
-import type { UpkeepDueItem, UpkeepReport } from "./types";
+import type { UpkeepDueItem, UpkeepReport, UpkeepStatus } from "./types";
 
 const exec = promisify(execFile);
 export const NIGHTLY_BUNDLE_VERSION = 2;
@@ -57,6 +57,20 @@ export interface BundleProblem {
   section: string;
   title: string;
   summary: string;
+}
+
+/**
+ * 점검판 모든 행의 상태와 수치. 사례·문구 없이 id·상태·값만 싣는다. 「문제」만 싣는 `problems`로는 HANDOFF 행이 묻는
+ * 「정상으로 돌아왔는가」「값이 기준 아래인가」를 판정할 수 없어 같은 행이 거듭 미측정으로 밀렸다(2026-11-28 야간).
+ */
+export interface BundleRowStatus {
+  /** `섹션/지표` id */
+  id: string;
+  status: UpkeepStatus;
+  current: number | null;
+  previous: number | null;
+  /** 점검 표시(고침이나 점검 완료)가 붙은 행 */
+  checked: boolean;
 }
 
 export interface ToolFailure {
@@ -95,6 +109,8 @@ export interface NightlyBundle {
   pluginEvents?: PluginEventExport;
   /** Optional v2 field; bundles without it leave the cache ledger break counts unmeasured. */
   prefixBreaks?: PrefixBreakExport;
+  /** Optional v2 field; bundles without it leave the row status checks of HANDOFF items unmeasured. */
+  rowStatuses?: BundleRowStatus[];
 }
 
 /**
@@ -153,6 +169,32 @@ export function bundleProblems(report: UpkeepReport): BundleProblem[] {
     })));
 }
 
+export function bundleRowStatuses(report: UpkeepReport): BundleRowStatus[] {
+  return report.sections.flatMap((section) => section.metrics.map((metric) => ({
+    id: `${section.id}/${metric.id}`, status: metric.status, current: metric.current, previous: metric.previous, checked: !!metric.check,
+  })));
+}
+
+const ROW_STATUS_LIMIT = 400;
+const ROW_STATUSES: Record<UpkeepStatus, true> = { ok: true, watch: true, problem: true, unknown: true };
+// `구역/항목` 꼴만 받는다(collect.ts의 id는 모두 소문자와 하이픈). 다른 글이 이 칸으로 새지 않게 한다.
+const ROW_ID = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/;
+const finiteOrNull = (value: unknown): value is number | null => value === null || (typeof value === "number" && Number.isFinite(value));
+
+/** 행 하나라도 모양이 틀리면 고쳐 읽지 않고 전체를 없는 것(null)으로 읽어 미측정으로 남긴다. 빈 배열은 행 없음으로 읽는다. */
+function parseRowStatuses(value: unknown): BundleRowStatus[] | null {
+  if (!Array.isArray(value) || value.length > ROW_STATUS_LIMIT) return null;
+  const out: BundleRowStatus[] = [];
+  for (const item of value) {
+    const r = rows([item])[0];
+    const id = r ? str(r.id, 120) : null;
+    if (!r || !id || !ROW_ID.test(id) || typeof r.status !== "string" || !Object.hasOwn(ROW_STATUSES, r.status)) return null;
+    if (!finiteOrNull(r.current) || !finiteOrNull(r.previous) || typeof r.checked !== "boolean") return null;
+    out.push({ id, status: r.status as UpkeepStatus, current: r.current, previous: r.previous, checked: r.checked });
+  }
+  return out;
+}
+
 /** 최근 7일 도구 오류 묶음(`도구: 키` → 건수)을 많은 순으로 20개. */
 export function rankToolFailures(errorsBySignature: Record<string, number>): ToolFailure[] {
   return Object.entries(errorsBySignature)
@@ -195,6 +237,7 @@ export function buildNightlyExport(input: {
     source: input.source,
     generatedAt: input.now.toISOString(),
     problems: bundleProblems(input.report),
+    rowStatuses: bundleRowStatuses(input.report),
     skillCandidates: input.skillCandidates,
     toolFailures,
     // 행의 세션 목록(경로 포함)은 parseBundle이 다시 만들 때 빠진다.
@@ -450,6 +493,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
   const modelErrors = raw.version === 2 ? parseModelErrors(raw.modelErrors, isoInstant(raw.generatedAt)) : null;
   const pluginEvents = raw.version === 2 ? parsePluginEvents(raw.pluginEvents, isoInstant(raw.generatedAt)) : null;
   const prefixBreaks = raw.version === 2 ? parsePrefixBreaks(raw.prefixBreaks, isoInstant(raw.generatedAt)) : null;
+  const rowStatuses = raw.version === 2 ? parseRowStatuses(raw.rowStatuses) : null;
   return {
     version: raw.version,
     source: fileSource,
@@ -473,6 +517,7 @@ function parseBundle(value: unknown, fileSource: string): NightlyBundle | null {
     ...(modelErrors ? { modelErrors } : {}),
     ...(pluginEvents ? { pluginEvents } : {}),
     ...(prefixBreaks ? { prefixBreaks } : {}),
+    ...(rowStatuses ? { rowStatuses } : {}),
   };
 }
 

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import { A2UI_ACTION_LANG, extractFencedBlocks, parseActionBlock } from "./blocks";
 
 /** Catalog id agents use for CUELO answer cards (the basic catalog id renders with the same components). */
@@ -33,6 +33,21 @@ const A2UI_HINT = `For a useful visual summary, choice or progress, use the on-d
 
 const CARD_REQUEST_EN = /\b(?:a2ui(?!-action)|(?:answer|summary|status|progress|comparison|visual|interactive) cards?|card format|cards? please|(?:make|create|show|render|use|as) (?:me )?(?:a |the )?cards?|compar(?:e|ing|ison)|trade-?offs?|(?:progress|status) (?:report|update|summary|overview)|visual (?:summary|report)|infographic|(?:make|draw|plot|show) (?:a )?(?:(?:bar|line|pie) )?chart)\b/i;
 const CARD_REQUEST_KO = /답변\s*카드|(?:요약|비교)\s*카드|카드(?:로|(?:를|\s*하나)?\s*(?:만들|보여|그려))|비교|선택지|대안|장단점|진행\s*상황|상태\s*요약|현황\s*(?:요약|보고)|시각화/;
+const GUIDE_TYPE = "cuelo-a2ui-guide";
+
+/**
+ * True when this exact guide is still in the model context: on the branch after the latest
+ * compaction or `/clear` boundary. Re-sending it there adds the same 2.5k characters again
+ * (2026-11-28 nightly: 6 of 11 home and 6 of 15 office guides were such repeats).
+ */
+function guideInContext(branch: readonly SessionEntry[]): boolean {
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry.type === "compaction" || entry.type === "reset_boundary") return false;
+    if (entry.type === "custom_message" && entry.customType === GUIDE_TYPE && entry.content === A2UI_AGENT_PROMPT) return true;
+  }
+  return false;
+}
 
 /** When the SDK cannot load inline extensions, keep the existing static card spec. */
 export function withA2uiAgentPrompt(appendPrompt: string | undefined, onDemand = true): string {
@@ -42,10 +57,11 @@ export function withA2uiAgentPrompt(appendPrompt: string | undefined, onDemand =
 
 export function registerA2uiAgentPrompt(pi: ExtensionAPI): void {
   // SDK preparation also runs on delivery of steering and queued follow-ups.
-  pi.on("before_agent_start", ({ reason, prompt }) => {
+  pi.on("before_agent_start", ({ reason, prompt }, ctx) => {
     if (reason !== "prompt") return;
     if (!CARD_REQUEST_EN.test(prompt) && !CARD_REQUEST_KO.test(prompt)
       && !extractFencedBlocks(prompt, A2UI_ACTION_LANG).some(parseActionBlock)) return;
-    return { message: { customType: "cuelo-a2ui-guide", content: A2UI_AGENT_PROMPT, display: false, attribution: "agent" } };
+    if (guideInContext(ctx.sessionManager.getBranch())) return;
+    return { message: { customType: GUIDE_TYPE, content: A2UI_AGENT_PROMPT, display: false, attribution: "agent" } };
   });
 }

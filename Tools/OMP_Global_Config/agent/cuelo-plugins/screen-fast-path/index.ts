@@ -17,13 +17,16 @@ const SCREEN_REQUEST = /\b(?:AnyDesk|WinBoat|RDP|VNC|remote desktop|screen(?:sho
 const COMPUTER_CALL = /\bcomputer\s*(?:\.|\[)/;
 const IMAGE_READ = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif)(?:$|\?)/i;
 
-function hasGuideForCurrentRequest(manager: ExtensionContext["sessionManager"]): boolean {
+// 이 안내가 아직 모델 문맥에 있으면 true다. 압축이나 /clear(reset_boundary) 앞은 문맥에서 빠졌으므로 거기서 멈춘다.
+// requestOnly면 이번 요청(마지막 user 메시지 뒤)만 본다. 요청 시작 때는 문맥 전체를 봐서, 같은 안내를 다시 넣지 않는다
+// (2026-11-28 야간: 사무실 7일 41건 중 5건이 압축 뒤 이미 들어간 같은 안내였다).
+function hasGuide(manager: ExtensionContext["sessionManager"], requestOnly: boolean): boolean {
   for (let entry = manager.getLeafEntry(); entry; entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined) {
-    if (entry.type === "compaction") return false;
-    if (entry.type === "custom_message" && entry.customType === GUIDE_TYPE) return true;
+    if (entry.type === "compaction" || entry.type === "reset_boundary") return false;
+    if (entry.type === "custom_message" && entry.customType === GUIDE_TYPE && entry.content === SYSTEM_BLOCK) return true;
     if (entry.type !== "message") continue;
     const { message } = entry;
-    if (message.role === "user") return false;
+    if (message.role === "user" && requestOnly) return false;
     if (message.role === "developer" && Array.isArray(message.content)
       && message.content.some((part) => part.type === "text" && part.text.includes(SYSTEM_BLOCK))) return true;
   }
@@ -76,8 +79,8 @@ export function createScreenFastPath(options: ScreenFastPathOptions = {}) {
       failures.set(session, [...(failures.get(session) ?? []), failure]);
     };
 
-    pi.on("before_agent_start", ({ reason, prompt }) => {
-      if (reason !== "prompt" || !SCREEN_REQUEST.test(prompt)) return;
+    pi.on("before_agent_start", ({ reason, prompt }, ctx) => {
+      if (reason !== "prompt" || !SCREEN_REQUEST.test(prompt) || hasGuide(ctx.sessionManager, false)) return;
       return { message: { customType: GUIDE_TYPE, content: SYSTEM_BLOCK, display: false, attribution: "agent" } };
     });
 
@@ -85,7 +88,7 @@ export function createScreenFastPath(options: ScreenFastPathOptions = {}) {
       const screenWork = toolName === "lab_screen_find"
         || (toolName === "read" && typeof input.path === "string" && IMAGE_READ.test(input.path.trim()))
         || (toolName === "eval" && typeof input.code === "string" && COMPUTER_CALL.test(input.code));
-      if (!screenWork || hasGuideForCurrentRequest(ctx.sessionManager)) return;
+      if (!screenWork || hasGuide(ctx.sessionManager, true)) return;
       return { additionalContext: SYSTEM_BLOCK };
     });
 
