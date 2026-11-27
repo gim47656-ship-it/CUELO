@@ -12,7 +12,8 @@ import type { CustomTool, CustomToolContext } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { vmCopyHint } from "../vm-build/hint";
 import { fileURLToPath } from "node:url";
 import { matchBlockedCommand } from "../../extensions/command-guard/matcher";
 import { DELETED_BLOB, ledgerPath, runGate, spawnExec } from "../../extensions/lib/cross-review";
@@ -707,13 +708,14 @@ async function checkAndPublish(repo: Repo, state: State, configured: ConfiguredC
     await clearState(repo);
     const syncHint = process.platform === "win32" ? "" : `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
       + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${outcome.pushed} --branch ${shellArg(state.target)}`;
+    const vmHint = await vmCopyHint(repo.commonDir.endsWith(".git") ? [repo.root, dirname(repo.commonDir)] : [repo.root], outcome.pushed, { signal: repo.signal });
     return {
       content: [{
         type: "text" as const,
         text: `Integrated ${state.branch} and pushed ${outcome.pushed} to ${state.remote} ${upstreamRef}.`
           + (state.moves > 0 ? ` The target moved ${state.moves} time(s) before the push; the branch was rebased and checked again.` : "")
           + ` Session branch: ${branchNote}.` + ` Local branch: ${localNote}.` + ` Main checkout: ${mainNote}.`
-          + (finalizeChecks ? `\n${finalizeChecksNote(finalizeChecks)}` : "") + syncHint,
+          + (finalizeChecks ? `\n${finalizeChecksNote(finalizeChecks)}` : "") + syncHint + (vmHint ? `\n${vmHint}` : ""),
       }],
       details: {
         ok: true, stage: "complete", commitSha: outcome.pushed, remote: state.remote, upstreamRef, branch: state.branch,

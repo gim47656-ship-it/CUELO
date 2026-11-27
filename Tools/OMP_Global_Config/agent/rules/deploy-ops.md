@@ -36,4 +36,5 @@ description: After publication; before CI, deploy, restart or Windows sync.
   실시간 감시와 양방향 동기화는 만들지 않고 산출물, 설치 프로필, 인증 DB, 세션, 기억과 독립 CLI는 복사하지 않는다.
   활성 런타임은 위 배포 절차를 따르며 Windows 앱을 다시 설치하거나 Windows 전용 프로젝트의 위치와 도구를 임의 변경하지 않는다.
   WinBoat 빌드 사본의 `vm_build` 계약은 `rule://linux-runtime`의 별도 절차다.
+  `git_finalize`와 `git_integrate` 결과는 게시한 저장소가 `~/.omp/agent/vm-build.json`에 매핑돼 있으면(2026-11-27 사용자 승인) VM 사본 경로, 그 사본의 현재 리비전(뒤처졌는지), 게시한 커밋, 맞출 `vm_build --repo <경로> --mode commit` 명령을 한 줄로 적는다. 그 줄이 있으면 게시 뒤 그 명령으로 사본을 맞춘다. VM에 닿지 못하면 「알 수 없음」과 명령만 적고 게시 결과는 바꾸지 않는다. 매핑이 없는 저장소는 줄이 없다.
 - `git_integrate` 게시(2026-10-31): worktree 세션이 `git_integrate`로 대상 branch(기본 `main`)에 올린 SHA는 `git_finalize`로 게시한 커밋과 똑같이 다룬다. 그 SHA로 위 CI 감시와 배포 확인을 하고, Windows 사본 반영은 원본 branch(`wt/<주제>`)가 대상 branch와 다르므로 `sync-checkout.ts --source <그 worktree 폴더> --target <대응 Windows 사본의 /mnt 경로> --revision <게시한 전체 SHA> --branch <대상 branch>`로 부른다. `git_integrate`가 충돌로 멈췄거나 검사·게이트에서 실패했으면 게시된 커밋이 없으므로 CI를 기다리지 않고 그 결과를 보고한다.

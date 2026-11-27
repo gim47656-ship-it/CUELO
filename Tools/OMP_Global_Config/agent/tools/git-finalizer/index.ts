@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
 import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
+import { vmCopyHint } from "../vm-build/hint";
 import { integrateTool, reattachRetiredBranch } from "./integrate";
 import { syncBehindUpstream } from "./sync-upstream";
 import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWindowsDriveRepo, windowsPathToPosix } from "./wsl-git";
@@ -612,6 +613,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       // 커밋·push는 이미 끝났으므로 저장소 조회가 실패해도 힌트만 빼고 성공 응답은 그대로 둔다.
       let syncHint = "";
       let publication: string | undefined;
+      let vmHint: string | undefined;
       if (parsed.commitSha) {
         const postExec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal: tailSignal });
         const repo = await resolveRepoTargets(pi.cwd, requested, postExec).catch(() => undefined);
@@ -622,6 +624,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
             syncHint = `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
               + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${parsed.commitSha}`;
           }
+          // 이 PC의 vm-build.json에 매핑된 저장소면 실제 VM 사본 위치·리비전·vm_build 명령을 적는다. 못 읽으면 줄만 빠진다.
+          if (!windows) vmHint = await vmCopyHint([repo.root], parsed.commitSha, { signal: tailSignal });
         }
       }
       const checksNote = finalizeChecksNote(finalizeChecks);
@@ -644,6 +648,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
                 : "")
               + (publication ? `\n${publication}` : "")
               + syncHint
+              + (vmHint ? `\n${vmHint}` : "")
           },
         ],
         details: checksNote ? { ...parsed, finalizeChecks } : parsed,
