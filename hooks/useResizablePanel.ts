@@ -102,6 +102,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
   // What a re-clamp goes back to: the chosen width when a following panel has one, else the width last committed.
   const reclampTargetRef = useRef(defaultWidth);
   const [width, setWidth] = useState(defaultWidth);
+  const [separatorMaxWidth, setSeparatorMaxWidth] = useState(maxWidth);
   const [isResizing, setIsResizing] = useState(false);
 
   const effectiveMaxWidth = useCallback(
@@ -122,7 +123,10 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
 
   const commitWidth = useCallback((candidate: number, commitOptions: CommitOptions = {}) => {
     const { forcePersist = false, persist = true } = commitOptions;
-    const nextWidth = clampWidth(candidate);
+    // Measure geometry on layout changes and resize actions, not on unrelated shell renders.
+    const limit = effectiveMaxWidth();
+    setSeparatorMaxWidth(limit);
+    const nextWidth = clampPanelWidth(candidate, minWidth, limit);
     const changed = nextWidth !== widthRef.current;
     applyLiveWidth(nextWidth);
     setWidth(nextWidth);
@@ -134,7 +138,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     }
     reclampTargetRef.current = preferredWidthRef.current ?? nextWidth;
     return nextWidth;
-  }, [applyLiveWidth, clampWidth, followDefault, storageKey, widthRef]);
+  }, [applyLiveWidth, effectiveMaxWidth, followDefault, minWidth, storageKey, widthRef]);
 
   const restoreBodyState = useCallback((drag: DragState) => {
     document.body.style.cursor = drag.previousCursor;
@@ -314,7 +318,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     separatorProps: {
       "aria-label": ariaLabel,
       "aria-orientation": "vertical" as const,
-      "aria-valuemax": effectiveMaxWidth(),
+      "aria-valuemax": separatorMaxWidth,
       "aria-valuemin": minWidth,
       "aria-valuenow": width,
       "aria-valuetext": formatValueText?.(width) ?? `${width} px`,

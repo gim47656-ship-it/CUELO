@@ -1662,7 +1662,7 @@ export function AppShell({
     const controller = new AbortController();
     sessionPreloadAbortRef.current = controller;
     setPendingSession(session);
-    const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
+    const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1", omitBashTrace: "1" });
     void fetch(`/api/sessions/${encodeURIComponent(session.id)}?${params}`, {
       cache: "no-store",
       signal: controller.signal,

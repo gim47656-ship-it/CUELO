@@ -666,7 +666,7 @@ export function buildSessionContext(
   entries: SessionEntry[],
   leafId?: string | null,
   /** `cwd`: the session working folder; the hidden open request's write paths resolve against it like the screen's cards. */
-  options: { deferThinking?: boolean; deferToolResultImages?: boolean; cwd?: string } = {},
+  options: { deferThinking?: boolean; deferToolResultImages?: boolean; omitBashTrace?: boolean; cwd?: string } = {},
 ): SessionContext {
   const byId = new Map<string, SessionEntry>();
   for (const e of entries) byId.set(e.id, e);
@@ -700,7 +700,11 @@ export function buildSessionContext(
       }
       continue;
     }
-    const m = entryToUiMessage(entry, options);
+    let m = entryToUiMessage(entry, options);
+    if (options.omitBashTrace && m?.role === "toolResult" && m.toolName === "bash" && isRecord(m.details) && "trace" in m.details) {
+      const { trace: _trace, ...details } = m.details;
+      m = { ...m, details };
+    }
     if (m) {
       if (hidden.length > 0) workItems.push({ message: m, entryId: entry.id });
       messages.push(capDisplayStrings(m) as AgentMessage);
