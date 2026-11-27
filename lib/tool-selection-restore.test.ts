@@ -45,10 +45,13 @@ test.each(models)("cold resume preserves %s explicit tool selection", async (api
   await mkdir(agentDir);
   const previousDir = process.env.PI_CODING_AGENT_DIR;
   const previousUpdateRoot = process.env.CUELO_EXTERNAL_UPDATE_ROOT;
+  const previousHome = process.env.HOME;
   const previousRuntime = globalThis.__ompRuntimePromise;
   const authStorage = await AuthStorage.create(join(agentDir, "agent.db"));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.CUELO_EXTERNAL_UPDATE_ROOT = root;
+  // The user's ~/.omp/plugins (e.g. an installed Cloudflare plugin's MCP server) must not add tools here.
+  process.env.HOME = root;
   refreshDirsFromEnv();
   const settings = Settings.isolated({
     "tools.commands": false, "memory.backend": "off", "goal.enabled": true,
@@ -148,6 +151,8 @@ test.each(models)("cold resume preserves %s explicit tool selection", async (api
     else process.env.PI_CODING_AGENT_DIR = previousDir;
     if (previousUpdateRoot === undefined) delete process.env.CUELO_EXTERNAL_UPDATE_ROOT;
     else process.env.CUELO_EXTERNAL_UPDATE_ROOT = previousUpdateRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
     __resetDirsFromEnvForTests();
     authStorage.close();
     await rm(root, { recursive: true, force: true });

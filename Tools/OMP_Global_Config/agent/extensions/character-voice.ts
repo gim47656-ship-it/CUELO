@@ -10,7 +10,6 @@ export type BuiltinCharacterAlias =
   | "MIO(미오)"
   | "RIN(린)"
   | "MITSU(미츠)"
-  | "HIKARI(히카리)"
   | "SHIORI(시오리)";
 
 /** 내장 캐릭터와 사무실 모드가 PC 프로필에서 들여오는 동적 alias. */
@@ -67,10 +66,6 @@ export const CHARACTER_VOICES: Readonly<Record<BuiltinCharacterAlias, CharacterV
     temperament: "맡은 일을 물고 와 끝까지 배달하는 부지런한 꿀벌 배달부. 몸이 먼저 움직이고, 작은 완료도 신나게 알리는 성실·활발형",
     expression: "짧고 통통 튀는 반말, \"배달 완료!\" 같은 경쾌한 보고, 막히면 경로를 바꿔 다시 날아가는 끈기. 귀엽되 수다스럽지 않게",
   },
-  "HIKARI(히카리)": {
-    temperament: "차분하고 여유롭게 본질을 꿰뚫어 보는 신비로운 쿨뷰티형. 서두르지 않으면서도 한 수 앞을 조용히 짚어 내고, 옅은 미소 뒤에 은근한 장난기를 품은 안내자",
-    expression: "나른하고 여유로운 반말, 핵심을 조용히 짚고 살짝 미소 짓듯 건네는 은근한 장난기, 틀려도 당황하지 않고 담백하게 고치는 침착함. 차분하되 차갑게 굳지 않게",
-  },
   "SHIORI(시오리)": {
     temperament: "다정하고 차분한 문학소녀형. 상대의 말을 끝까지 듣고, 맥락을 꼼꼼히 정리해 가장 알맞은 말을 골라 주는 기록자",
     expression: "부드럽고 단정한 존댓말, 핵심을 먼저 짚은 뒤 근거를 차분히 펼치는 문장, 가끔 책갈피처럼 요점을 한 줄로 끼워 두는 습관, 은근한 유머. 길어지지 않게",
@@ -92,10 +87,6 @@ export const CHARACTER_TARGETS: Readonly<Record<BuiltinCharacterAlias, Character
   },
   "MITSU(미츠)": {
     model: "hive/zai-org/glm-5.3-flash",
-  },
-  // omp 내장 `antigravity-cli` provider(공식 `agy acp`)의 Gemini 4 Neon. 이 provider의 모든 모델이 HIKARI다.
-  "HIKARI(히카리)": {
-    model: "antigravity-cli/gemini-4-neon",
   },
   "SHIORI(시오리)": {
     model: "anthropic/claude-opus-5-5",
@@ -147,7 +138,6 @@ function characterSeat(alias: BuiltinCharacterAlias, seats = characterSeats()): 
 const PROVIDER_CHARACTER: Readonly<Record<string, BuiltinCharacterAlias>> = {
   "openai-codex": "YUKI(유키)",
   hive: "ISANA(이사나)",
-  "antigravity-cli": "HIKARI(히카리)",
 };
 
 /** provider 안에서 특정 모델이 다른 캐릭터를 갖는 자리. 키는 `provider/model id` 선택자다. */
@@ -166,8 +156,6 @@ const NAME_TO_ALIAS: Readonly<Record<string, BuiltinCharacterAlias>> = {
   린: "RIN(린)",
   mitsu: "MITSU(미츠)",
   미츠: "MITSU(미츠)",
-  hikari: "HIKARI(히카리)",
-  히카리: "HIKARI(히카리)",
   shiori: "SHIORI(시오리)",
   시오리: "SHIORI(시오리)",
 };
@@ -180,7 +168,7 @@ const SUMMON_MARKER = /\[character-summon\s+alias="([^"]+)"\s+model="([^"]+)"(?:
 const SUMMON_MARKER_GLOBAL = /\n?\[character-summon\s+alias="[^"]+"\s+model="[^"]+"(?:\s+oauth-position="\d+")?\]\n?/gu;
 const SUMMON_DIRECTIVE = /^\[character-summon-intent alias="([^"]+)"\]/gmu;
 const CHARACTER_NAME_PATTERN = `(${Object.keys(NAME_TO_ALIAS).join("|")})`;
-// 호출·불러·소환 바로 뒤에 조사(도·은·는·을·를·이·가)가 오면 동사가 아니라 명사다("히카리호출도 프록시로 바꿔").
+// 호출·불러·소환 바로 뒤에 조사(도·은·는·을·를·이·가)가 오면 동사가 아니라 명사다("미오호출도 프록시로 바꿔").
 const SUMMON_ACTION = /(?:호출|불러|소환)(?![도은는을를이가])/u;
 // 교체 명령은 명령·청유형 어미 뒤에서 절이 끝나는 직접 발화만 인정한다. 어미 뒤에는 문장 부호·줄 끝이나
 // 대상·강조 단어("…교체해봐 미오로", "…교체해 메인을", "…교체해 지금")만 올 수 있다. 그래서
@@ -241,7 +229,7 @@ const OFFICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u;
  * 사무실 모드가 바꿀 수 있는 자리. roster의 다른 자리 항목은 무시한다. 이 순서가 자리 사이 충돌을
  * 가리는 우선순위이며 앱(`lib/character-mode.ts` `OFFICE_SEAT_ALIASES`)과 같아야 한다.
  */
-const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "HIKARI(히카리)", "SHIORI(시오리)"];
+const OFFICE_SEATS: readonly BuiltinCharacterAlias[] = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "SHIORI(시오리)"];
 let officeCache: { key: string; state: OfficeState } | undefined;
 
 function officeAgentDir(): string {

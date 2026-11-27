@@ -88,7 +88,6 @@ test("a session that switches provider re-asks instead of answering from the sta
     assert.equal(resolveAccountFace("switch", "openai-codex", 8)?.alias, "YUKI(유키)");
     // 자식 발화가 지나는 길도 그대로다 — 예약 얼굴은 provider 만으로 나온다.
     assert.equal(resolveAccountFace("switch", "web6", undefined), null, "WEB6 상담 얼굴(SHION)은 없어졌다");
-    assert.equal(resolveAccountFace("switch", "antigravity-cli", undefined, "gemini-4-neon")?.alias, "HIKARI(히카리)");
     assert.equal(resolveAccountFace("switch", "hive", undefined)?.alias, "ISANA(이사나)");
     assert.equal(resolveAccountFace("switch", "hive", undefined, "deepseek-ai/deepseek-v4.1-flash-1017")?.alias, "ISANA(이사나)");
     // 같은 hive 계정이라도 GLM 모델은 MITSU다. 기록된 credential 의 계정 얼굴(ISANA)보다 모델 얼굴이 먼저다.

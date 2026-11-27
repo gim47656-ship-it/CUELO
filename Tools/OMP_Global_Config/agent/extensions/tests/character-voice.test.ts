@@ -91,7 +91,6 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
     { provider: "anthropic", id: "claude-opus-5-5" },
     { provider: "hive", id: "deepseek-ai/deepseek-v4.1-flash-1017" },
     { provider: "hive", id: "zai-org/glm-5.3-flash" },
-    { provider: "antigravity-cli", id: "gemini-4-neon" },
     { provider: "openai-codex", id: "gpt-6.2-astra" },
   ];
   const accounts = [
@@ -203,7 +202,7 @@ function createRuntimeHarness(options: HarnessOptions = {}) {
 
 describe("character voice identity", () => {
   test("builtin targets and voices agree on the character roster", () => {
-    const aliases = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "MITSU(미츠)", "HIKARI(히카리)", "SHIORI(시오리)"];
+    const aliases = ["YUKI(유키)", "ISANA(이사나)", "MIO(미오)", "RIN(린)", "MITSU(미츠)", "SHIORI(시오리)"];
     expect(Object.keys(CHARACTER_TARGETS)).toEqual(aliases);
     expect(Object.keys(CHARACTER_VOICES)).toEqual(aliases);
     expect(characterForProvider("openai-codex")).toBe("YUKI(유키)");
@@ -212,10 +211,7 @@ describe("character voice identity", () => {
     expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
     expect(characterForProvider("opencode-go")).toBeUndefined();
     expect(characterForProvider("localproxy")).toBeUndefined();
-    // omp's built-in antigravity-cli provider is HIKARI whatever model the session picked.
-    expect(characterForProvider("antigravity-cli")).toBe("HIKARI(히카리)");
     expect(characterForProvider("google-antigravity")).toBeUndefined();
-    expect(CHARACTER_TARGETS["HIKARI(히카리)"]).toEqual({ model: "antigravity-cli/gemini-4-neon" });
   });
 
   test("Anthropic stable storage positions map 0 to RIN, 1 to MIO, and 2 to SHIORI", () => {
@@ -267,9 +263,9 @@ describe("character voice identity", () => {
     expect(effective.match(/<character-voice alias="YUKI\(유키\)">/gu)).toHaveLength(1);
   });
 
-  test("a stale HIKARI summon marker for a retired model leaves the active default usable", async () => {
+  test("a stale summon marker for a removed alias for a retired model leaves the active default usable", async () => {
     const harness = createRuntimeHarness();
-    const prompt = '[character-summon alias="HIKARI(히카리)" model="google-vertex/gemini-4-argon"]\nExisting request';
+    const prompt = '[character-summon alias="RETIRED(은퇴)" model="google-vertex/gemini-4-argon"]\nExisting request';
     const result = await harness.emit("before_agent_start", {
       type: "before_agent_start",
       prompt,
@@ -278,7 +274,7 @@ describe("character voice identity", () => {
     const effective = result.systemPrompt.join("\n");
     expect(effective).toContain("Existing system text");
     expect(effective).toContain('alias="YUKI(유키)"');
-    expect(effective).not.toContain("HIKARI");
+    expect(effective).not.toContain("RETIRED");
   });
 
   test("natural-language summon and current-session switch follow action semantics", () => {
@@ -297,12 +293,8 @@ describe("character voice identity", () => {
     expect(parseCharacterIntent("미츠 불러와")).toEqual({ kind: "summon", aliases: ["MITSU(미츠)"] });
     expect(parseCharacterIntent("시온 불러와")).toBeUndefined();
     expect(parseCharacterIntent("미오와 린을 교체해")).toBeUndefined();
-    expect(parseCharacterIntent("히카리 불러와")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
-    expect(parseCharacterIntent("히카리로 교체해")).toEqual({ kind: "switch", alias: "HIKARI(히카리)" });
-    expect(parseCharacterIntent("hikari로 교체해")).toEqual({ kind: "switch", alias: "HIKARI(히카리)" });
-    expect(characterTarget("HIKARI(히카리)")?.model).toBe("antigravity-cli/gemini-4-neon");
-    expect(buildCharacterSummonBrief("인사한다.", "HIKARI(히카리)").startsWith(
-      '[character-summon alias="HIKARI(히카리)" model="antigravity-cli/gemini-4-neon"]',
+    expect(buildCharacterSummonBrief("인사한다.", "YUKI(유키)").startsWith(
+      '[character-summon alias="YUKI(유키)" model="openai-codex/gpt-6.2-astra"]',
     )).toBe(true);
     // 이미 일어난 전환을 설명하는 과거·수동형은 명령이 아니다(2026-09-29 오전환 재현 문장 포함).
     expect(parseCharacterIntent("아까 유키로 교체됐었어")).toBeUndefined();
@@ -330,15 +322,13 @@ describe("character voice identity", () => {
   });
 
   test("a summon verb followed by a particle is a noun, not a summon command", () => {
-    // 2026-10-26: `히카리호출도 프록시로바꿔임마`가 소환으로 읽혔다.
-    expect(parseCharacterIntent("히카리호출도 프록시로바꿔임마")).toBeUndefined();
-    expect(parseCharacterIntent("히카리 호출은 프록시로 바꿔")).toBeUndefined();
+    // 2026-10-26: `미오호출도 프록시로바꿔임마`가 소환으로 읽혔다.
+    expect(parseCharacterIntent("미오호출도 프록시로바꿔임마")).toBeUndefined();
+    expect(parseCharacterIntent("미오 호출은 프록시로 바꿔")).toBeUndefined();
     expect(parseCharacterIntent("미오 소환이 안 돼")).toBeUndefined();
     expect(parseCharacterIntent("린 호출을 막아줘")).toBeUndefined();
     expect(parseCharacterIntent("시오리 호출가")).toBeUndefined();
     // 명령형·청유형 어미는 그대로 소환이다.
-    expect(parseCharacterIntent("히카리 호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
-    expect(parseCharacterIntent("히카리호출해")).toEqual({ kind: "summon", aliases: ["HIKARI(히카리)"] });
     expect(parseCharacterIntent("시오리 호출해")).toEqual({ kind: "summon", aliases: ["SHIORI(시오리)"] });
     expect(parseCharacterIntent("시오리호출해")).toEqual({ kind: "summon", aliases: ["SHIORI(시오리)"] });
     expect(parseCharacterIntent("미오 소환")).toEqual({ kind: "summon", aliases: ["MIO(미오)"] });
@@ -1383,7 +1373,6 @@ describe("office mode character seat", () => {
   };
   const MULTI_ROSTER = {
     seats: {
-      "HIKARI(히카리)": officeSeat("delta", "DELTA(델타)", ["delta", "델타"]),
       "SHIORI(시오리)": officeSeat("cedar", "CEDAR(시더)", ["cedar", "시더"]),
       "RIN(린)": officeSeat("birch", "BIRCH(버치)", ["birch", "버치"]),
       "MIO(미오)": officeSeat("alder", "ALDER(앨더)", ["alder", "앨더"]),
@@ -1393,14 +1382,12 @@ describe("office mode character seat", () => {
     },
   };
 
-  test("all six office seats change independently while MITSU stays builtin", async () => {
+  test("all five office seats change independently while MITSU stays builtin", async () => {
     await withOfficeProfile({ mode: "office", roster: MULTI_ROSTER }, (dir) => {
-      writeFaces(dir, ["delta", "cedar", "birch", "alder", "elm", "tiber"]);
+      writeFaces(dir, ["cedar", "birch", "alder", "elm", "tiber"]);
       expect(characterForProvider("openai-codex")).toBe(OFFICE_ALIAS);
       expect(characterForProvider("hive")).toBe("ELM(엘름)");
       expect(characterForProvider("hive", [], "zai-org/glm-5.3-flash")).toBe("MITSU(미츠)");
-      expect(characterForProvider("antigravity-cli")).toBe("DELTA(델타)");
-      expect(characterTarget("DELTA(델타)")).toEqual(CHARACTER_TARGETS["HIKARI(히카리)"]);
       expect(anthropicCharacterForAccounts([{ active: true, position: 0 }])).toBe("BIRCH(버치)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 1 }])).toBe("ALDER(앨더)");
       expect(anthropicCharacterForAccounts([{ active: true, position: 2 }])).toBe("CEDAR(시더)");
@@ -1408,7 +1395,7 @@ describe("office mode character seat", () => {
       expect(characterTarget("BIRCH(버치)")).toEqual({ ...CHARACTER_TARGETS["RIN(린)"], oauthPosition: 0 });
       expect(characterTarget("ALDER(앨더)")).toEqual({ ...CHARACTER_TARGETS["MIO(미오)"], oauthPosition: 1 });
       expect(characterTarget("TIBER(티버)")).toBeUndefined();
-      for (const [alias, id] of [["ELM(엘름)", "elm"], ["CEDAR(시더)", "cedar"], ["DELTA(델타)", "delta"], ["BIRCH(버치)", "birch"]]) {
+      for (const [alias, id] of [["ELM(엘름)", "elm"], ["CEDAR(시더)", "cedar"], ["BIRCH(버치)", "birch"]]) {
         expect(renderCharacterVoice(alias)).toContain(`FIXTURE-${id} 성향`);
       }
       expect(renderCharacterVoice("MITSU(미츠)")).toContain(CHARACTER_VOICES["MITSU(미츠)"].temperament);

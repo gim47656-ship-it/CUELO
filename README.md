@@ -206,7 +206,7 @@ Requires Node.js 22.19+ and Bun 1.4.4+ on Linux. Native Windows server installat
 
 **알림과 표현**
 
-- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · MITSU · HIKARI). SHIORI는 아직 스티커·음성 자산이 없어 얼굴만 표시합니다.
+- 완료·실패·승인 요청·선택 요청 등 상황에 맞는 캐릭터 스티커와 음성으로 알립니다(RIN · MIO · YUKI · ISANA · MITSU). SHIORI는 아직 스티커·음성 자산이 없어 얼굴만 표시합니다.
 - Anthropic 캐릭터를 아직 알 수 없으면 기본 모드에서는 RIN을, 사무실 모드에서는 PC 캐릭터 설정에서 RIN에 연결한 캐릭터를 표시합니다.
 - 브라우저 알림과 PWA 설치를 지원합니다.
 - 직접 저장한 교훈·스킬은 저장한 답변이나 과정 바로 뒤의 카드에서 확인합니다. 교훈 자동 기록을 켠 경우 자동 저장 알림도 작업 과정을 접어도 대화에 남습니다. 요청에 이름이 없고 필요성도 확인되지 않은 MCP 후보는 보류 안내로 나열하지 않습니다.
@@ -429,7 +429,7 @@ CUELO는 [@ddallabenetta](https://github.com/ddallabenetta)의 [omp-web](https:/
 
 CUELO의 에이전트 엔진은 [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)입니다. omp 소스를 이 저장소에 복사하지 않고 `@oh-my-pi/*` npm 패키지(MIT, Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük)를 의존성으로 씁니다. 각 패키지의 라이선스 전문은 설치된 패키지 안의 `LICENSE`에 들어 있습니다.
 
-캐릭터(RIN · MIO · SHIORI · YUKI · ISANA · MITSU · HIKARI)의 그림, SHIORI를 뺀 캐릭터의 음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
+캐릭터(RIN · MIO · SHIORI · YUKI · ISANA · MITSU)의 그림, SHIORI를 뺀 캐릭터의 음성·스티커와 `docs/hero.webp`는 CUELO 고유 자산입니다.
 
 함께 싣는 글꼴은 모두 SIL Open Font License 1.1입니다. 본문은 [Wanted Sans](https://github.com/wanteddev/wanted-sans), 코드는 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)이고, 제목은 [G마켓 산스](https://corp.gmarket.com/fonts/)를 웹용으로 나누고 변환한 것입니다. 원래 이름은 수정본에 쓸 수 없어서 "CUELO Display"라는 이름으로 싣습니다. 라이선스 전문은 [`public/fonts/`](./public/fonts/) 아래 각 글꼴 폴더에 있습니다.
 

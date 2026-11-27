@@ -37,22 +37,21 @@ function render(props = {}) {
   })));
 }
 
-test("캐릭터가 기본 선택되고 일곱 얼굴과 호출 안내가 보인다", () => {
+test("캐릭터가 기본 선택되고 여섯 얼굴과 호출 안내가 보인다", () => {
   const html = render();
   assert.match(html, /class="[^"]*resource-panel/);
   assert.match(html, /role="tablist"/);
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>캐릭터</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>계정 한도</);
   assert.match(html, /role="tab"[^>]*tabindex="-1"[^>]*>모델 통계</);
-  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "HIKARI(히카리)", "SHIORI(시오리)"]) {
+  for (const alias of ["YUKI(유키)", "ISANA(이사나)", "RIN(린)", "MIO(미오)", "MITSU(미츠)", "SHIORI(시오리)"]) {
     assert.match(html, new RegExp(alias.replace(/[()]/g, "\\$&")));
   }
-  assert.equal(html.match(/class="account-avatar"/g)?.length, 7);
+  assert.equal(html.match(/class="account-avatar"/g)?.length, 6);
   assert.match(html, /호출·불러·소환/);
   assert.match(html, /SubAgent로 이 대화에 부릅니다/);
   assert.match(html, /미오 불러와/);
   assert.match(html, /미오로 교체해/);
-  assert.match(html, /히카리로 교체해/);
   assert.match(html, /시오리 불러와/);
   assert.match(html, /시오리로 교체해/);
   assert.match(html, /\/avatars\/shiori\.webp/);

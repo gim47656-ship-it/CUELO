@@ -15,7 +15,6 @@ export const COMPLETION_AUDIO_ALIASES = [
   "MIO(미오)",
   "RIN(린)",
   "MITSU(미츠)",
-  "HIKARI(히카리)",
   "SHIORI(시오리)",
 ] as const;
 
@@ -28,7 +27,6 @@ const CHARACTER_ID_BY_ALIAS: Readonly<Record<CompletionAudioAlias, string>> = {
   "MIO(미오)": "mio",
   "RIN(린)": "rin",
   "MITSU(미츠)": "mitsu",
-  "HIKARI(히카리)": "hikari",
   "SHIORI(시오리)": "shiori",
 };
 

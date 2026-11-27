@@ -233,11 +233,9 @@ export const ACCOUNT_FACES = [
   // Codex 모델은 계정·모델과 무관하게 YUKI로 표시한다. hive는 API 키 하나를 읽는 custom provider이고
   // (2026-10-18 ISANA가 b-ai에서 옮겨 왔다) 모델마다 얼굴이 다르다 — `model` 이 붙은 MITSU는 그 모델만, provider
   // 예약인 ISANA는 그 밖의 hive 모델(DeepSeek)과 계정 보고서(모델이 없다)를 맡는다.
-  // HIKARI는 omp 내장 `antigravity-cli` provider 전체의 얼굴이다(그 provider의 모든 모델).
   { alias: "MITSU(미츠)", file: "mitsu.webp", provider: "hive", model: "zai-org/glm-5.3-flash" },
   { alias: "YUKI(유키)", file: "yuki.webp", provider: "openai-codex" },
   { alias: "ISANA(이사나)", file: "isana.webp", provider: "hive" },
-  { alias: "HIKARI(히카리)", file: "hikari.webp", provider: "antigravity-cli" },
 ] as const;
 
 export interface CharacterRosterEntry {
@@ -302,15 +300,6 @@ export const CHARACTER_ROSTER: readonly CharacterRosterEntry[] = [
     voice: "부지런한 배달·통통 튀는 보고·끈질긴 재도전",
     summonExample: "미츠 불러와",
     switchExample: "미츠로 교체해",
-  },
-  {
-    seed: 6,
-    alias: ACCOUNT_FACES[6].alias,
-    provider: "antigravity-cli",
-    model: "gemini-4-neon",
-    voice: "빠른 관찰·톡 쏘는 한마디·장난스러운 여유",
-    summonExample: "히카리 불러와",
-    switchExample: "히카리로 교체해",
   },
   {
     seed: 2,
@@ -617,7 +606,6 @@ export function providerDisplayName(provider: string): string {
     "openai-codex": "OpenAI Codex",
     anthropic: "Anthropic",
     "github-copilot": "GitHub Copilot",
-    "antigravity-cli": "Antigravity CLI",
     "opencode-go": "OpenCode Go",
     devin: "Devin",
     // 일반 규칙이라면 「B Ai」가 된다. 사용량·설정에서 이미 부르는 이름으로 맞춘다.
