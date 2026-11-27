@@ -451,6 +451,8 @@ try {
             }
             $scopePath = $commonSegments -join '/'
             if (-not $scopePath -and (Test-PathWithin -Path $cwd -Root $repoRoot)) { $scopePath = Convert-ToRepoPath -FullPath $cwd -Root $repoRoot }
+            # 세션 전용 linked worktree의 루트면 저장소 전체를 본다(사용자 결정 2026-11-27). 여러 세션이 쓰는 main checkout 루트는 지금처럼 건너뛴다.
+            if (-not $scopePath -and $cwdIsLinkedWorktree -and $repoRoot.Equals($cwdRepoRoot, $pathComparison) -and $cwd.Equals($repoRoot, $pathComparison)) { $scopePath = '.' }
             if ($scopePath) {
                 $committedSet = [Collections.Generic.HashSet[string]]::new($pathComparer)
                 foreach ($repoPath in $repoPaths) { [void]$committedSet.Add($repoPath) }

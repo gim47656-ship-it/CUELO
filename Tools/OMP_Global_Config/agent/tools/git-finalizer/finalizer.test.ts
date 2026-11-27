@@ -1033,6 +1033,22 @@ describe("git finalizer", () => {
       expect(fromRoot.output.leftoverFiles).toBeUndefined();
     }, TEST_TIMEOUT_MS);
 
+    test("checks the whole tree when the cwd is the root of the session's own linked worktree", async () => {
+      const { root, work } = await createRepository();
+      const linked = join(root, "linked");
+      git(work, ["worktree", "add", "-b", "linked-branch", linked]);
+      await mkdir(join(linked, "site"));
+      await mkdir(join(linked, "docs", "shots"), { recursive: true });
+      await writeFile(join(linked, "site", "index.html"), "page\n");
+      await writeFile(join(linked, "docs", "record.md"), "record\n");
+      await writeFile(join(linked, "docs", "shots", "home.png"), "png\n");
+
+      const { result, output } = await startFinalizer(root, linked, "linked-root", ["site/index.html", "docs/record.md"], "site and record");
+      expect(result.code, result.stderr || result.stdout).toBe(0);
+      expect(output.leftoverScope).toBe(".");
+      expect(output.leftoverFiles).toEqual(["untracked: docs/shots/home.png"]);
+    }, TEST_TIMEOUT_MS);
+
     test("finds the shared folder of several committed files and a root ancestor independent of file order", async () => {
       const { root, work } = await createRepository();
       await seedDocs(work);
