@@ -9,7 +9,7 @@ import { SessionSidebar, type SessionActivity } from "./SessionSidebar";
 import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
 import { ComputerTakeoverControl } from "./ComputerTakeoverControl";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
-import { FileViewer, type FileViewStateStore } from "./FileViewer";
+import { FileViewer, type FileLineRequest, type FileViewStateStore } from "./FileViewer";
 import type { MakerSelection } from "./answer-status/AnswerStatusContext";
 import { TabBar, type Tab } from "./TabBar";
 import { SettingsConfig } from "./SettingsConfig";
@@ -33,7 +33,8 @@ import { MemoryTraceView } from "./workspace/MemoryTraceView";
 import { FileDocShortcuts } from "./workspace/FileDocShortcuts";
 import { ProjectOverview } from "./workspace/ProjectOverview";
 import { BranchNavigator } from "./BranchNavigator";
-import { getContextIndicator } from "@/lib/context-usage";
+import { formatTokenCount } from "@/lib/context-usage";
+import { cacheHitPercent } from "@/lib/composer-usage";
 import { autoNameBlockReason } from "@/lib/auto-name";
 import { useTheme } from "@/hooks/useTheme";
 import { useGraphiteWallpaperSync } from "@/hooks/useGraphiteTheme";
@@ -55,6 +56,7 @@ import { UPKEEP_TEXT } from "./upkeep/text";
 import { copyText } from "@/lib/clipboard";
 import { getDraft, setDraft } from "@/lib/draft-store";
 import { getFileName } from "@/lib/file-paths";
+import type { FileLineRange, OpenFileHandler } from "@/lib/file-links";
 import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import { firstAskFormQuestion } from "@/lib/ask-form/answers";
 import {
@@ -978,7 +980,7 @@ export function AppShell({
   }, []);
   useEffect(() => () => sessionPreloadAbortRef.current?.abort(), []);
 
-  // Context usage — populated by ChatWindow, shown in the header indicator
+  // Context usage — populated by ChatWindow, shown in the session info popover
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
   const handleContextUsageChange = useCallback((usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
     setContextUsage(usage);
@@ -1310,7 +1312,10 @@ export function AppShell({
   }, [activeTopPanel]);
 
   // File tabs are rendered in the AuxiliaryDeck's existing FileViewer slot.
-  const [fileTabs, setFileTabs] = useState<Tab[]>([]);
+  const fileLineRequestId = useRef(0);
+  // `viewerMount` changes when a plain open leaves a ranged view, so the viewer remounts and restores
+  // the tab's own mode and scroll exactly as a plain open does.
+  const [fileTabs, setFileTabs] = useState<(Tab & { lineRequest?: FileLineRequest; viewerMount?: number })[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
   // 파일 탭마다 고른 보기(원본·미리보기·비교)와 스크롤. 넓게 보기로 덱이 다시 마운트돼도 이어진다.
   const fileViewStatesRef = useRef<FileViewStateStore>(new Map());
@@ -1941,10 +1946,11 @@ export function AppShell({
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff" },
+    options?: { sourceSessionId?: string | null; modeHint?: "diff"; lines?: FileLineRange },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
+    const lineRequest = options?.lines ? { id: ++fileLineRequestId.current, ...options.lines } : undefined;
     const tabId = `file:${filePath}`;
     // 비교로 열어 달라는 요청은 그 탭에서 전에 고른 보기보다 앞선다.
     if (modeHint) fileViewStatesRef.current.delete(tabId);
@@ -1957,18 +1963,19 @@ export function AppShell({
           filePath,
           sourceSessionId,
           initialDisplayMode: modeHint,
+          lineRequest,
         }];
       }
       const sourceUnchanged = !sourceSessionId || existing.sourceSessionId === sourceSessionId;
       const modeUnchanged = !modeHint || existing.initialDisplayMode === modeHint;
-      if (sourceUnchanged && modeUnchanged) return prev;
-      return prev.map((t) => {
-        if (t.id !== tabId) return t;
-        const next: Tab = { ...t };
-        if (sourceSessionId) next.sourceSessionId = sourceSessionId;
-        if (modeHint) next.initialDisplayMode = modeHint;
-        return next;
-      });
+      if (sourceUnchanged && modeUnchanged && !lineRequest && !existing.lineRequest) return prev;
+      return prev.map((t) => t.id === tabId ? {
+        ...t,
+        sourceSessionId: sourceSessionId || t.sourceSessionId,
+        initialDisplayMode: modeHint ?? t.initialDisplayMode,
+        lineRequest,
+        viewerMount: !lineRequest && t.lineRequest ? (t.viewerMount ?? 0) + 1 : t.viewerMount,
+      } : t);
     });
     setActiveFileTabId(tabId);
     dispatchWorkspaceLayout({ type: "select-view", view: "files" });
@@ -1976,8 +1983,8 @@ export function AppShell({
     if (isCompactWorkspace) setCompactDrawerOpen(false);
   }, [isCompactWorkspace, setCompactDrawerOpen]);
 
-  const handleOpenLinkedFile = useCallback((filePath: string) => {
-    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null });
+  const handleOpenLinkedFile = useCallback<OpenFileHandler>((filePath, lines) => {
+    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, lines });
   }, [handleOpenFile, selectedSession?.id]);
 
   const handleCloseFileTab = useCallback((tabId: string) => {
@@ -2235,22 +2242,6 @@ export function AppShell({
     : { chat: "Chat", process: "Process", efficiency: "Efficiency", subagents: "Subagents", files: "Files", resource: "캐릭터", sidechat: "Side Chat", plugins: "Plugins", memory: "Memory trace" };
   const inspectorViewLabels: Record<AuxiliaryDeckView, string> = { ...viewLabels, turn: translate("inspector.turn") };
   const inspectorShown = showAuxiliaryDeck && !deckPresentation.expanded;
-  // One context indicator. The number carries the meaning; the bar and the
-  // level only reinforce it, so colour is never the sole signal.
-  const contextIndicator = getContextIndicator(contextUsage);
-  const contextReadout = contextIndicator.readout;
-  const contextTitle = contextReadout
-    ? translate("chat.contextUsageTitle", {
-      used: contextIndicator.usedLabel,
-      limit: contextIndicator.limitLabel,
-      percent: contextIndicator.percentLabel,
-    })
-    : null;
-  const contextStatus = contextIndicator.level === "critical"
-    ? translate("chat.contextUsageCritical")
-    : contextIndicator.level === "warning"
-      ? translate("chat.contextUsageWarning")
-      : null;
   const autoNameBlock = autoNameBlockReason(selectedSession, sessionStats?.userMessages);
   const autoNameDisabledReason = autoNameBlock === "unsaved"
     ? translate("title.unsaved")
@@ -2277,21 +2268,22 @@ export function AppShell({
       <div className="workspace-file-content">
         {activeFileTab?.filePath ? (
           <FileViewer
-            key={activeFileTab.id}
+            key={`${activeFileTab.id}#${activeFileTab.viewerMount ?? 0}`}
             filePath={activeFileTab.filePath}
             cwd={activeCwd ?? undefined}
             sourceSessionId={activeFileTab.sourceSessionId}
             gitRefreshKey={gitRefreshKey}
             initialDisplayMode={activeFileTab.initialDisplayMode}
+            lineRequest={activeFileTab.lineRequest}
             viewStateStore={fileViewStatesRef.current}
             viewStateKey={activeFileTab.id}
             onMentionLines={handleFileLineMention}
             onAtMention={handleAtMention}
             onInsertText={insertIntoComposer}
-            onOpenFile={(filePath) => handleOpenFile(
+            onOpenFile={(filePath, lines) => handleOpenFile(
               filePath,
               getFileName(filePath),
-              { sourceSessionId: activeFileTab.sourceSessionId },
+              { sourceSessionId: activeFileTab.sourceSessionId, lines },
             )}
           />
         ) : (
@@ -2478,6 +2470,7 @@ export function AppShell({
         modelsRefreshKey={modelsRefreshKey}
         onAgentEnd={handleBesideAgentEnd}
         onOpenFile={handleOpenLinkedFile}
+        usageSnapshot={usage}
         soundEnabled={soundEnabled}
         onSoundToggle={onSoundToggle}
         playCueSound={playCueSound}
@@ -2764,28 +2757,6 @@ export function AppShell({
             {showChat && selectedSessionId && (
               <ComputerTakeoverControl sessionId={selectedSessionId} refreshKey={String(sessionBusy)} compact={isCompactWorkspace} />
             )}
-            {showChat && contextReadout && (
-              <ActionButton
-                className="workspace-context-usage"
-                variant="ghost"
-                size="small"
-                type="button"
-                onClick={() => toggleTopPanel("session")}
-                data-top-panel-opener=""
-                aria-expanded={activeTopPanel === "session"}
-                title={contextTitle ?? translate("session.title")}
-                aria-label={contextStatus ? `${contextTitle}. ${contextStatus}` : contextTitle ?? undefined}
-              >
-                <span className="workspace-context-meter" aria-hidden="true">
-                  <span
-                    className="workspace-context-meter-fill"
-                    data-level={contextIndicator.level}
-                    style={{ inlineSize: `${contextIndicator.fillPercent}%` }}
-                  />
-                </span>
-                <span className="workspace-context-readout" data-level={contextIndicator.level}>{contextReadout}</span>
-              </ActionButton>
-            )}
             {showChat && wideShell && inspectorPinned && (
               <div className="workspace-layout-presets" role="group" aria-label={translate("layout.presets")}>
                 {LAYOUT_PRESETS.map((preset) => (
@@ -3031,14 +3002,11 @@ export function AppShell({
                        [translate("session.total"), sessionStats.tokens.total.toLocaleString(locale)],
                     ];
                     const ctx = contextUsage ?? sessionStats.contextUsage;
-                    const formatCompact = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
+                    const cacheHitRate = cacheHitPercent(sessionStats.tokens);
                     const extraTokenRows = [
                        ...(sessionStats.cost > 0 ? [[translate("session.cost"), `$${sessionStats.cost.toFixed(4)}`]] : []),
-                       ...(ctx?.contextWindow ? [[translate("session.context"), `${ctx.tokens !== null ? formatCompact(ctx.tokens) : "?"} / ${formatCompact(ctx.contextWindow)}${ctx.percent !== null ? ` · ${ctx.percent.toFixed(1)}%` : ""}`]] : []),
-                       // Cache hit rate = cache reads / (input + cache writes + cache reads) — the denominator covers all input-class tokens.
-                       ...(sessionStats.tokens.cacheRead + sessionStats.tokens.cacheWrite > 0 && sessionStats.tokens.cacheRead + sessionStats.tokens.cacheWrite + sessionStats.tokens.input > 0
-                         ? [[translate("session.cacheHitRate"), `${(sessionStats.tokens.cacheRead / (sessionStats.tokens.cacheRead + sessionStats.tokens.cacheWrite + sessionStats.tokens.input) * 100).toFixed(1)}%`]]
-                         : []),
+                       ...(ctx?.contextWindow ? [[translate("session.context"), `${ctx.tokens !== null ? formatTokenCount(ctx.tokens) : "?"} / ${formatTokenCount(ctx.contextWindow)}${ctx.percent !== null ? ` · ${ctx.percent.toFixed(1)}%` : ""}`]] : []),
+                       ...(cacheHitRate !== null ? [[translate("session.cacheHitRate"), `${cacheHitRate.toFixed(1)}%`]] : []),
                     ];
                     const section = (
                       title: string,
@@ -3184,6 +3152,7 @@ export function AppShell({
                   {splitShown && renderPaneHead(sessionTitle, closeMainPane)}
             <ChatWindow
               session={selectedSession}
+              usageSnapshot={usage}
               newSessionCwd={effectiveNewSessionCwd}
               newSessionAutoWorktree={newSessionAutoWorktree}
               initialSessionData={preloadedSessionData}

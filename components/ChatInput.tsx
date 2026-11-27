@@ -210,10 +210,6 @@ interface Props {
   onToolPresetChange?: (preset: "none" | "default" | "full") => void;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   effectiveThinkingLevel?: string;
-  /** 마지막으로 끝난 답변의 출력 속도(토큰/초). 측정할 답변이 없으면 `null`. */
-  outputTokensPerSecond?: number | null;
-  /** 흐르는 답을 글자량으로 어림한 실시간 값이면 true(앞에 `~`), 끝난 답의 실제 토큰 값이면 false. */
-  outputSpeedLive?: boolean;
   /** 「Auto, 최대 X」의 X. `auto`와만 짝을 이루며 `null`이면 상한 없음. */
   thinkingCeiling?: ThinkingCeiling | null;
   /** `ceiling`은 `auto`와 함께만 온다. 그냥 `auto`나 구체 level은 상한을 푼다. */
@@ -256,6 +252,8 @@ interface Props {
   onLiveTranscriptPersisted?: (sessionId: string) => void | Promise<void>;
   /** Shown above the input on the empty new-session screen: where the first message starts. */
   startPlace?: React.ReactNode;
+  /** The session's one-line usage band, rendered directly above the input field. */
+  usageBand?: React.ReactNode;
 }
 
 export interface ChatInputHandle {
@@ -662,7 +660,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   mainPresetActiveAlias,
   modelRoles, onRoleModelChange, modelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
-  thinkingLevel, effectiveThinkingLevel, outputTokensPerSecond = null, outputSpeedLive = false, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
+  thinkingLevel, effectiveThinkingLevel, thinkingCeiling, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   fastMode = null, fastModeBusy = false, onFastModeToggle,
   retryInfo, deliveryRows = [], inputHistory = [], onRecallQueue, onRemoveQueuedMessage,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
@@ -676,6 +674,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onEnsureSession,
   onLiveTranscriptPersisted,
   startPlace,
+  usageBand,
 }: Props, ref) {
   const { t } = useI18n();
   // 사무실 모드에서는 openai-codex 자리의 이름과 얼굴이 바뀐다.
@@ -3385,6 +3384,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             );
           })()}
           {startPlace}
+          {usageBand}
           <div
             className={`chat-composer-field${bashMode ? " is-bash" : ""}${isStreaming ? " is-streaming" : ""}`}
             style={{
@@ -3500,7 +3500,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
 
         {/* Bottom bar: attachment + model | run options + stop + voice.
-            The context usage indicator lives once in the workspace header.
+            Session usage (context, limits, cache, tok/s) is the one-line band above the field.
             좁은 폭에서는 왼쪽 묶음이 줄어들어 한 줄에 들어간다. 왼쪽이 최소 내용 폭(44px 표적들과
             모델 칩 최소 44px)보다 좁아져야 할 때는 오른쪽 묶음이 둘째 줄로 내려간다. */}
         <div className="composer-action-bar" style={{
@@ -3793,11 +3793,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {!isMobile && currentReasoningText && (
               <span style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                 {currentReasoningText}
-              </span>
-            )}
-            {!isMobile && outputTokensPerSecond !== null && (
-              <span title={t(outputSpeedLive ? "chat.outputSpeedLiveTitle" : "chat.outputSpeedTitle")} style={{ flexShrink: 0, padding: "0 6px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
-                {t(outputSpeedLive ? "chat.outputSpeedLive" : "chat.outputSpeed", { rate: outputTokensPerSecond >= 10 ? Math.round(outputTokensPerSecond) : outputTokensPerSecond.toFixed(1) })}
               </span>
             )}
           </div>

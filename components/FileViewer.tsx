@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo, memo, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo, memo, type CSSProperties, type MouseEvent } from "react";
 import {
   Prism as SyntaxHighlighter,
   createElement as renderSyntaxNode,
@@ -18,7 +18,7 @@ import {
   isImagePath,
 } from "@/lib/file-types";
 import { encodeFilePathForApi, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
-import { resolveLocalFileHref } from "@/lib/file-links";
+import { rehypeFileLineLinks, resolveLocalFileHref, resolveLocalFileLink, type FileLineRange, type OpenFileHandler } from "@/lib/file-links";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
 import { CodeBlock, MermaidBlock } from "./MermaidBlock";
@@ -31,11 +31,13 @@ import { HtmlElementPicker } from "./HtmlElementPicker";
 import { buildAtMentionText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import { buildElementLocatorText, findStartTagLine, type PickedElement } from "@/lib/html-element-pick";
 
+const previewFileLinkRehypePlugins = [rehypeFileLineLinks, ...(markdownPreviewRehypePlugins ?? [])];
+
 interface Props {
   filePath: string;
   cwd?: string;
   sourceSessionId?: string | null;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   /** Insert this file's relative path into the chat input (@ mention). */
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -43,6 +45,7 @@ interface Props {
   onInsertText?: (text: string) => void;
   gitRefreshKey?: number;
   initialDisplayMode?: DisplayMode;
+  lineRequest?: FileLineRequest;
   /**
    * Per-tab memory that outlives this viewer. The deck remounts when it is
    * widened or restored, so the mode the user picked and the scroll position
@@ -60,10 +63,16 @@ interface FileData {
 
 export type DisplayMode = "source" | "preview" | "diff";
 
+export interface FileLineRequest extends FileLineRange {
+  id: number;
+}
+
 export interface FileViewState {
   /** Only a mode the user chose; automatic defaults are never stored. */
   mode?: DisplayMode;
   scrollTop?: number;
+  /** A link-open position, separate from the user's remembered mode and scroll. Null means the user switched modes. */
+  lineView?: { requestId: number; scrollTop: number | null };
 }
 
 export type FileViewStateStore = Map<string, FileViewState>;
@@ -86,7 +95,7 @@ const FILE_LINE_NUMBER_STYLE: CSSProperties = {
   padding: "0 10px",
   textAlign: "right",
   color: "var(--text-dim)",
-  background: "var(--bg-panel)",
+  background: "var(--file-source-gutter-bg, var(--bg-panel))",
   fontFamily: "var(--font-mono)",
   fontSize: 11,
   fontStyle: "normal",
@@ -814,7 +823,8 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, onInsertText, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
+export function FileViewer(props: Props) {
+  const { filePath, cwd, sourceSessionId } = props;
   if (isImagePath(filePath)) {
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
@@ -824,10 +834,10 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMenti
   if (isDocumentPreviewPath(filePath)) {
     return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
-  return <TextFileViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onOpenFile={onOpenFile} onMentionLines={onMentionLines} onAtMention={onAtMention} onInsertText={onInsertText} gitRefreshKey={gitRefreshKey} initialDisplayMode={initialDisplayMode} viewStateStore={viewStateStore} viewStateKey={viewStateKey} />;
+  return <TextFileViewer {...props} />;
 }
 
-function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, onInsertText, gitRefreshKey, initialDisplayMode, viewStateStore, viewStateKey }: Props) {
+function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, onAtMention, onInsertText, gitRefreshKey, initialDisplayMode, lineRequest, viewStateStore, viewStateKey }: Props) {
   const { isDark } = useTheme();
   const { t } = useI18n();
   // 사용자가 고른 보기와 스크롤. 넓게 보기로 덱이 다시 마운트돼도 탭 단위 저장소에서 이어 받는다.
@@ -837,7 +847,14 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     viewStateStore.set(viewStateKey, { ...viewStateStore.get(viewStateKey), ...patch });
   }, [viewStateKey, viewStateStore]);
   const rememberedMode = viewState?.mode;
-  const [data, setData] = useState<FileData | null>(null);
+  const lineView = viewState?.lineView;
+  const savedLineView = lineView && lineView.requestId === lineRequest?.id ? lineView : undefined;
+  const [dismissedLineRequestId, setDismissedLineRequestId] = useState(
+    savedLineView?.scrollTop === null ? savedLineView.requestId : undefined,
+  );
+  const linkedSource = lineRequest !== undefined && dismissedLineRequestId !== lineRequest.id;
+  const appliedLineRequestId = useRef(savedLineView?.requestId);
+  const [data, setData] = useState<(FileData & { sourceSessionId: Props["sourceSessionId"] }) | null>(null);
   const [gitDiff, setGitDiff] = useState<GitFileDiffResponse | null>(null);
   const [gitDiffLoading, setGitDiffLoading] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -862,7 +879,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
           return null;
         }
         setError(null);
-        setData(d);
+        setData({ ...d, sourceSessionId });
         return d;
       })
       .catch((e) => {
@@ -958,6 +975,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
 
   const hasGitDiff = gitDiff?.supported === true && typeof gitDiff.patch === "string";
   const isDeletedDiff = hasGitDiff && gitDiff.status === "deleted";
+  const effectiveDisplayMode = isDeletedDiff ? "diff" : linkedSource ? "source" : displayMode;
 
   useEffect(() => {
     if (!hasGitDiff && displayMode === "diff") setDisplayMode("source");
@@ -990,14 +1008,14 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   useEffect(() => {
     scrollRestoredRef.current = false;
   }, [viewStateKey]);
-  const rememberedScrollTop = viewState?.scrollTop;
+  const rememberedScrollTop = linkedSource ? savedLineView?.scrollTop : viewState?.scrollTop;
   useEffect(() => {
     if (scrollRestoredRef.current || !data) return;
     if (!rememberedScrollTop) {
       scrollRestoredRef.current = true;
       return;
     }
-    if (rememberedMode && displayMode !== rememberedMode) return;
+    if (!linkedSource && rememberedMode && displayMode !== rememberedMode) return;
     // 같은 커밋에서 미리보기 자동 전환 같은 보기 변경이 이 프레임을 취소할 수 있다. 실제로 맞춘 뒤에만 끝낸다.
     const frame = requestAnimationFrame(() => {
       const content = contentRef.current;
@@ -1006,7 +1024,50 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
       scrollRestoredRef.current = true;
     });
     return () => cancelAnimationFrame(frame);
-  }, [data, displayMode, rememberedMode, rememberedScrollTop]);
+  }, [data, displayMode, linkedSource, rememberedMode, rememberedScrollTop]);
+
+  // Decorate the committed rows without re-running the memoized syntax highlighter.
+  useLayoutEffect(() => {
+    if (!lineRequest || loading || error || effectiveDisplayMode !== "source") return;
+    if (!data || data.sourceSessionId !== sourceSessionId) return;
+    const content = contentRef.current;
+    const code = content?.querySelector(".file-source-view > code");
+    if (!content || !code) return;
+    const rows = code.children;
+    const first = lineRequest.startLine - 1;
+    const end = Math.min(lineRequest.endLine, rows.length);
+    for (let index = first; index < end; index++) {
+      rows[index].setAttribute("data-line-link-highlight", "");
+    }
+    const target = appliedLineRequestId.current !== lineRequest.id
+      ? rows[Math.min(first, rows.length - 1)]
+      : undefined;
+    let visibilityObserver: ResizeObserver | undefined;
+    const jumpToLine = () => {
+      if (!target || !content.clientHeight) return;
+      visibilityObserver?.disconnect();
+      const rowTop = target.getBoundingClientRect().top;
+      const viewportTop = content.getBoundingClientRect().top + content.clientTop;
+      content.scrollTop += rowTop - viewportTop - 24;
+      appliedLineRequestId.current = lineRequest.id;
+      rememberViewState({ lineView: { requestId: lineRequest.id, scrollTop: content.scrollTop } });
+    };
+    if (target) {
+      if (content.clientHeight) jumpToLine();
+      else {
+        // Inspector tab panels can be mounted while hidden.
+        visibilityObserver = new ResizeObserver(jumpToLine);
+        visibilityObserver.observe(content);
+      }
+    }
+
+    return () => {
+      visibilityObserver?.disconnect();
+      for (let index = first; index < end; index++) {
+        rows[index]?.removeAttribute("data-line-link-highlight");
+      }
+    };
+  }, [data, effectiveDisplayMode, error, lineRequest, loading, rememberViewState, sourceSessionId]);
 
   const markdownPreview = useMemo(
     () => (data?.language === "markdown" ? normalizeDisplayMath(data.content) : ""),
@@ -1021,7 +1082,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   useEffect(() => {
     const updateSelectedLineRange = () => {
       const root = contentRef.current;
-      const next = onMentionLines && displayMode === "source" && root
+      const next = onMentionLines && effectiveDisplayMode === "source" && root
         ? getSelectedSourceLineRange(root, window.getSelection())
         : null;
       // selectionchange fires for every caret move; an unchanged range must not re-render the viewer.
@@ -1031,11 +1092,11 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     };
 
     updateSelectedLineRange();
-    if (!onMentionLines || displayMode !== "source") return;
+    if (!onMentionLines || effectiveDisplayMode !== "source") return;
 
     document.addEventListener("selectionchange", updateSelectedLineRange);
     return () => document.removeEventListener("selectionchange", updateSelectedLineRange);
-  }, [data?.content, displayMode, onMentionLines]);
+  }, [data?.content, effectiveDisplayMode, onMentionLines]);
 
   const mentionLineRange = useCallback((lineRange: SelectedLineRange | null) => {
     if (!onMentionLines || !lineRange) return;
@@ -1047,7 +1108,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   }, [cwd, filePath, onMentionLines]);
 
   useEffect(() => {
-    if (!onMentionLines || displayMode !== "source") return;
+    if (!onMentionLines || effectiveDisplayMode !== "source") return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.key.toLowerCase() !== "i" || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return;
@@ -1065,7 +1126,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [displayMode, mentionLineRange, onMentionLines]);
+  }, [effectiveDisplayMode, mentionLineRange, onMentionLines]);
 
   // 불러오는 동안·실패해도 머리줄은 남아 무엇을 보고 있는지와 넓게 보기 토글이 그대로 있다.
   if (loading || (initialDisplayMode === "diff" && gitDiffLoading && !data)) {
@@ -1099,7 +1160,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const hasPreview = isHtml || isMarkdown;
   const markdownDirectory = getFileDirectory(filePath);
   const lines = content.split("\n");
-  const effectiveDisplayMode = isDeletedDiff ? "diff" : displayMode;
+  const baseMode = rememberedMode ?? initialDisplayMode ?? (hasPreview ? "preview" : "source");
   const displayModes: DisplayMode[] = isDeletedDiff
     ? ["diff"]
     : [
@@ -1143,9 +1204,13 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             title: mode === "diff" ? t("i18n.compareHead") : undefined,
           })),
           onChange: (mode) => {
+            setDismissedLineRequestId(lineRequest?.id);
             setDisplayMode(mode);
             setPickingElement(false);
-            rememberViewState({ mode });
+            rememberViewState({
+              mode,
+              lineView: lineRequest ? { requestId: lineRequest.id, scrollTop: null } : undefined,
+            });
           },
         }}
         actions={[
@@ -1185,7 +1250,15 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
         ref={contentRef}
         className="file-viewer-content"
         style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}
-        onScroll={(event) => rememberViewState({ scrollTop: event.currentTarget.scrollTop })}
+        onScroll={(event) => {
+          const scrollTop = event.currentTarget.scrollTop;
+          if (!linkedSource) {
+            rememberViewState({ scrollTop });
+          } else if (appliedLineRequestId.current === lineRequest.id) {
+            const lineView = { requestId: lineRequest.id, scrollTop };
+            rememberViewState(baseMode === "source" ? { lineView, scrollTop } : { lineView });
+          }
+        }}
       >
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
@@ -1205,7 +1278,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             {frontmatter?.data && <FrontmatterCard data={frontmatter.data} />}
             <ReactMarkdown
               remarkPlugins={markdownPreviewRemarkPlugins}
-              rehypePlugins={markdownPreviewRehypePlugins}
+              rehypePlugins={onOpenFile ? previewFileLinkRehypePlugins : markdownPreviewRehypePlugins}
               components={{
                 code({ className, children, ...props }) {
                   const lang = className?.replace("language-", "").toLowerCase() ?? "";
@@ -1231,7 +1304,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
                 a({ href, children, ...props }) {
                   delete props.node;
                   const linkedFile = onOpenFile
-                    ? resolveLocalFileHref(href, markdownDirectory, cwd ?? markdownDirectory)
+                    ? resolveLocalFileLink(href, markdownDirectory, cwd ?? markdownDirectory)
                     : null;
                   if (!linkedFile || !onOpenFile) {
                     return <a href={href} {...props}>{children}</a>;
@@ -1241,7 +1314,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
                     if (event.defaultPrevented || event.button !== 0) return;
                     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                     event.preventDefault();
-                    onOpenFile(linkedFile);
+                    onOpenFile(linkedFile.filePath, linkedFile.lines);
                   };
 
                   return <a href={href} {...props} onClick={handleClick}>{children}</a>;

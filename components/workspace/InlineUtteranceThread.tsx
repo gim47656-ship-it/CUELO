@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { InlineUtterance } from "@/lib/inline-utterance";
+import type { OpenFileHandler } from "@/lib/file-links";
 import { useAccountFace } from "@/hooks/useAccountFaces";
 import { providerDisplayName } from "@/lib/hanse-resource-client";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -54,7 +55,7 @@ export function InlineTurnThreads({
   turnEntryId?: string;
   sessionId?: string;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
 }) {
   const utterances = useContext(InlineUtterancesContext).get(turnIndex);
   if (!utterances || utterances.length === 0) return null;
@@ -92,7 +93,7 @@ function InlineUtteranceBlock({
   utterance: InlineUtterance;
   sessionId?: string;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
 }) {
   const accountSessionId = utterance.accountSessionId === null ? undefined : utterance.accountSessionId ?? sessionId;
   const accountFace = useAccountFace(accountSessionId, utterance.provider, utterance.credentialId, utterance.model);

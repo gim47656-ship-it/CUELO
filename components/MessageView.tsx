@@ -7,6 +7,7 @@ import { vs, vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism"
 import { MarkdownBody } from "./MarkdownBody";
 import { A2uiActionChip, A2uiPartScope, useInA2uiSession } from "./a2ui/A2uiSession";
 import { parseActionMessage } from "@/lib/a2ui/blocks";
+import type { OpenFileHandler } from "@/lib/file-links";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
@@ -179,7 +180,7 @@ interface Props {
   toolResults?: Map<string, ToolResultMessage>;
   modelNames?: Record<string, string>;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   entryId?: string;
   onFork?: (entryId: string) => void;
   forking?: boolean;
@@ -285,7 +286,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
 function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, inputTranslation }: {
   message: UserMessage;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   entryId?: string;
   onFork?: (entryId: string) => void;
   forking?: boolean;
@@ -531,7 +532,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 }
 
 /** 예전 기록의 사용자 메시지에 붙은 숨은 영어 통역(2026-11-20 철거한 user-input-interpreter). 처음엔 접혀 있고 눌러야 펼쳐진다. */
-function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+function InputTranslationToggle({ text, cwd, onOpenFile }: { text: string; cwd?: string; onOpenFile?: OpenFileHandler }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const bodyId = useId();
@@ -587,7 +588,7 @@ function AssistantMessageView({
   toolResults?: Map<string, ToolResultMessage>;
   modelNames?: Record<string, string>;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
@@ -916,7 +917,7 @@ function AssistantMessageView({
 }
 
 /** 영어로 나간 답의 한국어 번역을 본문으로 두고 영어 원문은 접어 둔다(korean-reply-guard). */
-function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { translation: string; original: string; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { translation: string; original: string; cwd?: string; onOpenFile?: OpenFileHandler }) {
   const { t } = useI18n();
   const [originalOpen, setOriginalOpen] = useState(false);
   return (
@@ -946,7 +947,7 @@ function TranslatedReplyBody({ translation, original, cwd, onOpenFile }: { trans
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, runStartedAt, cwd, onOpenFile, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; runStartedAt?: number; cwd?: string; onOpenFile?: (filePath: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, runStartedAt, cwd, onOpenFile, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; runStartedAt?: number; cwd?: string; onOpenFile?: OpenFileHandler; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
     // A2UI fences find their card through the text part they belong to.
     return <A2uiPartScope part={block}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} /></A2uiPartScope>;
@@ -1195,7 +1196,7 @@ function ToolImageDialog({ src, fileName, onClose }: { src: string; fileName: st
   );
 }
 
-function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: OpenFileHandler }) {
   return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
 }
 
@@ -2120,7 +2121,7 @@ function CompactionFileList({ title, files }: { title: string; files: string[] }
   );
 }
 
-function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: OpenFileHandler }) {
   const { t } = useI18n();
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);

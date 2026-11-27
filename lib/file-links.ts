@@ -1,3 +1,40 @@
+import type { Element, Root } from "hast";
+
+/** 1-based inclusive line range carried by a file link such as `file.ts#L10-L25` or `file.ts:10-25`. */
+export interface FileLineRange {
+  startLine: number;
+  endLine: number;
+}
+
+/** Opens a local file in the side file viewer; `lines`, when given, is scrolled to and highlighted. */
+export type OpenFileHandler = (filePath: string, lines?: FileLineRange) => void;
+
+const COLON_LINE_SUFFIX = /:(-?\d+)(?:-(-?\d+)|:\d+)?$/;
+const HASH_LINE_SUFFIX = /^L(-?\d+)(?:-L?(-?\d+))?$/;
+
+// Bare filename locations look like URL schemes to the Markdown sanitizers.
+// Only rewrite that shape; the regular URL and HTML checks still run afterwards.
+export function rehypeFileLineLinks() {
+  return (root: Root) => {
+    function visit(node: Root | Element) {
+      if (node.type === "element" && node.tagName === "a") {
+        const href = node.properties.href;
+        if (typeof href === "string") {
+          const path = href.split(/[?#]/, 1)[0];
+          const suffix = COLON_LINE_SUFFIX.exec(path);
+          if (suffix && /^[^:/\\\s]+\.[^:/\\\s.]+$/.test(path.slice(0, suffix.index))) {
+            node.properties.href = `./${href}`;
+          }
+        }
+      }
+      for (const child of node.children) {
+        if (child.type === "element") visit(child);
+      }
+    }
+    visit(root);
+  };
+}
+
 function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -116,6 +153,27 @@ export function resolveLocalFileHref(
   const filePath = stripLineSuffix(normalizeLocalPath(candidate));
   if (candidateKind === "relative" && relativeRoot && !isPathInside(filePath, relativeRoot)) return null;
   return filePath;
+}
+
+/** Resolve a Markdown file link while retaining a valid source line or range. */
+export function resolveLocalFileLink(href: string | undefined, baseDir?: string, relativeRoot = baseDir) {
+  if (!href) return null;
+
+  const [reference, fragment] = href.trim().split("#", 2);
+  const path = reference.split("?", 1)[0].trim();
+  const colon = COLON_LINE_SUFFIX.exec(path);
+  const hash = fragment === undefined ? null : HASH_LINE_SUFFIX.exec(fragment);
+  const filePath = resolveLocalFileHref(colon ? path.slice(0, colon.index) : path, baseDir, relativeRoot);
+  if (!filePath) return null;
+
+  const location = hash ?? colon;
+  if (!location) return { filePath };
+
+  const start = Number(location[1]);
+  const end = location[2] === undefined ? start : Number(location[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < 1) return { filePath };
+
+  return { filePath, lines: { startLine: Math.min(start, end), endLine: Math.max(start, end) } };
 }
 
 /** Resolve a filesystem path without applying URL or source-location syntax. */

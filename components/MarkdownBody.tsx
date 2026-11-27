@@ -2,19 +2,21 @@
 
 import { useMemo, type MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import { resolveLocalFileHref } from "@/lib/file-links";
+import { rehypeFileLineLinks, resolveLocalFileHref, resolveLocalFileLink, type OpenFileHandler } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
 import { A2uiFence, A2uiMarkdownSource } from "./a2ui/A2uiSession";
 import { A2UI_LANG } from "@/lib/a2ui/blocks";
 
+const fileLinkRehypePlugins = [rehypeFileLineLinks, ...(markdownRehypePlugins ?? [])];
+
 interface MarkdownBodyProps {
   children: string;
   className?: string;
   isStreaming?: boolean;
   cwd?: string;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
 }
 
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
@@ -49,9 +51,9 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
     a({ href, children, ...props }) {
       // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
-      const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
+      const linkedFile = onOpenFile ? resolveLocalFileLink(href, cwd) : null;
       const openFile = onOpenFile;
-      if (!filePath || !openFile) {
+      if (!linkedFile || !openFile) {
         return (
           <a href={href} {...props} target="_blank" rel="noopener noreferrer">
             {children}
@@ -65,7 +67,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         const target = event.currentTarget.getAttribute("target");
         if (target && target !== "_self") return;
         event.preventDefault();
-        openFile(filePath);
+        openFile(linkedFile.filePath, linkedFile.lines);
       };
 
       return (
@@ -98,7 +100,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       <A2uiMarkdownSource.Provider value={normalizedMarkdown}>
         <ReactMarkdown
           remarkPlugins={markdownRemarkPlugins}
-          rehypePlugins={markdownRehypePlugins}
+          rehypePlugins={onOpenFile ? fileLinkRehypePlugins : markdownRehypePlugins}
           components={components}
         >
           {normalizedMarkdown}

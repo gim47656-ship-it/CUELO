@@ -37,6 +37,24 @@ test("keeps local file markdown links in the app", () => {
   assert.doesNotMatch(html, /target=|rel=|\snode=/);
 });
 
+test("keeps bare numeric file links actionable through the Markdown sanitizers", () => {
+  const html = renderMarkdown("[range](file.ts:10-25) [line](file.ts:10:5) [hash](file.ts#L10-L25)");
+
+  assert.match(html, /<a href="\.\/file\.ts:10-25">range<\/a>/);
+  assert.match(html, /<a href="\.\/file\.ts:10:5">line<\/a>/);
+  assert.match(html, /<a href="file\.ts#L10-L25">hash<\/a>/);
+  assert.doesNotMatch(html, /target=/);
+});
+
+test("does not change Markdown handling for other URL schemes", () => {
+  const html = renderMarkdown("[blocked](javascript:123) [unknown](scheme:123) [mail](mailto:user@example.com) [web](https://example.com/file.ts:10-25)");
+
+  assert.match(html, /<a target="_blank" rel="noopener noreferrer">blocked<\/a>/);
+  assert.match(html, /<a target="_blank" rel="noopener noreferrer">unknown<\/a>/);
+  assert.match(html, /<a href="mailto:user@example\.com" target="_blank"/);
+  assert.match(html, /<a href="https:\/\/example\.com\/file\.ts:10-25" target="_blank"/);
+});
+
 test("keeps single-tilde CJK numeric ranges literal instead of striking them", () => {
   const html = renderMarkdown("5~7U 保证金 × 100~200倍杠杆");
 

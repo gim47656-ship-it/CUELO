@@ -76,6 +76,10 @@ import { useDragDrop } from "@/hooks/useDragDrop";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useSoftKeyboardOpen } from "@/hooks/useViewportHeight";
 import type { GoalStatusInfo, SessionStatsInfo } from "@/lib/omp-types";
+import type { OpenFileHandler } from "@/lib/file-links";
+import type { UsageSnapshotController } from "@/hooks/useUsageSnapshot";
+import { latestAnswerCredential } from "@/lib/composer-usage";
+import { ComposerUsageBand } from "./ComposerUsageBand";
 import {
   captureScrollDistance,
   getVisibleRenderWindow,
@@ -117,7 +121,7 @@ interface Props {
   onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   onSubagentsChange?: (subagents: SubagentSnapshot[]) => void;
   /** `lab:<id>` widgets of this session. They belong to the plugin panels, not to the text cards here. */
   onLabWidgetsChange?: (sessionId: string | null, widgets: ExtensionWidgetItem[]) => void;
@@ -168,6 +172,8 @@ interface Props {
    * The second pane of the split view passes false so the two chats never fight over them.
    */
   shellConnected?: boolean;
+  /** The app's single usage poller; the composer band reads this session's account limits from it. */
+  usageSnapshot?: UsageSnapshotController;
 }
 
 export interface ChatJumpRequest {
@@ -531,7 +537,7 @@ const HistoricalTranscript = memo(function HistoricalTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, initialSessionData, transitioning = false, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onLabWidgetsChange, onOpenWorkspaceView, onOpenSessionList, onRevealToolCall, composerStartPlace, onOpenMaker, selectedMaker, onProcessLogChange, onOpenFile, transcriptReplacement, onComposerFocusChange, onSessionBusyChange, onWaitingChange, onAttentionChange, soundEnabled = true, onSoundToggle, playCueSound = async () => ({ sticker: null, text: null }), preloadCueSound, unlockAudio, jumpRequest = null, onJumpHandled, turnInspectorTarget = null, onShowTurnInspector, turnInspectorFolded = false, shellConnected = true, usageSnapshot }: Props) {
   const { t } = useI18n();
   // 휴대폰 키보드가 올라와 있으면 dock의 할 일 줄을 잠시 접어 대화가 보이게 한다.
   const softKeyboardOpen = useSoftKeyboardOpen();
@@ -1163,7 +1169,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
   const inlineUtterances = useInlineUtterances(inlineContext);
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
-  // 입력창 아래 tok/s: 답이 흐르는 동안은 받은 글로 어림한 실시간 값, 아니면 마지막으로 끝난 답의 실제 값.
+  // 입력창 위 사용량 줄의 tok/s: 답이 흐르는 동안은 받은 글로 어림한 실시간 값, 아니면 마지막으로 끝난 답의 실제 값.
   // 실시간 값의 답 구분 키는 끝난 assistant 답의 수다 — 답이 끝날 때만 늘고, 생성 중 끼어든 사용자 메시지로는 바뀌지 않는다.
   const finishedAnswers = useMemo(() => messages.filter((message) => message.role === "assistant").length, [messages]);
   const liveOutputRate = useLiveOutputRate(
@@ -1171,6 +1177,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     finishedAnswers,
   );
   const finishedOutputRate = useMemo(() => latestOutputTokensPerSecond(messages), [messages]);
+  const answerCredential = useMemo(() => latestAnswerCredential(messages, displayModelValue?.provider), [messages, displayModelValue?.provider]);
   const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
 
   const availableThinkingLevels = displayModelValue
@@ -1270,8 +1277,6 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
         thinkingLevel={thinkingLevel}
         effectiveThinkingLevel={effectiveThinkingLevel}
-        outputTokensPerSecond={liveOutputRate ?? finishedOutputRate}
-        outputSpeedLive={liveOutputRate !== null}
         thinkingCeiling={thinkingCeiling}
         onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
         fastMode={fastMode}
@@ -1295,6 +1300,17 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
         cwd={session?.cwd ?? newSessionCwd}
         sessionTitle={session?.name}
         startPlace={isEmptyNew && !transcriptReplacement ? composerStartPlace : undefined}
+        usageBand={session ? (
+          <ComposerUsageBand
+            contextUsage={contextUsage ?? sessionStats?.contextUsage}
+            sessionTokens={sessionStats?.tokens}
+            outputTokensPerSecond={liveOutputRate ?? finishedOutputRate}
+            outputSpeedLive={liveOutputRate !== null}
+            usageReports={usageSnapshot?.state.data?.reports}
+            provider={displayModelValue?.provider}
+            credentialId={answerCredential}
+          />
+        ) : null}
       />
     </div>
   );

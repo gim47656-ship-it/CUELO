@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActionButton } from "@seed-design/react";
 import { useI18n } from "@/hooks/useI18n";
+import type { OpenFileHandler } from "@/lib/file-links";
 import { isRecoveredAssistantError, withAssistantBlocks } from "@/lib/message-display";
 import type { ProcessTurnGroup } from "@/lib/transcript-plan";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "@/lib/types";
@@ -31,7 +32,7 @@ export interface ProcessLogData {
 export interface ProcessLogPanelProps {
   title: string;
   data: ProcessLogData | null;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   /** 채팅의 bash 카드가 보낸 이동 요청. nonce가 바뀔 때마다 그 실행을 펼치고 보이게 하고 잠시 강조한다. */
   focusRequest?: { toolCallId: string; nonce: number } | null;
 }

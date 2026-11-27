@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { SubagentSnapshot, ToolResultMessage } from "@/lib/types";
+import type { OpenFileHandler } from "@/lib/file-links";
 import { MessageView } from "@/components/MessageView";
 import {
   createHanseSubagentClient,
@@ -54,7 +55,7 @@ export interface SubagentArchivePanelProps {
   /** 발주 카드에서 연 상세에서 뒤로 갈 때. 셸이 그 카드 행으로 초점을 돌려보낸다. */
   onReturnToOrigin?: (origin: string) => void;
   /** 상세의 변경 파일을 미리보기로 연다. */
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
 }
 
 type LoadState<T> =
@@ -218,7 +219,7 @@ function SubagentDetail({
   client: HanseSubagentClient;
   visible: boolean;
   onBack: () => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
 }) {
   const { st } = useAnswerStatusText();
   const { t } = useI18n();

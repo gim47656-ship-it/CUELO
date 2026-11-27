@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { ActionButton, Badge, Icon, Menu, Tabs } from "@seed-design/react";
+import type { OpenFileHandler } from "@/lib/file-links";
 import type { SubagentSnapshot } from "@/lib/types";
 import type { HanseSubagentClient } from "@/lib/hanse-subagent-client";
 import type { WorkspacePanelViewId } from "@/lib/workspace-layout";
@@ -61,7 +62,7 @@ export interface AuxiliaryDeckProps {
   selectedMaker?: MakerSelection | null;
   onSelectMaker?: (selection: MakerSelection | null) => void;
   onReturnToDispatch?: (origin: string) => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: OpenFileHandler;
   /** 파일 보기에 열린 파일이 있어 그 머리줄이 넓게 보기 토글을 든다. 없으면 탭 줄이 든다. */
   fileOpen?: boolean;
   /** The shell's width readout while the pinned inspector's edge is dragged or focused. */

@@ -2135,51 +2135,6 @@ span.linenumber {
   font-weight: 500;
 }
 
-.workspace-context-usage {
-  flex: 0 1 auto;
-  min-inline-size: 0;
-  overflow: hidden;
-}
-
-.workspace-context-meter {
-  position: relative;
-  flex: 0 1 96px;
-  min-inline-size: 40px;
-  block-size: var(--seed-dimension-x1_5);
-  overflow: hidden;
-  border-radius: var(--seed-radius-full);
-  background: var(--seed-color-bg-neutral-weak);
-}
-
-.workspace-context-meter-fill {
-  display: block;
-  block-size: 100%;
-  background: var(--seed-color-fg-neutral);
-}
-
-.workspace-context-meter-fill[data-level="warning"] {
-  background: var(--seed-color-fg-warning);
-}
-
-.workspace-context-meter-fill[data-level="critical"] {
-  background: var(--seed-color-fg-critical);
-}
-
-/* The figure is the signal; level colour only reinforces it. */
-.workspace-context-readout {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.workspace-context-readout[data-level="warning"] {
-  color: var(--seed-color-fg-warning);
-}
-
-.workspace-context-readout[data-level="critical"] {
-  color: var(--seed-color-fg-critical);
-}
-
 /* Secondary session surfaces (session info, system prompt, branches) drop
    from the header row as one opaque floating layer on <body>: the panel fill
    steps 1.30 or more away from the centre beneath, the float shadow lifts it
@@ -5248,6 +5203,11 @@ h2.priority-group-heading {
   background: var(--bg-subtle);
 }
 
+.file-source-line[data-line-link-highlight] {
+  --file-source-gutter-bg: transparent;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
 .file-source-line ::selection {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
@@ -7112,17 +7072,11 @@ section[aria-label="Subagent 기록"] .subagent-task-line {
     padding-inline: var(--seed-dimension-x1);
   }
 
-  /* Phone: the status chip and the numeric readout yield to the controls, but
-     the meter and its accessible name stay. The running count stays in the top
-     bar; the project name went first (the drawer and window title still name it). */
+  /* Phone: the status chip yields to the controls. The running count stays in
+     the top bar; the project name went first (the drawer and window title still name it). */
   .workspace-session-status,
-  .workspace-context-readout,
   .workspace-session-project {
     display: none !important;
-  }
-
-  .workspace-context-meter {
-    flex-basis: 56px;
   }
 
   .directory-picker-back,

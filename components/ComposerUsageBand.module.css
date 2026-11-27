@@ -1,0 +1,30 @@
+/* One line, always: items wrap onto a clipped second line, so whatever does not fit disappears
+   whole from the end (lowest priority) and nothing is cut mid-number. Height follows the font. */
+.band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 14px;
+  block-size: 1.5em;
+  overflow: hidden;
+  margin: 0 0 4px;
+  padding: 0 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  word-break: keep-all;
+}
+
+.item {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.item[data-level="warning"] {
+  color: var(--seed-color-fg-warning);
+}
+
+.item[data-level="critical"] {
+  color: var(--seed-color-fg-critical);
+}
