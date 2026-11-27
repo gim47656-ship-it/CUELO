@@ -15,6 +15,13 @@ import { hasPosixGitdirWorktree, isWindowsDrivePath, selectGitExecutor, usesWind
 export { hasPosixGitdirWorktree };
 /** 도구 로더가 넘기는 API. 한 factory가 git_finalize와 git_integrate를 함께 등록한다. */
 export type ToolApi = Parameters<CustomToolFactory>[0];
+type ProtectPublication = (reason: string) => Promise<void>;
+type StartBackgroundJob = (label: string, run: (signal: AbortSignal, protect: ProtectPublication) => Promise<{ text: string; details: unknown }>) => string;
+const runningFinalizes = new Map<string, string>();
+function refuseRunningFinalize(root: string, tool = "git_finalize") {
+  const id = runningFinalizes.get(pathKey(resolve(root)));
+  if (id) throw new Error(`${tool} failed at lock: ${root} already has a running git_finalize job (${id}). Wait for its result.`);
+}
 
 interface FinalizerResult {
   ok: boolean;
@@ -30,6 +37,7 @@ interface FinalizerResult {
   leftoverFiles?: string[];
   repositoryRoot?: string;
   repositoryFiles?: string[];
+  target?: { branch: string; remote: string; upstreamRef: string; commonDir: string };
 }
 
 class FinalizerPathRefusal extends Error {}
@@ -399,6 +407,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
   label: "Git Finalize",
   loadMode: "essential",
   description:
+    "Returns a background job id after gates; checks can be cancelled before the commit/push transaction. Its result arrives later. Without background-job support the final result is returned synchronously. An overlapping finalize/integrate for this checkout in this process is refused with the running job id; transactions on the same upstream ref still share the repository lock. " +
     "Main-only commit/push. Before calling: give exact cwd-relative files in one repo (no globs/directories) and message; crossReviewHighRisk uses paths from files. Resolve cross_review for gated code and slop_check for gated visible files at current content. Include the matching source manifest where required; stale hashes are regenerated and committed when possible. Fix known .finalize-checks.json failures; matching checks run after review/slop before publication." +
     " crossReviewWaiver: explicit user instruction OR standing exception when required review failed only on provider rate or usage limits (decision, reviewId, raw errors). slopGateWaiver and finalizeChecksWaiver: explicit user instruction only. outsideCwdReason: user's explicit instruction for files outside session cwd, except in its own linked worktree or for direct children of the cwd repo root. Result lists leftover files under the committed folder (advisory). Behind-only copies fast-forward/merge before gates; divergence/conflict stops. Never bypass locks/ancestry.",
   parameters: pi.zod.object({
@@ -430,9 +439,9 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       const request = { cwd: windows?.[0] ?? pi.cwd, files, message, outsideCwdReason, generatedFiles: generatedManifest ? [manifestPath] : undefined };
       return {
         requestPath, request, windows, shell, args, options,
-        async checkPaths() {
+        async checkPaths(pin = false) {
           await writeFile(requestPath, JSON.stringify(request), "utf8");
-          const result = await pi.exec(shell, [...args, "-PreflightOnly"], options);
+          const result = await pi.exec(shell, [...args, "-PreflightOnly", ...(pin ? ["-PinPublicationTarget"] : [])], options);
           const parsed = parseResult(result.stdout);
           if (result.code !== 0 || !parsed?.ok || !parsed.repositoryRoot || !parsed.repositoryFiles?.length) {
             const detail = `git_finalize failed at ${parsed?.stage ?? "preflight"}: ${parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`;
@@ -440,7 +449,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
             throw new Error(detail);
           }
           const root = windows ? windowsPathToPosix(parsed.repositoryRoot) : parsed.repositoryRoot;
-          return { root, paths: parsed.repositoryFiles };
+          if (pin && !parsed.target) throw new Error("git_finalize failed at preflight: missing publication target.");
+          return { root, paths: parsed.repositoryFiles, target: parsed.target };
         },
       };
     };
@@ -478,6 +488,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     let upstreamNote = "";
     const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
     if (repo && !("failure" in repo)) {
+      refuseRunningFinalize(repo.root);
       // git_integrate가 게시 뒤 로컬 세션 브랜치를 지운 worktree(분리된 HEAD)에서 다시 커밋하면 같은 이름의 브랜치를 먼저 다시 붙인다.
       const reattached = isWindowsDrivePath(repo.root) ? { status: "none" as const } : await reattachRetiredBranch(repo.root, { signal });
       if (reattached.note) onUpdate?.({ content: [{ type: "text", text: reattached.note }], details: { phase: "branch-reattach" } });
@@ -537,13 +548,15 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     }
 
     const tempDir = await mkdtemp(join(tmpdir(), "omp-git-finalize-"));
+    let transferred = false;
     try {
       const prepared = await prepareFinalizer(tempDir, files, Boolean(regeneratedManifest));
       const { requestPath, request, windows, shell, args, options } = prepared;
       let finalizeChecks: FinalizeChecksResult | undefined;
       const run = spawnExec(signal);
-      let pathPreflight: { root: string; paths: string[] } | undefined;
-      const verifyPaths = async () => pathPreflight ??= await prepared.checkPaths();
+      const startJob = (pi as ToolApi & { startBackgroundJob?: StartBackgroundJob }).startBackgroundJob;
+      let pathPreflight: { root: string; paths: string[]; target?: FinalizerResult["target"] } | undefined;
+      const verifyPaths = async () => pathPreflight ??= await prepared.checkPaths(Boolean(startJob));
       const portableFiles = files.map((file) => file.replaceAll("\\", "/"));
       const targets = repo && !("failure" in repo) && files.length === repo.targets.length && portableFiles.every((file, index) => file === repo.targets[index].input)
         ? repo : await resolveRepoTargets(pi.cwd, portableFiles, run);
@@ -551,38 +564,43 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         ? await verifyPaths()
         : { root: targets.root, paths: targets.targets.map((target) => target.path) };
       const git = (await selectGitExecutor(root)).command;
+      const authorize = async () => {
+        const authoritative = await verifyPaths();
+        if (pathKey(resolve(authoritative.root)) !== pathKey(resolve(root)) ||
+          authoritative.paths.length !== paths.length ||
+          authoritative.paths.some((path, index) => pathKey(path) !== pathKey(paths[index]))) {
+          throw new Error("The publication paths changed during path preflight.");
+        }
+        const missing = paths.filter((path) => !gateBlobs || !Object.hasOwn(gateBlobs, path));
+        if (missing.length) gateBlobs = { ...Object.fromEntries(await currentBlobs(run, git, root, missing)), ...gateBlobs };
+      };
+      const finish = async (tailSignal: AbortSignal | undefined, update: typeof onUpdate, protect?: ProtectPublication) => {
       try {
         finalizeChecks = await runFinalizeChecks({
-          root, files: paths, git, exec: run, signal, waiver: params.finalizeChecksWaiver,
+          root, files: paths, git, exec: spawnExec(tailSignal), signal: tailSignal, waiver: params.finalizeChecksWaiver,
           sessionManager: ctx?.sessionManager, publicationCandidate: true,
           authorize: async () => {
             // Project commands may only run after the finalizer approves the same target/paths.
-            const authoritative = await verifyPaths();
-            if (pathKey(resolve(authoritative.root)) !== pathKey(resolve(root)) ||
-              authoritative.paths.length !== paths.length ||
-              authoritative.paths.some((path, index) => pathKey(path) !== pathKey(paths[index]))) {
-              throw new Error("The publication paths changed during path preflight.");
-            }
-            const missing = paths.filter((path) => !gateBlobs || !Object.hasOwn(gateBlobs, path));
-            const blobs = await currentBlobs(run, git, root, missing);
-            gateBlobs = { ...Object.fromEntries(blobs), ...gateBlobs };
-            onUpdate?.({ content: [{ type: "text", text: "Checking the repository's publication candidate." }], details: { phase: "finalize-checks" } });
+            if (!startJob) await authorize(); // The background path authorized and bound these bytes before registration.
+            update?.({ content: [{ type: "text", text: "Checking the repository's publication candidate." }], details: { phase: "finalize-checks" } });
           },
         });
       } catch (error) {
         const manifestNote = regeneratedManifest?.restoreIfUnchanged();
         throw new Error(`git_finalize failed at finalize-checks: ${error instanceof Error ? error.message : String(error)}${manifestNote ? `\n${manifestNote}` : ""}`);
       }
-      onUpdate?.({
+      update?.({
         content: [{ type: "text", text: "Repository finalizer lock을 획득하고 변경 경계를 확인하는 중입니다." }],
         details: { phase: "preflight", files },
       });
       // Gate blobs and HEAD bind the checked publication to the commit transaction under the lock.
       await writeFile(requestPath, JSON.stringify({
-        ...request, finalizeChecksHead: finalizeChecks?.publicationHead, finalizeChecksTree: finalizeChecks?.candidateTree,
+        ...request, target: pathPreflight?.target, finalizeChecksHead: finalizeChecks?.publicationHead, finalizeChecksTree: finalizeChecks?.candidateTree,
         gateBlobs: gateBlobs && Object.keys(gateBlobs).length ? gateBlobs : undefined,
       }), "utf8");
-      const result = await pi.exec(shell, args, options);
+      await protect?.("git_finalize is committing/pushing; cannot cancel. The result will be delivered.");
+      tailSignal?.throwIfAborted();
+      const result = await pi.exec(shell, args, { ...options, signal: protect ? undefined : tailSignal });
       const parsed = parseResult(result.stdout);
       if (result.code !== 0 || !parsed?.ok) {
         const detail = parsed?.error || result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
@@ -595,10 +613,11 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       let syncHint = "";
       let publication: string | undefined;
       if (parsed.commitSha) {
-        const repo = await resolveRepoTargets(pi.cwd, requested, exec).catch(() => undefined);
+        const postExec: Exec = (command, args, options) => pi.exec(command, args, { ...options, signal: tailSignal });
+        const repo = await resolveRepoTargets(pi.cwd, requested, postExec).catch(() => undefined);
         if (repo && !("failure" in repo)) {
           // 기다릴 대상 안내는 Windows 저장소에도 붙인다. 대응 사본 명령만 WSL·Linux 저장소 전용이다.
-          publication = await publicationNote(repo.root, parsed.commitSha, Boolean(parsed.resumedPush), exec).catch(() => undefined);
+          publication = await publicationNote(repo.root, parsed.commitSha, Boolean(parsed.resumedPush), postExec).catch(() => undefined);
           if (!windows && process.platform !== "win32") {
             syncHint = `\nWindows 대응 사본이 있으면: bun ${shellArg(syncCheckoutPath)} --source ${shellArg(repo.root)}`
               + ` --target ${shellArg("<대응 Windows 사본의 /mnt 경로>")} --revision ${parsed.commitSha}`;
@@ -609,7 +628,7 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `Committed and pushed ${parsed.commitSha} to ${parsed.remote} ${parsed.upstreamRef}.`
               + (upstreamNote ? ` ${upstreamNote}` : "")
               + (regeneratedManifest ? ` 소스 매니페스트(${manifestPath})가 낡아 다시 만들어 이번 커밋에 포함했다.` : "")
@@ -629,8 +648,33 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
         ],
         details: checksNote ? { ...parsed, finalizeChecks } : parsed,
       };
+      };
+      if (!startJob) return await finish(signal, onUpdate);
+      // Capture even ungated files before releasing the exclusive call to later edits.
+      try {
+        await authorize();
+        signal?.throwIfAborted();
+        refuseRunningFinalize(root);
+        const key = pathKey(resolve(root));
+        const id = startJob(`git_finalize ${root}: ${message.split(/\r?\n/, 1)[0]}`, async (jobSignal, protect) => {
+          try {
+            const result = await finish(jobSignal, undefined, protect);
+            return { text: result.content[0].text, details: result.details };
+          } finally {
+            runningFinalizes.delete(key);
+            await rm(tempDir, { recursive: true, force: true });
+          }
+        });
+        runningFinalizes.set(key, id);
+        transferred = true;
+        return { content: [{ type: "text", text: `git_finalize job ${id} started; the commit/push result will be delivered here.` }], details: { stage: "pending", jobId: id } };
+      } catch (error) {
+        const note = regeneratedManifest?.restoreIfUnchanged();
+        if (note) throw new Error(`${error instanceof Error ? error.message : String(error)}\n${note}`);
+        throw error;
+      }
     } finally {
-      await rm(tempDir, { recursive: true, force: true });
+      if (!transferred) await rm(tempDir, { recursive: true, force: true });
     }
   },
 });
@@ -643,6 +687,17 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
  */
 const runAlone = (tool: CustomTool<any, any>): CustomTool<any, any> => Object.assign(tool, { concurrency: "exclusive" as const });
 
-const factory: CustomToolFactory = (pi) => [finalizeTool(pi), integrateTool(pi)].map(runAlone);
+const factory: CustomToolFactory = (pi) => {
+  const integrate = integrateTool(pi);
+  const execute = integrate.execute;
+  integrate.execute = async (...args) => {
+    if (runningFinalizes.size) {
+      const top = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: pi.cwd, signal: args[4] });
+      if (top.code === 0) refuseRunningFinalize(top.stdout.trim(), "git_integrate");
+    }
+    return execute(...args);
+  };
+  return [runAlone(finalizeTool(pi)), runAlone(integrate)];
+};
 
 export default factory;

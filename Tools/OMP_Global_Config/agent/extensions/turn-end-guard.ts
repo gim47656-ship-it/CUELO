@@ -397,7 +397,7 @@ export function createTurnEndGuard(
       (Message & { stopReason?: string }) | undefined;
     if (lastAssistant?.stopReason === "aborted") return;
     // 게시 안내는 입력당 1회 안내와 승인 경계 낱말에 묶지 않는다. 배포·장비 대기만으로는 Git 보류가 아니다. child 세션은 게시하지 않는다.
-    const publish = () => ctx.agent?.kind === "sub" ? undefined : publication.note(ctx.cwd);
+    const publish = () => ctx.agent?.kind === "sub" ? undefined : publication.note(ctx.cwd, options => ctx.getAsyncJobSnapshot?.(options) ?? null);
     // Optional plugins append synchronous fragments at the original final-notice boundary.
     const extra = () => {
       const request: TurnEndNotices = { ctx, notices: [] };

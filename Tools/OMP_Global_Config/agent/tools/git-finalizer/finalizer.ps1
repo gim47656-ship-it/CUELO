@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Request,
-    [switch]$PreflightOnly
+    [switch]$PreflightOnly,
+    [switch]$PinPublicationTarget
 )
 
 $ErrorActionPreference = 'Stop'
@@ -236,7 +237,7 @@ try {
         $repoPaths += $repoPath
     }
 
-    if ($PreflightOnly) {
+    if ($PreflightOnly -and -not $PinPublicationTarget) {
         [Console]::Out.WriteLine((@{ ok = $true; stage = 'preflight'; repositoryRoot = $repoRoot; repositoryFiles = @($repoPaths) } | ConvertTo-Json -Compress))
         exit 0
     }
@@ -269,6 +270,11 @@ try {
         $upstreamRef = "refs/heads/$branch"
     }
     $trackingConfigured = [bool]$configuredRemote -and [bool]$configuredUpstreamRef
+    if ($PreflightOnly) {
+        $target = @{ branch = $branch; remote = $remote; upstreamRef = $upstreamRef; commonDir = $commonDir }
+        [Console]::Out.WriteLine((@{ ok = $true; stage = 'preflight'; repositoryRoot = $repoRoot; repositoryFiles = @($repoPaths); target = $target } | ConvertTo-Json -Compress))
+        exit 0
+    }
 
     $stage = 'lock'
     $lockDirectory = if ($isWindowsPlatform) { $commonDir.ToLowerInvariant() } else { $commonDir }
@@ -287,6 +293,15 @@ try {
     $lockedBranch = (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('rev-parse', '--abbrev-ref', 'HEAD')).Output
     if (-not $lockedCommonDir.Equals($commonDir, $pathComparison) -or $lockedBranch -cne $branch) {
         throw 'Repository or branch changed while acquiring the finalizer lock.'
+    }
+    if ($payload.target) {
+        $target = $payload.target
+        if ($lockedBranch -cne $target.branch -or $remote -cne $target.remote -or $upstreamRef -cne $target.upstreamRef -or
+            -not $lockedCommonDir.Equals([string]$target.commonDir, $pathComparison) -or
+            (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.remote") -AllowedExitCodes @(0, 1)).Output -cne $configuredRemote -or
+            (Invoke-Git -WorkingDirectory $repoRoot -GitArgs @('config', '--get', "branch.$branch.merge") -AllowedExitCodes @(0, 1)).Output -cne $configuredUpstreamRef) {
+            throw 'Publication target changed after git_finalize preflight. No commit or push was made.'
+        }
     }
 
     $stage = 'remote-probe'

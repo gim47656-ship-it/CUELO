@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runResolve, runReview, spawnExec } from "../../extensions/lib/cross-review";
 import { createRoutingLedger, readCrossReviewRecords } from "../../extensions/lib/routing-ledger";
-import { finalizeTool } from "./index";
+import factory, { finalizeTool } from "./index";
 import { integrateTool, reattachRetiredBranch } from "./integrate";
 
 // 검증 범위: 실제 git(bare 원격 + main clone + linked worktree + 다른 세션 clone)과 실제 pwsh 잠금 보유자로 git_integrate의
@@ -120,6 +120,31 @@ async function holdLock(repository: string, options: { wait?: number; maxHold?: 
 const settledWithin = async (promise: Promise<unknown>, ms: number) => Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
 
 describe("git_integrate", () => {
+  test("refuses integration before touching a checkout with an outstanding finalize job", async () => {
+    const f = await fixture();
+    const head = git(f.tree, ["rev-parse", "HEAD"]);
+    await writeFile(join(f.tree, "a.txt"), "pending");
+    const release = Promise.withResolvers<void>();
+    let done: Promise<unknown> | undefined;
+    const pi = {
+      cwd: f.tree, exec: spawnExec(), zod: schemaNode,
+      startBackgroundJob(_label: string, run: (signal: AbortSignal, protect: () => Promise<void>) => Promise<unknown>) {
+        done = release.promise.then(() => run(new AbortController().signal, async () => {}));
+        return "publication-job";
+      },
+    };
+    const tools = await factory(pi as never);
+    if (!Array.isArray(tools)) throw new Error("Expected finalize and integrate");
+    const [finalize, integrate] = tools;
+    try {
+      const receipt = await finalize!.execute("publish", { files: ["a.txt"], message: "publish" }, undefined, {} as never);
+      expect(receipt.details.jobId).toBe("publication-job");
+      await expect(integrate!.execute("integrate", { checks: [] }, undefined, {} as never)).rejects.toThrow(/git_integrate failed at lock:.*publication-job.*Wait for its result/);
+      expect(git(f.tree, ["rev-parse", "HEAD"])).toBe(head);
+      expect(remoteRef(f)).toBe(head);
+    } finally { release.resolve(); await done; }
+  }, TIMEOUT);
+
   test("a failed rebased publication check makes no remote change and restores the worktree for a fix and retry", async () => {
     const f = await fixture({
       ".finalize-checks.json": JSON.stringify({ version: 1, checks: [{

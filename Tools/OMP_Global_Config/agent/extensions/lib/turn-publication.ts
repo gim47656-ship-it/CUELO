@@ -149,13 +149,33 @@ export function createTurnPublication() {
   const handoffs = new Map<string, string[]>();
   /** wt/<주제> 브랜치 upstream에만 push됐고 git_integrate 완료 영수증이 아직 없는 절대 경로. */
   const branchOnly = new Set<string>();
+  const pending = new Map<string, { paths: string[]; editedLater: Set<string> }>();
   let failedStage: string | undefined;
   let hold = false;
   let noticed = false;
   /** 사용자가 직접 게시(commit·push)를 요청한 입력이 마지막 사용자 입력일 때만 참이다. */
   let explicit = false;
+  const finish = (paths: string[], details: Record<string, unknown>, editedLater?: Set<string>) => {
+    for (const path of paths) {
+      if (!editedLater?.has(path)) changed.delete(path);
+      if (typeof details.upstreamRef === "string" && details.upstreamRef.startsWith("refs/heads/wt/")) branchOnly.add(path);
+    }
+    failedStage = undefined;
+  };
+  const settleFinalize = (job: Record<string, unknown>) => {
+    const id = typeof job.jobId === "string" ? job.jobId : job.id;
+    if (typeof id !== "string") return;
+    const receipt = pending.get(id);
+    if (!receipt || !["completed", "failed", "cancelled"].includes(String(job.status))) return;
+    pending.delete(id);
+    const details = record(job.toolResultDetails);
+    if (job.status === "completed" && details.ok === true && details.stage === "complete" && typeof details.commitSha === "string") {
+      finish(receipt.paths, details, receipt.editedLater);
+    } else failedStage = `git_finalize ${id} ${job.status}`;
+    noticed = false;
+  };
   return {
-    reset() { changed.clear(); running.clear(); handoffs.clear(); branchOnly.clear(); failedStage = undefined; hold = false; noticed = false; explicit = false; },
+    reset() { changed.clear(); running.clear(); handoffs.clear(); branchOnly.clear(); pending.clear(); failedStage = undefined; hold = false; noticed = false; explicit = false; },
     /** 사용자 직접 입력·조향만 넘긴다. Git 보류는 해제 전까지 유지하고, 해제는 안내를 다시 연다. */
     user(text: string) {
       const own = text.replace(QUOTED, " ");
@@ -171,21 +191,22 @@ export function createTurnPublication() {
       const pushed = !event.isError && details.ok === true && details.stage === "complete" && typeof details.commitSha === "string";
       if (event.toolName === "git_finalize") {
         const files = Array.isArray(input.files) ? input.files.filter((file): file is string => typeof file === "string") : [];
-        if (pushed) {
-          const sessionBranch = typeof details.upstreamRef === "string" && details.upstreamRef.startsWith("refs/heads/wt/");
-          for (const file of files) {
-            const path = localPath(file, base, false);
-            if (!path) continue;
-            changed.delete(path);
-            // wt 브랜치 push 뒤의 다른 finalize는 통합 영수증이 아니다. branch-only 증거는 git_integrate 완료로만 지운다.
-            if (sessionBranch) branchOnly.add(path);
-          }
-          failedStage = undefined;
+        const paths = files.map(file => localPath(file, base, false)).filter((path): path is string => !!path);
+        if (!event.isError && details.stage === "pending" && typeof details.jobId === "string") {
+          pending.set(details.jobId, { paths, editedLater: new Set() });
+          noticed = false;
+        } else if (pushed) {
+          finish(paths, details);
         } else {
           failedStage = `git_finalize ${typeof details.stage === "string" ? details.stage : "error"}`;
           noticed = false;
         }
         return;
+      }
+      if (event.toolName === "wait" || ((event.toolName === "write" || event.toolName === "read") &&
+        typeof input.path === "string" && input.path.startsWith("proc://"))) {
+        const rows = event.toolName === "wait" ? details.jobs : record(details.proc).jobs;
+        if (Array.isArray(rows)) for (const job of rows) settleFinalize(record(job));
       }
       if (event.toolName === "git_integrate") {
         // complete만 세션 브랜치 전체를 대상에 push한 영수증이다. up-to-date·aborted·충돌 안내는 완료로 보지 않는다.
@@ -223,6 +244,7 @@ export function createTurnPublication() {
         if (!path || !within(base, path) || !boundary(dirname(path), memo).git) continue;
         if (relative(base, path).split(sep).includes(".git")) continue;
         changed.add(path);
+        for (const receipt of pending.values()) if (receipt.paths.includes(path)) receipt.editedLater.add(path);
         noticed = false;
       }
     },
@@ -231,6 +253,7 @@ export function createTurnPublication() {
       const jobs = record(details).jobs;
       if (!Array.isArray(jobs)) return;
       for (const job of jobs.map(record)) {
+        settleFinalize(job);
         if (job.type !== undefined && job.type !== "task") continue;
         const id = typeof job.agentId === "string" ? job.agentId : typeof job.jobId === "string" ? job.jobId : undefined;
         const owned = id ? running.get(id) : undefined;
@@ -239,9 +262,23 @@ export function createTurnPublication() {
         if (job.status === "completed") { handoffs.set(id, owned); noticed = false; }
       }
     },
-    /** 게시할 근거가 있고 사용자 Git 보류가 없을 때 한 번만 안내문을 돌려준다. 새 근거·해제가 다시 연다. */
-    note(cwd: string | undefined): string | undefined {
+    note(cwd: string | undefined, snapshot?: (options: { recentLimit: number }) => { running: readonly unknown[]; recent: readonly unknown[] } | null): string | undefined {
+      let missingReceipt = false;
+      if (pending.size && snapshot) {
+        const state = snapshot({ recentLimit: Number.POSITIVE_INFINITY });
+        if (state) {
+          // Recent rows are newest first. Apply terminal receipts oldest first so an
+          // older failure cannot overwrite the latest publication outcome.
+          for (let i = state.recent.length - 1; i >= 0; i--) settleFinalize(record(state.recent[i]));
+          missingReceipt = [...pending.keys()].some(id => !state.running.some(row => record(row).id === id));
+        }
+      }
       if (hold || noticed || !cwd) return undefined;
+      if (pending.size) {
+        noticed = true;
+        if (missingReceipt) return `git_finalize ${[...pending.keys()].join(", ")}: no terminal receipt yet. Do not assume success or retry; check the job result.`;
+        return `git_finalize ${[...pending.keys()].join(", ")} is still running. You can answer the user now; do not report a push or repeat the call before its result.`;
+      }
       let base: string;
       try { base = realpathSync(cwd); } catch { return undefined; }
       const shown = (paths: string[]) => `${paths.slice(0, SHOWN).join(", ")}${paths.length > SHOWN ? ` 외 ${paths.length - SHOWN}개` : ""}`;

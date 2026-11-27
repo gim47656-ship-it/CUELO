@@ -1320,6 +1320,55 @@ const ANTHROPIC_PRIORITY_SELECTION = `		// CUELO: fresh Anthropic sessions follo
 
 /** 각 항목: 원본 앵커를 찾아 patched 로 바꾼다. marker 가 있으면 이미 적용된 것으로 본다. */
 const EDITS = [
+	// File tool factories are bound per cwd and session, including on cwd reload.
+	// Register their in-process callbacks on the same owner-scoped manager as eval.
+	...[
+		["src/extensibility/custom-tools/types.ts", "export interface CustomToolAPI {",
+			"\n\tstartBackgroundJob?(label: string, run: (signal: AbortSignal, protect: (reason: string) => Promise<void>) => Promise<{ text: string; details: unknown }>): string;"],
+		["src/extensibility/custom-tools/loader.ts", "\t\t}) => void,\n\t) {\n\t\tthis.#sharedApi = {",
+			"\t\t}) => void,\n\t\tstartBackgroundJob?: CustomToolAPI[\"startBackgroundJob\"],\n\t) {\n\t\tthis.#sharedApi = {\n\t\t\tstartBackgroundJob,", true],
+		["src/extensibility/custom-tools/loader.ts", "\t}) => void,\n) {\n\tconst loader = new CustomToolLoader(cwd, builtInToolNames, pushPendingAction);",
+			"\t}) => void,\n\tstartBackgroundJob?: CustomToolAPI[\"startBackgroundJob\"],\n) {\n\tconst loader = new CustomToolLoader(cwd, builtInToolNames, pushPendingAction, startBackgroundJob);", true],
+		["src/sdk.ts", "\tconst scopedAsyncJobManager = asyncJobManager ?? options.asyncJobManager;",
+			`\n\tconst startCustomToolJob: import("./extensibility/custom-tools/types").CustomToolAPI["startBackgroundJob"] =
+		scopedAsyncJobManager && ((label, run) => scopedAsyncJobManager.register("eval", label, async ({ signal, reportProgress }) => {
+			await reportProgress("", { customToolJob: true });
+			let cancelRefusal: string | undefined;
+			const result = await run(signal, async reason => {
+				signal.throwIfAborted();
+				cancelRefusal = reason;
+				await reportProgress(reason, { customToolJob: true, cancelRefusal });
+				signal.throwIfAborted();
+			});
+			await reportProgress("", { customToolJob: true, cancelRefusal, toolResultDetails: result.details });
+			return result.text;
+		}, { ownerId: resolvedAgentId }));`],
+		["src/async/job-manager.ts", "\t\tif (job.status !== \"running\") return false;\n\t\tjob.status = \"cancelled\";",
+			"\t\tif (job.status !== \"running\" || job.latestDetails?.cancelRefusal) return false;\n\t\tjob.status = \"cancelled\";", true],
+		["src/async/job-manager.ts", "for (const job of this.#filterJobs(this.#jobs.values(), filter)) {\n\t\t\tif (job.status !== \"running\") continue;\n\t\t\tjob.status = \"cancelled\";",
+			"for (const job of this.#filterJobs(this.#jobs.values(), filter)) {\n\t\t\tif (job.status !== \"running\" || job.latestDetails?.cancelRefusal) continue;\n\t\t\tjob.status = \"cancelled\";", true],
+		["src/async/job-control.ts", "\t\tconst cancelled = manager.cancel(id, { ownerId });",
+			"\n\t\tif (!cancelled && existing.status === \"running\" && typeof existing.latestDetails?.cancelRefusal === \"string\") throw new Error(existing.latestDetails.cancelRefusal);"],
+		["src/sdk.ts", "loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),",
+			"loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action), startCustomToolJob),", true],
+		["src/sdk.ts", "loadCustomTools(paths, scopeCwd, builtInToolNames, action =>\n\t\t\t\t\tqueueResolveHandler(toolSession, action),",
+			"loadCustomTools(paths, scopeCwd, builtInToolNames, action => queueResolveHandler(toolSession, action),\n\t\t\t\t\tstartCustomToolJob,", true],
+		["src/sdk.ts", "\t\tlegacyName: tool.legacyName,\n\t\tsourcePath,",
+			"\n\t\t...(\"concurrency\" in tool ? { concurrency: tool.concurrency } : {}),"],
+		["src/session/async-job-delivery.ts", "\t\t\tresult: escapeHarnessTags(entry.result),",
+			"\t\t\tresult: escapeHarnessTags(entry.job?.latestDetails?.customToolJob ? entry.job.errorText ?? entry.job.resultText ?? entry.result : entry.result),\n\t\t\ttoolResultDetails: entry.job?.latestDetails?.toolResultDetails,", true],
+		["src/session/async-job-delivery.ts", "\t\t\tjobId: job.jobId,\n\t\t\ttype: job.type,",
+			"\n\t\t\t...(job.toolResultDetails !== undefined ? { toolResultDetails: job.toolResultDetails } : {}),"],
+		["src/session/async-job-delivery.ts", "type AsyncResultJobDetails = {", "\n\ttoolResultDetails?: unknown;"],
+		["src/session/async-job-views.ts", "\t\tcaption: widgets?.caption(job),",
+			"\n\t\t...(job.latestDetails?.toolResultDetails !== undefined ? { toolResultDetails: job.latestDetails.toolResultDetails } : {}),"],
+		["src/session/agent-session-types.ts", "\t/** Full command line of a job that runs a process;", "\ttoolResultDetails?: unknown;\n\t/** Full command line of a job that runs a process;", true],
+		["src/async/job-control.ts", "\t\t\t...(latest.endTime !== undefined ? { settledAtMs: latest.endTime } : {}),",
+			"\n\t\t\t...(latest.latestDetails?.toolResultDetails !== undefined ? { toolResultDetails: latest.latestDetails.toolResultDetails } : {}),"],
+		["src/tools/details/wait.ts", "export interface JobSnapshot {", "\n\ttoolResultDetails?: unknown;"],
+	].map(([file, anchor, change, replace]) => ({
+		file, anchor, patched: replace ? change : anchor + change, marker: replace ? change : anchor + change,
+	})),
 	// Claude 18.20.0 Cedar grants: next_grant_id is a suggestion, not a redemption restriction.
 	{
 		file: "../pi-ai/src/usage/claude-reset.ts",
