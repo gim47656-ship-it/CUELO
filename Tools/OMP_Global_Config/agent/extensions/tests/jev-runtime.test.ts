@@ -3117,7 +3117,7 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
     const result = await harness.emit("before_agent_start", start(PROMPT, ["base", block(BRANCH, CHART, DEPLOY, SECRET)])) as StartResult;
     expect(harness.judgments).toHaveLength(1);
     const state = harness.judgments[0]!.state;
-    expect(state).toMatchObject({ grantsPermission: false, requestTruncated: false });
+    expect(state).toMatchObject({ grantsPermission: false });
     // 비밀 패턴 항목은 판정기로 보내지 않는다.
     expect(Object.keys(harness.judgments[0]!.questions)).toEqual(["memory0", "memory1", "memory2"]);
     expect(JSON.stringify(state)).not.toContain(FAKE_MEMORY_KEY);
@@ -3177,12 +3177,22 @@ describe("jev-runtime 회상 기억 적용 점검(before_agent_start)", () => {
   });
 
   // 2026-10-28 감사: 142건 중 133건이 잘린 발췌의 "조건 미확인" 목록만 실었다. 그 기억은 이미 <memories>로 문맥에 있다.
-  test("요청 발췌에서 경로·literal이 빠지면 관련 판정을 단정하지 않고, 정해진 기억이 없으면 알리지 않는다", async () => {
+  // 2026-11-27 감사: 그런 배치는 알림을 만들 수 없으므로 판정기도 부르지 않는다.
+  test("요청 발췌에서 경로·literal이 빠지거나 완전한 기억이 없으면 판정하지 않고 알리지 않는다", async () => {
     const harness = createHarness({ judgeAnswers: { memory0: choice("applies") } });
-    const result = await harness.emit("before_agent_start", start("`git push origin main` 으로 src/app.ts 변경을 올려줘.", ["base", block(BRANCH)])) as StartResult;
-    expect(harness.judgments[0]!.state).toMatchObject({ requestTruncated: true });
-    expect(result?.message).toBeUndefined();
-    expect(JSON.stringify(harness.judgments[0]!.state)).not.toContain("src/app.ts");
+    expect(await harness.emit("before_agent_start", start("`git push origin main` 으로 src/app.ts 변경을 올려줘.", ["base", block(BRANCH)]))).toBeUndefined();
+    expect(await harness.emit("before_agent_start", start(PROMPT, ["base", block(DEPLOY)]))).toBeUndefined();
+    expect(harness.judgments).toHaveLength(0);
+    expect(harness.sent).toHaveLength(0);
+  });
+
+  test("판정하지 않는 새 요청도 진행 중인 이전 요청의 판정을 버린다", async () => {
+    const gate = Promise.withResolvers<void>();
+    const harness = createHarness({ judgeGate: gate.promise, judgeAnswers: { memory0: choice("applies") } });
+    const pending = harness.emit("before_agent_start", start(PROMPT, ["base", block(BRANCH)]));
+    expect(await harness.emit("before_agent_start", start("`git push origin main` 으로 src/app.ts 변경을 올려줘.", ["base", block(BRANCH)]))).toBeUndefined();
+    gate.resolve();
+    expect(await pending).toBeUndefined();
   });
 
   test("같은 id라도 정정 revision·scope가 바뀌면 다시 판정한다", async () => {

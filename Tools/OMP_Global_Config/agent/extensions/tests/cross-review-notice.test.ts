@@ -65,6 +65,10 @@ function setup() {
   return { work, ledger, sent, emit, edited, control, turnEnd };
 }
 
+/** Paths announced so far, in delivery order; one early notice lists `- <trigger>: <path>, <path>` lines. */
+const noticedPaths = (env: { sent: { message: { content: string } }[] }) => env.sent.flatMap(({ message }) =>
+  message.content.split("\n").filter((line) => line.startsWith("- ")).flatMap((line) => line.slice(line.lastIndexOf("): ") + 3).split(", ")));
+
 const MARKER_CODE = "import { rmSync } from \"node:fs\";\nexport const wipe = (p: string) => rmSync(p, { recursive: true });\n";
 
 describe("편집 직후 조기 알림", () => {
@@ -179,14 +183,13 @@ describe("편집 직후 조기 알림", () => {
     const shell = Bun.spawnSync(["bash", "-c", "for file in a b c; do printf 'package example\\n' > \"$file.go\"; done"], { cwd: env.work });
     expect(shell.exitCode).toBe(0);
     await env.emit("tool_result", { toolName: "bash", input: { command: "shell writes" }, details: { exitCode: 0 }, isError: false });
-    expect(env.sent).toHaveLength(3);
+    expect(env.sent).toHaveLength(1);
+    expect(env.sent[0]!.message.content).toContain("- crosses the review threshold (size: 3 code files, 3 changed lines): a.go, b.go, c.go");
+    expect(env.sent[0]!.message.content.match(/rule:\/\/cross-review-procedure/g)).toHaveLength(1);
     const [reminder] = env.turnEnd();
-    for (const file of ["a.go", "b.go", "c.go"]) {
-      expect(env.sent.some(({ message }) => message.content.includes(`${file} crosses the review threshold (size: 3 code files, 3 changed lines)`))).toBe(true);
-      expect(reminder).toContain(file);
-    }
+    for (const file of ["a.go", "b.go", "c.go"]) expect(reminder).toContain(file);
     await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });
-    expect(env.sent).toHaveLength(3);
+    expect(noticedPaths(env)).toEqual(["a.go", "b.go", "c.go"]);
   });
 
   test("bash-only changes below the size threshold do not trigger marker notices", async () => {
@@ -212,7 +215,7 @@ describe("편집 직후 조기 알림", () => {
     for (const file of ["d.go", "e.go"]) writeFileSync(join(env.work, file), "package mine\n");
     await env.emit("tool_call", bash);
     await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
-    expect(env.sent.map(({ message }) => message.content.split(" ")[3]).sort()).toEqual(["b.go", "d.go", "e.go"]);
+    expect(noticedPaths(env).sort()).toEqual(["b.go", "d.go", "e.go"]);
   });
 
   test("an inherited file the session edits with edit or write is announced", async () => {
@@ -222,7 +225,7 @@ describe("편집 직후 조기 알림", () => {
     await env.emit("tool_call", { toolName: "write", input: { path: "a.ts" } });
     writeFileSync(join(env.work, "a.ts"), MARKER_CODE);
     await env.edited("write", "a.ts");
-    expect(env.sent.map(({ message }) => message.content.split(" ")[3])).toEqual(["a.ts"]);
+    expect(noticedPaths(env)).toEqual(["a.ts"]);
   });
 
   test("a clean repository at the first tool still announces bash-only writes", async () => {
@@ -231,7 +234,7 @@ describe("편집 직후 조기 알림", () => {
     await env.emit("tool_call", bash);
     for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package example\n");
     await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
-    expect(env.sent).toHaveLength(3);
+    expect(noticedPaths(env)).toHaveLength(3);
   });
 
   test("a failed first root lookup never lets a later call baseline the session's own writes", async () => {
@@ -254,7 +257,7 @@ describe("편집 직후 조기 알림", () => {
       await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
     } finally { hook.mockRestore(); }
     expect(failed).toBe(true);
-    expect(env.sent.map(({ message }) => message.content.split(" ")[3]).sort()).toEqual(["a.go", "b.go", "c.go"]);
+    expect(noticedPaths(env).sort()).toEqual(["a.go", "b.go", "c.go"]);
   });
 
   test("a baseline that misses its wait does not hold back the earlier repository-wide notice", async () => {
@@ -275,7 +278,7 @@ describe("편집 직후 조기 알림", () => {
       await env.emit("tool_call", bash);
       await env.emit("tool_result", { ...bash, details: { exitCode: 0 }, isError: false });
       expect(held).toBe(true);
-      expect(env.sent).toHaveLength(3);
+      expect(noticedPaths(env)).toHaveLength(3);
     } finally {
       hold.resolve();
       hook.mockRestore();
@@ -292,7 +295,7 @@ describe("편집 직후 조기 알림", () => {
     await env.emit("tool_result", { toolName: "ast_edit", input: {}, details: { applied: false }, isError: false });
     expect(env.sent).toHaveLength(0);
     await env.emit("tool_result", { toolName, input: {}, details, isError: false });
-    expect(env.sent).toHaveLength(3);
+    expect(noticedPaths(env)).toHaveLength(3);
   });
 
   test("rapid bash results in the same window share one repository inventory", async () => {
@@ -320,7 +323,7 @@ describe("편집 직후 조기 알림", () => {
     for (const file of ["a.go", "b.go", "c.go"]) writeFileSync(join(env.work, file), "package example\n");
     const hold = Promise.withResolvers<void>();
     const sent = Promise.withResolvers<void>();
-    env.control.onNotice = () => { if (env.sent.length === 3) sent.resolve(); };
+    env.control.onNotice = () => { if (noticedPaths(env).length === 3) sent.resolve(); };
     const spawn = Bun.spawn;
     const hook = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof spawn>) => {
       const child = spawn(...args);
@@ -348,13 +351,13 @@ describe("편집 직후 조기 알림", () => {
     for (const [index, file] of files.entries()) {
       writeFileSync(join(env.work, file), `export const x = ${index};\n`);
       await env.edited("write", file);
-      expect(env.sent).toHaveLength(index < 2 ? 0 : 3);
+      expect(noticedPaths(env)).toHaveLength(index < 2 ? 0 : 3);
     }
     await env.edited("edit", "c.ts");
-    expect(env.sent).toHaveLength(3);
+    expect(noticedPaths(env)).toHaveLength(3);
     const [reminder] = env.turnEnd();
     for (const file of files) {
-      expect(env.sent.filter(({ message }) => message.content.includes(`${file} `))).toHaveLength(1);
+      expect(noticedPaths(env).filter((path) => path === file)).toHaveLength(1);
       expect(reminder).toContain(file);
     }
     expect(env.sent.every(({ message }) => message.content.includes("size: 3 code files, 3 changed lines"))).toBe(true);
@@ -380,7 +383,7 @@ describe("편집 직후 조기 알림", () => {
       await env.edited("write", "c.ts");
       expect(review).toBeDefined();
       await review;
-      expect(env.sent.map(({ message }) => message.content.match(/notice: (.*?) /)?.[1])).toEqual(["a.ts", "b.ts", "c.ts"]);
+      expect(noticedPaths(env)).toEqual(["a.ts", "b.ts", "c.ts"]);
     } finally { hook.mockRestore(); }
   });
 
@@ -401,7 +404,7 @@ describe("편집 직후 조기 알림", () => {
       return exec(command, args, options);
     }, () => []);
     expect(notice).toHaveLength(3);
-    expect(notice.every(({ text }) => text.includes("size: 3 code files, 4 changed lines"))).toBe(true);
+    expect(notice.every(({ trigger }) => trigger === "crosses the review threshold (size: 3 code files, 4 changed lines)")).toBe(true);
     for (const arg of ["status", "--numstat", "check-attr"]) expect(calls.filter((args) => args.includes(arg))).toHaveLength(1);
     expect(calls.some((args) => args.includes("hash-object"))).toBe(false);
   });

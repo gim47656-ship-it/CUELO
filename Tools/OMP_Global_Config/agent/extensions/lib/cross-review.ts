@@ -1472,7 +1472,7 @@ export async function workingBaseline(root: string, exec: Exec): Promise<Map<str
  * Advisory-only: use repository-wide size, but only look for markers on paths edited this session. With a `baseline`, files whose
  * content still equals the snapshot and that this session did not edit are left out, so only work done since then counts.
  */
-export async function earlyReviewNotice(root: string, edited: ReadonlySet<string>, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[], baseline?: ReadonlyMap<string, string>): Promise<{ path: string; text: string }[]> {
+export async function earlyReviewNotice(root: string, edited: ReadonlySet<string>, exec: Exec, readRecords: () => readonly CrossReviewLedgerRecord[], baseline?: ReadonlyMap<string, string>): Promise<{ path: string; trigger: string }[]> {
   const git = "git";
   let { changed } = await collectWorkingChanges(exec, git, root, undefined, edited);
   const inherited = baseline?.size ? changed.filter(({ path }) => baseline.has(path) && !edited.has(path)) : [];
@@ -1501,9 +1501,23 @@ export async function earlyReviewNotice(root: string, edited: ReadonlySet<string
   }
   return uncovered.map(({ path, reasons }) => {
     const markers = [...new Set(reasons.filter((reason) => reason.startsWith("marker ")).map((reason) => reason.slice(7).split(": ", 1)[0]))];
-    const trigger = markers.length ? `hits a review marker (${markers.join(", ")})` : `crosses the review threshold (${reasons[0]})`;
-    return { path, text: `cross_review early notice: ${path} ${trigger}, so it needs a passed cross_review before you report the work as done, whether or not you commit. Review it once the file has settled, together with your other changed code files in one call (rule://cross-review-procedure). This notice is sent once per file in this session; it is not a gate.` };
+    return { path, trigger: markers.length ? `hits a review marker (${markers.join(", ")})` : `crosses the review threshold (${reasons[0]})` };
   });
+}
+
+/** One early notice for every newly uncovered file: shared instructions once, paths grouped by their exact trigger. */
+export function earlyReviewNoticeText(notices: readonly { path: string; trigger: string }[]): string {
+  const byTrigger = new Map<string, string[]>();
+  for (const { path, trigger } of notices) {
+    const paths = byTrigger.get(trigger);
+    if (paths) paths.push(path);
+    else byTrigger.set(trigger, [path]);
+  }
+  return [
+    "cross_review early notice: these changed code files need a passed cross_review before you report the work as done, whether or not you commit.",
+    ...[...byTrigger].map(([trigger, paths]) => `- ${trigger}: ${paths.join(", ")}`),
+    "Review them once the files have settled, together with your other changed code files in one call (rule://cross-review-procedure). Each file is noticed once per session; this is not a gate.",
+  ].join("\n");
 }
 
 export const DEFAULT_CROSS_REVIEW_DIR = join(dirname(dirname(import.meta.dir)), "cross-review");

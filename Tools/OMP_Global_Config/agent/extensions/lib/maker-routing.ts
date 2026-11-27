@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { admitsUserRequestedDeliverable, defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isPhoneOperatorCall, isSummonCall, normalizeDeliverable, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
+import { defaultPrimaryDeliverable, extractGuardBlock, isPathOwned, isPhoneOperatorCall, isSummonCall, normalizeWorkClass, parseOwnedPaths, readGuardField, taskGuardLockOf, WORK_CLASSES } from "../command-guard/task-guard";
 import { parseCharacterSummonMarker } from "../character-voice";
 import { assignmentsByName, type AttemptIdentity, type DispatchOwnership, type DispatchRecord, type RoutingLedger } from "./routing-ledger";
 import type { MakerEffortRange } from "./auto-effort-policy";
@@ -85,40 +85,6 @@ export function contractGapReason(task: string, lock: DispatchContractLock | und
     ? `빠진 필드: ${missing.join(", ")}.`
     : "필드가 블록 안에서 읽히지 않습니다(`TASK_GUARD:` 뒤 빈 줄이나 guard 필드 사이에 끼어든 줄이 있는지 확인).";
   return `task ${label}: ${detail} ${GUARD_TEMPLATE}`;
-}
-
-function sameContractLock(lock: DispatchContractLock, contract: DispatchContractLock): boolean {
-  return contract.workClass === lock.workClass && normalizeDeliverable(contract.primaryDeliverable) === normalizeDeliverable(lock.primaryDeliverable);
-}
-
-/**
- * 같은 요청에서 lock과 다른 완료물을 받아들이는 판정을 TaskGuard와 맞춘다: 이 batch에서 이미 받아들인 완료물이거나,
- * TaskGuard가 받아들였거나 USER_REQUEST 인용이 이번 사용자 입력에 그대로 있다. 받아들인 완료물은 batchAdmitted에 더한다.
- */
-function userRequestAdmission(sessionId: string): (task: string, contract: DispatchContract) => boolean {
-  const batchAdmitted: DispatchContractLock[] = [];
-  return (task, contract) => {
-    if (batchAdmitted.some((lock) => sameContractLock(lock, contract))) return true;
-    const quote = guardFields(task)?.("USER_REQUEST") || undefined;
-    if (!admitsUserRequestedDeliverable(sessionId, contract.workClass, contract.primaryDeliverable, quote)) return false;
-    batchAdmitted.push(contract);
-    return true;
-  };
-}
-
-/** Return a non-blocking advisory when a child adds a deliverable to the request. */
-export function contractLockConflict(
-  name: string,
-  contract: DispatchContract,
-  lock: DispatchContractLock | undefined,
-  lockSource: "request" | "batch",
-  admits: () => boolean = () => false,
-): string | null {
-  if (!lock) return null;
-  if (sameContractLock(lock, contract) || admits()) return null;
-  const label = name.trim() ? `'${name.trim().slice(0, 60)}'` : "(이름 없음)";
-  const source = lockSource === "request" ? "이 요청의 TaskGuard lock" : "같은 batch에서 먼저 계약을 정한 child";
-  return `[SideQuestGuard] task ${label}: 추가 완료물 허용. 기준=${lock.workClass}:${lock.primaryDeliverable}(${source}), 이 child=${contract.workClass}:${contract.primaryDeliverable}. 누적 budget은 유지됩니다.`;
 }
 
 /**
@@ -230,8 +196,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
     const ranges: [index: number, range: MakerEffortRange][] = [];
     const atGeneration = generation;
     let candidateLock = lockFor(sessionIdOf(ctx));
-    const lockSource = candidateLock ? "request" : "batch";
-    const admission = userRequestAdmission(sessionIdOf(ctx));
     const locksBefore: (DispatchContractLock | undefined)[] = [];
     const contracts = tasks.map((item) => {
       const task = typeof item.task === "string" ? item.task : "";
@@ -263,8 +227,6 @@ export function registerMakerRouting(pi: ExtensionAPI, deps: RoutingDeps) {
       }
       const contract = contracts[itemIndex];
       if (!contract) return { block: true, reason: `task는 TaskGuard lock으로 완성 가능한 WORK_CLASS·PRIMARY_DELIVERABLE 및 명시 OWNED_PATHS가 필요합니다. ${contractGapReason(task, locksBefore[itemIndex], String(item.name ?? ""))}` };
-      const conflict = contractLockConflict(String(item.name ?? ""), contract, locksBefore[itemIndex], lockSource, () => admission(task, contract));
-      if (conflict) notices.push(conflict);
       ready.push({ itemIndex, item, contract });
     }
     if (ready.length === 0) return;

@@ -558,11 +558,14 @@ export function reserveTaskCall(
       deliverable: metadata.primaryDeliverable,
     };
     // Additional deliverables share the request budget; the first lock remains the inheritance default.
+    // A deliverable the user's own words already ask for needs no advisory.
     if (
       isMakerAgent(item.agent) &&
       ![candidateLock, ...admitted].some((lock) => sameLock(lock, metadata.workClass, metadata.primaryDeliverable))
     ) {
-      notices.push(`[SideQuestGuard] 추가 완료물 허용: locked=${candidateLock.workClass}:${candidateLock.deliverable}, new=${metadata.workClass}:${metadata.primaryDeliverable}. 누적 budget은 유지됩니다.`);
+      if (!quotesUserRequest(state, raw.userRequest)) {
+        notices.push(`[SideQuestGuard] 추가 완료물 허용: locked=${candidateLock.workClass}:${candidateLock.deliverable}, new=${metadata.workClass}:${metadata.primaryDeliverable}. 누적 budget은 유지됩니다.`);
+      }
       admitted.push({
         workClass: metadata.workClass,
         deliverableKey: normalizeDeliverable(metadata.primaryDeliverable),
@@ -890,21 +893,6 @@ export function taskGuardLockOf(sessionId: string): { workClass: string; primary
   const state = boundSessions.get(sessionId.trim())?.state;
   if (!state) return undefined;
   return state.lock ? { workClass: state.lock.workClass, primaryDeliverable: state.lock.deliverable } : null;
-}
-
-/**
- * task 발주가 사용하는 SideQuestGuard 면제 판정: 이 session이 USER_REQUEST로 이미 받아들인
- * 완료물이거나, 인용이 이번 요청의 사용자 입력에 글자 그대로 있다. 연결된 session이 없으면 기준 글이 없으므로 false다.
- */
-export function admitsUserRequestedDeliverable(
-  sessionId: string,
-  workClass: string,
-  deliverable: string,
-  quote: string | undefined,
-): boolean {
-  const state = boundSessions.get(sessionId.trim())?.state;
-  if (!state) return false;
-  return state.admitted.some((lock) => sameLock(lock, workClass, deliverable)) || quotesUserRequest(state, quote);
 }
 
 /**

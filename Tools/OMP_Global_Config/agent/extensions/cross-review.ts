@@ -9,6 +9,7 @@ import {
   REVIEW_TIMEOUT_MS,
   ReviewerCallError,
   earlyReviewNotice,
+  earlyReviewNoticeText,
   SLOT,
   ledgerPath,
   resolveRepoTargets,
@@ -308,14 +309,12 @@ export default function crossReview(pi: ExtensionAPI): void {
       state.uncovered = notices.map(({ path }) => resolve(root, path));
       if (!state.sendPending || !(pi.getActiveTools?.().includes("cross_review") ?? true)) return;
       state.sendPending = false;
-      for (const { path, text } of notices) {
-        const absolute = resolve(root, path);
-        if (noticed.has(absolute)) continue;
-        try {
-          pi.sendMessage({ customType: "cross-review-notice", content: text, display: false, attribution: "agent" }, { deliverAs: "aside" });
-          noticed.add(absolute);
-        } catch { /* 전달에 실패해도 다음 편집에서 다시 보낼 수 있다. */ }
-      }
+      const fresh = notices.filter(({ path }) => !noticed.has(resolve(root, path)));
+      if (fresh.length === 0) return;
+      try {
+        pi.sendMessage({ customType: "cross-review-notice", content: earlyReviewNoticeText(fresh), display: false, attribution: "agent" }, { deliverAs: "aside" });
+        for (const { path } of fresh) noticed.add(resolve(root, path));
+      } catch { /* 전달에 실패해도 다음 편집에서 다시 보낼 수 있다. */ }
     } catch { /* 보조 알림 실패를 편집이나 검토 결과로 전파하지 않는다. */ }
   };
   const stateFor = (root: string): RepoNoticeState => {

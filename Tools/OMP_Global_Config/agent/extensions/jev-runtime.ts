@@ -858,7 +858,6 @@ function memoryApplicationQuestions(memories: readonly RecalledMemory[]): Record
  */
 function renderMemoryApplication(
   memories: readonly RecalledMemory[],
-  requestComplete: boolean,
   answers: Record<string, JudgeAnswer> | undefined,
   withheld: readonly string[],
 ): string | undefined {
@@ -871,7 +870,7 @@ function renderMemoryApplication(
       ? answer.choice as MemoryApplication : "unknown";
     if (choice === "unknown") unknown += 1;
     else if (choice === "unrelated") unrelated += 1;
-    else if (memory.truncated || !requestComplete) groups.unconfirmed.push(memory.id);
+    else if (memory.truncated) groups.unconfirmed.push(memory.id);
     else groups[choice].push(memory.id);
   }
   if (groups.applies.length + groups.excepted.length + groups.conflicts.length === 0) return undefined;
@@ -882,7 +881,7 @@ function renderMemoryApplication(
   if (groups.excepted.length > 0) lines.push(`- 관련되나 조건 불충족·예외(적용하지 않는다면 그 이유를 판단에 남긴다): ${groups.excepted.join(", ")}`);
   if (groups.conflicts.length > 0) lines.push(`- 현재 요청과 기억 지침이 충돌(JEV가 본 발췌 기준, 현재 지시를 따르고 충돌을 밝힌다): ${groups.conflicts.join(", ")}`);
   if (groups.unconfirmed.length > 0) {
-    lines.push(`- 관련 가능·조건 미확인(${requestComplete ? "기억" : "요청 또는 기억"} 발췌가 잘렸거나 코드·경로·literal이 빠짐): ${groups.unconfirmed.map((id) => `${id} → memory://${id}`).join(", ")} 원문과 요청 원문으로 조건·예외를 확인한다`);
+    lines.push(`- 관련 가능·조건 미확인(기억 발췌가 잘렸거나 코드·경로·literal이 빠짐): ${groups.unconfirmed.map((id) => `${id} → memory://${id}`).join(", ")} 원문과 요청 원문으로 조건·예외를 확인한다`);
   }
   if (withheld.length > 0) lines.push(`- 비밀 패턴이 있어 판정하지 않음: ${withheld.join(", ")}`);
   lines.push(`판정 불명 ${unknown}개, 무관 ${unrelated}개.`);
@@ -1924,10 +1923,16 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (!recalled || recalled.memories.length === 0 || MEMORY_SECRET_PATTERN.test(event.prompt)) return undefined;
       const request = boundedExcerpt(event.prompt, REQUEST_EXCERPT_CHARS);
       if (!request.excerpt) return undefined;
+      // 2026-11-27 audit: a truncated request or a batch without one complete memory can never render an advisory
+      // (renderMemoryApplication reports only complete memories against a complete request), so the judge is not called.
+      // The new request still supersedes a pending judgment for an older one.
+      if (!request.complete || recalled.memories.every((memory) => memory.truncated)) {
+        memoryController?.abort();
+        return undefined;
+      }
       const state = {
         source: "untrusted-recalled-memory-and-request-excerpts",
         request: request.excerpt,
-        requestTruncated: !request.complete,
         memories: recalled.memories,
         grantsPermission: false,
       };
@@ -1955,7 +1960,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
         ]);
         if (!result || controller.signal.aborted || expectedGeneration !== memoryGeneration) return undefined;
         judgedMemoryInputs.add(inputKey);
-        const content = renderMemoryApplication(recalled.memories, request.complete, result.answers, recalled.withheld);
+        const content = renderMemoryApplication(recalled.memories, result.answers, recalled.withheld);
         return content ? { message: { customType: ADVISORY_CUSTOM_TYPE, content, display: false, attribution: "agent" as const } } : undefined;
       } catch (error) {
         if (!controller.signal.aborted) {

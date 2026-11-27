@@ -19,6 +19,7 @@ import {
   matchRelayBrowserOpen,
   matchUserEgoAppCdp,
   noteOwnershipWrites,
+  noteUserRequestText,
   noteUserRedirect,
   OWNERSHIP_MAIN_WRITER,
   parseOwnedPaths,
@@ -264,6 +265,18 @@ describe("SideQuestGuard", () => {
       if (decision.ok) expect(decision.notices?.join("\n")).toMatch(/SideQuestGuard/);
     }
     expect(getTaskGuardUsage(state).primaryMaker).toBe(3);
+  });
+
+  test("사용자 원문을 인용한 추가 완료물은 알리지 않고 받아들인 완료물로 센다", () => {
+    const state = lockedState();
+    noteUserRequestText(state, "그리고 관측 로그 정리도 해줘");
+    const quoted = brief({ PRIMARY_DELIVERABLE: "관측 로그를 정리한다" }).replace("\nOWNED_PATHS", "\nUSER_REQUEST: 관측 로그 정리도 해줘\nOWNED_PATHS");
+    const decision = reserveTaskCall(state, "quoted", flat("maker", quoted));
+    expect(decision.ok).toBe(true);
+    if (decision.ok) expect(decision.notices ?? []).toEqual([]);
+    const again = reserveTaskCall(state, "again", flat("maker", brief({ PRIMARY_DELIVERABLE: "관측 로그를 정리한다" })));
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.notices ?? []).toEqual([]);
   });
 
   test("lock 없는 첫 child의 미기재와 폐지된 역할을 차단한다", () => {
