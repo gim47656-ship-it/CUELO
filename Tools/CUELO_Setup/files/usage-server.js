@@ -748,6 +748,26 @@ function createControlFacade(getControl, invalidate = invalidateUsage, { now = D
 
 let localControl;
 const facade = createControlFacade(() => localControl);
+// 계정 관리가 쓰는 SDK 이름 다섯 개만 좁은 모듈에서 읽는다. barrel(index.ts)은 SDK 전체를 올려 상주 메모리가 약 90MB 더 든다
+// (doc/history/2026/11/27-memory-footprint/sidecars.md). 클래스와 함수는 barrel이 다시 내보내는 것과 같은 객체다.
+// SDK 판이 달라 좁은 파일이나 이름이 없으면 예전처럼 barrel에서 읽어 관리 기능을 잃지 않는다.
+async function loadControlSdk(load, warn = console.warn) {
+    const narrow = await Promise.all([
+        load('pi-ai', 'auth-storage.ts'), load('pi-coding-agent', 'config/model-registry.ts'),
+        load('pi-utils', 'dirs.ts'), load('pi-utils', 'file-lock.ts'),
+    ]).then(([auth, models, dirs, lock]) => ({
+        AuthStorage: auth.AuthStorage, ModelRegistry: models.ModelRegistry,
+        getAgentDbPath: dirs.getAgentDbPath, getAgentDir: dirs.getAgentDir, withFileLock: lock.withFileLock,
+    }), () => undefined);
+    if (narrow && Object.values(narrow).every(value => typeof value === 'function')) return narrow;
+    warn('usage SDK narrow modules unavailable; loading the full SDK');
+    const [sdk, utils] = await Promise.all([load('pi-coding-agent', 'index.ts'), load('pi-utils', 'index.ts')]);
+    return {
+        AuthStorage: sdk.AuthStorage, ModelRegistry: sdk.ModelRegistry,
+        getAgentDbPath: utils.getAgentDbPath, getAgentDir: utils.getAgentDir, withFileLock: utils.withFileLock,
+    };
+}
+
 async function initializeControl() {
     let storage;
     try {
@@ -763,11 +783,10 @@ async function initializeControl() {
             root = names.map(name => path.join(npmRoot, name)).find(hasSdk) ?? path.join(npmRoot, names[0]);
         }
         const load = (pkg, file) => import(pathToFileURL(path.join(root, 'node_modules', '@oh-my-pi', pkg, 'src', file)).href);
-        const [sdk, utils, usageRegistry] = await Promise.all([
-            load('pi-coding-agent', 'index.ts'), load('pi-utils', 'index.ts'),
-            load('pi-ai', 'usage/registry.ts').catch(() => undefined),
+        const [sdk, usageRegistry] = await Promise.all([
+            loadControlSdk(load), load('pi-ai', 'usage/registry.ts').catch(() => undefined),
         ]);
-        storage = await sdk.AuthStorage.create(utils.getAgentDbPath());
+        storage = await sdk.AuthStorage.create(sdk.getAgentDbPath());
         await storage.reload();
         const registry = new sdk.ModelRegistry(storage);
         localControl = {
@@ -775,7 +794,7 @@ async function initializeControl() {
             defaultUsageProviders: Array.isArray(usageRegistry?.DEFAULT_USAGE_PROVIDERS)
                 ? usageRegistry.DEFAULT_USAGE_PROVIDERS : [],
             // 만료 정책·전송 기록은 agent.db와 같은 profile의 agent 디렉터리에 둔다. 잠금은 SDK의 프로세스 간 배타 잠금이다.
-            agentDir: utils.getAgentDir(), withFileLock: utils.withFileLock,
+            agentDir: sdk.getAgentDir(), withFileLock: sdk.withFileLock,
         };
     } catch {
         storage?.close?.();
@@ -2062,6 +2081,7 @@ module.exports = {
     readSdkUsage,
     claimResetAttempt,
     createControlFacade,
+    loadControlSdk,
     matchCredential,
     MANUAL_UNTIL_MS,
     createSampleStore,

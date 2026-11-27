@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { createControlFacade, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog, createSampleStore, applyDaySlots, readSdkUsage } = require('./usage-server');
+const { createControlFacade, loadControlSdk, matchCredential, startServer, startExpirySweep, claimResetAttempt, usageEntry, MANUAL_UNTIL_MS, shapeStats, modelCatalog, createSampleStore, applyDaySlots, readSdkUsage } = require('./usage-server');
 
 function fixture(provider = 'openai-codex') {
     const entries = [1, 2].map(id => ({
@@ -1444,4 +1444,46 @@ test('without a slot-start sample the day slot reports a lower bound and the wee
     assert.equal(next.quality, 'approx');
     assert.equal(Math.round(next.usedPct), 5);
     assert.equal(next.paceOver, undefined);
+});
+
+test('account management loads narrow SDK modules and falls back to the barrel when one is missing or incomplete', async () => {
+    const fn = name => Object.assign(() => name, { tag: name });
+    const modules = () => ({
+        'pi-ai/auth-storage.ts': { AuthStorage: fn('narrow') },
+        'pi-coding-agent/config/model-registry.ts': { ModelRegistry: fn('narrow') },
+        'pi-utils/dirs.ts': { getAgentDbPath: fn('narrow'), getAgentDir: fn('narrow') },
+        'pi-utils/file-lock.ts': { withFileLock: fn('narrow') },
+        'pi-coding-agent/index.ts': { AuthStorage: fn('barrel'), ModelRegistry: fn('barrel') },
+        'pi-utils/index.ts': { getAgentDbPath: fn('barrel'), getAgentDir: fn('barrel'), withFileLock: fn('barrel') },
+    });
+    const run = async available => {
+        const asked = [];
+        const warned = [];
+        const sdk = await loadControlSdk(async (pkg, file) => {
+            const key = `${pkg}/${file}`;
+            asked.push(key);
+            if (!available[key]) throw new Error(`Cannot find module ${key}`);
+            return available[key];
+        }, line => warned.push(line));
+        return { tags: Object.fromEntries(Object.entries(sdk).map(([name, value]) => [name, value.tag])), asked, warned };
+    };
+    const all = { AuthStorage: 'narrow', ModelRegistry: 'narrow', getAgentDbPath: 'narrow', getAgentDir: 'narrow', withFileLock: 'narrow' };
+    const barrel = Object.fromEntries(Object.keys(all).map(name => [name, 'barrel']));
+
+    const normal = await run(modules());
+    assert.deepEqual(normal.tags, all);
+    assert.deepEqual(normal.asked.filter(key => key.endsWith('index.ts')), [], 'the normal path never loads a barrel');
+    assert.deepEqual(normal.warned, []);
+
+    const missingFile = modules();
+    delete missingFile['pi-utils/file-lock.ts'];
+    const moved = await run(missingFile);
+    assert.deepEqual(moved.tags, barrel);
+    assert.equal(moved.warned.length, 1);
+
+    const missingName = modules();
+    missingName['pi-ai/auth-storage.ts'] = {};
+    const renamed = await run(missingName);
+    assert.deepEqual(renamed.tags, barrel);
+    assert.equal(renamed.warned.length, 1);
 });
