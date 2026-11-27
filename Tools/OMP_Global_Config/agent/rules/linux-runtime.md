@@ -4,13 +4,13 @@ description: Before Linux VM, browser, network, CUELO runtime update/troubleshoo
 
 # Runtime: native Linux CUELO
 
-Install this file only as `~/.omp/agent/APPEND_SYSTEM.md` for native Linux (e.g. home Linux Mint), not WSL. `wsl/update.sh` and `linux/setup.sh` select it by runtime; WSL uses `wsl/APPEND_SYSTEM.md`. Installation/migration status: `Tools/CUELO_Setup/HANDOFF.md`, `Tools/CUELO_Setup/LINUX-SETUP.md`.
+Install this file only as `~/.omp/agent/APPEND_SYSTEM.md` for native Linux (home and office Linux Mint), not WSL. `wsl/update.sh` and `linux/setup.sh` select it by runtime; WSL uses `wsl/APPEND_SYSTEM.md`. Installation/migration status: `Tools/CUELO_Setup/HANDOFF.md`, `Tools/CUELO_Setup/LINUX-SETUP.md`.
 
 ## Work on this Linux host
 - CUELO and all tools run here. Use `/bin/bash` and Linux Git, Bun, Node, search, build and test binaries. No Windows interop: do not invoke `wsl.exe`, `powershell.exe`, `cmd.exe`, `*.exe` or `wslpath` here. `git_finalize` uses Linux `pwsh`.
 - An old Windows `hostname` does not make this Windows; check `process.platform`, executables and working paths.
 - Development: `~/src/CUELO-private`; runtime: `~/cuelo-run`. Run bulk Linux file work under home (ext4). Do not clone/move other projects without a user request.
-- Access NTFS only through mounts (home: `/mnt/d`, `/mnt/e`); access grants no move/edit permission. Do not assume ext4 speed. Before repeated bulk scans, propose a home copy (`~/src/<이름>`, clone for Git) and create it only after approval. Never edit copy and original concurrently.
+- Access NTFS only through mounts (home PC: `/mnt/d`, `/mnt/e`); access grants no move/edit permission. Do not assume ext4 speed. Before repeated bulk scans, propose a home copy (`~/src/<이름>`, clone for Git) and create it only after approval. Never edit copy and original concurrently.
 - If Windows hibernation/Fast Startup leaves NTFS read-only, do not force writes. Explain that options such as `remove_hiberfile` can destroy hibernation state and data; wait for a normal Windows shutdown.
 - `OMP_EXE` points to the runtime's Linux CLI. Do not also run the migrated-from WSL CUELO or Windows `omp.exe` with the same credentials: either can refresh OAuth and invalidate the other's tokens.
 - Python document/image modules (PyMuPDF, openpyxl, Pillow, ezdxf, python-docx, python-pptx) live in `~/.omp/python-env/bin/python`, not system `python3`. Eval selects it; bash must use that path. Install modules with `~/.omp/python-env/bin/python -m pip install`.
