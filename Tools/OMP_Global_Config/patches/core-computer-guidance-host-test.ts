@@ -19,6 +19,11 @@ assert.ok(full.includes(mac) && full.includes(win), "upstream guide still carrie
 assert.ok(full.includes("help://eval/computer") && !full.includes("xd://"), "computer guide links help://eval/computer");
 const { default: bashDoc } = await import(`${core}/prompts/tools/bash.md`, { with: { type: "text" } });
 assert.ok(bashDoc.includes("help://bash/builtins") && !bashDoc.includes("xd://"), "bash guide links help://bash/builtins");
+const { InternalUrlRouter } = await import(`${core}/internal-urls/router.ts`);
+const router = new InternalUrlRouter();
+const legacyComputerDoc = await router.target("xd://eval/computer");
+assert.equal(legacyComputerDoc?.url.href, "help://eval/computer", "old transcripts still reach the computer guide");
+assert.equal(router.normalize("xd://eval/other"), "xd://eval/other", "unrelated MCP URLs are not aliased");
 
 const native = computerUseGuidanceForHost(full, "linux", {});
 assert.ok(!native.includes(mac) && !native.includes(win), "native linux omits macOS-only and Windows-only bullets");

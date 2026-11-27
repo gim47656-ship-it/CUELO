@@ -39,17 +39,23 @@ function message(error: unknown): string { return error instanceof Error ? error
 
 /** 모델을 부르기 전에 저장 위치를 확정한다. cwd 밖·심볼릭 링크·비밀/관리 경로·덮어쓰기를 막는다. */
 async function resolveTarget(cwd: string, output: string, overwrite: boolean): Promise<Target> {
-  const root = await realpath(resolve(cwd));
+  const root = await realpath(resolve(cwd)).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(`세션 작업 폴더가 없습니다. 대상 프로젝트의 기존 폴더에서 세션을 다시 여세요. (${message(error)})`, { cause: error });
+    }
+    throw error;
+  });
   if (slash(root).toLowerCase().includes("/.omp/agent")) throw new Error("인증 저장소 ~/.omp/agent 아래에서는 draft를 사용할 수 없습니다.");
   const value = output.trim();
   if (/^[A-Za-z]:/.test(value)) throw new Error(`output은 cwd 기준 상대 경로나 cwd 안의 절대 경로만 허용됩니다: ${value}`);
   if (slash(value).split("/").includes("..")) throw new Error(`output에 '..'를 쓸 수 없습니다: ${value}`);
   // cwd 안의 절대 경로는 cwd 기준 상대 경로로 바꿔 아래 검사를 똑같이 거친다. 세션 cwd가 링크 경로여도 그 경로로 적은 값을 받는다.
   const given = isAbsolute(value) ? [relative(resolve(cwd), value), relative(root, value)].find(inside) : value;
-  if (given === undefined) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
-  const absolute = resolve(root, given);
-  const rel = relative(root, absolute);
-  if (!inside(rel)) throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}`);
+  const absolute = given === undefined ? undefined : resolve(root, given);
+  const rel = absolute === undefined ? "" : relative(root, absolute);
+  if (absolute === undefined || !inside(rel)) {
+    throw new Error(`프로젝트 cwd 밖에는 쓸 수 없습니다: ${value}\n세션 cwd(${root}) 아래에 새 이름을 골라 상대 경로로 지정하세요(예: output: ${JSON.stringify(basename(value))}).`);
+  }
   const segments = slash(rel).split("/");
   const lower = segments.map((part) => part.toLowerCase());
   // 관리 폴더는 경로 어디에 있든 막고, 비밀 이름·확장자는 skim과 같은 secretFileName으로 파일 이름만 본다.
@@ -220,7 +226,7 @@ export default function draft(pi: ExtensionAPI): void {
     description: "Draft prose with configured role; output extension sets format. paths text goes to provider. Overwrite needs overwrite:true. Open/review result. Use edit/write for code/config/rules/exact-line edits.",
     parameters: z.object({
       instruction: z.string().describe("Purpose, audience, structure, length, language, facts"),
-      output: z.string().describe("Inside cwd: .md .txt .csv .xlsx .docx .pdf"),
+      output: z.string().describe("Save inside the session cwd. Prefer a relative path like report.draft.md; no /tmp or other path outside the session cwd. .md .txt .csv .xlsx .docx .pdf"),
       paths: z.array(z.string()).optional().describe("reference files/directories/globs: cwd-relative, absolute or ~/"),
       overwrite: z.boolean().optional().describe("Default false"),
     }) as never,

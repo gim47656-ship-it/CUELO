@@ -71,6 +71,29 @@ export function spaceName(sessionId: string, profile: EgoProfile): string {
 /** 이미 있는 공간에 profileId를 주면 ego가 거절한다. 그 거절만 profileId 없이 이어 쓰기로 바꾼다(그 밖의 오류는 그대로 던진다). */
 export const RESUME_ERROR_MARKER = "only applies when creating";
 
+const LINUX_MANAGED_API = 'typeof taskSpace === "function" && typeof ego !== "undefined" && typeof ego.taskPages === "function"';
+
+// Electron removes a Space record when its final tab closes. The Linux SDK can
+// then report a failed registry commit despite having closed every managed tab.
+const LINUX_FINISH_MANAGED = `const __egoFinishManaged = async (managed, keep, id) => {
+  try {
+    const result = await managed.finish({ keep });
+    return { ...result, done: result.finished };
+  } catch (error) {
+    const missing = "task space not found: " + id;
+    if (keep.length !== 0 || error?.message !== "taskPages.finish: " + missing) throw error;
+    // The legacy list can still be stale. Native tab inventory rechecks the bound ID and cannot create, activate or claim anything.
+    try { await managed.tabs(); }
+    catch (check) {
+      if (check?.error_code === "EGO_TASK_SPACE_NOT_FOUND" && check.message === "taskPages.list: " + missing) {
+        return { done: true, finished: true, kept: [] };
+      }
+    }
+    throw error;
+  }
+};
+`;
+
 /**
  * 모델 스크립트 앞에 붙이는 머리말. `task`와 `page`(p1)를 묶는다. profileId는 공간을 처음 만들 때만 적용된다.
  * verify는 ego `profiles()`에서 이름이 VERIFY_PROFILE_NAME인 프로필의 id를 쓴다. 없으면 공간을 만들지 않고 던진다.
@@ -78,30 +101,62 @@ export const RESUME_ERROR_MARKER = "only applies when creating";
 export function buildPrelude(name: string, profile: EgoProfile, host: EgoHost = "windows"): string {
   const quoted = JSON.stringify(name);
   if (host === "linux") {
-    // `page`는 SDK가 미리 넣은 전역(선택된 공간의 현재 탭)이라 다시 선언하지 않는다. Windows의 task 모양(handOff·finish·page)을 맞춘다.
-    // Linux 전역 page(ego index.js createPageFacade)에는 Windows TaskPage에 있는 click(selector, options)·fill(selector, value, options)이 없어
-    // 11-15 집 PC에서 page.click 6세션, page.fill 4세션이 스크립트 중간에 깨졌다. 둘 다 locator(selector)의 같은 내부 함수로 잇는다.
-    // 본문이 `const page = ...`를 선언하면 바인딩 `page`는 TDZ라 전역 객체로만 접근한다. 얼었거나 쓸 수 없는 page면 할당을 건너뛰어 예전과 같게 둔다.
-    // finish는 공간을 한 번만 닫고 다음 호출에는 첫 결과를 돌려준다. 본문 task.finish 뒤 finish:true의 finally가 다시 닫아
-    // 11-19~11-23 집과 사무실에서 `task space not found`로 호출이 실패했다.
-    // waitForTimeout(ms)도 Windows TaskPage에만 있어 11-23까지 사무실 3세션이 그 호출을 잃고 setTimeout으로 다시 불렀다. 같은 대기로 잇는다.
+    // Keep the Linux current-tab facade for existing scripts; only the SDK can bind a named managed page.
     return `const __egoSpace = await taskSpaces.useOrCreate(${quoted});
+const __egoNativeSpace = ${LINUX_MANAGED_API} ? taskSpace : undefined;
+let __egoManaged;
+let __egoBinding;
+const __egoBindManaged = async () => {
+  if (!__egoNativeSpace) throw new Error("Managed pages require the ego TaskSpace/Page SDK.");
+  return __egoManaged ??= await (__egoBinding ??= __egoNativeSpace(__egoSpace.id));
+};
+${LINUX_FINISH_MANAGED}
+const __egoWait = (ms) => {
+  const { promise, resolve } = Promise.withResolvers();
+  setTimeout(resolve, ms);
+  return promise;
+};
+const __egoAddWait = (p) => {
+  try { if (p && typeof p.waitForTimeout !== "function") p.waitForTimeout = __egoWait; } catch {}
+  return p;
+};
+const __egoFindBound = async () => (await taskSpaces.list()).find((space) => space.id === __egoSpace.id);
 let __egoFinished;
 const task = {
   id: __egoSpace.id,
+  spaceId: __egoSpace.id,
   name: __egoSpace.name,
-  page: () => page,
+  page: (label = "p1") => {
+    if (label === "p1") return page;
+    if (!__egoManaged) throw new Error("Call await task.pages() before looking up a managed Page by label.");
+    return __egoAddWait(__egoManaged.page(label));
+  },
+  newPage: async () => __egoAddWait(await (await __egoBindManaged()).newPage()),
+  pages: async () => (await __egoBindManaged()).pages(),
+  tabs: async () => (await __egoBindManaged()).tabs(),
   handOff: () => taskSpaces.handOff(__egoSpace.id),
-  takeOver: () => taskSpaces.takeOver(__egoSpace.id),
-  finish: (options = {}) => (__egoFinished ??= taskSpaces.complete(__egoSpace.id, { keep: Array.isArray(options.keep) ? options.keep.length > 0 : Boolean(options.keep) })),
+  takeOver: async () => {
+    const resumed = await taskSpaces.takeOver(__egoSpace.id);
+    __egoManaged = __egoBinding = undefined;
+    return resumed;
+  },
+  finish: (options = {}) => (__egoFinished ??= (async () => {
+    const current = await __egoFindBound();
+    if (!current) return { done: true, finished: true, kept: [] };
+    if (current.createdBy !== "agent" || current.ownership !== "agent") {
+      throw new Error("TaskSpace cleanup refused: the bound space is under user control or was not created by the agent. It was left open; do not replay the script.");
+    }
+    // Native finish does not reclaim user-owned Spaces or close unmanaged tabs.
+    const managed = await __egoBindManaged();
+    const keep = options.keep === true ? (await managed.pages()).map(({label}) => label) : options.keep === false ? [] : options.keep ?? [];
+    return __egoFinishManaged(managed, keep, __egoSpace.id);
+  })()),
 };
-const __egoPage = globalThis.page;
+const __egoPage = __egoAddWait(globalThis.page);
 if (__egoPage && typeof __egoPage.locator === "function") {
-  try { if (typeof __egoPage.click !== "function") __egoPage.click = (selector, options) => __egoPage.locator(selector).click(options); } catch {}
-  try { if (typeof __egoPage.fill !== "function") __egoPage.fill = (selector, value, options) => __egoPage.locator(selector).fill(value, options); } catch {}
-}
-if (__egoPage) {
-  try { if (typeof __egoPage.waitForTimeout !== "function") __egoPage.waitForTimeout = (ms) => { const { promise, resolve } = Promise.withResolvers(); setTimeout(resolve, ms); return promise; }; } catch {}
+  for (const method of ["click", "fill", "press", "setInputFiles"]) {
+    try { if (typeof __egoPage[method] !== "function") __egoPage[method] = (selector, ...args) => __egoPage.locator(selector)[method](...args); } catch {}
+  }
 }
 `;
   }
@@ -137,7 +192,21 @@ const __egoNamedTaskSpace = (nameOrId, ...rest) => typeof nameOrId === "string" 
 `;
   const run = `return await (async (taskSpace) => {\n{\n${body}\n}\n})(__egoNamedTaskSpace);`;
   if (!finish) return `${prelude}${run}\n`;
-  return `${prelude}try {\n${run}\n} finally {\n  await task.finish({ keep: [] });\n}\n`;
+  if (host === "windows") return `${prelude}try {\n${run}\n} finally {\n  await task.finish({ keep: [] });\n}\n`;
+  return `${prelude}let __egoBodyFailed = false;
+try {
+  ${run}
+} catch (error) {
+  __egoBodyFailed = true;
+  throw error;
+} finally {
+  try { await task.finish({ keep: [] }); }
+  catch (error) {
+    if (!__egoBodyFailed) throw error;
+    console.error("TaskSpace cleanup failed:", error);
+  }
+}
+`;
 }
 
 /**
@@ -148,10 +217,14 @@ const __egoNamedTaskSpace = (nameOrId, ...rest) => typeof nameOrId === "string" 
 export function buildCleanup(name: string, host: EgoHost = "windows"): string {
   const quoted = JSON.stringify(name);
   const list = host === "linux" ? "taskSpaces.list()" : "listTaskSpaces()";
-  const close = host === "linux" ? "await taskSpaces.complete(found.id, { keep: false });" : "await (await taskSpace(found.id)).finish({ keep: [] });";
+  const finish = host === "linux"
+    ? `if (!(${LINUX_MANAGED_API})) { console.log("skipped: managed TaskSpace API unavailable"); return; }
+  ${LINUX_FINISH_MANAGED}
+  await __egoFinishManaged(await taskSpace(found.id), [], found.id);`
+    : "await (await taskSpace(found.id)).finish({ keep: [] });";
   return `const found = (await ${list}).find((space) => space.name === ${quoted});
 if (found && found.createdBy === "agent" && found.ownership === "agent") {
-  ${close}
+  ${finish}
   console.log("closed", found.id);
 } else {
   console.log("skipped", found ? found.ownership : "not found");
@@ -192,6 +265,15 @@ export function misuseHint(raw: string, host: EgoHost = "windows"): string {
   const missing = /TypeError: page\.([\w$]+) is not a function/.exec(raw)?.[1];
   if (missing === "cdp" && host === "linux") hints.push("Linux ego의 `page`에는 `cdp`가 없다. raw CDP는 전역 `cdp(method, params)`로 부른다(TaskSpace 탭에 적용된다). Linux ego 앱에는 `Page.printToPDF`가 없다.");
   else if (missing) hints.push(`\`page\`에는 \`${missing}\`가 없다. 요소 입력·클릭은 \`page.locator('@N' 또는 CSS 선택자)\`의 \`click\`·\`fill\`·\`press\`로 하고, 다른 API는 도구 설명의 ego-browser 가이드에서 이름을 확인한 뒤 쓴다.`);
+  if (host === "linux" && raw.includes("SyntaxError: Cannot use import statement outside a module")) {
+    hints.push('Linux scripts run in a Node async function, not a module. Use `const fs = await import("node:fs")` instead of a static import. Do not replay side effects from earlier calls.');
+  }
+  if (/^Error: Object reference chain is too long\s*$/m.test(raw)) {
+    hints.push("In `page.evaluate`, return strings, numbers or shallow plain objects, not DOM nodes, windows or event objects. For a page action with no result, use a function block without `return`. Verify any earlier action before retrying.");
+  }
+  if (host === "linux" && /^Error: task space not found:/m.test(raw)) {
+    hints.push("A guide example's name is not the actual TaskSpace name. Log `task.spaceId` before handoff, and use that same numeric ID only after the user confirms continue. Check `taskSpaces.list()` if the saved ID is missing; never take over a different space.");
+  }
   return hints.length ? `\n${hints.join("\n")}` : "";
 }
 
@@ -434,7 +516,9 @@ function toolDescription(host: EgoHost): string {
     const guide = join(dirname(linuxHostPath()), "..", "..", "skills", "ego-browser", "SKILL.md");
     return "Isolated ego TaskSpace; never user's Space/tabs/PWA or substitute browser after failure. "
       + `Read \`${guide}\` first; recipes: skill://ego-browser-verify-recipes. `
-      + "script: Node ESM/await; task/page bound; global cdp(), not page.cdp; no Page.printToPDF. Space persists, variables do not. profile:user only; logged-out checks unverified. Never clear cookies/cache/storage. Login/permission/CAPTCHA: await task.handOff(), end script, tell user; takeOver() only after continue. Last call finish:true.";
+      + 'script: Node async body with await (use `await import("node:fs")`, not static imports); task/page bound; global cdp(), not page.cdp; no Page.printToPDF. '
+      + "Use task.newPage()/pages()/tabs() for managed Pages; list with await task.pages() before looking up a saved label. page and task.page('p1') use the selected tab. Space persists, variables do not. "
+      + "profile:user only; logged-out checks unverified. Never clear cookies/cache/storage. Login/permission/CAPTCHA: record task.spaceId, await task.handOff(), end script, tell user; takeOver() only after continue. Do not finish when handing off. Run one call at a time; last call finish:true.";
   }
   return "Isolated ego lite TaskSpaces. Read API with `ego-browser skill` before first use. script: Windows Node ESM/top-level await; task/page(p1) bound; use page.evaluate for page JS and UNC/file URLs for WSL files. Space persists per session/profile, variables do not. Use profile:verify for CUELO UI checks; missing verify profile is a failure, never fall back to user. Never clear cookies/cache/storage. Login/permission/CAPTCHA: task.handOff() and tell user; resume only after continue. Last call finish:true. Relay browser.open only for an already-open user-named tab.";
 }
@@ -452,7 +536,7 @@ export function createFactory(exec: Exec, host: EgoHost = "windows"): CustomTool
       description: toolDescription(host),
       parameters: pi.zod.object({
         script: pi.zod.string(),
-        profile: pi.zod.enum(["user", "verify"]).optional(),
+        profile: pi.zod.enum(host === "linux" ? ["user"] : ["user", "verify"]).optional(),
         finish: pi.zod.boolean().optional(),
         timeoutMs: pi.zod.number().optional().describe(`ms; default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}`),
       }),

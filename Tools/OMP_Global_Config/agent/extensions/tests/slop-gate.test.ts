@@ -1007,7 +1007,7 @@ describe("보이는 산출물은 공개 선언 없이 대상이다: .publicignor
 });
 
 describe("턴 끝 게이트: 저장소 밖 보이는 산출물(공개 선언 불필요)", () => {
-  type Handler = (event: Record<string, unknown>, ctx: unknown) => void;
+  type Handler = (event: Record<string, unknown>, ctx: unknown) => unknown;
   function session(cwd: string) {
     const handlers: Record<string, Handler[]> = {};
     const sent: { customType: string; content: string }[] = [];
@@ -1016,7 +1016,7 @@ describe("턴 끝 게이트: 저장소 밖 보이는 산출물(공개 선언 불
       on: (name: string, handler: Handler) => { (handlers[name] ??= []).push(handler); },
       sendMessage: (message: (typeof sent)[number]) => { sent.push(message); },
     } as unknown as ExtensionAPI);
-    const emit = (name: string, event: Record<string, unknown>) => { for (const handler of handlers[name] ?? []) handler(event, { cwd, agent: { kind: "main" } }); };
+    const emit = (name: string, event: Record<string, unknown>) => Promise.all((handlers[name] ?? []).map((handler) => handler(event, { cwd, agent: { kind: "main" } })));
     return {
       sent,
       input: () => emit("input", { source: "interactive", text: "보고서 만들어줘" }),
@@ -1025,6 +1025,23 @@ describe("턴 끝 게이트: 저장소 밖 보이는 산출물(공개 선언 불
     };
   }
   const home = () => { const dir = mkdtempSync(join(homedir(), ".slop-gate-test-")); roots.push(dir); return dir; };
+
+  test("a Git artifact without a pass is named after the write without extending the turn", async () => {
+    const cwd = scratch();
+    expect(spawnSync("git", ["init", "-q"], { cwd }).status).toBe(0);
+    expect(spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "base"], { cwd }).status).toBe(0);
+    process.env.OMP_SLOP_GATE_LEDGER = join(cwd, "ledger.jsonl");
+    const s = session(cwd);
+    await s.input();
+    const path = join(cwd, "page.html");
+    writeFileSync(path, `<p>${KO_PLAIN}</p>`);
+    await s.tool("write", { path: "page.html" });
+    await s.tool("write", { path: "page.html" });
+    await s.end();
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0]).toMatchObject({ customType: "slop-gate-notice", content: expect.stringContaining('slop_check {files:["page.html"]') });
+    expect(readSlopRecords(process.env.OMP_SLOP_GATE_LEDGER)).toEqual([]);
+  });
 
   test("선언 없는 저장소 밖 문서는 깨우고, 내부 기록 이름(HANDOFF.md)은 깨우지 않는다", () => {
     const cwd = scratch();

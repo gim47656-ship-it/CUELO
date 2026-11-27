@@ -192,6 +192,18 @@ describe("편집 직후 조기 알림", () => {
     expect(noticedPaths(env)).toEqual(["a.go", "b.go", "c.go"]);
   });
 
+  test("a completed nonzero bash result remains ineligible for the success-only size notice", async () => {
+    const env = setup();
+    const command = "for file in a b c; do printf 'package example\\n' > \"$file.go\"; done; exit 3";
+    const bash = { toolName: "bash", input: { command } };
+    await env.emit("tool_call", bash);
+    const result = Bun.spawnSync(["bash", "-c", command], { cwd: env.work });
+    expect(result.exitCode).toBe(3);
+    await env.emit("tool_result", { ...bash, details: { exitCode: result.exitCode }, isError: false });
+    expect(env.sent).toEqual([]);
+    expect(env.turnEnd()).toEqual([]);
+  });
+
   test("bash-only changes below the size threshold do not trigger marker notices", async () => {
     const env = setup();
     await env.emit("tool_result", { toolName: "bash", input: {}, details: { exitCode: 0 }, isError: false });

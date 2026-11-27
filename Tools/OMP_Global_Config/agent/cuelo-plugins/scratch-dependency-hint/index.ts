@@ -14,13 +14,15 @@ export default function scratchDependencyHint(pi: ExtensionAPI): void {
     // On success, distinguish a direct watcher launch from commands quoting its output.
     const command = typeof event.input.command === "string" ? event.input.command.trim() : "";
     const launchedWatcher = /^bash[ \t]+(\/tmp\/[A-Za-z0-9_][A-Za-z0-9_.-]*)$/.exec(command)?.[1];
-    if (!event.isError && !launchedWatcher) return;
+    const exitCode = (event.details as { exitCode?: unknown } | undefined)?.exitCode;
+    const failed = event.isError || (typeof exitCode === "number" && exitCode !== 0);
+    if (!failed && !launchedWatcher) return;
     for (const part of event.content) {
       if (part.type !== "text") continue;
       const text = part.text.includes("\u001b") ? stripVTControlCharacters(part.text) : part.text;
-      if (event.isError && BUN_SCRATCH_IMPORT.test(text)) return { additionalContext: IMPORT_HINT };
+      if (failed && BUN_SCRATCH_IMPORT.test(text)) return { additionalContext: IMPORT_HINT };
       for (const [, script] of text.matchAll(SCRATCH_WATCHER_JQ)) {
-        if (event.isError || launchedWatcher === script) return { additionalContext: JQ_HINT };
+        if (failed || launchedWatcher === script) return { additionalContext: JQ_HINT };
       }
     }
   });

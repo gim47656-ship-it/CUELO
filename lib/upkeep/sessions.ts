@@ -62,7 +62,7 @@ type Entry = {
     credentialId?: unknown;
     toolName?: string;
     isError?: boolean;
-    details?: { toolCommands?: unknown };
+    details?: { toolCommands?: unknown; exitCode?: number };
     /** 네이티브 리더가 성공한 read 결과에만 싣는 저장 JSON 값의 UTF-8 바이트 수와 지문(본문 대신) */
     contentBytes?: number;
     contentHash?: string;
@@ -615,7 +615,8 @@ async function collectDreaming(files: readonly SessionFile[], now: number): Prom
       } else if (humanTurn && m.role === "toolResult" && m.toolName === "bash" && typeof m.toolCallId === "string") {
         command = commands.get(m.toolCallId);
         commands.delete(m.toolCallId);
-        if (!command || m.isError !== true) continue;
+        const exitCode = m.details?.exitCode;
+        if (!command || (m.isError !== true && !(typeof exitCode === "number" && exitCode !== 0))) continue;
         quote = dreamingText(m.content);
         if (SHAKEN_RESULT.test(quote.trim()) || INTENDED_ERROR.test(quote) || HARNESS_NOTICE.test(quote)
           || classifyToolError("bash", command, quote) !== "failed") continue;

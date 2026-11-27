@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { collectChanges, currentBlobs, hashBytes, resolveRepoTargets, spawnExec, type Exec } from "./cross-review";
+import { collectChanges, currentBlobs, hashBytes, resolveRepoTargets, spawnExec, type CrossReviewRefusal, type Exec } from "./cross-review";
 
 /**
  * 밖에 보이는 산출물의 AI 슬롭 게이트(사용자 결정 2026-10-26: "소스코드 안에 내장된 내부 말고 바깥에 보이는 모든 것은
@@ -273,6 +273,20 @@ export interface SlopGateOutcome {
   gateBlobs?: Record<string, string>;
 }
 
+/** The preceding cross-review gate already collected these exact working-tree bytes.
+ * Report coexisting slop misses without another Git scan, clean filter or ledger write. */
+export function missingSlopPasses(worktree: NonNullable<CrossReviewRefusal["worktree"]>, ledgerPath: string): string[] {
+  const config = loadSlopConfig(worktree.root);
+  let records: SlopRecord[] | undefined;
+  const missing: string[] = [];
+  for (const { path, status, content } of worktree.changes) {
+    if (status === "deleted" || !content || !classify(path, config).visible || rawDataReason(path, content.length)) continue;
+    records ??= readSlopRecords(ledgerPath);
+    if (!passFor(records, sha256(content))) missing.push(worktree.inputs.get(path) ?? path);
+  }
+  return missing;
+}
+
 /**
  * git_finalize가 cross-review 다음에 부르는 게이트. 새로 커밋할 변경이 없는 파일(resume-push)과 삭제는 대상이 아니고, 보이는 산출물(classify)이
  * 아닌 파일은 바이트를 읽지 않는다. 보이는 산출물에 통과 기록이 없으면 SlopGateRefusal. waiver는 기록을 남기고 통과시킨다.
@@ -346,6 +360,35 @@ export async function runSlopGate(options: SlopGateOptions): Promise<SlopGateOut
     return { checked: true, waived: true, artifacts, ...dataNote, gateBlobs };
   }
   return { checked: true, artifacts, ...dataNote, gateBlobs };
+}
+
+/** After a direct edit, suggest checking visible bytes that would need a pass if included in a commit. */
+export async function pendingGitArtifacts(paths: readonly string[], cwd: string, ledgerPath: string, signal: AbortSignal): Promise<string[]> {
+  const exec = spawnExec(signal);
+  let records: SlopRecord[] | undefined;
+  const configs = new Map<string, SlopConfig>();
+  const pending: string[] = [];
+  for (const path of paths) {
+    if (signal.aborted) break;
+    const root = gitRootOf(path);
+    if (!root) continue;
+    const repoPath = relative(root, path).split(sep).join("/");
+    let config = configs.get(root);
+    if (!config) configs.set(root, config = loadSlopConfig(root));
+    if (!classify(repoPath, config).visible) continue;
+    // Do not read through a symlink or advise on ignored/untracked artifacts. Use ls-files, not
+    // the publication gate's diff/worktree hashing: this advisory must not invoke Git clean filters.
+    try {
+      if (realpathSync(path) !== path) continue;
+      const info = statSync(path);
+      if (!info.isFile() || rawDataReason(repoPath, info.size)) continue;
+      const listed = await exec("git", ["--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", repoPath], { cwd: root });
+      if (listed.code !== 0 || !listed.stdout.split("\0").includes(repoPath) || realpathSync(path) !== path) continue;
+      records ??= readSlopRecords(ledgerPath);
+      if (!passFor(records, sha256(readFileSync(path)))) pending.push(relative(cwd, path).split(sep).join("/"));
+    } catch { /* An unavailable path is not a reason to interrupt the edit. */ }
+  }
+  return pending;
 }
 
 /**

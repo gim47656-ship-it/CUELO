@@ -2438,7 +2438,8 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       }
 
       // 실패 기록 — 탐색 도구의 실패는 일상 probing이라 재시도 판정을 세우지 않는다.
-      if (event.isError) {
+      const exitCode = event.toolName === "bash" ? fieldOf(event.details, "exitCode") : undefined;
+      if (event.isError || (typeof exitCode === "number" && exitCode !== 0)) {
         if (!EXPLORATION_TOOLS[event.toolName]) {
           pendingFailures.set(event.toolName, {
             category: classifyError(event.content, event.input, platform),

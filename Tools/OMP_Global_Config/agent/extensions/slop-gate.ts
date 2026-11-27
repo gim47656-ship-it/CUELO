@@ -1,7 +1,8 @@
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { completeReviewer } from "./cross-review";
 import { onSessionLifecycle } from "./lib/session-identity";
-import { candidatesOf, pendingArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
+import { candidatesOf, pendingArtifacts, pendingGitArtifacts, readSlopRecords, slopLedgerPath, type PendingArtifact } from "./lib/slop-gate";
 import { reviewFiles, resolveFindings, type Lang, type SlopDeps } from "./slop-gate/review";
 
 /**
@@ -73,7 +74,8 @@ export default function slopGate(pi: ExtensionAPI): void {
   let dirs = new Set<string>();
   let attempts = new Map<string, number>();
   let warned = new Set<string>();
-  const reset = () => { since = Date.now(); files = new Set(); dirs = new Set(); attempts = new Map(); warned = new Set(); };
+  let noticed = new Set<string>();
+  const reset = () => { since = Date.now(); files = new Set(); dirs = new Set(); attempts = new Map(); warned = new Set(); noticed = new Set(); };
 
   const z = pi.zod;
   pi.registerTool({
@@ -102,10 +104,22 @@ export default function slopGate(pi: ExtensionAPI): void {
   pi.on("input", (event) => {
     if (event.source === "interactive" || event.source === "rpc") reset();
   });
-  pi.on("tool_result", (event, ctx) => {
+  pi.on("tool_result", async (event, ctx) => {
     const found = candidatesOf(event.toolName, event.input, ctx.cwd);
     for (const file of found.files) files.add(file);
     for (const dir of found.dirs) dirs.add(dir);
+    if (event.isError || !["write", "edit", "draft"].includes(event.toolName) || !(pi.getActiveTools?.().includes("slop_check") ?? true)) return;
+    const noticeState = noticed;
+    try {
+      const pending = (await pendingGitArtifacts(found.files.filter((path) => !noticeState.has(path)), ctx.cwd, slopLedgerPath(), AbortSignal.timeout(1_000)))
+        .filter((path) => !noticeState.has(resolve(ctx.cwd, path)));
+      if (noticed !== noticeState || pending.length === 0) return;
+      pi.sendMessage({
+        customType: "slop-gate-notice", display: false, attribution: "agent",
+        content: `These visible files have no slop_check pass for their current content. If they are part of the next commit, review them once the text is settled: slop_check {files:${JSON.stringify(pending)}, authors:[<author model selectors or "main">]}. Do not edit a file after its pass.`,
+      }, { deliverAs: "aside" });
+      for (const path of pending) noticeState.add(resolve(ctx.cwd, path));
+    } catch { /* Advisory only; never change the writing tool's result. */ }
   });
   pi.on("agent_end", (event, ctx) => {
     if (event.willContinue) return;

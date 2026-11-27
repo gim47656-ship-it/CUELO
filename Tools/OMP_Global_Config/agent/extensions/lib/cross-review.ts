@@ -1529,7 +1529,15 @@ export const DEFAULT_CROSS_REVIEW_DIR = join(dirname(dirname(import.meta.dir)), 
 export function ledgerPath(): string { return process.env.OMP_CROSS_REVIEW_LEDGER || DEFAULT_LEDGER_PATH; }
 export function snapshotRoot(): string { return process.env.OMP_CROSS_REVIEW_DIR || DEFAULT_CROSS_REVIEW_DIR; }
 
-export class CrossReviewRefusal extends Error {}
+export class CrossReviewRefusal extends Error {
+  constructor(message: string, readonly worktree?: {
+    root: string;
+    changes: readonly ChangedFile[];
+    inputs: ReadonlyMap<string, string>;
+  }) {
+    super(message);
+  }
+}
 
 export interface GateOptions {
   cwd: string;
@@ -1624,7 +1632,7 @@ export async function runGate(options: GateOptions): Promise<GateOutcome> {
     ...(reviewable.length > 0 ? [`Next: run cross_review {action:"review", files:${names}${reviewInputs.length > 0 ? `, inputs:${JSON.stringify(reviewInputs)}` : ""}, acceptance:"<criteria>", authors:[<author model selectors or "main">]${reviewable.some((file) => file.reasons.some((reason) => reason.startsWith("declared"))) ? ", highRisk:true" : ""}} and follow its resolution guidance. Then call git_finalize again with the same files${declaredInputs.length > 0 ? ` (and the same crossReviewHighRisk:${JSON.stringify(declaredInputs)})` : ""}. Do not edit these files after resolve: the pass is tied to their exact git blob${reviewInputs.length > 0 ? ", and to the exact content of the inputs it was reviewed against" : ""}.`] : []),
     ...(blocked.length > 0 ? [policyGuidance(blocked.map((file) => nameOf(file.path)))] : []),
     `A waiver (crossReviewWaiver) is allowed only on the user's explicit instruction, or under ${LIMIT_WAIVER_DECISION} when the required review failed only because of provider limits (quote that decision, the reviewId and the raw errors), and is recorded in the routing ledger.`,
-  ].join("\n"));
+  ].join("\n"), { root: resolved.root, changes: changed, inputs: inputOf });
 }
 
 // ── 리뷰 입력과 출력 ────────────────────────────────────────────────────────
@@ -2458,7 +2466,7 @@ function describeNext(state: NextState): string {
     parts.push("Close any remaining round-1 findings with evidence.");
   }
   if (state.runFindings > 0 && state.canProbe) {
-    parts.push(`${state.runFindings} finding(s) need a run to settle: run each recipe on unchanged code, then call cross_review review with previousReviewId and probeResults:[{findingId, command, exitCode, output}] (one verdict-only probe round; excerpts up to ${MAX_PROBE_OUTPUT_BYTES} bytes each and ${MAX_PROBE_TOTAL_BYTES} total).`);
+    parts.push(`${state.runFindings} finding(s) need a run to settle: run each recipe and submit the verdict-only probe before editing any reviewed file or bound input. Use previousReviewId with probeResults:[{findingId, command, exitCode, output}] (one round; excerpts up to ${MAX_PROBE_OUTPUT_BYTES} bytes each and ${MAX_PROBE_TOTAL_BYTES} total). If you already edited, keep the command and output as resolution evidence instead.`);
   }
   if (state.limitCandidates.length > 0) {
     parts.push(`${state.maker ? "Propose limit for" : "Close as limit:"} ${state.limitCandidates.join(", ")}. Record each id and reason. Any voluntary fix goes in the evidence; no probe is needed for these findings.`);
@@ -2764,7 +2772,7 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   const preparedProbes = probeRound ? prepareProbeResults(input.probeResults!, chainFindings) : [];
 
   const targets = await resolveRepoTargets(deps.cwd, files, deps.exec);
-  if ("failure" in targets) throw new Error(`files must be cwd-relative paths of existing parents inside ONE git repository (like git_finalize): ${targets.detail}`);
+  if ("failure" in targets) throw new Error(`files must be cwd-relative paths of existing parents inside ONE git repository (like git_finalize): ${targets.detail}\nSession cwd: ${deps.cwd}. Spell each path from that directory, not from the repository root.`);
   const { root } = targets;
   // 문서(마크다운·HANDOFF·맨 위 doc/ 기록)는 게이트 대상이 아니고 통과가 덮지도 않는다. 심사할 코드가 실제로 실리면 문서는 심사 대상에서 빼 참고(맥락)로만 보낸다
   // (측정 7일: 기록 문서를 files에 넣은 체인이 지적 115건·추가 라운드 25회를 만들었다). 코드가 하나도 실리지 않으면(문서뿐인 요청·바뀐 코드 없음) 문서를 그대로 심사한다.
@@ -2896,7 +2904,18 @@ export async function runReview(input: ReviewInput, deps: ReviewDeps, signal: Ab
   // probe 라운드는 코드가 그대로여도 실험 결과만으로 판단받을 수 있다. 그 밖의 이어지는 라운드는 바뀐 것이 있어야 한다.
   if (parts.length === 0 && !probeRound) {
     const why = codePrevious ? `nothing changed since round ${codePrevious.round} in the listed files` : skipped.map((item) => `${item.path}: ${item.reason}`).join("; ") || "no reviewable change";
-    throw new Error(`Nothing to review (${why}).${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
+    const prefix = relative(root, deps.cwd).split(sep).join("/");
+    // Suggest the exact cwd prefix correction, but never choose which file to send for the caller.
+    const suggestions = !previous && prefix ? targets.targets.flatMap(({ input }) => {
+      const path = input.split(sep).join("/").replace(/^\.\//, "");
+      const rest = path.startsWith(`${prefix}/`) ? path.slice(prefix.length + 1) : "";
+      if (!rest || rest.split("/").some((part) => part === "..") || existsSync(resolve(deps.cwd, input))) return [];
+      try {
+        return statSync(resolve(deps.cwd, rest)).isFile() ? [`${JSON.stringify(input)} → ${JSON.stringify(rest)}`] : [];
+      } catch { return []; }
+    }) : [];
+    const pathHint = suggestions.length ? ` The paths below include the session cwd's repository prefix twice. If these are the intended files, use their cwd-relative spelling: ${suggestions.join("; ")}.` : "";
+    throw new Error(`Nothing to review (${why}).${pathHint}${policyExcluded.length > 0 ? ` ${policyGuidance(policyExcluded)}` : ""}`);
   }
 
   // 입력(통과에 묶이는 계약)을 참고보다 먼저 맥락 예산에 싣는다. 이어받은 입력은 그중에서도 앞에 있다(planInputs).

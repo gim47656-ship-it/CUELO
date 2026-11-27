@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import draftCoverage from "../draft-coverage";
 import { proseBlocks, proseChanges, scriptLineText } from "../lib/draft-coverage";
 
@@ -49,8 +49,8 @@ function session(cwd: string) {
     input: () => emit("input", { source: "interactive", text: "보고서 HTML 만들어줘" }),
     shutdown: () => emit("session_shutdown", {}),
     call: (toolName: string, input: Record<string, unknown>) => emit("tool_call", { toolName, toolCallId: `c${++n}`, input })[0] as { block?: boolean; reason?: string } | undefined,
-    result: (toolName: string, input: Record<string, unknown>, isError = false, text = "model: fake\n\n저장: x") =>
-      emit("tool_result", { toolName, toolCallId: `c${n}`, input, isError, content: [{ type: "text", text }] }),
+    result: (toolName: string, input: Record<string, unknown>, isError = false, text = "model: fake\n\n저장: x", details?: unknown) =>
+      emit("tool_result", { toolName, toolCallId: `c${n}`, input, isError, details, content: [{ type: "text", text }] }),
     resultAt: (id: number, toolName: string, input: Record<string, unknown>) =>
       emit("tool_result", { toolName, toolCallId: `c${id}`, input, isError: false, content: [{ type: "text", text: "ok" }] }),
     /** 도구가 실제로 파일을 쓴 것처럼 디스크에 남기고 성공 결과를 보낸다(차단되지 않았을 때만). */
@@ -71,7 +71,7 @@ function session(cwd: string) {
     },
     draft(output: string, content: string, ok = true) {
       if (ok) writeFileSync(join(cwd, output), content);
-      this.result("draft", { instruction: "보고서", output }, !ok, ok ? `model: fake\n\n저장: ${output}` : "model: none\n\nDeepSeek 실패: outage");
+      this.result("draft", { instruction: "보고서", output }, !ok, ok ? `model: fake\n\n저장: ${output}` : "model: none\n\nDeepSeek 실패: outage", ok ? { savedPath: join(cwd, output) } : undefined);
     },
   };
 }
@@ -84,6 +84,26 @@ function workdir(): string {
   return cwd;
 }
 
+test("a home-relative edit uses the real file's baseline without covering new prose", () => {
+  const cwd = workdir();
+  const homeFixture = mkdtempSync(join(homedir(), ".draft-coverage-"));
+  roots.push(homeFixture);
+  const path = join(homeFixture, "report.html");
+  writeFileSync(path, html(DIRECT));
+  const s = session(cwd);
+  const homeRelative = `~/${relative(homedir(), path)}`;
+  expect(s.edit(homeRelative, `<section>${html(DIRECT)}</section>`)?.block).toBeUndefined();
+  expect(s.edit(homeRelative, html(DRAFTED))?.block).toBe(true);
+});
+
+test("draft coverage reads the saved path reported by the draft tool", () => {
+  const cwd = workdir();
+  const savedPath = join(cwd, "draft.md");
+  writeFileSync(savedPath, markdown(DIRECT));
+  const s = session(cwd);
+  s.result("draft", { output: " draft.md " }, false, undefined, { savedPath });
+  expect(s.write("report.html", html(DIRECT))?.block).toBeUndefined();
+});
 describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈춘다", () => {
   test("앞 네 문단만 draft하고 뒤 세 문단을 직접 쓴 HTML은 첫 write에서 멈추고 직접 쓴 세 덩어리만 보여 준다", () => {
     const s = session(workdir());
@@ -140,6 +160,18 @@ describe("draft-coverage: 쓰기 전에 draft를 거치지 않은 새 글을 멈
     expect(main.write("report.md", markdown(DIRECT))?.block).toBe(true);
     main.result("read", { path: "doc/rest.md:1-40" });
     expect(main.write("report.md", markdown(DIRECT))?.block).toBeUndefined();
+  });
+
+  test("a read via a symlinked session cwd grants the corresponding saved draft snapshot", () => {
+    const realCwd = workdir();
+    const cwd = join(workdir(), "session");
+    symlinkSync(realCwd, cwd, process.platform === "win32" ? "junction" : "dir");
+    const maker = session(realCwd);
+    const main = session(cwd);
+    maker.draft("rest.md", markdown(DIRECT));
+    expect(main.write("blocked.html", html(DIRECT))?.block).toBe(true);
+    main.result("read", { path: "rest.md:1" }, false, "[rest.md#AB12]\n1:# 점검 결과");
+    expect(main.write("report.html", html(DIRECT))?.block).toBeUndefined();
   });
 
   // 2026-10-30 사용자 결정(B7): 이미 있는 글을 옮긴 미리보기 사본은 새 글이 아니다. 새로 쓰는 노트는 계속 멈춘다.

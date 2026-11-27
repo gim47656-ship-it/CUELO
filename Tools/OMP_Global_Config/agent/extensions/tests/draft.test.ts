@@ -223,6 +223,22 @@ describe("draft", () => {
     expect(existsSync(join(outside, "abs.md"))).toBe(false);
   });
 
+  test("an outside output names a safe relative retry and a missing session cwd requires reopening", async () => {
+    const cwd = fixture();
+    const outside = fixture();
+    const unexpected: DraftCompletion = async () => { throw new Error("must not call provider"); };
+    const output = join(outside, "report.md");
+    const refused = await draftDocument({ instruction: "write", output }, context(cwd), signal, unexpected);
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('output: "report.md"');
+    expect(refused.text).toContain(cwd);
+    expect(existsSync(output)).toBe(false);
+    const missing = await draftDocument({ instruction: "write", output: "report.md" }, context(join(cwd, "missing")), signal, unexpected);
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("세션을");
+    expect(missing.text).toContain("ENOENT");
+  });
+
   test("형식이 깨진 응답은 고정 대체(Sonnet)에 한 번만 넘기고, 둘 다 실패하면 저장하지 않는다", async () => {
     const cwd = fixture();
     writeFileSync(join(cwd, "facts.md"), "재고 12개");

@@ -2026,14 +2026,14 @@ describe("jev-runtime pre-retry", () => {
     await harness.emit("tool_result", {
       type: "tool_result", toolCallId: "read-stopping", toolName: "read",
       input: { path: "proc://my-dev" }, isError: false,
-      details: { proc: { daemon: { name: "my-dev", state: "stopping" } } },
+      details: { proc: { daemon: { key: "my-dev", state: "stopping" } } },
     });
     expect(await harness.emit("tool_call", bashCall("del-stopping", "rd /s /q /tmp/build-assets")))
       .toMatchObject({ block: true });
     await harness.emit("tool_result", {
-      type: "tool_result", toolCallId: "read-svc", toolName: "read",
-      input: { path: "proc://my-dev" }, isError: false,
-      details: { proc: { daemon: { name: "my-dev", state: "exited" } } },
+      type: "tool_result", toolCallId: "stop-svc", toolName: "write",
+      input: { path: "proc://my-dev/kill" }, isError: false,
+      details: { proc: { action: "stop", daemon: { key: "my-dev", state: "exited" } } },
     });
     expect(await harness.emit("tool_call", bashCall("del-c", "rd /s /q /tmp/build-assets")))
       .toBeUndefined();
@@ -2051,7 +2051,12 @@ describe("jev-runtime pre-retry", () => {
     expect(await harness.emit("tool_call", removal)).toMatchObject({ block: true });
     await harness.emit("tool_result", {
       toolCallId: "list", toolName: "read", isError: false,
-      input: { path: "proc://" }, details: { proc: { daemons: [] } },
+      input: { path: "proc://" }, details: { proc: { daemons: [{ key: "my-dev", state: "ready" }] } },
+    });
+    expect(await harness.emit("tool_call", removal)).toMatchObject({ block: true });
+    await harness.emit("tool_result", {
+      toolCallId: "list-exited", toolName: "read", isError: false,
+      input: { path: "proc://" }, details: { proc: { daemons: [{ key: "my-dev", state: "exited" }] } },
     });
     expect(await harness.emit("tool_call", removal)).toBeUndefined();
   });
@@ -2068,7 +2073,10 @@ describe("jev-runtime pre-retry", () => {
 
   test("같은 실패→재시도 경계는 한 번만 판정하고, 새 실패는 새 경계다", async () => {
     const harness = createHarness();
-    await harness.emit("tool_result", bashError("c1", "bun test", "1 fail (exit code 1)"));
+    await harness.emit("tool_result", {
+      ...bashError("c1", "bun test", "1 fail (exit code 1)"),
+      isError: false, details: { exitCode: 1 },
+    });
     await harness.emit("tool_call", bashCall("c2", "bun test"));
     await harness.emit("tool_call", bashCall("c3", "bun test"));
     // 경계는 c2에서 소비됐으므로 c3은 판정하지 않는다.

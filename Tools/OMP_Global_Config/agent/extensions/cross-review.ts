@@ -254,7 +254,7 @@ export default function crossReview(pi: ExtensionAPI): void {
   const z = pi.zod;
   pi.registerTool({
     name: "cross_review", label: "Cross Review", loadMode: "essential", approval: "read",
-    description: "Read rule://cross-review-procedure first. action: review|resolve. review: marker, high-risk, or size-triggered changes; acceptance and authors (model selectors; subagents own family, not main). Delta: previousReviewId only for an R1 blocker. One verdict-only probe on unchanged code: previousReviewId + probeResults. base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}].",
+    description: "Read rule://cross-review-procedure first. action: review|resolve. Review files are relative to the session cwd, not the Git root: from a subfolder omit its prefix. Review marker, high-risk, or size-triggered changes; acceptance and authors (model selectors; subagents own family, not main). Delta: previousReviewId only for an R1 blocker. One verdict-only probe before changing reviewed files or bound inputs: previousReviewId + probeResults. base: first committed round. inputs bind pass; references=context. Sends code to reviewer providers. Main-only resolve: reviewId + resolutions[{id,status:fixed|refuted|limit,evidence}].",
     parameters: z.object({
       action: z.string(),
       files: z.array(z.string()).optional(),
@@ -404,6 +404,8 @@ export default function crossReview(pi: ExtensionAPI): void {
   });
   pi.on("tool_result", async (event, ctx) => {
     if (event.isError) return;
+    if (event.toolName === "bash" && event.details && typeof event.details === "object"
+      && "exitCode" in event.details && typeof event.details.exitCode === "number" && event.details.exitCode !== 0) return;
     const startedEpoch = epoch;
     if (event.toolName === "cross_review") {
       await Promise.all([...repos].filter(([, state]) => state.uncovered.length > 0).map(([root, state]) => refresh(root, state, startedEpoch, false)));

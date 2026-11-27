@@ -53,13 +53,13 @@ for (const entry of cases) {
   test(`R12 incident replay: ${entry.command} gets advice only with the plugin loaded`, async () => {
     const disabled = await load(false);
     const enabled = await load(true);
-    const event = result(entry);
+    const event = { ...result(entry), isError: false };
     expect(await disabled.emitToolResult(event)).toBeUndefined();
     expect(await enabled.emitToolCall({ type: "tool_call", toolName: event.toolName, toolCallId: event.toolCallId, input: event.input })).toBeUndefined();
     const out = await enabled.emitToolResult(event);
     expect(out).toEqual({ additionalContext: expect.stringContaining(entry.guidance) });
     expect(out?.additionalContext).toContain("오류 문구로 추정");
-    expect(event).toEqual(result(entry));
+    expect(event).toEqual({ ...result(entry), isError: false });
     expect(await enabled.emitToolResult(result(entry, false, "bash", "completed"))).toBeUndefined();
   });
 }

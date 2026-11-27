@@ -26446,6 +26446,124 @@ ${mcpLap}`,
 	});
 }
 
+// Bash reports a command's exit status separately from a tool execution error.
+{
+	const file = "src/tools/bash.ts";
+	const changes = [
+		[
+			"\t\tconst exitCode = result.exitCode;\n\t\tconst failedExit = exitCode !== undefined && exitCode !== 0;",
+			"\t\tconst exitCode = result.exitCode; // CUELO: observed shell status is not a tool error",
+			"CUELO: observed shell status is not a tool error",
+		],
+		[
+			"\t\tif (failedExit) resultBuilder.error();\n\t\treturn resultBuilder.done();",
+			"\t\treturn resultBuilder.done(); // CUELO: completed command result",
+			"CUELO: completed command result",
+		],
+		[
+			" * failed. A definite non-zero exit is a completed command that failed;\n\t * #buildCompletedResult surfaces it as an error *result* (carrying\n\t * execution details) rather than a throw.",
+			" * failed. A completed command returns its exit status as data.",
+			"A completed command returns its exit status as data.",
+		],
+		[
+			"\t\t\t\t\t\t// A non-zero exit is a completed command that failed. Re-enter\n\t\t\t\t\t\t// the failure path so the job manager records it as failed and\n\t\t\t\t\t\t// delivers the error text, matching prior throw-based behavior.",
+			"\t\t\t\t\t\t// A timed-out command still marks the background job failed.",
+			"A timed-out command still marks the background job failed.",
+		],
+	];
+	for (const [anchor, patched, marker] of changes) EDITS.push({ file, anchor, patched, marker });
+}
+
+// The larger-output fallback may clip the original shell status footer.
+{
+	const file = "src/session/agent-session.ts";
+	// Pristine 19.2.1 and the async-success-summary patch above both keep this call
+	// text; anchoring on the whole `const formatted = successPreview ?? ...` line
+	// made the entry anchor-lost on a pristine core.
+	const call = "this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);";
+	const exitArg = "job?.type === \"bash\" && job.status === \"completed\" ? job.latestDetails?.exitCode : undefined";
+	EDITS.push({
+		file, anchor: call, marker: `job?.latestDetails?.meta, ${exitArg}`,
+		patched: `this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta, ${exitArg});`,
+	});
+	const method = "async #formatAsyncResultForFollowUp(result: string, meta?: OutputMeta): Promise<string>";
+	EDITS.push({ file, anchor: method, marker: "meta?: OutputMeta, bashExitCode?: number", patched: method.replace("meta?: OutputMeta", "meta?: OutputMeta, bashExitCode?: number") });
+	const preview = "\t\tconst preview = `${body.slice(0, ASYNC_PREVIEW_MAX_CHARS)}\\n\\n[Output truncated. Showing first ${ASYNC_PREVIEW_MAX_CHARS.toLocaleString()} characters.]`;";
+	EDITS.push({
+		file, anchor: preview, marker: "const exitNotice = bashExitCode",
+		patched: "\t\tconst exitNotice = bashExitCode === undefined ? \"\" : `\\nCommand exited with code ${bashExitCode}`;\n" + preview,
+	});
+	for (const anchor of [
+		"return `${preview}\\n[${formatArtifactErrorNotice(meta.artifactError)}]`;",
+		"return `${preview}\\nFull output: ${spillUrl(artifactId)}`;",
+		"return preview;",
+	]) {
+		const patched = anchor === "return preview;" ? "return preview + exitNotice;" : anchor.replace("`;", "${exitNotice}`;");
+		EDITS.push({ file, anchor, marker: patched, patched });
+	}
+}
+
+// A gap header already names the exact operation location. Repair only the omitted
+// verb before a `+` body; approval, event hooks, and native validation see the same edit.
+{
+	const file = "src/edit/index.ts";
+	const marker = "CUELO: fill in a missing gap PUT";
+	EDITS.push({
+		file, anchor: "\tget parameters(): TInput {", marker,
+		patched: String.raw`	// CUELO: fill in a missing gap PUT
+	resolveEventInput(input: string): string {
+		return !this.#magic && this.mode === "hashline"
+			? input.replace(/^([<>][1-9]\d*):([ \t]*\r?\n)(?=\+)/gm, "PUT $1:$2")
+			: input;
+	}
+
+	#normalizeGapArgs(args: unknown): unknown {
+		if (!args || typeof args !== "object" || !("input" in args) || typeof args.input !== "string") return args;
+		const input = this.resolveEventInput(args.input);
+		return input === args.input ? args : { ...args, input };
+	}
+
+	get parameters(): TInput {`,
+	});
+	const args = "const argsJson = JSON.stringify(params);";
+	const inspect = "inspection = editInspect(this.mode, JSON.stringify(args ?? {}));";
+	for (const [anchor, patched] of [
+		[args, "const argsJson = JSON.stringify(this.#normalizeGapArgs(params));"],
+		[inspect, "inspection = editInspect(this.mode, JSON.stringify(this.#normalizeGapArgs(args) ?? {}));"],
+	]) EDITS.push({ file, anchor, patched, marker: patched });
+	const wrapper = "src/extensibility/extensions/wrapper.ts";
+	const wrapperAnchor = "\tasync execute(\n\t\ttoolCallId: string,";
+	EDITS.push({
+		file: wrapper, anchor: wrapperAnchor, marker: "CUELO: forward mode-specific edit normalization",
+		patched: `	// CUELO: forward mode-specific edit normalization
+	resolveEventInput(input: string): string {
+		return (this.tool as { resolveEventInput?(input: string): string }).resolveEventInput?.(input) ?? input;
+	}
+
+${wrapperAnchor}`,
+	});
+}
+
+{
+	const anchor = "\tnormalize(input: string): string {\n\t\tif (!URL_PREFIX_RE.test(input)) {";
+	EDITS.push({
+		file: "src/internal-urls/router.ts", anchor, marker: 'if (input === "xd://eval/computer")',
+		patched: anchor.replace("\n", '\n\t\tif (input === "xd://eval/computer") return "help://eval/computer";\n'),
+	});
+}
+
+// Add the alias to the bound function, not the raw facade whose methods the run wraps.
+{
+	const anchor = "\t\t\tconst desktop = this.#createDesktopScope(session);\n\t\t\truntime.setRunScope({\n\t\t\t\tdesktop: bindRunFacade(desktop, signal),";
+	EDITS.push({
+		file: "src/tools/computer/worker.ts", anchor, marker: "Object.assign(desktop.windows, { list: desktop.windows });",
+		patched: `			const desktop = bindRunFacade(this.#createDesktopScope(session), signal);
+			Object.assign(desktop.windows, { list: desktop.windows });
+			runtime.setRunScope({
+				desktop,`,
+	});
+}
+
 /** All possible targets, including files reached only by a version alternate. */
 export function corePatchTargetFiles() {
 	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];

@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import { htmlText, literalStrings } from "../slop-gate/extract";
 
 /**
@@ -132,7 +133,7 @@ export interface ProseChange { path: string; added: string }
  * edit 본문의 파일 머리 `[path#TAG]` 아래 줄은 그 파일 몫이다.
  */
 export function proseChanges(toolName: string, input: Record<string, unknown>, cwd: string): ProseChange[] {
-  const abs = (path: string) => /^[a-z][a-z\d+.-]*:\/\//i.test(path) ? undefined : (isAbsolute(path) ? path : resolve(cwd, path));
+  const abs = (path: string) => /^[a-z][a-z\d+.-]*:\/\//i.test(path) ? undefined : resolveToCwd(path, cwd);
   if (toolName === "write") {
     if (typeof input.path !== "string" || typeof input.content !== "string") return [];
     const path = abs(input.path);

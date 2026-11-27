@@ -39,13 +39,13 @@ export class LiveServices {
     if (typeof path !== "string" || !/^proc:\/\//u.test(path)) return;
     const proc = fieldOf(event.details, "proc");
     const daemon = fieldOf(proc, "daemon");
-    const name = fieldOf(daemon, "name");
+    const name = fieldOf(daemon, "key") ?? fieldOf(daemon, "name");
     if (typeof name === "string" && ENDED.test(String(fieldOf(daemon, "state")))) this.#services.delete(name);
     if (event.toolName !== "read" || !/^proc:\/\/\/?$/u.test(path)) return;
     const daemons = fieldOf(proc, "daemons");
     if (!Array.isArray(daemons)) return;
     const active = new Set(daemons.flatMap((item) => {
-      const serviceName = fieldOf(item, "name");
+      const serviceName = fieldOf(item, "key") ?? fieldOf(item, "name");
       return typeof serviceName === "string" && LISTED_ACTIVE.test(String(fieldOf(item, "state"))) ? [serviceName] : [];
     }));
     for (const serviceName of [...this.#services.keys()]) {

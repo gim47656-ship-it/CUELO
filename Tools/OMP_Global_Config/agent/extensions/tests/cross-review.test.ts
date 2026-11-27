@@ -512,6 +512,19 @@ describe("runReview", () => {
     await expect(runReview(input({ acceptance: " " }), deps(env, {}), signal)).rejects.toThrow("acceptance");
   });
 
+  test("a doubled nested cwd prefix shows the corrected spelling without reviewing a different file", async () => {
+    const env = repo();
+    const cwd = join(env.work, "nested folder", "app");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "a.ts"), PLAIN_BASE);
+    const calls: { family: Lane; prompt: string }[] = [];
+    await expect(runReview(input({ files: ["nested folder/app/a.ts"] }), { ...deps(env, {}, calls), cwd }, signal))
+      .rejects.toThrow(/Nothing to review[^]*"nested folder\/app\/a.ts" → "a.ts"/);
+    expect(calls).toEqual([]);
+    await runReview(input(), { ...deps(env, {}, calls), cwd }, signal);
+    expect(calls[0]?.prompt).toContain('<new-file path="nested folder/app/a.ts">');
+  });
+
   test("a1 smoke: an R1 blocker allows one delta review, then R3 is rejected", async () => {
     const env = repo();
     const far = Array.from({ length: 40 }, (_, index) => `export const filler${index} = ${index};\n`).join("");

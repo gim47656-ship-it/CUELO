@@ -1808,6 +1808,39 @@ describe("AI-slop gate", () => {
     expect(stale.error?.message).toContain("older version");
   }, TEST_TIMEOUT_MS);
 
+  test("the cross-review refusal also names exact slop blockers unless this call has a slop waiver", async () => {
+    const { root, work, remote } = await publicRepository();
+    const ledger = join(root, "slop.jsonl");
+    process.env.OMP_SLOP_GATE_LEDGER = ledger;
+    const before = git(work, ["rev-parse", "HEAD"]);
+    await writeFile(join(work, "wipe.ts"), wipe);
+    await writeFile(join(work, "page.html"), readme);
+    await writeFile(join(work, "passed.html"), `${readme}\nother`);
+    passFor(ledger, join(work, "passed.html"), `${readme}\nother`);
+    const files = ["wipe.ts", "page.html", "passed.html"];
+    const refused = await startTool(work, files);
+    expect(refused.error?.message).toContain("failed at cross-review");
+    expect(refused.error?.message).toContain('slop_check {files:["page.html"]');
+    const waived = await startTool(work, files, { slopGateWaiver: "user's explicit instruction" });
+    expect(waived.error?.message).toContain("failed at cross-review");
+    expect(waived.error?.message).not.toContain("slop_check {");
+    expect(readSlopRecords(ledger).map((record) => record.type)).toEqual(["slop-pass"]);
+    expect(git(work, ["rev-parse", "HEAD"])).toBe(before);
+    expect(git(work, ["--git-dir", remote, "rev-parse", "refs/heads/main"])).toBe(before);
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+  }, TEST_TIMEOUT_MS);
+
+  test("the cross-review refusal lists a binary Office artifact without a pass", async () => {
+    const { root, work } = await publicRepository();
+    process.env.OMP_SLOP_GATE_LEDGER = join(root, "slop.jsonl");
+    await writeFile(join(work, "wipe.ts"), wipe);
+    await writeFile(join(work, "report.docx"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0]));
+    const refused = await startTool(work, ["wipe.ts", "report.docx"]);
+    expect(refused.error?.message).toContain("failed at cross-review");
+    expect(refused.error?.message).toContain('slop_check {files:["report.docx"]');
+    expect(git(work, ["diff", "--cached", "--name-only"])).toBe("");
+  }, TEST_TIMEOUT_MS);
+
   test("never gates code, tests, internal records or data files, and the gate hands finalizer the blob of the checked bytes", async () => {
     const { root, work } = await publicRepository();
     process.env.OMP_SLOP_GATE_LEDGER = join(root, "slop.jsonl");

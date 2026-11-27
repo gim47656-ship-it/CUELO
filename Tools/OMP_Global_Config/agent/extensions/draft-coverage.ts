@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { onSessionLifecycle } from "./lib/session-identity";
 import { candidatesOf } from "./lib/slop-gate";
@@ -139,8 +139,8 @@ export default function draftCoverage(pi: ExtensionAPI): void {
       return;
     }
     if (event.toolName === "draft") {
-      if (event.isError || typeof input.output !== "string" || textOf(event.content).startsWith("model: none")) return;
-      const path = resolve(ctx.cwd, input.output);
+      if (event.isError || !event.details || typeof event.details !== "object" || !("savedPath" in event.details) || typeof event.details.savedPath !== "string") return;
+      const path = event.details.savedPath;
       if (!SNAPSHOT_FORMAT.test(path)) return;
       const text = readText(path);
       if (text === undefined) return;
@@ -150,10 +150,14 @@ export default function draftCoverage(pi: ExtensionAPI): void {
     }
     if (event.toolName === "read") {
       if (event.isError || typeof input.path !== "string") return;
-      // read 경로 뒤의 줄 범위·:raw 선택자는 떼고 맞춘다. 이 세션이 실제로 연 draft 결과만 쓸 수 있게 된다.
-      const bare = input.path.replace(/(?::(?:raw|conflicts|img|-?\d[\d+,:-]*(?::raw)?))+$/, "");
-      const path = isAbsolute(bare) ? bare : resolve(ctx.cwd, bare);
-      for (const snap of drafts) if (snap.path === path) granted.add(snap);
+      if (drafts.length > 0 && !/^[a-z][a-z\d+.-]*:\/\//i.test(input.path)) {
+        // Compare the saved file, not the spelling through a symlinked session checkout.
+        const bare = input.path.replace(/(?::(?:raw|conflicts|img|-?\d[\d+,:-]*(?::raw)?))+$/, "");
+        try {
+          const path = realpathSync(resolveToCwd(bare, ctx.cwd));
+          for (const snap of drafts) if (snap.path === path) granted.add(snap);
+        } catch { /* No file identity to grant; the read text is still available below. */ }
+      }
       // 파일을 다시 읽지 않고 성공한 read 결과의 본문을 쓴다: 그 사이 파일이 바뀌어도 이 세션이 본 글만 출처가 된다.
       const text = readOutputText(event.content);
       if (!text.trim()) return;

@@ -36,7 +36,10 @@ if (process.argv[2] !== "--worker") {
  const model = getBundledModel("openai", "gpt-4o-mini");
  const { session } = await createAgentSession({
   cwd: fixture, agentDir: fixture, agentId: "AsyncSuccess", model, getApiKey: () => "fixture",
-  settings: Settings.isolated({ "async.enabled": true, "launch.enabled": false }),
+  settings: Settings.isolated({
+   "async.enabled": true, "bash.autoBackground.enabled": false,
+   "launch.enabled": false, "bashInterceptor.enabled": true,
+  }),
   bindProcessState: false, enableMCP: false, enableLsp: false, skipPythonPreflight: true,
   disableExtensionDiscovery: true, skills: [], rules: [], contextFiles: [], toolNames: ["read", "bash"],
  });
@@ -165,6 +168,34 @@ if (process.argv[2] !== "--worker") {
    assert.ok(message!.length <= 2100);
    cases++;
   }
+  pendingCall = { type: "toolCall", id: "foreground-exit", name: "bash", arguments: { command: "printf foreground; exit 7", timeout: 10 } };
+  await session.prompt("Run the local foreground exit fixture.");
+  const foreground = session.messages.find((message) => message.role === "toolResult" && message.toolCallId === "foreground-exit");
+  assert.ok(foreground && foreground.role === "toolResult");
+  console.log(`real foreground BashTool: isError=${foreground.isError}; exit=${foreground.details?.exitCode}; ${JSON.stringify(foreground.content)}`);
+  assert.equal(foreground.isError, false);
+  assert.equal(foreground.details?.exitCode, 7);
+  assert.match(JSON.stringify(foreground.content), /Command exited with code 7/);
+
+  for (const [id, args, expected] of [
+   ["missing-cwd", { command: "true", cwd: join(fixture, "missing") }, /Working directory does not exist/],
+   ["intercept", { command: "cat missing" }, /Use the `read` tool instead of cat/],
+   ["foreground-timeout", { command: "sleep 3", timeout: 1 }, /Command timed out/],
+  ] as const) {
+   pendingCall = { type: "toolCall", id, name: "bash", arguments: args };
+   await session.prompt(`Run the local ${id} fixture.`);
+   const rejected = session.messages.find((message) => message.role === "toolResult" && message.toolCallId === id);
+   assert.ok(rejected && rejected.role === "toolResult");
+   assert.equal(rejected.isError, true, id);
+   assert.match(JSON.stringify(rejected.content), expected);
+   if (id === "foreground-timeout") assert.equal(rejected.details?.timedOut, true);
+   console.log(`real BashTool ${id}: isError=${rejected.isError}`);
+  }
+  await assert.rejects(
+   () => session.getToolByName("bash")!.execute("foreground-abort", { command: "sleep 3", timeout: 10 }, AbortSignal.timeout(100)),
+   /aborted|cancelled/i,
+  );
+  console.log("real BashTool foreground abort: threw a cancellation error");
   for (const [name, command, timeout] of [
    ["success", "seq 1 1200", 10],
    ["nonzero", "seq 1 3000; exit 7", 10],
@@ -176,17 +207,21 @@ if (process.argv[2] !== "--worker") {
    await ("waitForRunEnd" in session ? session.waitForRunEnd() : session.settleAsyncWork());
    const job = manager.getAllJobs().find((job: AsyncJob) => !before.has(job.id) && job.type === "bash");
    assert.ok(job, `${name}: actual BashTool registered a job`);
-   assert.equal(job.status, name === "success" ? "completed" : "failed");
+   assert.equal(job.status, name === "timeout" ? "failed" : "completed");
    if (name === "nonzero") assert.equal(job.latestDetails?.exitCode, 7);
    if (name === "timeout") assert.equal(job.latestDetails?.timedOut, true);
-   const message = session.messages.find((message: { customType?: string; content?: unknown }) => message.customType === "async-result" && JSON.stringify(message.content).includes(job.id));
+   const message = session.messages.find((message: { customType?: string; details?: { jobs?: { jobId: string }[] }; content?: unknown }) =>
+    message.customType === "async-result" && message.details?.jobs?.some(entry => entry.jobId === job.id));
    assert.ok(message && typeof message.content === "string", `${name}: actual bash result auto-delivered`);
+   if (name === "nonzero") {
+    assert.match(message.content, /Command exited with code 7\s*(?:<\/system-notice>)?\s*$/);
+    assert.doesNotMatch(message.content, / failed:/);
+   }
    if (name === "success") {
     const full = job.resultText!;
     assert.ok(full.length > 2000);
     assert.ok(message.content.includes(`Result length: ${full.length} chars;`));
     assert.ok(message.content.length < 2300 && message.content.length < full.length, "real delivery is bounded with header included");
-    assert.ok(!message.content.includes("\n600\n601\n"), "real delivery omits the middle");
     assert.ok(message.content.includes(full.slice(0, 1000)));
     // The existing prompt renderer collapses blank lines; check tail content/notices, not that whitespace.
     assert.ok(message.content.includes("1199\n1200") && message.content.includes("Command exited with code 0"));
@@ -195,7 +230,7 @@ if (process.argv[2] !== "--worker") {
     const path = await session.sessionManager.getArtifactPath(link[2]!);
     assert.ok(path);
     assert.equal(readFileSync(path, "utf8"), full);
-   } else assert.ok(!message.content.includes("Result length:"), `${name}: real bash failure keeps original spill policy`);
+   } else assert.ok(!message.content.includes("Result length:"), `${name}: non-successful command keeps the existing output shape`);
    cases++;
    console.log(`real BashTool ${name}: status=${job.status} exit=${job.latestDetails?.exitCode} timedOut=${job.latestDetails?.timedOut}; success-summary=${message.content.includes("Result length:")}`);
   }

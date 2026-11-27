@@ -1,3 +1,4 @@
+import type { CustomToolFactory } from "@oh-my-pi/pi-coding-agent";
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -159,6 +160,19 @@ describe("runEgoBrowser results", () => {
     expect(other).not.toContain("`page`에는");
   });
 
+  test("explains Linux async-body imports and by-value evaluation errors without swallowing either", async () => {
+    for (const [stderr, hint] of [
+      ["SyntaxError: Cannot use import statement outside a module", 'await import("node:fs")'],
+      ["Error: Object reference chain is too long", "plain"],
+    ]) {
+      const { exec, calls } = fakeExec({ code: 1, stdout: "", stderr, killed: false });
+      const error = await runEgoBrowser({ script: "1" }, { exec, sessionId: "s", host: "linux" }).catch((e: Error) => e);
+      expect(String(error)).toContain(stderr);
+      expect(String(error)).toContain(hint);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
   test("a killed run reports the timeout and that the space may remain", async () => {
     const { exec } = fakeExec({ code: -1, stdout: "", stderr: "", killed: true });
     await expect(runEgoBrowser({ script: "1", timeoutMs: 5000 }, { exec, sessionId: "s" })).rejects.toThrow(/5초[\s\S]*남아 있을 수 있다/);
@@ -261,31 +275,46 @@ describe("session tool lifecycle", () => {
 });
 
 describe("native Linux host", () => {
-  // Linux SDK(오픈소스 ego-browser)의 실제 모양: taskSpaces.useOrCreate/handOff/takeOver/complete/list, page는 미리 넣은 전역이다.
-  function linuxSdk(spaces: object[] = []) {
+  function linuxSdk(spaces: { id: number; name: string; createdBy: string; ownership: string }[] = []) {
     const log: string[] = [];
+    let listCalls = 0;
+    const initial = { id: 3, name: "", createdBy: "agent", ownership: "agent" };
     const page = { kind: "global page" };
     const taskSpaces = {
-      useOrCreate: async (name: string) => { log.push(`use:${name}`); return { id: 3, name }; },
-      handOff: async (id: unknown) => { log.push(`handOff:${id}`); return { done: true }; },
-      takeOver: async (id: unknown) => { log.push(`takeOver:${id}`); },
-      complete: async (id: unknown, options: { keep: boolean }) => { log.push(`complete:${id}:${options.keep}`); return { done: true }; },
-      list: async () => spaces,
+      useOrCreate: async (name: string) => { log.push(`use:${name}`); initial.name = name; return initial; },
+      handOff: async (id: unknown) => { log.push(`handOff:${id}`); initial.ownership = "user"; return { done: true }; },
+      takeOver: async (id: unknown) => { log.push(`takeOver:${id}`); initial.ownership = "agent"; return { done: true }; },
+      list: async () => { listCalls++; return initial.name ? [initial, ...spaces] : spaces; },
     };
+    const taskSpace = async (id: number) => ({
+      pages: async () => [{ label: "p1" }, { label: "p2" }],
+      finish: async ({ keep }: { keep: string[] }) => { log.push(`finish:${id}:${JSON.stringify(keep)}`); return { finished: true, kept: keep }; },
+    });
     const run = (source: string) =>
-      new Function("taskSpaces", "page", "console", `return (async () => { ${source} })()`)(taskSpaces, page, { log: (...parts: unknown[]) => log.push(parts.join(" ")) })
+      new Function("taskSpaces", "taskSpace", "ego", "page", "console", `return (async () => { ${source} })()`)(
+        taskSpaces, taskSpace, { taskPages() {} }, page, { log: (...parts: unknown[]) => log.push(parts.join(" ")) },
+      )
         .then(() => "ok", (error: Error) => error.message);
-    return { log, page, run };
+    return { log, page, run, get listCalls() { return listCalls; } };
   }
 
   test("the prelude resumes the session's space by name and gives the Windows-shaped task; finish closes it even on error", async () => {
     const sdk = linuxSdk();
     const body = "if (task.page() !== page) throw new Error('page mismatch'); await task.handOff(); await task.takeOver(); throw new Error('script failed');";
     expect(await sdk.run(buildScript("cuelo-s-user", "user", body, true, "linux"))).toBe("script failed");
-    expect(sdk.log).toEqual(["use:cuelo-s-user", "handOff:3", "takeOver:3", "complete:3:false"]);
+    expect(sdk.log).toEqual(["use:cuelo-s-user", "handOff:3", "takeOver:3", "finish:3:[]"]);
     const kept = linuxSdk();
     expect(await kept.run(buildScript("n", "user", "await task.finish({ keep: ['p1'] });", false, "linux"))).toBe("ok");
-    expect(kept.log).toEqual(["use:n", "complete:3:true"]);
+    expect(kept.log).toEqual(["use:n", 'finish:3:["p1"]']);
+    const legacy = linuxSdk();
+    expect(await legacy.run(buildScript("n", "user", "await task.finish({ keep: true });", false, "linux"))).toBe("ok");
+    expect(legacy.log).toEqual(["use:n", 'finish:3:["p1","p2"]']);
+    const empty = linuxSdk();
+    expect(await empty.run(buildScript("n", "user", "await task.finish({});", false, "linux"))).toBe("ok");
+    expect(empty.log).toEqual(["use:n", "finish:3:[]"]);
+    const handedOff = linuxSdk();
+    expect(await handedOff.run(buildScript("n", "user", "await task.handOff();", true, "linux"))).toContain("It was left open; do not replay the script.");
+    expect(handedOff.log).toEqual(["use:n", "handOff:3"]);
   });
 
   test("a script that opens its own space by name, as the ego guide shows, runs in the session's space instead of failing or leaving a second space", async () => {
@@ -293,7 +322,7 @@ describe("native Linux host", () => {
     const sdk = linuxSdk();
     const body = "const task = await taskSpace('voice engine verification');\nconst page = task.page('p1');\nconsole.log(task.id, page.kind);";
     expect(await sdk.run(buildScript("cuelo-s-user", "user", body, true, "linux"))).toBe("ok");
-    expect(sdk.log).toEqual(["use:cuelo-s-user", "3 global page", "complete:3:false"]);
+    expect(sdk.log).toEqual(["use:cuelo-s-user", "3 global page", "finish:3:[]"]);
     const open = linuxSdk();
     expect(await open.run(buildScript("n", "user", "let task = await taskSpace('x'); void task;", false, "linux"))).toBe("ok");
     expect(open.log).toEqual(["use:n"]);
@@ -302,26 +331,12 @@ describe("native Linux host", () => {
   test("a script that finishes its own space under finish:true closes it once instead of failing on the second close", async () => {
     // 11-19~11-23 집과 사무실의 `task space not found`: 본문 task.finish 뒤 finish:true의 finally가 같은 공간을 다시 닫았다.
     const sdk = linuxSdk();
-    const closed = new Set<unknown>();
-    const complete = async (id: unknown, options: { keep: boolean }) => {
-      if (closed.has(id)) throw new Error(`task space not found: ${id}`);
-      closed.add(id);
-      sdk.log.push(`complete:${id}:${options.keep}`);
-      return { done: true };
-    };
-    const run = (source: string) =>
-      new Function("taskSpaces", "page", "console", `return (async () => { ${source} })()`)(
-        { useOrCreate: async (name: string) => ({ id: 3, name }), complete },
-        sdk.page,
-        { log: (...parts: unknown[]) => sdk.log.push(parts.join(" ")) },
-      ).then(() => "ok", (error: Error) => error.message);
-    expect(await run(buildScript("n", "user", "console.log(JSON.stringify(await task.finish({ keep: [] })));", true, "linux"))).toBe("ok");
-    expect(sdk.log).toEqual(["complete:3:false", '{"done":true}']);
+    expect(await sdk.run(buildScript("n", "user", "const result = await task.finish({ keep: [] }); if (!result.done || !result.finished) throw new Error('not finished');", true, "linux"))).toBe("ok");
+    expect(sdk.log).toEqual(["use:n", "finish:3:[]"]);
     // 닫는 중에 두 번째로 부른 쪽도 같은 약속을 받아야 한다(async 감싸기면 서로 다른 약속이 된다).
-    closed.clear();
-    sdk.log.length = 0;
-    expect(await run(buildScript("n", "user", "const first = task.finish(); if (task.finish() !== first) throw new Error('different promises'); await first;", true, "linux"))).toBe("ok");
-    expect(sdk.log).toEqual(["complete:3:false"]);
+    const concurrent = linuxSdk();
+    expect(await concurrent.run(buildScript("n", "user", "const first = task.finish(); if (task.finish() !== first) throw new Error('different promises'); await first;", true, "linux"))).toBe("ok");
+    expect(concurrent.log).toEqual(["use:n", "finish:3:[]"]);
   });
 
   test("the Linux global page gets the Windows page.click, page.fill and page.waitForTimeout shapes, without touching a script's own page", async () => {
@@ -331,6 +346,8 @@ describe("native Linux host", () => {
     const locator = (selector: string) => ({
       click: async (options?: unknown) => { calls.push(["click", selector, options]); },
       fill: async (value: string, options?: unknown) => { calls.push(["fill", selector, value, options]); },
+      press: async (key: string, options?: unknown) => { calls.push(["press", selector, key, options]); },
+      setInputFiles: async (paths: string[], options?: unknown) => { calls.push(["upload", selector, paths, options]); },
     });
     const taskSpaces = { useOrCreate: async (name: string) => ({ id: 1, name }), complete: async () => ({}) };
     const run = async (page: object, body: string) => {
@@ -346,7 +363,9 @@ describe("native Linux host", () => {
       }
     };
     expect(await run({ locator }, "await page.click('#go'); await page.click('@3', { force: true }); await page.fill('#q', 'hi');")).toBe("ok");
-    expect(calls).toEqual([["click", "#go", undefined], ["click", "@3", { force: true }], ["fill", "#q", "hi", undefined]]);
+    expect(calls.splice(0)).toEqual([["click", "#go", undefined], ["click", "@3", { force: true }], ["fill", "#q", "hi", undefined]]);
+    expect(await run({ locator }, "await page.press('#q', 'Enter'); await page.setInputFiles('input[type=file]', ['/tmp/input']);")).toBe("ok");
+    expect(calls.splice(0)).toEqual([["press", "#q", "Enter", undefined], ["upload", "input[type=file]", ["/tmp/input"], undefined]]);
     const own = async () => { calls.push(["own click"]); };
     calls.length = 0;
     expect(await run({ locator, click: own }, "await page.click('#go');")).toBe("ok");
@@ -362,6 +381,107 @@ describe("native Linux host", () => {
     expect(await run({ locator, waitForTimeout: async () => 71 }, "if (await page.waitForTimeout(0) !== 71) throw new Error('replaced');")).toBe("ok");
   });
 
+  test("uses the real managed page bindings for new and named pages without changing the current-tab page", async () => {
+    const p2 = { label: "p2", title: async () => "second" };
+    const native = {
+      page: (label: string) => {
+        if (label === "p2") return p2;
+        throw new Error(`unknown label: ${label}`);
+      },
+      newPage: async () => p2,
+      pages: async () => [{ label: "p2", targetId: "mine" }],
+      tabs: async () => [{ label: "p2", targetId: "mine", ownership: "agent" }],
+    };
+    const page = { title: async () => "current" };
+    const taskSpaces = { useOrCreate: async (name: string) => ({ id: 3, name, createdBy: "agent", ownership: "agent" }) };
+    const seen: number[] = [];
+    const taskSpace = async (id: number) => { seen.push(id); return native; };
+    const script = buildScript("n", "user", `
+      const example = await taskSpace("guide's example");
+      const fresh = await example.newPage();
+      await fresh.waitForTimeout(0);
+      return [example.spaceId, example.page("p1") === page, await fresh.title(),
+        await example.page("p2").title(), (await example.pages())[0].label, (await example.tabs())[0].ownership];
+    `, false, "linux");
+    const run = new Function("page", "taskSpaces", "taskSpace", "ego", `return (async () => { ${script} })()`);
+    expect(await run(page, taskSpaces, taskSpace, { taskPages() {} })).toEqual([3, true, "second", "second", "p2", "agent"]);
+    expect(seen).toEqual([3]);
+  });
+
+  test("a current-tab script can run without looking up a managed TaskSpace", async () => {
+    const source = buildScript("n", "user", "return page.kind;", false, "linux");
+    const run = new Function("taskSpaces", "taskSpace", "ego", "page", `return (async () => { ${source} })()`);
+    const taskSpaces = { useOrCreate: async () => ({ id: 3, ownership: "agent" }) };
+    const taskSpace = async () => { throw new Error("native down"); };
+    await expect(run(taskSpaces, taskSpace, { taskPages() {} }, { kind: "global page" })).resolves.toBe("global page");
+  });
+
+  test("native finish succeeds after Electron deletes the last-tab Space only if scoped inventory confirms its absence", async () => {
+    const state = { id: 3, name: "n", createdBy: "agent", ownership: "agent" };
+    const finishError = new Error("taskPages.finish: task space not found: 3");
+    const source = buildScript("n", "user", "return 42;", true, "linux");
+    const run = new Function("taskSpaces", "taskSpace", "ego", `return (async () => { ${source} })()`);
+    const taskSpaces = { useOrCreate: async () => state, list: async () => [state] };
+    let finishes = 0;
+    const native = {
+      finish: async () => { finishes++; throw finishError; },
+      tabs: async () => { throw Object.assign(new Error("taskPages.list: task space not found: 3"), { error_code: "EGO_TASK_SPACE_NOT_FOUND" }); },
+    };
+    await expect(run(taskSpaces, async () => native, { taskPages() {} })).resolves.toBe(42);
+    await expect(run(taskSpaces, async () => ({ ...native, tabs: async () => [] }), { taskPages() {} })).rejects.toBe(finishError);
+    expect(finishes).toBe(2);
+  });
+
+  test("after an explicit SDK close finish:true accepts only verified absence of the bound space", async () => {
+    const initial = { id: 3, name: "n", createdBy: "agent", ownership: "agent" };
+    const original = async () => initial;
+    const observed: number[] = [];
+    async function run(body: string, state: { id: number; name: string; createdBy: string; ownership: string }[]) {
+      const taskSpaces = {
+        useOrCreate: original,
+        list: async () => state,
+        complete: async (id: number) => {
+          const index = state.findIndex((space) => space.id === id);
+          if (index < 0) throw new Error(`task space not found: ${id}`);
+          observed.push(id);
+          state.splice(index, 1);
+        },
+      };
+      const taskSpace = async (id: number) => ({
+        finish: async () => { await taskSpaces.complete(id); return { finished: true, kept: [] }; },
+      });
+      const script = buildScript("n", "user", body, true, "linux");
+      return new Function("taskSpaces", "taskSpace", "ego", `return (async () => { ${script} })()`)(taskSpaces, taskSpace, { taskPages() {} });
+    }
+    const replacement = { ...initial, id: 4 };
+    const closed = [initial, replacement];
+    await expect(run("await taskSpaces.complete(task.id, { keep: false }); return 42;", closed)).resolves.toBe(42);
+    expect(closed).toEqual([replacement]);
+    await expect(run("throw new Error('body failed: task space not found: 99');", [])).rejects.toThrow("body failed: task space not found: 99");
+    const handedOff = [{ ...initial, ownership: "user" }];
+    await expect(run("return 43;", handedOff)).rejects.toThrow(/user control/i);
+    expect(handedOff).toHaveLength(1);
+    expect(observed).toEqual([3]);
+  });
+
+  test("advertises only user on Linux and keeps verify available on Windows", () => {
+    const chain = { optional() { return this; }, describe() { return this; } };
+    const profiles: string[][] = [];
+    // Exercise the schema the factory publishes without needing a full agent session.
+    const pi = {
+      zod: {
+        object: () => chain, string: () => chain, boolean: () => chain, number: () => chain,
+        enum: (values: string[]) => { profiles.push(values); return chain; },
+      },
+    } as unknown as Parameters<CustomToolFactory>[0];
+    const exec = fakeExec(ok("")).exec;
+    const linux = createFactory(exec, "linux")(pi) as { description: string };
+    const windows = createFactory(exec, "windows")(pi) as { description: string };
+    expect(profiles).toEqual([["user"], ["user", "verify"]]);
+    expect(linux.description).toContain("await import");
+    expect(windows.description).toContain("profile:verify");
+  });
+
   test("verify is refused before launching anything; an unreachable ego browser points at browser.open", async () => {
     const { exec, calls } = fakeExec(ok(""));
     await expect(runEgoBrowser({ script: "1", profile: "verify" }, { exec, sessionId: "s", host: "linux" })).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
@@ -374,10 +494,18 @@ describe("native Linux host", () => {
     const base = { name: "target", id: 7, createdBy: "agent", ownership: "agent" };
     const held = linuxSdk([base, { ...base, name: "other", id: 8 }]);
     await held.run(buildCleanup("target", "linux"));
-    expect(held.log).toEqual(["complete:7:false", "closed 7"]);
+    expect(held.log).toEqual(["finish:7:[]", "closed 7"]);
+    expect(held.listCalls).toBe(1);
     const delegated = linuxSdk([{ ...base, ownership: "agentDelegatedToUser" }]);
     await delegated.run(buildCleanup("target", "linux"));
     expect(delegated.log).toEqual(["skipped agentDelegatedToUser"]);
+    expect(delegated.listCalls).toBe(1);
+    const output: unknown[] = [];
+    await new Function("taskSpaces", "console", `return (async () => { ${buildCleanup("target", "linux")} })()`)(
+      { list: async () => [base], complete: () => { throw new Error("unsafe close"); } },
+      { log: (text: string) => output.push(text) },
+    );
+    expect(output).toEqual(["skipped: managed TaskSpace API unavailable"]);
   });
 
   test("the Linux shutdown cleanup uses the Linux SDK and never touches the refused verify profile", async () => {
@@ -389,7 +517,7 @@ describe("native Linux host", () => {
     await tool.execute("1", { script: "1" }, undefined, ctx);
     await expect(tool.execute("2", { script: "2", profile: "verify" }, undefined, ctx)).rejects.toThrow(LINUX_VERIFY_UNSUPPORTED);
     await tool.onSession({ reason: "shutdown", previousSessionFile: undefined }, ctx);
-    const cleaned = calls.filter((input) => input.includes("taskSpaces.list()"));
+    const cleaned = calls.filter((input) => input.startsWith("const found = (await taskSpaces.list())"));
     expect(cleaned).toHaveLength(1);
     expect(cleaned[0]).toContain(`"cuelo-${UUID_A}-user"`);
   });
@@ -576,7 +704,7 @@ console.log("ok");`);
       expect(launched).toEqual([launcher]);
       await tool.onSession(shutdown, ctx);
       expect(launched).toEqual([launcher]);
-      expect(readFileSync(seenLog, "utf8")).toContain("taskSpaces.list()");
+      expect(readFileSync(seenLog, "utf8")).toContain("const found = (await taskSpaces.list())");
 
       // 조건 B: 정상 사용 뒤 사용자가 앱을 닫았다. 그 정리가 앱을 다시 켜면 안 된다.
       await tool.execute("3", { script: "work" }, undefined, ctx);
@@ -585,7 +713,7 @@ console.log("ok");`);
       await tool.onSession(shutdown, ctx);
       expect(launched).toEqual([launcher]);
       // 앱이 꺼져 있으면 정리 스크립트는 실행되지 않는다(호스트 stdin에 한 번도 닿지 않는다).
-      expect(readFileSync(seenLog, "utf8").match(/taskSpaces\.list\(\)/g)).toHaveLength(1);
+      expect(readFileSync(seenLog, "utf8").match(/const found = \(await taskSpaces\.list\(\)\)/g)).toHaveLength(1);
     } finally {
       server.stop(true);
       for (const key of keys) {

@@ -5,9 +5,9 @@ import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
+import { CrossReviewRefusal, currentBlobs, ledgerPath, resolveRepoTargets, runGate, spawnExec } from "../../extensions/lib/cross-review";
 import { finalizeChecksNote, runFinalizeChecks, type FinalizeChecksResult } from "../../extensions/lib/finalize-checks";
-import { mergeGateBlobs, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
+import { mergeGateBlobs, missingSlopPasses, runSlopGate, slopLedgerPath } from "../../extensions/lib/slop-gate";
 import { vmCopyHint } from "../vm-build/hint";
 import { integrateTool, reattachRetiredBranch } from "./integrate";
 import { syncBehindUpstream } from "./sync-upstream";
@@ -458,6 +458,8 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
     const preconditionError = async (error: unknown, stage?: "cross-review" | "slop-gate", generatedManifest = false) => {
       const primary = (stage ? `git_finalize failed at ${stage}: ` : "") + (error instanceof Error ? error.message : String(error));
       let pathNote = "";
+      let slopNote = "";
+      let slopUnknown = !params.slopGateWaiver?.trim() && stage !== "slop-gate";
       let dir: string | undefined;
       try {
         // Diagnose paths only on rejection. This stops before fetch, staging, or project commands.
@@ -478,12 +480,21 @@ export const finalizeTool = (pi: ToolApi): CustomTool<any, any> => ({
           });
         }
       }
+      if (stage === "cross-review" && slopUnknown && !pathNote && !signal?.aborted && error instanceof CrossReviewRefusal && error.worktree) {
+        try {
+          const missing = missingSlopPasses(error.worktree, slopLedgerPath());
+          slopUnknown = false;
+          if (missing.length > 0) {
+            slopNote = `\nAlso blocked at slop-gate: ${missing.length} visible artifact(s) have no pass for their current content.\nNext: run slop_check {files:${JSON.stringify(missing)}, authors:[<author model selectors or "main">]} before retrying git_finalize.`;
+          }
+        } catch { /* The original refusal still applies; keep the generic prerequisite if the ledger cannot be read. */ }
+      }
       const next = [
         !stage && "a current cross_review pass for gated code",
-        stage !== "slop-gate" && "a current slop_check pass for gated visible files",
+        slopUnknown && "a current slop_check pass for gated visible files",
         "passing matching .finalize-checks.json checks (git_finalize runs them after preflight)",
       ].filter(Boolean).join("; ");
-      return new Error(`${primary}${pathNote}\nAfter fixing the above, this call also requires, where applicable: ${next}.`);
+      return new Error(`${primary}${pathNote}${slopNote}\nAfter fixing the above, this call also requires, where applicable: ${next}.`);
     };
     // 뒤처지기만 한 작업 사본은 원격 커밋을 먼저 받는다(사용자 결정 2026-11-05). 게이트가 받은 뒤의 내용(합친 파일 포함)을 보도록 맨 앞에서 한다.
     let upstreamNote = "";
