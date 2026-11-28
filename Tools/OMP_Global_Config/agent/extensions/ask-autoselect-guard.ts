@@ -59,16 +59,27 @@ function formDecisionText(html: string): string {
   return parts.join(" ");
 }
 
+/** Both automatic submission and the web inbox must leave these decisions to a blocking ask. */
+export function requiresBlockingAsk(html: string): boolean {
+  const text = formDecisionText(html);
+  return HIGH_IMPACT.test(text) || USER_DECISION.test(text) || MODEL_CHOICE.test(text) ||
+    PROVIDER_CHOICE.test(text) || namesBothSides(text) || (PROVIDER.test(text) && FALLBACK.test(text));
+}
+
 export default function askAutoSelectGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", event => {
-    if (event.toolName !== "ask" || !record(event.input) || event.input.autoSelectRecommended !== true) return;
-    if (typeof event.input.html !== "string") return;
-    const text = formDecisionText(event.input.html);
-    if (HIGH_IMPACT.test(text) || USER_DECISION.test(text) || MODEL_CHOICE.test(text) ||
-        PROVIDER_CHOICE.test(text) || namesBothSides(text) || (PROVIDER.test(text) && FALLBACK.test(text))) {
+    if (event.toolName !== "ask" || !record(event.input)) return;
+    const inbox = event.input.background === true;
+    if (!inbox && event.input.autoSelectRecommended !== true) return;
+    if (typeof event.input.html !== "string") {
+      if (inbox) return { block: true, reason: "Inbox questions require an HTML form." };
+      return;
+    }
+    if (requiresBlockingAsk(event.input.html)) {
       return {
         block: true,
-        reason: "ask-autoselect-guard: 사용자 결정·승인 질문은 자동선택할 수 없다. 이 폼의 autoSelectRecommended를 빼거나 false로 바꿔 다시 호출하라.",
+        reason: inbox ? "This decision requires a blocking ask. Omit background and autoSelectRecommended." :
+          "ask-autoselect-guard: 사용자 결정·승인 질문은 자동선택할 수 없다. 이 폼의 autoSelectRecommended를 빼거나 false로 바꿔 다시 호출하라.",
       };
     }
   });

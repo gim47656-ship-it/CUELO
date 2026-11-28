@@ -83,6 +83,16 @@ describe("ask auto-select guard", () => {
     expect(result?.reason).toContain("autoSelectRecommended");
   });
 
+  test.each(decisions)("requires a blocking ask for inbox decision: %s", text => {
+    expect(harness()({ html: form(text), background: true })?.block).toBe(true);
+  });
+
+  test("accepts a reversible inbox question but not unclassifiable legacy input", () => {
+    const call = harness();
+    expect(call({ html: form("Which example filename?"), background: true })).toBeUndefined();
+    expect(call({ questions: [{ question: "Delete?" }], background: true })?.block).toBe(true);
+  });
+
   test.each(decisions)("allows the same decision without auto-selection: %s", text => {
     const call = harness();
     expect(call(ask(text, false))).toBeUndefined();

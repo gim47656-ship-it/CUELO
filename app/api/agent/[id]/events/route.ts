@@ -78,6 +78,7 @@ export async function GET(
       const coalescer = createMessageUpdateCoalescer(encode);
       let replaying = true;
       let replayedDialog: AgentEvent | undefined;
+      const replayedInbox: AgentEvent[] = [];
       const forward = (event: AgentEvent) => {
         // The entries stream stays open for the selected view after the main stream's idle
         // grace, so it also carries a bare run start that lets that view re-attach.
@@ -92,7 +93,8 @@ export async function GET(
         // The client has one dialog slot. Replaying an older request first
         // would replace the newer card and discard edits to it.
         if (replaying && event.type === "extension_ui_request" && event.method !== "custom") {
-          replayedDialog = event;
+          if (event.method === "form" && event.background === true) replayedInbox.push(event);
+          else replayedDialog = event;
           return;
         }
         if (includeTiming) {
@@ -115,6 +117,7 @@ export async function GET(
         sessionId: id,
         ...(!entriesOnly ? { pendingExtensionUiIds: session.getPendingExtensionUiIds() } : {}),
       });
+      for (const question of replayedInbox) forward({ ...question, replayed: true });
       if (replayedDialog) forward({ ...replayedDialog, replayed: true });
       if (entriesOnly) {
         const manager = session.inner.sessionManager;

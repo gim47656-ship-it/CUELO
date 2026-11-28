@@ -254,6 +254,20 @@ export const useLayoutEffect = () => {};
   hook = useRenderedSession();
   assert.equal(hook.extensionDialog, null, "a reconnect clears a dialog closed while away");
   assert.equal(hook.extensionResponse, null);
+  const inbox = { type: "extension_ui_request", method: "form", id: "inbox", background: true, form: { fields: [], sections: [] } };
+  hook.handleAgentEventRef.current(inbox);
+  hook.handleAgentEventRef.current(newRequest);
+  hook.handleAgentEventRef.current({ ...inbox, replayed: true });
+  hook = useRenderedSession();
+  assert.deepEqual(hook.inboxQuestions, [inbox]);
+  assert.equal(hook.extensionDialog, newRequest);
+  hook.handleAgentEventRef.current({ type: "connected", pendingExtensionUiIds: [inbox.id] });
+  hook = useRenderedSession();
+  assert.equal(hook.extensionDialog, null);
+  assert.equal(hook.inboxQuestions[0], inbox);
+  hook.handleAgentEventRef.current({ type: "extension_ui_closed", id: inbox.id });
+  hook = useRenderedSession();
+  assert.deepEqual(hook.inboxQuestions, []);
   const customRequest = {
     type: "extension_ui_request",
     id: "custom-dialog",

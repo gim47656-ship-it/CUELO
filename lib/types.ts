@@ -262,6 +262,7 @@ export type ExtensionUiRequest =
       method: "form";
       /** The agent's HTML form as data (lib/ask-form); never markup. */
       form: AskFormModel;
+      background?: true;
       timeout?: number;
       expiresAt?: number;
       closed?: boolean;

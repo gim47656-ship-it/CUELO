@@ -9,7 +9,7 @@ import type { SkillsSettings } from "@oh-my-pi/pi-coding-agent/extensibility/set
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import type { Goal } from "@oh-my-pi/pi-coding-agent/tools/details/goal";
-import type { ExtensionCustomFactory, ExtensionCustomOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { ExtensionCustomFactory, ExtensionCustomOptions, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { ExtensionTheme } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/render-types";
 import type { AskFormData } from "./ask-form/types";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "./types";
@@ -143,6 +143,7 @@ export interface ExtensionUiContextLike {
   readonly timeoutStartsOnPresentation?: boolean;
   askDialog?(questions: ExtensionAskDialogQuestion[], opts?: DialogOptionsLike): Promise<ExtensionAskDialogResult | undefined>;
   formDialog?(html: string, opts?: DialogOptionsLike): Promise<ExtensionFormDialogResultLike | undefined>;
+  postInboxForm?: ExtensionUIContext["postInboxForm"];
   select(title: string, options: string[], opts?: DialogOptionsLike): Promise<string | undefined>;
   confirm(title: string, message: string, opts?: DialogOptionsLike): Promise<boolean>;
   input(title: string, placeholder?: string, opts?: DialogOptionsLike): Promise<string | undefined>;
@@ -241,11 +242,7 @@ export interface AgentSessionLike {
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
   refreshSkills?(): Promise<void>;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
-  prompt(text: string, options?: {
-    images?: Array<{ type: "image"; data: string; mimeType: string }>;
-    streamingBehavior?: "steer" | "followUp";
-    userInitiated?: boolean;
-  }): Promise<boolean>;
+  prompt: AgentSession["prompt"];
   /**
    * Inject a message the user did not type, optionally running a turn for it.
    * The live voice surface delivers every Codex delegation this way, so the

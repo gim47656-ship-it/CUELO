@@ -475,7 +475,7 @@ export function AskForm({
 
   return (
     <div data-ask-form="" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <div style={{ padding: "12px 16px" }}>
+      {!request.background && <div style={{ padding: "12px 16px" }}>
         <div style={{ color: "var(--text)", fontSize: "var(--seed-font-size-t4-static)", fontWeight: 600 }}>{t("chat.agentQuestion")}</div>
         <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: "var(--seed-font-size-t3-static)" }}>{t("chat.agentFormHint")}</div>
         {request.timeout ? (
@@ -483,7 +483,7 @@ export function AskForm({
             {t("chat.askFormAutoSubmitHint", { seconds: Math.round(request.timeout / 1000) })}
           </div>
         ) : null}
-      </div>
+      </div>}
 
       <div
         ref={bodyRef}

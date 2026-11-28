@@ -360,6 +360,8 @@ export const enLocale = {
     "chat.confirm": "Confirm",
     "chat.submit": "Submit",
     "chat.agentQuestion": "Agent needs your input",
+    "chat.inboxQuestions": "Questions ({count})",
+    "chat.inboxLifetime": "No need to answer now. Questions disappear if you end the session or the server restarts.",
     "chat.agentQuestionHint": "Choose an option or provide a custom response.",
     "chat.askAutoSelectHint": "If there is no response for {seconds}s, the recommended option is selected automatically. Choosing or typing restarts the wait.",
     "chat.recommended": "Recommended",

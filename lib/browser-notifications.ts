@@ -36,12 +36,13 @@ export function isBlockingExtensionUiRequest(
   request: ExtensionUiRequest,
 ): request is BlockingExtensionUiRequest {
   switch (request.method) {
+    case "form":
+      return request.background !== true;
     case "select":
     case "confirm":
     case "input":
     case "editor":
     case "ask":
-    case "form":
     case "plan_review":
       return true;
     case "custom":

@@ -53,7 +53,7 @@ import {
 } from "@/lib/inline-utterance";
 import type { ProcessLogData } from "./workspace/ProcessLogPanel";
 import { splitLabWidgets } from "./workspace/plugin-lab-bridge";
-import { AskForm } from "./AskForm";
+import { AskForm, type AskFormRequest } from "./AskForm";
 import { MarkdownBody } from "./MarkdownBody";
 import { A2uiSessionProvider } from "./a2ui/A2uiSession";
 import type { A2uiSendOutcome } from "@/lib/a2ui/session-store";
@@ -666,6 +666,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
     runStateKnown, compactedWork,
     slashCommands, slashCommandsLoading, deliveryRows, subagents, todoPhases: reportedTodoPhases,
     notices, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
+    inboxQuestions, respondToInbox,
     isAutoModelSelection,
     agentPhase,
     isNew,
@@ -1783,6 +1784,15 @@ export function ChatWindow({ session, newSessionCwd, newSessionAutoWorktree, ini
           }}
         >
           <div className="chat-column-cap" style={{ maxWidth: "var(--reading-measure)", margin: "0 auto" }}>
+            {inboxQuestions.length > 0 && (
+              <details style={{ maxHeight: "35dvh", overflowY: "auto", background: "var(--bg-panel)", borderRadius: "var(--radius-control)" }}>
+                <summary style={{ cursor: "pointer", minHeight: 44, padding: "10px 16px", fontWeight: 600 }}>
+                  {t("chat.inboxQuestions", { count: inboxQuestions.length })}
+                </summary>
+                <p style={{ margin: "0 16px 8px", color: "var(--text-muted)", wordBreak: "keep-all", overflowWrap: "break-word" }}>{t("chat.inboxLifetime")}</p>
+                {inboxQuestions.map(request => <InboxQuestion key={request.id} request={request} onRespond={respondToInbox} />)}
+              </details>
+            )}
             <CompactionBanner compaction={compaction} t={t} />
             <GoalBar goal={goalStatus} t={t} />
             <ExtensionWidgets widgets={belowEditorWidgets} />
@@ -1939,6 +1949,26 @@ function NoticeShelf({ notices, floating = false, align = "left" }: { notices: N
       })}
     </div>
   );
+}
+
+function InboxQuestion({ request, onRespond }: {
+  request: AskFormRequest;
+  onRespond: (request: AskFormRequest, response: { value: string } | { cancelled: true }) => Promise<void>;
+}) {
+  const [delivery, setDelivery] = useState<ExtensionResponseState | null>(null);
+  const send = async (form: AskFormRequest, response: { value: string } | { cancelled: true }) => {
+    if (delivery?.status === "sending") return;
+    setDelivery({ id: form.id, status: "sending" });
+    try {
+      await onRespond(form, response);
+    } catch (error) {
+      setDelivery({ id: form.id, status: "failed", error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  return <>
+    <AskForm request={request} onRespond={send} delivery={delivery} />
+    {delivery?.status === "failed" && <p role="alert" style={{ color: "var(--danger)" }}>{delivery.error}</p>}
+  </>;
 }
 
 type ExtensionDialogRequest = Extract<

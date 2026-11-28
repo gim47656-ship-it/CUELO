@@ -78,6 +78,7 @@ import type {
   SubagentSnapshot,
 } from "./types";
 import { createHeadlessCustomUi, CUSTOM_UI_THEME, type HeadlessCustomUi } from "./custom-ui-terminal";
+import { requiresBlockingAsk } from "../Tools/OMP_Global_Config/agent/extensions/ask-autoselect-guard";
 import {
   parseAskFormActivity,
   parseAskFormSnapshot,
@@ -247,7 +248,7 @@ export function createMessageUpdateCoalescer(emit: EventListener): MessageUpdate
 
 
 type PendingUiResponse = {
-  resolve: (response: ExtensionUiResponse) => void;
+  resolve: (response: ExtensionUiResponse) => void | Promise<void>;
   cancel: () => void;
   /**
    * Restart the timeout on user activity; only timed asks that auto-select have it. A timed form passes
@@ -1056,7 +1057,10 @@ export class AgentSessionWrapper {
 
   /** 사용자 답(ask·승인 등 확장 UI)을 기다리는 중인지. 재시작 뒤 자동 재개 대상에서 빼는 근거다. */
   isWaitingForUser(): boolean {
-    return this.pendingUiResponses.size > 0;
+    for (const id of this.pendingUiResponses.keys()) {
+      if (this.pendingUiRequests.get(id)?.background !== true) return true;
+    }
+    return false;
   }
 
   isRunning(): boolean {
@@ -1474,7 +1478,7 @@ export class AgentSessionWrapper {
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
-      if (this.keepAliveListeners.size > 0 || this.isRunning()) {
+      if (this.keepAliveListeners.size > 0 || this.isRunning() || this.pendingUiResponses.size > 0) {
         this.resetIdleTimer();
         return;
       }
@@ -2219,7 +2223,8 @@ export class AgentSessionWrapper {
       }
 
       case "extension_ui_response": {
-        this.resolveExtensionUiResponse(command as ExtensionUiResponse);
+        const response = command as ExtensionUiResponse;
+        await this.pendingUiResponses.get(response.id)?.resolve(response);
         return null;
       }
 
@@ -2363,11 +2368,6 @@ export class AgentSessionWrapper {
     return jobsSettled && this.subagents.getSubagents().length === 0;
   }
 
-  private resolveExtensionUiResponse(response: ExtensionUiResponse): void {
-    const pending = this.pendingUiResponses.get(response.id);
-    if (!pending) return;
-    pending.resolve(response);
-  }
 
   private getExtensionStatuses(): Array<{ key: string; text: string }> {
     return Array.from(this.extensionStatuses, ([key, text]) => ({ key, text }));
@@ -2583,6 +2583,61 @@ export class AgentSessionWrapper {
         opts?.signal,
         () => timedOutAskResult(questions),
       ),
+      postInboxForm: async (html, toolCallId, format, signal) => {
+        // The host is the last boundary even when the harness extension was not loaded.
+        if (requiresBlockingAsk(html)) throw new Error("This decision requires a blocking ask. Omit background and autoSelectRecommended.");
+        const prepared = await prepareAskForm(html, { cwd: this.cwd, signal });
+        signal?.throwIfAborted();
+        if (!this._alive || this.closing) throw new Error("Session closed before posting the inbox question.");
+        const id = randomUUID();
+        const request: AgentEvent = { type: "extension_ui_request", method: "form", background: true, form: prepared.model, id };
+        const close = () => {
+          this.pendingUiRequests.delete(id);
+          this.pendingUiResponses.delete(id);
+          this.emit({ type: "extension_ui_closed", id });
+          notifyRunningChange();
+        };
+        let delivering: Promise<void> | undefined;
+        const deliver = async (response: ExtensionUiResponse) => {
+          const prefix = `Inbox question ${toolCallId}: `;
+          let text = prefix + "dismissed by the user, without an answer or approval.";
+          const images: OmpImageContent[] = [];
+          if (!("cancelled" in response && response.cancelled)) {
+            if (!("value" in response)) throw new Error("Expected a form answer.");
+            const checked = validateAskFormSubmission(prepared, parseAskFormSnapshot(response.value));
+            if ("error" in checked) throw new Error(checked.error);
+            const answer = await format({ data: checked.data });
+            text = prefix + "the user's answer (not approval):";
+            for (const block of answer) {
+              if (block.type === "text") text += "\n" + block.text;
+              else images.push(block);
+            }
+          }
+          if (!this._alive || this.closing) throw new Error("Session closed before delivering the inbox answer.");
+          assertUpdateTurnAdmission(this.sessionId);
+          // Acknowledge admission, not the end of the resulting model turn. A later provider
+          // failure is a turn error, not a reason for the browser to resend the user's answer.
+          const receipt = Promise.withResolvers<void>();
+          let admitted = false;
+          void this.inner.prompt(text, {
+            images: images.length ? images : undefined, streamingBehavior: "aside", userInitiated: true,
+            expandPromptTemplates: false, runCommands: false, throwOnDrop: true,
+            onPromptAdmitted: () => { admitted = true; receipt.resolve(); },
+          }).then(() => receipt.resolve(), error => {
+            if (!admitted) receipt.reject(error);
+            else this.emit({ type: "prompt_error", errorMessage: error instanceof Error ? error.message : String(error) });
+          });
+          await receipt.promise;
+          close();
+        };
+        this.pendingUiRequests.set(id, request);
+        this.pendingUiResponses.set(id, {
+          resolve: response => delivering ??= deliver(response).finally(() => { delivering = undefined; }),
+          cancel: close,
+        });
+        this.emit(request);
+        notifyRunningChange();
+      },
       formDialog: async (html, opts) => {
         let prepared: PreparedAskForm;
         try {

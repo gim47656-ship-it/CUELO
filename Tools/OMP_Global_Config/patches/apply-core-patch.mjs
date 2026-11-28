@@ -26871,6 +26871,37 @@ _install_builtins(_STATE.user_ns)
 						.error(!scriptError)`);
 }
 
+// CUELO web hosts own inbox requests after the tool returns. A pending question is not a running job.
+{
+	const ask = "src/tools/ask.ts";
+	const add = (file, anchor, patched, marker = patched) => EDITS.push({ file, anchor, patched, marker });
+	const html = '\thtml: arkType("string").describe("one HTML <form>"),';
+	add(ask, html, `${html}\n\t"background?": arkType("boolean").describe("post to the question inbox without waiting"),`, '"background?": arkType("boolean")');
+	add("src/prompts/tools/ask.md", "Ask the user to fill in one HTML form; blocks until they submit or cancel.",
+		"Ask the user to fill in one HTML form. By default, wait for their answer. Use background: true only when independent work remains and the answer does not gate your next action. Approvals and high-impact decisions must block.");
+	add(ask, "\t\t// Headless fallback", `		if (params?.background === true && !context?.ui?.postInboxForm) {
+			throw new ToolError("This host has no question inbox. Use a blocking ask if you need an answer.");
+		}
+		// Headless fallback`);
+	add(ask, "\t\tconst extensionUi = context.ui;", `		const extensionUi = context.ui;
+		if (params.background === true) {
+			if (params.autoSelectRecommended === true) throw new ToolError("Inbox questions require an explicit answer. Omit autoSelectRecommended.");
+			await extensionUi.postInboxForm!(html, _toolCallId, async answered => (await this.#formatAnswer(form, answered)).content, signal);
+			return { content: [{ type: "text", text: "Inbox question pending (" + _toolCallId + "). Continue independent work; the answer will arrive in this session." }], details: { answers: [] } };
+		}`, "await extensionUi.postInboxForm!");
+	add(ask, "\t\tconst notes = answered.notes?.length ? answered.notes : undefined;",
+		`		return this.#formatAnswer(form, answered, signal);
+	}
+
+	async #formatAnswer(form: HtmlForm, answered: ExtensionFormDialogResult, signal?: AbortSignal): Promise<AgentToolResult<AskToolDetails>> {
+		const notes = answered.notes?.length ? answered.notes : undefined;`, "async #formatAnswer(");
+	const form = "\tformDialog?(html: string, dialogOptions?: ExtensionUIDialogOptions): Promise<ExtensionFormDialogResult | undefined>;";
+	add("src/extensibility/extensions/types.ts", form, `${form}
+	postInboxForm?(html: string, toolCallId: string, format: (answer: ExtensionFormDialogResult) => Promise<(import("@oh-my-pi/pi-ai").TextContent | import("@oh-my-pi/pi-ai").ImageContent)[]>, signal?: AbortSignal): Promise<void>;`, "postInboxForm?(html:");
+	const decl = form.trimStart();
+	add("dist/types/extensibility/extensions/types.d.ts", decl, `${decl}\n    postInboxForm?(html: string, toolCallId: string, format: (answer: ExtensionFormDialogResult) => Promise<(import("@oh-my-pi/pi-ai").TextContent | import("@oh-my-pi/pi-ai").ImageContent)[]>, signal?: AbortSignal): Promise<void>;`, "postInboxForm?(html:");
+}
+
 /** All possible targets, including files reached only by a version alternate. */
 export function corePatchTargetFiles() {
 	return [...new Set(EDITS.flatMap(entry => [entry.file, ...(entry.alternates ?? []).map(candidate => candidate.file)]))];

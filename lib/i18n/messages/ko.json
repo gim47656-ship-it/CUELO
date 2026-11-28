@@ -403,6 +403,8 @@
  "chat.confirm": "확인",
  "chat.submit": "제출",
  "chat.agentQuestion": "Agent가 입력을 기다립니다",
+ "chat.inboxQuestions": "질문함 ({count})",
+ "chat.inboxLifetime": "지금 답하지 않아도 됩니다. 세션을 종료하거나 서버가 다시 시작되면 질문이 사라집니다.",
  "chat.agentQuestionHint": "옵션을 선택하거나 직접 응답을 입력하세요.",
  "chat.askAutoSelectHint": "{seconds}초 동안 응답이 없으면 추천안으로 자동 선택합니다. 선택하거나 입력하면 대기 시간이 다시 시작됩니다.",
  "chat.recommended": "추천",

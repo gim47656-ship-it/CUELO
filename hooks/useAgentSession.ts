@@ -664,6 +664,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [noticeState, dispatchNotice] = useReducer(noticeReducer, { visible: [], pending: [] });
   const [sessionStatsOverride, setSessionStatsOverride] = useState<SessionStatsInfo | null>(null);
   const [extensionDialog, setExtensionDialog] = useState<ExtensionUiDialogRequest | null>(null);
+  type InboxForm = Extract<ExtensionUiRequest, { method: "form" }>;
+  const [inboxQuestions, setInboxQuestions] = useState<InboxForm[]>([]);
   const extensionDialogIdRef = useRef<string | null>(null);
   const deferredExtensionDialogRef = useRef<ExtensionUiDialogRequest | null>(null);
   /** Delivery state of the reader's answer to `extensionDialog`. */
@@ -1289,6 +1291,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [onAttentionNeeded]);
 
   const clearExtensionDialog = useCallback((id: string) => {
+    setInboxQuestions(current => current.some(q => q.id === id) ? current.filter(q => q.id !== id) : current);
     if (deferredExtensionDialogRef.current?.id === id) deferredExtensionDialogRef.current = null;
     if (extensionDialogIdRef.current === id) {
       const deferred = deferredExtensionDialogRef.current;
@@ -1337,6 +1340,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       publish({ id: request.id, status: "failed", error: e instanceof Error ? e.message : String(e) });
       return;
     }
+    if (sessionIdRef.current === sid) clearExtensionDialog(request.id);
+  }, [clearExtensionDialog]);
+
+  const respondToInbox = useCallback(async (request: InboxForm, response: { value: string } | { cancelled: true }) => {
+    const sid = sessionIdRef.current;
+    if (!sid) throw new Error("No active session");
+    await sendAgentCommand(sid, { type: "extension_ui_response", id: request.id, ...response });
     if (sessionIdRef.current === sid) clearExtensionDialog(request.id);
   }, [clearExtensionDialog]);
 
@@ -1399,6 +1409,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest, replayed: boolean) => {
     if (request.method !== "custom" && "closed" in request && request.closed) {
       clearExtensionDialog(request.id);
+      return;
+    }
+
+    if (request.method === "form" && request.background) {
+      setInboxQuestions(current => current.some(q => q.id === request.id) ? current : [...current, request]);
       return;
     }
 
@@ -1613,7 +1628,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (previousDeferred && !pending.includes(previousDeferred.id)) deferredExtensionDialogRef.current = null;
           if (previousDialogId !== null && !pending.includes(previousDialogId)) clearExtensionDialog(previousDialogId);
         }
-        if (extensionDialogIdRef.current !== null) {
+        if (extensionDialogIdRef.current !== null || pending?.length) {
           eventStreamGraceTimerRef.current = setTimeout(() => void checkServerIdle(), EVENT_STREAM_IDLE_GRACE_MS);
           return;
         }
@@ -1909,6 +1924,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const pending = event.pendingExtensionUiIds;
         const id = extensionDialogIdRef.current;
         if (Array.isArray(pending)) {
+          setInboxQuestions(current => current.some(q => !pending.includes(q.id)) ? current.filter(q => pending.includes(q.id)) : current);
           const deferred = deferredExtensionDialogRef.current;
           if (deferred && !pending.includes(deferred.id)) deferredExtensionDialogRef.current = null;
           if (id !== null && !pending.includes(id)) clearExtensionDialog(id);
@@ -3337,6 +3353,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           }
         }
         const state = agentState?.state;
+        if (state?.pendingExtensionUiIds?.length) void connectEvents(session.id);
         if (state) {
           if (state.isCompacting !== undefined) setIsCompacting(state.isCompacting);
           setCompaction(adoptServerCompaction(state));
@@ -3362,6 +3379,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       bashRecoveryIdRef.current += 1;
       cancelEventStreamGrace();
       deferredExtensionDialogRef.current = null;
+      setInboxQuestions([]);
       if (extensionDialogIdRef.current !== null) clearExtensionDialog(extensionDialogIdRef.current);
       closeEvents();
       closeSessionSnapshots();
@@ -3497,6 +3515,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     todoPhases: todoSnapshot && todoSnapshot.sid === sessionIdRef.current ? todoSnapshot.phases : null,
     compactedWork,
     notices: noticeState.visible, extensionDialog, extensionResponse, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
+    inboxQuestions, respondToInbox,
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,
     isNew,

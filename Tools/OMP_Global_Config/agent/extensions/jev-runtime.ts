@@ -2070,7 +2070,7 @@ export function createJevRuntime(deps: JevRuntimeDeps = {}) {
       if (event.toolName === "read") bindJobInspection(event.toolCallId, event.input, ctx);
 
       // ask는 tool_call 시점부터 사용자 대기로 본다. block되어도 tool_execution_end가 닫는다.
-      if (event.toolName === "ask") {
+      if (event.toolName === "ask" && (event.input as { background?: unknown } | null)?.background !== true) {
         pendingAsks.add(event.toolCallId);
         cancelObservationTimer?.();
         cancelObservationTimer = undefined;
