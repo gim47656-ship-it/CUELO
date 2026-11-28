@@ -142,7 +142,7 @@ type WidgetOptionsLike = {
 export interface ExtensionUiContextLike {
   readonly timeoutStartsOnPresentation?: boolean;
   askDialog?(questions: ExtensionAskDialogQuestion[], opts?: DialogOptionsLike): Promise<ExtensionAskDialogResult | undefined>;
-  formDialog?(html: string, opts?: DialogOptionsLike): Promise<ExtensionFormDialogResultLike | undefined>;
+  formDialog?(html: string, opts?: DialogOptionsLike & { askToolCallId?: string; askInterrupted?: () => boolean }): Promise<ExtensionFormDialogResultLike | undefined>;
   postInboxForm?: ExtensionUIContext["postInboxForm"];
   select(title: string, options: string[], opts?: DialogOptionsLike): Promise<string | undefined>;
   confirm(title: string, message: string, opts?: DialogOptionsLike): Promise<boolean>;

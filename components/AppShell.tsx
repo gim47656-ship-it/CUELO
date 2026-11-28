@@ -7,6 +7,7 @@ import { ActionButton, Icon, Menu } from "@seed-design/react";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar, type SessionActivity } from "./SessionSidebar";
 import { ChatWindow, type ChatJumpRequest } from "./ChatWindow";
+import { UnansweredQuestionsDialog } from "./UnansweredQuestionsDialog";
 import { ComputerTakeoverControl } from "./ComputerTakeoverControl";
 import { PaletteTranscriptSearch } from "./PaletteTranscriptSearch";
 import { FileViewer, type FileLineRequest, type FileViewStateStore } from "./FileViewer";
@@ -1003,6 +1004,7 @@ export function AppShell({
     if (opener?.isConnected) window.requestAnimationFrame(() => opener.focus());
   }, []);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [unansweredOpen, setUnansweredOpen] = useState(false);
   // The right inspector stays open on a wide desktop until the operator hides it (per browser).
   // Below its pin width, and on the phone, 이번 턴 opens on request (turn row, peek strip, toggle).
   const [inspectorOpen, setInspectorOpenState] = useState(true);
@@ -2838,6 +2840,9 @@ export function AppShell({
                   <Menu.ScrollArea>
                     <Menu.Group>
                       <Menu.GroupLabel>{locale === "ko" ? "세션" : "Session"}</Menu.GroupLabel>
+                      <Menu.Item onClick={() => setUnansweredOpen(true)}>
+                        <Menu.ItemBody><Menu.ItemLabel>{translate("unanswered.title")}</Menu.ItemLabel></Menu.ItemBody>
+                      </Menu.Item>
                       {showChat && (
                         <Menu.Item onClick={toggleAuxiliaryPanel}>
                           <Menu.ItemBody>
@@ -3427,6 +3432,7 @@ export function AppShell({
         </div>
       )}
     </div>
+    {unansweredOpen && <UnansweredQuestionsDialog onClose={() => setUnansweredOpen(false)} />}
     {upkeepVisited ? (
       <UpkeepView open={upkeepOpen} onClose={() => setUpkeepActive(false)} onStartSession={startUpkeepSession} />
     ) : null}

@@ -1,0 +1,31 @@
+.dialog {
+  margin: auto;
+  width: min(38rem, calc(100vw - 24px));
+  max-height: 80dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px;
+  border: 0;
+  border-radius: var(--radius-panel);
+  background: var(--bg-panel);
+  color: var(--text);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.dialog::backdrop { background: rgb(0 0 0 / 40%); }
+.dialog header, .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dialog h2 { margin: 0; font-size: var(--seed-font-size-t6-static); font-weight: 650; }
+.dialog button { cursor: pointer; }
+.dialog header button, .row > button:last-child, .dialog [role="alert"] button {
+  min-height: 40px; padding: 0 12px; background: var(--bg); color: var(--text-muted); border-radius: var(--radius-control);
+}
+.dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hint, .question small { color: var(--text-muted); font-size: var(--seed-font-size-t3-static); }
+.hint { margin: 8px 0 16px; }
+.dialog ul { list-style: none; margin: 0; padding: 0; }
+.dialog li { margin: 4px 0; }
+.question { flex: 1; min-width: 0; padding: 10px 8px; text-align: start; }
+.question[aria-expanded="true"], .question:hover { background: var(--bg-hover); border-radius: var(--radius-control); }
+.question strong, .question small { display: block; }
+.question small { margin-top: 4px; }
+.dialog [role="alert"] { color: var(--danger); }

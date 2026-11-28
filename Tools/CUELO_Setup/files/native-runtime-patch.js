@@ -9,7 +9,7 @@ const MEMORY_RE = /(const phase1Model = await resolveMemoryModel\(\{[^}]*?fallba
 const MEMORY_DONE = /const phase1Model = await resolveMemoryModel\(\{[^}]*?fallbackRole: "smol"/;
 const EXPECTED = {
     name: 'cuelo',
-    version: '0.10.383',
+    version: '0.10.384',
     distribution: 'cuelo',
     coreVersion: '19.2.1',
 };

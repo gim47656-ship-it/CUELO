@@ -26900,6 +26900,13 @@ _install_builtins(_STATE.user_ns)
 	postInboxForm?(html: string, toolCallId: string, format: (answer: ExtensionFormDialogResult) => Promise<(import("@oh-my-pi/pi-ai").TextContent | import("@oh-my-pi/pi-ai").ImageContent)[]>, signal?: AbortSignal): Promise<void>;`, "postInboxForm?(html:");
 	const decl = form.trimStart();
 	add("dist/types/extensibility/extensions/types.d.ts", decl, `${decl}\n    postInboxForm?(html: string, toolCallId: string, format: (answer: ExtensionFormDialogResult) => Promise<(import("@oh-my-pi/pi-ai").TextContent | import("@oh-my-pi/pi-ai").ImageContent)[]>, signal?: AbortSignal): Promise<void>;`, "postInboxForm?(html:");
+	// Host-only metadata for journaling a blocking ask. No model-visible schema/prompt change.
+	const options = "formDialog(html, {\n\t\t\t\t\t\ttimeout,";
+	add(ask, options, `${options}\n\t\t\t\t\t\taskToolCallId: _toolCallId,\n\t\t\t\t\t\taskInterrupted: () => userSteering.signal.aborted,`);
+	for (const [file, indent] of [["src/extensibility/extensions/types.ts", "\t"], ["dist/types/extensibility/extensions/types.d.ts", "    "]]) {
+		const anchor = "export interface ExtensionUIDialogOptions {";
+		add(file, anchor, `${anchor}\n${indent}askToolCallId?: string;\n${indent}askInterrupted?: () => boolean;`, "askInterrupted?: () => boolean;");
+	}
 }
 
 /** All possible targets, including files reached only by a version alternate. */

@@ -35,7 +35,7 @@ function dataUri(media: FormMedia): string {
  */
 export async function prepareAskForm(
   html: string,
-  options: { cwd: string; signal?: AbortSignal },
+  options: { cwd: string; signal?: AbortSignal; omitMedia?: boolean },
 ): Promise<PreparedAskForm> {
   const form = parseHtmlForm(html);
   const fields = form.fields.filter((field) => field.name);
@@ -64,6 +64,7 @@ export async function prepareAskForm(
           break;
         }
         case "image":
+          if (options.omitMedia) break;
           blocks.push({
             kind: "image",
             alt: block.alt,
@@ -71,6 +72,7 @@ export async function prepareAskForm(
           });
           break;
         case "svg":
+          if (options.omitMedia) break;
           blocks.push({ kind: "image", alt: block.alt, src: await resolvePicture(() => svgMedia(block.markup)) });
           break;
         default:

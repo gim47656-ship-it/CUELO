@@ -79,6 +79,7 @@ import type {
 } from "./types";
 import { createHeadlessCustomUi, CUSTOM_UI_THEME, type HeadlessCustomUi } from "./custom-ui-terminal";
 import { requiresBlockingAsk } from "../Tools/OMP_Global_Config/agent/extensions/ask-autoselect-guard";
+import { archiveFormHtml, finishArchivedQuestion, updateUnansweredQuestions, type UnansweredReason } from "./unanswered-questions";
 import {
   parseAskFormActivity,
   parseAskFormSnapshot,
@@ -366,6 +367,8 @@ export function resolveForkEntryId(
 }
 
 export interface RpcSessionStartOptions {
+  /** A late reply must never mint a replacement transcript at a stale path. */
+  requireExistingSession?: true;
   toolNames?: string[];
   /** Hard builtin-only admission policy, unlike the UI's toolNames preset. Re-pass on cold resume. */
   restrictTools?: string[];
@@ -911,6 +914,7 @@ export class AgentSessionWrapper {
     eventBus: ConstructorParameters<typeof RpcSubagentRegistry>[0],
     private readonly stopResumeToolReplay?: RestoredRpcTools,
     readonly restrictTools?: readonly string[],
+    private readonly questionArchiveDir?: string,
   ) {
     // The pinned SDK uses the same Agent instance for both fresh prompts and
     // autonomous continuations. Guard before it claims a run or dequeues input,
@@ -2491,6 +2495,36 @@ export class AgentSessionWrapper {
     return promise;
   }
 
+  private recordAsk(id: string, toolCallId: string, prepared: PreparedAskForm): void {
+    if (!this.questionArchiveDir) return;
+    try {
+      updateUnansweredQuestions(items => {
+        // A hard stop cannot run cleanup: the pending record already has the correct recovery reason.
+        items.push({ id, sessionId: this.sessionId, cwd: this.cwd, toolCallId, createdAt: Date.now(), reason: "restart",
+          html: archiveFormHtml(prepared.form), ...(this.restrictTools ? { restrictTools: this.restrictTools } : {}) });
+        return true;
+      }, this.questionArchiveDir);
+    } catch {
+      console.warn("[ask archive] Cannot save this question; its live form remains available.");
+    }
+  }
+
+  async admitQuestionAnswer(text: string, images: OmpImageContent[] = []): Promise<void> {
+    if (!this._alive || this.closing || this.handoffRunning) throw new Error("Session unavailable for a question answer.");
+    assertUpdateTurnAdmission(this.sessionId);
+    const receipt = Promise.withResolvers<void>();
+    let admitted = false;
+    void this.inner.prompt(text, {
+      images: images.length ? images : undefined, streamingBehavior: "aside", userInitiated: true,
+      expandPromptTemplates: false, runCommands: false, throwOnDrop: true,
+      onPromptAdmitted: () => { admitted = true; receipt.resolve(); },
+    }).then(() => receipt.resolve(), error => {
+      if (!admitted) receipt.reject(error);
+      else this.emit({ type: "prompt_error", errorMessage: error instanceof Error ? error.message : String(error) });
+    });
+    await receipt.promise;
+  }
+
   private requestExtensionUi<T>(
     request: ExtensionUiRequestBody,
     defaultValue: T,
@@ -2501,10 +2535,12 @@ export class AgentSessionWrapper {
     timeoutValue?: () => T,
     /** Receives what a timed form's browser reports with each activity (its current values); false drops a stale report, which then does not restart the wait. */
     onActivityPayload?: (payload: string) => boolean,
+    archive?: { toolCallId: string; prepared: PreparedAskForm; interrupted?: () => boolean },
   ): Promise<T> {
     if (signal?.aborted) return Promise.resolve(defaultValue);
 
     const id = randomUUID();
+    if (archive) this.recordAsk(id, archive.toolCallId, archive.prepared);
     const fullRequest = {
       type: "extension_ui_request",
       id,
@@ -2523,18 +2559,19 @@ export class AgentSessionWrapper {
       notifyRunningChange();
     };
     // Submit, cancel, abort and timeout can race; only the first one settles.
-    const settle = (value: T, notifyClosed = false) => {
+    const settle = (value: T, reason: UnansweredReason | "answered", notifyClosed = false) => {
       if (settled) return;
+      if (archive && this.questionArchiveDir) finishArchivedQuestion(id, reason, this.questionArchiveDir);
       settled = true;
       cleanup();
       if (notifyClosed) this.emit({ ...fullRequest, closed: true } as AgentEvent);
       resolve(value);
     };
-    const onAbort = () => settle(defaultValue, true);
+    const onAbort = () => settle(defaultValue, archive?.interrupted?.() ? "interrupted" : "cancelled", true);
     // The server stops waiting at the deadline, so the browser surface is closed with it.
     const armTimeout = () => {
       if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => settle(timeoutValue ? timeoutValue() : defaultValue, true), timeout);
+      timeoutId = setTimeout(() => settle(timeoutValue ? timeoutValue() : defaultValue, "timeout", true), timeout);
     };
 
     if (timeout) armTimeout();
@@ -2543,10 +2580,10 @@ export class AgentSessionWrapper {
     this.pendingUiRequests.set(id, fullRequest as AgentEvent);
     this.pendingUiResponses.set(id, {
       resolve: (response) => {
-        settle(parseResponse(response));
+        settle(parseResponse(response), "value" in response ? "answered" : "cancelled");
         this.emit({ type: "extension_ui_closed", id });
       },
-      cancel: () => settle(defaultValue),
+      cancel: () => settle(defaultValue, "session-closed"),
       ...(timeout && timeoutValue
         ? {
           activity: (payload) => {
@@ -2590,8 +2627,10 @@ export class AgentSessionWrapper {
         signal?.throwIfAborted();
         if (!this._alive || this.closing) throw new Error("Session closed before posting the inbox question.");
         const id = randomUUID();
+        this.recordAsk(id, toolCallId, prepared);
         const request: AgentEvent = { type: "extension_ui_request", method: "form", background: true, form: prepared.model, id };
-        const close = () => {
+        const close = (reason: UnansweredReason | "answered") => {
+          if (this.questionArchiveDir) finishArchivedQuestion(id, reason, this.questionArchiveDir);
           this.pendingUiRequests.delete(id);
           this.pendingUiResponses.delete(id);
           this.emit({ type: "extension_ui_closed", id });
@@ -2613,27 +2652,13 @@ export class AgentSessionWrapper {
               else images.push(block);
             }
           }
-          if (!this._alive || this.closing) throw new Error("Session closed before delivering the inbox answer.");
-          assertUpdateTurnAdmission(this.sessionId);
-          // Acknowledge admission, not the end of the resulting model turn. A later provider
-          // failure is a turn error, not a reason for the browser to resend the user's answer.
-          const receipt = Promise.withResolvers<void>();
-          let admitted = false;
-          void this.inner.prompt(text, {
-            images: images.length ? images : undefined, streamingBehavior: "aside", userInitiated: true,
-            expandPromptTemplates: false, runCommands: false, throwOnDrop: true,
-            onPromptAdmitted: () => { admitted = true; receipt.resolve(); },
-          }).then(() => receipt.resolve(), error => {
-            if (!admitted) receipt.reject(error);
-            else this.emit({ type: "prompt_error", errorMessage: error instanceof Error ? error.message : String(error) });
-          });
-          await receipt.promise;
-          close();
+          await this.admitQuestionAnswer(text, images);
+          close("cancelled" in response && response.cancelled ? "dismissed" : "answered");
         };
         this.pendingUiRequests.set(id, request);
         this.pendingUiResponses.set(id, {
           resolve: response => delivering ??= deliver(response).finally(() => { delivering = undefined; }),
-          cancel: close,
+          cancel: () => close("session-closed"),
         });
         this.emit(request);
         notifyRunningChange();
@@ -2676,6 +2701,7 @@ export class AgentSessionWrapper {
             snapshot = activity.snapshot;
             return true;
           },
+          opts?.askToolCallId ? { toolCallId: opts.askToolCallId, prepared, interrupted: opts.askInterrupted } : undefined,
         );
       },
       select: (title, options, opts) => this.requestExtensionUi(
@@ -3127,11 +3153,13 @@ export async function startRpcSession(
     initTheme({ watch: false });
     const agentDir = getAgentDir();
     const sessionManager = sessionFile
-      ? await SessionManager.open(sessionFile, undefined)
+      ? await SessionManager.open(sessionFile, undefined, undefined, options.requireExistingSession ? { throwIfMissing: true } : undefined)
       : (() => {
+        if (options.requireExistingSession) throw new Error("Original session is missing");
         if (!cwd) throw new Error("cwd is required for a new session");
         return SessionManager.create(cwd, undefined);
       })();
+    if (options.requireExistingSession && sessionManager.getSessionId() !== sessionId) throw new Error("Original session changed");
     const releaseResumeWorktree = sessionFile
       ? await prepareResumedWorktree(sessionManager)
       : undefined;
@@ -3277,7 +3305,7 @@ export async function startRpcSession(
         await session.setActiveToolsByName(withExtensionTools(session, toolNames));
       }
 
-      const wrapper = new AgentSessionWrapper(session, eventBus, stopResumeToolReplay, restrictTools);
+      const wrapper = new AgentSessionWrapper(session, eventBus, stopResumeToolReplay, restrictTools, agentDir);
       wrapper.projectCodeLoaded = untrusted === undefined;
       // The runtime's shared Settings instance must never carry a per-session takeover override.
       wrapper.sharesRuntimeSettings = sessionSettings === runtime.settings;
